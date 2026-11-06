@@ -5,4 +5,21 @@
 **/storage/
 code/shishu-v2/storage/
 .DS_Store
-data/SHISHU Call/audio/*.mp4
+.local-data/
+.cursor/
+
+# Private notes. Keep the files on disk. Do not publish them.
+jd-raw-words.md
+ai_chats/
+
+# Source material. Call transcripts and clinical documents stay on disk.
+data/
+submission-round1/
+SHISHU_Round_2_Owner_Working_Draft.pptx
+**/*.mp4
+
+# Old versions. This app does not use them.
+code/bad-v1/
+infra/
+plan/
+architecture/

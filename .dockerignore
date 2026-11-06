@@ -7,3 +7,14 @@
 **/*.mp4
 .git
 .DS_Store
+.local-data
+.cursor
+jd-raw-words.md
+ai_chats
+data
+submission-round1
+*.pptx
+code/bad-v1
+infra
+plan
+architecture
