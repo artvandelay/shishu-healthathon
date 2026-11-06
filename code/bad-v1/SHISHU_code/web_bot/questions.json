@@ -1,0 +1,86 @@
+[
+  {
+    "id": "q1",
+    "category": "basic info",
+    "question": "How many children do you have and what are their ages?",
+    "required": true
+  },
+  {
+    "id": "q2",
+    "category": "basic info",
+    "question": "Were you and your husband related by blood before marriage?",
+    "required": true
+  },
+  {
+    "id": "q3",
+    "category": "history",
+    "question": "Did you experience high blood pressure, diabetes, or thyroid issues during pregnancy?",
+    "required": true
+  },
+  {
+    "id": "q4",
+    "category": "history",
+    "question": "Did you require any blood transfusions during pregnancy or delivery?",
+    "required": true
+  },
+  {
+    "id": "q5",
+    "category": "history",
+    "question": "Did you have any complications during delivery?",
+    "required": true
+  },
+  {
+    "id": "q6",
+    "category": "history",
+    "question": "Have you or your husband been tested for thalassemia?",
+    "required": true
+  },
+  {
+    "id": "q7",
+    "category": "symptoms",
+    "question": "Was the child born prematurely or require NICU admission/blue light therapy?",
+    "required": true
+  },
+  {
+    "id": "q8",
+    "category": "symptoms",
+    "question": "Did the child have any seizures, fits, or abnormal development milestones?",
+    "required": true
+  },
+  {
+    "id": "q9",
+    "category": "symptoms",
+    "question": "Does the child have persistent breathing problems or need repeated hospitalizations?",
+    "required": true
+  },
+  {
+    "id": "q10",
+    "category": "symptoms",
+    "question": "Are there signs of abnormal growth, such as an enlarging stomach or liver/kidney issues?",
+    "required": true
+  },
+  {
+    "id": "q11",
+    "category": "symptoms",
+    "question": "Has the child ever required a blood transfusion or been diagnosed with low blood counts?",
+    "required": true
+  },
+  {
+    "id": "q12",
+    "category": "symptoms",
+    "question": "Does the child experience excessive bleeding, bruising, or delayed healing from injuries?",
+    "required": true
+  },
+  {
+    "id": "q13",
+    "category": "symptoms",
+    "question": "Does the child experience recurring joint pain or swelling?",
+    "required": true
+  },
+  {
+    "id": "q14",
+    "category": "history",
+    "question": "Is there a family history of genetic conditions, bleeding disorders, or unexplained childhood deaths?",
+    "required": true
+  }
+]

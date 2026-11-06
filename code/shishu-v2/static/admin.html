@@ -1,0 +1,950 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0e6b63">
+  <title>SHISHU — Clinical Dashboard</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1c2430;
+      --muted: #5c6772;
+      --line: #e6dccf;
+      --bg: #f4efe6;
+      --card: #fffdf9;
+      --teal: #0e6b63;
+      --teal-soft: #e7f4f1;
+      --red: #a3261e;
+      --red-bg: #fdecea;
+      --red-line: #f0b2ab;
+      --amber: #8a5a12;
+    }
+
+    * { box-sizing: border-box; }
+
+    [hidden] { display: none !important; }
+
+    body {
+      margin: 0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      color: var(--ink);
+      background: var(--bg);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Nirmala UI", "Noto Sans Devanagari", sans-serif;
+    }
+
+    button, a { font: inherit; }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      padding: 12px 16px;
+      background: var(--card);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .brand { min-width: 160px; }
+
+    .brand strong {
+      display: block;
+      font-size: 18px;
+      letter-spacing: 0.04em;
+    }
+
+    .brand span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .engine {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .engine-label {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .engine button,
+    .refresh,
+    .ghost {
+      border: 1px solid #d7cbbd;
+      background: #fff;
+      color: var(--ink);
+      border-radius: 999px;
+      min-height: 36px;
+      padding: 0 12px;
+      cursor: pointer;
+    }
+
+    .engine button[aria-pressed="true"] {
+      background: var(--teal);
+      border-color: var(--teal);
+      color: #fff;
+    }
+
+    .test {
+      margin-left: auto;
+      text-decoration: none;
+      background: var(--teal);
+      color: #fff;
+      border-radius: 999px;
+      min-height: 36px;
+      padding: 8px 14px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .layout {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+    }
+
+    aside {
+      width: 340px;
+      flex: none;
+      border-right: 1px solid var(--line);
+      background: #fbf7f1;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+
+    .aside-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 12px 8px;
+    }
+
+    .aside-head h2 {
+      margin: 0;
+      font-size: 15px;
+    }
+
+    .updated {
+      margin: 0;
+      padding: 0 12px 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    #call-list {
+      overflow: auto;
+      padding: 0 8px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .call-item {
+      display: block;
+      width: 100%;
+      text-align: left;
+      border: 1px solid transparent;
+      background: #fff;
+      border-radius: 14px;
+      padding: 10px 12px;
+      cursor: pointer;
+    }
+
+    .call-item.selected {
+      border-color: var(--teal);
+      box-shadow: inset 0 0 0 1px var(--teal);
+    }
+
+    .row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .row-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .people {
+      margin-top: 4px;
+      font-size: 14px;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .badge, .pill {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+    }
+
+    .badge {
+      background: var(--teal-soft);
+      color: var(--teal);
+    }
+
+    .badge.openai {
+      background: #eef2fb;
+      color: #2a3f86;
+    }
+
+    .pill {
+      background: #eeeae4;
+      color: var(--muted);
+    }
+
+    .pill.hot {
+      background: var(--red-bg);
+      color: var(--red);
+    }
+
+    .live-dot {
+      color: var(--red);
+      font-weight: 700;
+    }
+
+    main {
+      flex: 1;
+      min-width: 0;
+      overflow: auto;
+      padding: 18px 18px 40px;
+    }
+
+    .empty, .notice {
+      color: var(--muted);
+      padding: 12px 0;
+    }
+
+    .notice {
+      margin: 0 0 10px;
+      color: var(--amber);
+    }
+
+    .detail-head h2 {
+      margin: 0 0 4px;
+      font-size: 22px;
+    }
+
+    .detail-head p {
+      margin: 0 0 16px;
+      color: var(--muted);
+    }
+
+    section.block {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 14px 16px 16px;
+      margin-bottom: 14px;
+    }
+
+    section.block h3 {
+      margin: 0 0 10px;
+      font-size: 15px;
+    }
+
+    .player-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
+    }
+
+    audio { width: min(480px, 100%); }
+
+    .download {
+      color: var(--teal);
+      font-weight: 700;
+    }
+
+    .banner {
+      background: var(--red-bg);
+      border: 1px solid var(--red-line);
+      border-radius: 16px;
+      padding: 14px 16px;
+      margin-bottom: 14px;
+    }
+
+    .banner h3 {
+      margin: 0 0 8px;
+      color: var(--red);
+      font-size: 15px;
+    }
+
+    .banner ul {
+      margin: 0;
+      padding-left: 18px;
+    }
+
+    .banner li { margin: 4px 0; }
+
+    .calm {
+      color: var(--muted);
+      margin: 0 0 14px;
+    }
+
+    .columns {
+      display: grid;
+      grid-template-columns: minmax(0, 1.15fr) minmax(280px, 0.85fr);
+      gap: 14px;
+    }
+
+    .head-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .actions { display: flex; gap: 8px; }
+
+    .md h1, .md h2, .md h3 {
+      font-size: 15px;
+      margin: 14px 0 6px;
+    }
+
+    .md h1 { font-size: 18px; }
+
+    .md p { margin: 0 0 8px; line-height: 1.45; }
+
+    .md ul { margin: 0 0 8px; padding-left: 18px; }
+
+    .md code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    .mother {
+      white-space: pre-wrap;
+      line-height: 1.55;
+      font-size: 16px;
+      margin: 0;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    th, td {
+      text-align: left;
+      vertical-align: top;
+      padding: 8px 6px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    th { color: var(--muted); font-weight: 650; }
+
+    tr.flag td { background: #fff6f5; }
+
+    .turn {
+      padding: 8px 0;
+      border-bottom: 1px solid #f0e7dc;
+    }
+
+    .turn strong { font-size: 12px; letter-spacing: 0.03em; }
+
+    .turn.shishu strong { color: var(--teal); }
+
+    .turn p {
+      margin: 4px 0 0;
+      white-space: pre-wrap;
+      line-height: 1.45;
+    }
+
+    button:focus-visible,
+    a:focus-visible,
+    .call-item:focus-visible {
+      outline: 3px solid rgba(14, 107, 99, 0.35);
+      outline-offset: 2px;
+    }
+
+    @media (max-width: 980px) {
+      body { height: auto; }
+      .layout { display: block; }
+      aside { width: auto; max-height: 46vh; border-right: 0; border-bottom: 1px solid var(--line); }
+      .columns { grid-template-columns: 1fr; }
+      .test { margin-left: 0; }
+      .topbar { flex-wrap: wrap; }
+    }
+
+    @media print {
+      body.printing .topbar,
+      body.printing aside,
+      body.printing .player,
+      body.printing .banner,
+      body.printing .calm,
+      body.printing .mother-col,
+      body.printing .transcript,
+      body.printing .actions,
+      body.printing .empty,
+      body.printing .notice { display: none !important; }
+      body.printing { height: auto; background: #fff; }
+      body.printing .layout { display: block; }
+      body.printing main { overflow: visible; padding: 0; }
+      body.printing .columns { display: block; }
+      body.printing .block { border: 0; padding: 0; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <strong>SHISHU</strong>
+      <span>Clinical dashboard</span>
+    </div>
+    <div class="engine" role="group" aria-label="Active voice engine">
+      <span class="engine-label">Active Voice Engine</span>
+      <button id="eng-gemini" type="button" aria-pressed="false">Gemini 3.8 Live</button>
+      <button id="eng-openai" type="button" aria-pressed="false">OpenAI GPT-Live-1</button>
+    </div>
+    <a class="test" href="/">Test Call -&gt;</a>
+  </header>
+  <div class="layout">
+    <aside>
+      <div class="aside-head">
+        <h2>Calls</h2>
+        <button id="refresh" class="refresh" type="button">Refresh</button>
+      </div>
+      <p id="updated" class="updated"></p>
+      <div id="call-list"></div>
+    </aside>
+    <main id="detail">
+      <p id="notice" class="notice" role="status" hidden></p>
+      <p id="empty" class="empty">Select a call to review the recording, red flags, and reports.</p>
+      <article id="report" hidden>
+        <header class="detail-head">
+          <h2 id="call-title"></h2>
+          <p id="call-meta"></p>
+        </header>
+        <section class="block player">
+          <h3>Call Recording Player</h3>
+          <div class="player-row">
+            <audio id="player" controls preload="none"></audio>
+            <a id="download" class="download" href="/api/audio/0">Download WAV</a>
+          </div>
+          <p id="audio-note" class="calm" hidden>Recording is not available yet.</p>
+        </section>
+        <section id="flag-banner" class="banner" hidden>
+          <h3>Red Flags Alert Banner</h3>
+          <ul id="flag-list"></ul>
+        </section>
+        <p id="no-flags" class="calm" hidden>No red flags recorded.</p>
+        <div class="columns">
+          <section class="block">
+            <div class="head-row">
+              <h3>Doctor Clinical Intake Report</h3>
+              <div class="actions">
+                <button id="copy-report" class="ghost" type="button">Copy Report</button>
+                <button id="print-report" class="ghost" type="button">Print PDF</button>
+              </div>
+            </div>
+            <div id="doctor" class="md"></div>
+          </section>
+          <div>
+            <section class="block mother-col">
+              <h3>Mother Take-Home Summary (Hindi)</h3>
+              <p id="mother" class="mother" lang="hi"></p>
+            </section>
+            <section class="block mother-col">
+              <h3>Structured Checklist Findings</h3>
+              <div id="findings"></div>
+            </section>
+          </div>
+        </div>
+        <section class="block transcript">
+          <h3>Full Call Transcript</h3>
+          <div id="transcript"></div>
+        </section>
+      </article>
+    </main>
+  </div>
+  <script>
+    (function () {
+      const listEl = document.getElementById("call-list");
+      const emptyEl = document.getElementById("empty");
+      const reportEl = document.getElementById("report");
+      const noticeEl = document.getElementById("notice");
+      const updatedEl = document.getElementById("updated");
+      const titleEl = document.getElementById("call-title");
+      const metaEl = document.getElementById("call-meta");
+      const player = document.getElementById("player");
+      const download = document.getElementById("download");
+      const audioNote = document.getElementById("audio-note");
+      const flagBanner = document.getElementById("flag-banner");
+      const flagList = document.getElementById("flag-list");
+      const noFlags = document.getElementById("no-flags");
+      const doctorEl = document.getElementById("doctor");
+      const motherEl = document.getElementById("mother");
+      const findingsEl = document.getElementById("findings");
+      const transcriptEl = document.getElementById("transcript");
+      const geminiBtn = document.getElementById("eng-gemini");
+      const openaiBtn = document.getElementById("eng-openai");
+
+      let calls = [];
+      let selectedId = null;
+      let selectedStatus = "";
+      let current = null;
+      let refreshTimer = 0;
+      let loadingList = false;
+
+      function el(tag, className, text) {
+        const node = document.createElement(tag);
+        if (className) node.className = className;
+        if (text != null) node.textContent = text;
+        return node;
+      }
+
+      function showNotice(message) {
+        noticeEl.textContent = message;
+        noticeEl.hidden = !message;
+      }
+
+      function loginRedirect() {
+        location.href = "/login?next=" + encodeURIComponent(location.pathname + location.search);
+      }
+
+      async function api(path, options) {
+        const opts = options ? Object.assign({}, options) : {};
+        opts.credentials = "same-origin";
+        const headers = Object.assign({ "Accept": "application/json" }, opts.headers || {});
+        opts.headers = headers;
+        const res = await fetch(path, opts);
+        if (res.status === 401) {
+          loginRedirect();
+          return null;
+        }
+        if (!res.ok) {
+          let detail = "Request failed (" + res.status + ")";
+          try {
+            const body = await res.json();
+            if (body && (body.detail || body.message)) detail = body.detail || body.message;
+          } catch (err) { /* keep the status text */ }
+          throw new Error(typeof detail === "string" ? detail : "Request failed");
+        }
+        return res;
+      }
+
+      function asList(value) {
+        if (Array.isArray(value)) return value;
+        if (typeof value === "string") {
+          try {
+            const parsed = JSON.parse(value);
+            return Array.isArray(parsed) ? parsed : [];
+          } catch (err) { return []; }
+        }
+        return [];
+      }
+
+      function asObject(value) {
+        if (value && typeof value === "object" && !Array.isArray(value)) return value;
+        if (typeof value === "string") {
+          try {
+            const parsed = JSON.parse(value);
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+          } catch (err) { return {}; }
+        }
+        return {};
+      }
+
+      function asCalls(data) {
+        if (Array.isArray(data)) return data;
+        if (data && Array.isArray(data.calls)) return data.calls;
+        return [];
+      }
+
+      function normalizeEngine(value) {
+        const v = String(value || "").toLowerCase();
+        if (v.indexOf("openai") !== -1 || v.indexOf("gpt") !== -1) return "openai";
+        return "gemini";
+      }
+
+      function engineBadge(engine) {
+        const v = String(engine || "").toLowerCase();
+        if (!v) return "—";
+        if (v.indexOf("openai") !== -1 || v.indexOf("gpt") !== -1) return "gpt-live-1";
+        if (v.indexOf("gemini") !== -1) return "gemini-3.8-live";
+        return String(engine);
+      }
+
+      function flagCount(call) {
+        if (Array.isArray(call.red_flags)) return call.red_flags.length;
+        if (typeof call.red_flag_count === "number") return call.red_flag_count;
+        return asList(call.red_flags).length;
+      }
+
+      function pad(n) {
+        return String(n).padStart(2, "0");
+      }
+
+      function fmtDuration(sec) {
+        const n = Math.max(0, Number(sec) || 0);
+        return pad(Math.floor(n / 60)) + ":" + pad(Math.floor(n % 60));
+      }
+
+      function fmtTime(value) {
+        if (!value) return "";
+        const raw = String(value).trim();
+        const iso = raw.indexOf("T") === -1 ? raw.replace(" ", "T") : raw;
+        const d = new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(iso) ? iso : iso + "Z");
+        if (Number.isNaN(d.getTime())) return raw;
+        return d.toLocaleString(undefined, {
+          day: "2-digit",
+          month: "short",
+          year: "numeric",
+          hour: "2-digit",
+          minute: "2-digit"
+        });
+      }
+
+      function people(call) {
+        const mother = call.mother_name || "Mother not named";
+        const childBits = [call.child_name, call.child_age].filter(Boolean).join(", ");
+        return childBits ? mother + " · " + childBits : mother;
+      }
+
+      function labelize(key) {
+        return String(key || "")
+          .replace(/^profile_/, "")
+          .replace(/_/g, " ")
+          .replace(/\b\w/g, function (ch) { return ch.toUpperCase(); });
+      }
+
+      function paintEngine(active) {
+        const name = normalizeEngine(active);
+        geminiBtn.setAttribute("aria-pressed", name === "gemini" ? "true" : "false");
+        openaiBtn.setAttribute("aria-pressed", name === "openai" ? "true" : "false");
+      }
+
+      function renderList() {
+        listEl.textContent = "";
+        if (!calls.length) {
+          listEl.appendChild(el("p", "empty", "No calls yet."));
+          return;
+        }
+        calls.forEach(function (call) {
+          const btn = el("button", "call-item");
+          btn.type = "button";
+          if (call.id === selectedId) btn.classList.add("selected");
+          const top = el("div", "row");
+          const left = el("div", "row-left");
+          left.appendChild(el("strong", "", "Call #" + call.id));
+          if (call.status === "active") left.appendChild(el("span", "live-dot", "Live"));
+          top.appendChild(left);
+          const count = flagCount(call);
+          const pill = el("span", count > 0 ? "pill hot" : "pill", count === 1 ? "1 flag" : count + " flags");
+          pill.setAttribute("aria-label", count + " red flags");
+          top.appendChild(pill);
+          btn.appendChild(top);
+          btn.appendChild(el("div", "people", people(call)));
+          const meta = el("div", "meta");
+          const badgeName = engineBadge(call.engine);
+          const badge = el("span", badgeName === "gpt-live-1" ? "badge openai" : "badge", badgeName);
+          meta.appendChild(badge);
+          meta.appendChild(el("span", "", fmtDuration(call.duration_sec)));
+          const when = fmtTime(call.started_at);
+          if (when) meta.appendChild(el("span", "", when));
+          btn.appendChild(meta);
+          btn.addEventListener("click", function () { loadDetail(call.id); });
+          listEl.appendChild(btn);
+        });
+      }
+
+      function escapeHtml(value) {
+        return String(value == null ? "" : value).replace(/[&<>"']/g, function (ch) {
+          return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch];
+        });
+      }
+
+      function inlineMd(value) {
+        return escapeHtml(value)
+          .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+          .replace(/`(.+?)`/g, "<code>$1</code>");
+      }
+
+      function renderMarkdown(md) {
+        const lines = String(md || "").split(/\r?\n/);
+        let html = "";
+        let inList = false;
+        function closeList() {
+          if (inList) {
+            html += "</ul>";
+            inList = false;
+          }
+        }
+        lines.forEach(function (line) {
+          const t = line.trim();
+          if (!t) {
+            closeList();
+            return;
+          }
+          if (t === "---") {
+            closeList();
+            html += "<hr>";
+            return;
+          }
+          const heading = /^(#{1,3})\s+(.*)$/.exec(t);
+          if (heading) {
+            closeList();
+            const level = heading[1].length;
+            html += "<h" + level + ">" + inlineMd(heading[2]) + "</h" + level + ">";
+            return;
+          }
+          const item = /^[-*]\s+(.*)$/.exec(t);
+          if (item) {
+            if (!inList) {
+              html += "<ul>";
+              inList = true;
+            }
+            html += "<li>" + inlineMd(item[1]) + "</li>";
+            return;
+          }
+          closeList();
+          html += "<p>" + inlineMd(t) + "</p>";
+        });
+        closeList();
+        return html || "<p>The report is not ready yet.</p>";
+      }
+
+      function renderFindings(findings) {
+        findingsEl.textContent = "";
+        const data = asObject(findings);
+        const keys = Object.keys(data).sort(function (a, b) {
+          function rank(key) {
+            if (String(key).indexOf("profile_") === 0) return 0;
+            if (key === "chief_complaint") return 1;
+            return 2;
+          }
+          return rank(a) - rank(b) || String(a).localeCompare(String(b));
+        });
+        if (!keys.length) {
+          findingsEl.appendChild(el("p", "calm", "No structured findings were recorded."));
+          return;
+        }
+        const table = el("table");
+        const head = el("tr");
+        ["Domain", "Status", "Detail", "Red flag"].forEach(function (label) {
+          head.appendChild(el("th", "", label));
+        });
+        const thead = el("thead");
+        thead.appendChild(head);
+        table.appendChild(thead);
+        const tbody = el("tbody");
+        keys.forEach(function (key) {
+          const item = data[key] || {};
+          const flagged = item.is_red_flag === true || item.is_red_flag === 1 || item.is_red_flag === "true";
+          const row = el("tr", flagged ? "flag" : "");
+          row.appendChild(el("td", "", labelize(key)));
+          row.appendChild(el("td", "", item.status || ""));
+          const detail = item.detail == null ? "" : (typeof item.detail === "string" ? item.detail : JSON.stringify(item.detail));
+          row.appendChild(el("td", "", detail));
+          row.appendChild(el("td", "", flagged ? "Yes" : ""));
+          tbody.appendChild(row);
+        });
+        table.appendChild(tbody);
+        findingsEl.appendChild(table);
+      }
+
+      function renderTranscript(turns) {
+        transcriptEl.textContent = "";
+        const list = asList(turns);
+        if (!list.length) {
+          transcriptEl.appendChild(el("p", "calm", "No transcript was recorded."));
+          return;
+        }
+        list.forEach(function (turn) {
+          const role = turn.role || turn.speaker || "";
+          const who = role === "assistant" ? "SHISHU" : (role === "user" ? "Mother" : (role || "Note"));
+          const block = el("div", role === "assistant" ? "turn shishu" : "turn");
+          block.appendChild(el("strong", "", who));
+          block.appendChild(el("p", "", turn.text || ""));
+          transcriptEl.appendChild(block);
+        });
+      }
+
+      function renderFlags(flags) {
+        flagList.textContent = "";
+        const items = asList(flags);
+        if (!items.length) {
+          flagBanner.hidden = true;
+          noFlags.hidden = false;
+          return;
+        }
+        noFlags.hidden = true;
+        flagBanner.hidden = false;
+        items.forEach(function (item) {
+          const text = typeof item === "string" ? item : JSON.stringify(item);
+          flagList.appendChild(el("li", "", text));
+        });
+      }
+
+      function showDetail(call) {
+        current = call;
+        selectedId = call.id;
+        selectedStatus = call.status || "";
+        emptyEl.hidden = true;
+        reportEl.hidden = false;
+        titleEl.textContent = "Call #" + call.id;
+        const meta = [
+          people(call),
+          call.child_gender || "",
+          engineBadge(call.engine),
+          fmtDuration(call.duration_sec),
+          fmtTime(call.started_at),
+          call.status || ""
+        ].filter(Boolean);
+        metaEl.textContent = meta.join(" · ");
+        const src = "/api/audio/" + encodeURIComponent(call.id);
+        player.src = src;
+        download.href = src;
+        download.setAttribute("download", "call_" + call.id + ".wav");
+        audioNote.hidden = true;
+        renderFlags(call.red_flags);
+        doctorEl.innerHTML = renderMarkdown(call.summary_doctor || "");
+        motherEl.textContent = call.summary_mother || "The mother summary is not ready yet.";
+        renderFindings(call.findings);
+        renderTranscript(call.transcript);
+        renderList();
+      }
+
+      async function loadDetail(id) {
+        selectedId = id;
+        renderList();
+        const res = await api("/api/calls/" + encodeURIComponent(id));
+        if (!res) return;
+        const call = await res.json();
+        showDetail(call);
+      }
+
+      async function refreshList() {
+        if (loadingList) return;
+        loadingList = true;
+        try {
+          const res = await api("/api/calls");
+          if (!res) return;
+          calls = asCalls(await res.json());
+          updatedEl.textContent = "Updated " + new Date().toLocaleTimeString(undefined, {
+            hour: "2-digit",
+            minute: "2-digit"
+          });
+          renderList();
+          const currentRow = calls.find(function (call) { return call.id === selectedId; });
+          if (currentRow && currentRow.status !== selectedStatus) await loadDetail(selectedId);
+        } finally {
+          loadingList = false;
+        }
+      }
+
+      async function setEngine(name) {
+        geminiBtn.disabled = true;
+        openaiBtn.disabled = true;
+        try {
+          const res = await api("/api/config", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ active_engine: name })
+          });
+          if (!res) return;
+          const data = await res.json();
+          paintEngine(data.active_engine || name);
+          showNotice("Active engine is now " + (normalizeEngine(data.active_engine || name) === "openai"
+            ? "OpenAI GPT-Live-1."
+            : "Gemini 3.8 Live."));
+        } catch (err) {
+          showNotice(err.message || "Could not change the voice engine.");
+        } finally {
+          geminiBtn.disabled = false;
+          openaiBtn.disabled = false;
+        }
+      }
+
+      async function copyReport() {
+        const text = current && current.summary_doctor ? current.summary_doctor : "";
+        try {
+          await navigator.clipboard.writeText(text);
+        } catch (err) {
+          const area = document.createElement("textarea");
+          area.value = text;
+          document.body.appendChild(area);
+          area.select();
+          document.execCommand("copy");
+          area.remove();
+        }
+        showNotice("Report copied.");
+      }
+
+      function printReport() {
+        if (!current) return;
+        document.body.classList.add("printing");
+        function cleanup() {
+          document.body.classList.remove("printing");
+          window.removeEventListener("afterprint", cleanup);
+        }
+        window.addEventListener("afterprint", cleanup);
+        window.print();
+      }
+
+      player.addEventListener("error", function () {
+        if (player.getAttribute("src")) audioNote.hidden = false;
+      });
+
+      geminiBtn.addEventListener("click", function () { setEngine("gemini"); });
+      openaiBtn.addEventListener("click", function () { setEngine("openai"); });
+      document.getElementById("refresh").addEventListener("click", function () {
+        refreshList().catch(function (err) { showNotice(err.message); });
+      });
+      document.getElementById("copy-report").addEventListener("click", function () {
+        copyReport().catch(function (err) { showNotice(err.message || "Could not copy the report."); });
+      });
+      document.getElementById("print-report").addEventListener("click", printReport);
+
+      async function boot() {
+        const cfgRes = await api("/api/config");
+        const callsRes = await api("/api/calls");
+        if (!cfgRes || !callsRes) return;
+        paintEngine((await cfgRes.json()).active_engine);
+        calls = asCalls(await callsRes.json());
+        updatedEl.textContent = "Updated " + new Date().toLocaleTimeString(undefined, {
+          hour: "2-digit",
+          minute: "2-digit"
+        });
+        const wanted = Number(new URLSearchParams(location.search).get("call"));
+        const pick = calls.find(function (call) { return call.id === wanted; }) || calls[0];
+        if (pick) await loadDetail(pick.id);
+        else renderList();
+        refreshTimer = setInterval(function () {
+          refreshList().catch(function (err) { showNotice(err.message); });
+        }, 15000);
+      }
+
+      boot().catch(function (err) { showNotice(err.message || "Could not load the dashboard."); });
+
+      window.addEventListener("beforeunload", function () {
+        if (refreshTimer) clearInterval(refreshTimer);
+      });
+    })();
+  </script>
+</body>
+</html>

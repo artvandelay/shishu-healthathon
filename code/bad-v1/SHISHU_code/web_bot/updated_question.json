@@ -1,0 +1,290 @@
+[
+  {
+    "id": "q1",
+    "category": "basic info",
+    "question": "Are you Married?",
+    "required": true
+  },
+  {
+    "id": "q2",
+    "category": "basic info",
+    "question": "Do you have kids?",
+    "required": true
+  },
+  {
+    "id": "q3",
+    "category": "basic info",
+    "question": "How many children do you have and what are their ages?",
+    "required": true
+  },
+  {
+    "id": "q4",
+    "category": "basic info",
+    "question": "Were your children born via normal delivery or operation(C-section)?",
+    "required": true
+  },
+  {
+    "id": "q5",
+    "category": "basic info",
+    "question": "Were your children born at full term (nine months) or prematurely?",
+    "required": true
+  },
+  {
+    "id": "q6",
+    "category": "basic info",
+    "question": "Did the child need to be admitted to the NICU after birth?",
+    "required": true
+  },
+  {
+    "id": "q7",
+    "category": "basic info",
+    "question": "Were there any abnormal results in pregnancy scans?",
+    "required": false
+  },
+  {
+    "id": "q8",
+    "category": "basic info",
+    "question": "What is the primary health issue the child is facing?",
+    "required": true
+  },
+  {
+    "id": "q9",
+    "category": "basic info",
+    "question": "Were hearing and sight tests conducted at birth?",
+    "required": false
+  },
+  {
+    "id": "q10",
+    "category": "symptoms",
+    "question": "Did the child's eyes appear yellowish (jaundice)?",
+    "required": true
+  },
+  {
+    "id": "q11",
+    "category": "symptoms",
+    "question": "Did your child require blue light therapy (phototherapy) for jaundice?",
+    "required": true
+  },
+  {
+    "id": "q12",
+    "category": "symptoms",
+    "question": "Has your child ever experienced seizures or fits?",
+    "required": true
+  },
+  {
+    "id": "q13",
+    "category": "symptoms",
+    "question": "Has your child lost any skills or abilities they previously possessed?",
+    "required": true
+  },
+  {
+    "id": "q14",
+    "category": "symptoms",
+    "question": "Does your child have any swelling or lumps in the body or joints?",
+    "required": true
+  },
+  {
+    "id": "q15",
+    "category": "symptoms",
+    "question": "Does your child bruise easily or experience excessive bleeding from injuries or teething?",
+    "required": true
+  },
+  {
+    "id": "q16",
+    "category": "symptoms",
+    "question": "Does your child have any kidney or heart disease?",
+    "required": true
+  },
+  {
+    "id": "q17",
+    "category": "symptoms",
+    "question": "Does the child experience severe pain in the arms or legs?",
+    "required": true
+  },
+  {
+    "id": "q18",
+    "category": "symptoms",
+    "question": "Does the child become drowsy, sleepy, or shiver when sick?",
+    "required": true
+  },
+  {
+    "id": "q19",
+    "category": "symptoms",
+    "question": "Does the child have frequent vomiting or diarrhea?",
+    "required": true
+  },
+  {
+    "id": "q20",
+    "category": "feeding",
+    "question": "Does the child eat well and in sufficient quantities?",
+    "required": true
+  },
+  {
+    "id": "q21",
+    "category": "feeding",
+    "question": "Does the child vomit after eating?",
+    "required": true
+  },
+  {
+    "id": "q22",
+    "category": "duration",
+    "question": "Is the child's weight and height growing normally for their age?",
+    "required": true
+  },
+  {
+    "id": "q23",
+    "category": "developmental milestones",
+    "question": "Did your child meet developmental milestones (sitting, walking, talking) at the expected age?",
+    "required": true
+  },
+  {
+    "id": "q24",
+    "category": "developmental milestones",
+    "question": "Has the child lost any skills they previously possessed?",
+    "required": true
+  },
+  {
+    "id": "q25",
+    "category": "symptoms",
+    "question": "Does your child breathe fast or frequently require hospital admission?",
+    "required": true
+  },
+  {
+    "id": "q26",
+    "category": "infections",
+    "question": "Has the child been hospitalized due to infections, pneumonia, or respiratory issues?",
+    "required": true
+  },
+  {
+    "id": "q27",
+    "category": "infections",
+    "question": "Has the child ever had a brain infection?",
+    "required": false
+  },
+  {
+    "id": "q28",
+    "category": "infections",
+    "question": "Does the child require frequent hospitalizations?",
+    "required": true
+  },
+  {
+    "id": "q29",
+    "category": "blood",
+    "question": "Has your child ever needed a blood transfusion or been diagnosed with low blood counts?",
+    "required": true
+  },
+  {
+    "id": "q30",
+    "category": "blood",
+    "question": "Does the child experience excessive bleeding or slow clotting after an injury or losing a tooth?",
+    "required": true
+  },
+  {
+    "id": "q31",
+    "category": "blood",
+    "question": "Does the child bruise easily or get blue spots on the skin?",
+    "required": true
+  },
+  {
+    "id": "q32",
+    "category": "physical features",
+    "question": "Was there any difficulty determining the child's gender at birth?",
+    "required": true
+  },
+  {
+    "id": "q33",
+    "category": "physical features",
+    "question": "Does the child have a bloated or growing stomach (organ enlargement)?",
+    "required": true
+  },
+  {
+    "id": "q34",
+    "category": "physical features",
+    "question": "Does the child have silver or white hair?",
+    "required": true
+  },
+  {
+    "id": "q35",
+    "category": "physical features",
+    "question": "Is there a cut or cleft on the child's lips or mouth?",
+    "required": true
+  },
+  {
+    "id": "q36",
+    "category": "physical features",
+    "question": "Did the umbilical cord take more than three weeks to fall off?",
+    "required": true
+  },
+  {
+    "id": "q37",
+    "category": "physical features",
+    "question": "Are the child's limbs, fingers, or thumbs unusually small compared to the body?",
+    "required": true
+  },
+  {
+    "id": "q38",
+    "category": "physical features",
+    "question": "Are there any unusual rashes, pus formation in wounds, or skin knots?",
+    "required": true
+  },
+  {
+    "id": "q39",
+    "category": "physical features",
+    "question": "Has the child had broken bones or fractures from minor falls?",
+    "required": true
+  },
+  {
+    "id": "q40",
+    "category": "medication",
+    "question": "Has the child been treated with IV antibiotics?",
+    "required": false
+  },
+  {
+    "id": "q41",
+    "category": "history",
+    "question": "Were there any pregnancy complications such as high blood pressure, diabetes, or thyroid issues?",
+    "required": true
+  },
+  {
+    "id": "q42",
+    "category": "history",
+    "question": "Were you and your partner blood relatives before marriage?",
+    "required": true
+  },
+  {
+    "id": "q43",
+    "category": "history",
+    "question": "Were you or your partner tested for thalassemia?",
+    "required": true
+  },
+  {
+    "id": "q44",
+    "category": "history",
+    "question": "Does anyone in your family have a history of seizures, blindness, hearing loss, cancer, or heart/kidney disease?",
+    "required": true
+  },
+  {
+    "id": "q45",
+    "category": "history",
+    "question": "Does anyone in your family have a history of excessive bleeding or require regular blood transfusions?",
+    "required": true
+  },
+  {
+    "id": "q46",
+    "category": "history",
+    "question": "Are there other children who were aborted or died at a young age?",
+    "required": true
+  },
+  {
+    "id": "q47",
+    "category": "others",
+    "question": "Does the child urinate frequently or drink excessive water?",
+    "required": true
+  },
+  {
+    "id": "q48",
+    "category": "others",
+    "question": "Does the child's urine or stool have an unusual smell?",
+    "required": false
+  }
+]

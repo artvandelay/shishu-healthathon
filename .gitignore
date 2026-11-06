@@ -1,0 +1,8 @@
+.env
+**/venv/
+**/.venv/
+**/__pycache__/
+**/storage/
+code/shishu-v2/storage/
+.DS_Store
+data/SHISHU Call/audio/*.mp4

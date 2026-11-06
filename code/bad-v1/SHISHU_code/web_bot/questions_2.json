@@ -1,0 +1,146 @@
+[
+  {
+    "id": "q1",
+    "category": "basic info",
+    "question": "How many children do you have?",
+    "required": true
+  },
+  {
+    "id": "q2",
+    "category": "basic info",
+    "question": "What are the ages of your children?",
+    "required": true
+  },
+  {
+    "id": "q3",
+    "category": "history",
+    "question": "Was the delivery normal or by operation?",
+    "required": true
+  },
+  {
+    "id": "q4",
+    "category": "history",
+    "question": "Was the child born at full term (9 months)?",
+    "required": true
+  },
+  {
+    "id": "q5",
+    "category": "history",
+    "question": "Did the child need admission to the NICU after birth?",
+    "required": true
+  },
+  {
+    "id": "q6",
+    "category": "history",
+    "question": "Did the child need phototherapy (blue light) for jaundice after birth?",
+    "required": true
+  },
+  {
+    "id": "q7",
+    "category": "symptoms",
+    "question": "Does the child have frequent seizures or fits?",
+    "required": true
+  },
+  {
+    "id": "q8",
+    "category": "symptoms",
+    "question": "Did the child have any developmental delays in sitting, walking, or speaking?",
+    "required": true
+  },
+  {
+    "id": "q9",
+    "category": "symptoms",
+    "question": "Is there any loss of previously acquired skills?",
+    "required": true
+  },
+  {
+    "id": "q10",
+    "category": "symptoms",
+    "question": "Did the child have hearing or vision tests at birth?",
+    "required": true
+  },
+  {
+    "id": "q11",
+    "category": "symptoms",
+    "question": "Does the child have any physical abnormalities such as cleft lip/palate or limb/finger deformities?",
+    "required": true
+  },
+  {
+    "id": "q12",
+    "category": "symptoms",
+    "question": "Does the child breathe fast or require frequent hospitalizations?",
+    "required": true
+  },
+  {
+    "id": "q13",
+    "category": "symptoms",
+    "question": "Are there signs of heart, liver, or kidney enlargement or disease?",
+    "required": true
+  },
+  {
+    "id": "q14",
+    "category": "symptoms",
+    "question": "Does the child show signs of cyanosis (blue lips, fingers, or toes)?",
+    "required": true
+  },
+  {
+    "id": "q15",
+    "category": "symptoms",
+    "question": "Has the child ever required a blood transfusion or had abnormal blood counts?",
+    "required": true
+  },
+  {
+    "id": "q16",
+    "category": "symptoms",
+    "question": "Does the child have abnormal bleeding, easy bruising, or slow wound healing?",
+    "required": true
+  },
+  {
+    "id": "q17",
+    "category": "symptoms",
+    "question": "Does the child suffer from recurrent unexplained fever, infections, or pain?",
+    "required": true
+  },
+  {
+    "id": "q18",
+    "category": "symptoms",
+    "question": "Are there any unusual swellings, lumps, or knots on the child's body?",
+    "required": true
+  },
+  {
+    "id": "q19",
+    "category": "symptoms",
+    "question": "Is the child's urine or stool different from other children (e.g., smell, appearance)?",
+    "required": true
+  },
+  {
+    "id": "q20",
+    "category": "history",
+    "question": "Were there any complications during pregnancy such as high blood pressure, diabetes, or thyroid issues?",
+    "required": true
+  },
+  {
+    "id": "q21",
+    "category": "history",
+    "question": "Have you or your husband had a thalassemia screening test?",
+    "required": true
+  },
+  {
+    "id": "q22",
+    "category": "history",
+    "question": "Was there any need for blood transfusion during your pregnancy?",
+    "required": true
+  },
+  {
+    "id": "q23",
+    "category": "history",
+    "question": "Were you and your husband relatives before marriage?",
+    "required": true
+  },
+  {
+    "id": "q24",
+    "category": "history",
+    "question": "Is there a family history of genetic disorders, unexplained deaths, or chronic health issues (e.g., cancer, blood/heart/kidney disease)?",
+    "required": true
+  }
+]

@@ -1,0 +1,888 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0e6b63">
+  <title>SHISHU — Call</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1c2430;
+      --muted: #5e6975;
+      --line: #eadfD0;
+      --card: #fffdf9;
+      --teal: #0e6b63;
+      --green: #1c8c4e;
+      --green-dark: #146b3b;
+      --red: #c5342a;
+      --red-dark: #9d281f;
+      --cream: #f4eee4;
+    }
+
+    * { box-sizing: border-box; }
+
+    [hidden] { display: none !important; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Nirmala UI", "Noto Sans Devanagari", sans-serif;
+      background:
+        radial-gradient(800px 360px at 50% -10%, #f8dcc4 0%, transparent 60%),
+        var(--cream);
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 18px 20px 0;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 22px;
+      font-weight: 720;
+      letter-spacing: -0.02em;
+    }
+
+    .admin-link {
+      color: var(--muted);
+      font-size: 13px;
+      text-decoration: none;
+    }
+
+    .admin-link:hover { color: var(--teal); }
+
+    main {
+      width: min(460px, 100%);
+      margin: 0 auto;
+      padding: 18px 20px 36px;
+      text-align: center;
+    }
+
+    .engine-note {
+      min-height: 18px;
+      margin: 8px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: 0.02em;
+    }
+
+    .stage {
+      margin-top: 28px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .avatar-wrap {
+      position: relative;
+      width: 168px;
+      height: 168px;
+      display: grid;
+      place-items: center;
+      margin-bottom: 22px;
+    }
+
+    .ring {
+      position: absolute;
+      inset: 18px;
+      border-radius: 50%;
+      border: 2px solid rgba(14, 107, 99, 0.18);
+      opacity: 0;
+    }
+
+    .avatar-wrap.live .ring { opacity: 1; }
+
+    .avatar-wrap.live .ring.r1 { animation: pulse 2.4s ease-out infinite; }
+    .avatar-wrap.live .ring.r2 { animation: pulse 2.4s ease-out 0.8s infinite; }
+
+    .avatar-wrap.speaking .ring { border-color: rgba(224, 122, 47, 0.45); }
+
+    @keyframes pulse {
+      0% { transform: scale(0.86); opacity: 0.55; }
+      100% { transform: scale(1.45); opacity: 0; }
+    }
+
+    .avatar {
+      width: 112px;
+      height: 112px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: #e7f4f1;
+      color: var(--teal);
+      font-size: 42px;
+      font-weight: 700;
+      position: relative;
+      z-index: 1;
+      box-shadow: inset 0 0 0 1px rgba(14, 107, 99, 0.08);
+    }
+
+    #status {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 680;
+      line-height: 1.35;
+    }
+
+    #timer {
+      margin: 8px 0 0;
+      font-variant-numeric: tabular-nums;
+      font-size: 28px;
+      letter-spacing: 0.04em;
+      font-weight: 650;
+    }
+
+    #caption {
+      min-height: 48px;
+      margin: 14px 0 0;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.45;
+    }
+
+    #wait {
+      margin: 8px 0 0;
+      color: var(--teal);
+      font-size: 15px;
+    }
+
+    .call-btn {
+      width: 168px;
+      height: 168px;
+      margin-top: 18px;
+      border: 0;
+      border-radius: 50%;
+      background: var(--green);
+      color: #fff;
+      font: inherit;
+      font-size: 20px;
+      font-weight: 750;
+      letter-spacing: 0.01em;
+      cursor: pointer;
+      box-shadow: 0 12px 30px rgba(20, 107, 59, 0.22);
+      touch-action: manipulation;
+    }
+
+    .call-btn:hover { background: var(--green-dark); }
+
+    .call-btn.end {
+      background: var(--red);
+      box-shadow: 0 12px 30px rgba(197, 52, 42, 0.22);
+    }
+
+    .call-btn.end:hover { background: var(--red-dark); }
+
+    .call-btn:disabled { opacity: 0.65; cursor: wait; }
+
+    .call-btn:focus-visible,
+    .admin-link:focus-visible,
+    .text-btn:focus-visible {
+      outline: 3px solid rgba(14, 107, 99, 0.4);
+      outline-offset: 3px;
+    }
+
+    .thanks {
+      margin-top: 12px;
+      padding: 26px 22px 22px;
+      background: var(--card);
+      border: 1px solid #eadfD0;
+      border-radius: 22px;
+      text-align: left;
+      box-shadow: 0 16px 40px rgba(70, 46, 20, 0.06);
+    }
+
+    .thanks h2 {
+      margin: 0 0 6px;
+      font-size: 32px;
+      text-align: center;
+    }
+
+    .thanks .sub {
+      margin: 0 0 16px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .summary {
+      margin: 0;
+      white-space: pre-wrap;
+      line-height: 1.55;
+      font-size: 17px;
+    }
+
+    .thanks-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 20px;
+    }
+
+    .text-btn,
+    .dash-link {
+      display: block;
+      text-align: center;
+      text-decoration: none;
+      min-height: 48px;
+      line-height: 48px;
+      border-radius: 12px;
+      font-weight: 700;
+    }
+
+    .text-btn {
+      width: 100%;
+      border: 0;
+      background: var(--teal);
+      color: #fff;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .dash-link {
+      color: var(--teal);
+      background: #e7f4f1;
+    }
+
+    #error {
+      margin: 16px 0 0;
+      padding: 12px 14px;
+      border-radius: 12px;
+      background: #fdecea;
+      color: #9d2c24;
+      text-align: left;
+      line-height: 1.4;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>SHISHU (शिशु)</h1>
+    <a class="admin-link" href="/admin">Admin</a>
+  </header>
+  <main>
+    <p id="engine-note" class="engine-note"></p>
+    <section id="stage" class="stage">
+      <div id="avatar-wrap" class="avatar-wrap">
+        <span class="ring r1"></span>
+        <span class="ring r2"></span>
+        <div class="avatar" aria-hidden="true">श</div>
+      </div>
+      <p id="status" role="status" aria-live="polite">Tap Mic to Start Call in Hindi</p>
+      <p id="timer">00:00</p>
+      <p id="caption"></p>
+      <p id="wait" hidden>Generating summary for your doctor...</p>
+      <button id="call-btn" class="call-btn" type="button">Start Call</button>
+    </section>
+    <section id="thanks" class="thanks" hidden>
+      <h2 lang="hi">धन्यवाद</h2>
+      <p id="thanks-sub" class="sub"></p>
+      <p id="summary" class="summary" lang="hi"></p>
+      <div class="thanks-actions">
+        <button id="new-call" class="text-btn" type="button">Start New Call</button>
+        <a id="admin-view" class="dash-link" href="/admin">View in Admin Dashboard</a>
+      </div>
+    </section>
+    <p id="error" role="alert" hidden></p>
+  </main>
+  <script>
+    (function () {
+      const statusEl = document.getElementById("status");
+      const timerEl = document.getElementById("timer");
+      const captionEl = document.getElementById("caption");
+      const waitEl = document.getElementById("wait");
+      const callBtn = document.getElementById("call-btn");
+      const stageEl = document.getElementById("stage");
+      const thanksEl = document.getElementById("thanks");
+      const summaryEl = document.getElementById("summary");
+      const thanksSubEl = document.getElementById("thanks-sub");
+      const adminView = document.getElementById("admin-view");
+      const errorEl = document.getElementById("error");
+      const engineNote = document.getElementById("engine-note");
+      const avatarWrap = document.getElementById("avatar-wrap");
+      const newCallBtn = document.getElementById("new-call");
+
+      const WORKLET_SOURCE = [
+        "class PcmCapture extends AudioWorkletProcessor {",
+        "  constructor() {",
+        "    super();",
+        "    this.buf = new Float32Array(2048);",
+        "    this.used = 0;",
+        "  }",
+        "  process(inputs) {",
+        "    const ch = inputs[0] && inputs[0][0];",
+        "    if (!ch) return true;",
+        "    let offset = 0;",
+        "    while (offset < ch.length) {",
+        "      const n = Math.min(this.buf.length - this.used, ch.length - offset);",
+        "      this.buf.set(ch.subarray(offset, offset + n), this.used);",
+        "      this.used += n;",
+        "      offset += n;",
+        "      if (this.used === this.buf.length) {",
+        "        this.port.postMessage(this.buf.slice(0));",
+        "        this.used = 0;",
+        "      }",
+        "    }",
+        "    return true;",
+        "  }",
+        "}",
+        "registerProcessor('pcm-capture', PcmCapture);"
+      ].join("\n");
+
+      let phase = "idle";
+      let engine = "gemini";
+      let captureRate = 16000;
+      let ws = null;
+      let playbackCtx = null;
+      let captureCtx = null;
+      let micStream = null;
+      let micSource = null;
+      let processor = null;
+      let workletNode = null;
+      let silentGain = null;
+      let nextPlayTime = 0;
+      const activeSources = new Set();
+      let timerHandle = 0;
+      let startedAt = 0;
+      let frozenDuration = "00:00";
+      let callId = null;
+      let captionRole = "";
+      let captionText = "";
+      let socketOpened = false;
+      let connectReject = null;
+
+      function setStatus(text) {
+        statusEl.hidden = false;
+        statusEl.textContent = text;
+      }
+
+      function showError(message) {
+        errorEl.textContent = message;
+        errorEl.hidden = false;
+      }
+
+      function clearError() {
+        errorEl.hidden = true;
+        errorEl.textContent = "";
+      }
+
+      function engineLabel(name) {
+        if (name === "openai") return "OpenAI GPT-Live-1 · 24 kHz";
+        return "Gemini 3.8 Live · 16 kHz";
+      }
+
+      function chosenEngine(configEngine) {
+        const query = new URLSearchParams(location.search).get("engine");
+        if (query === "gemini" || query === "openai") return query;
+        return configEngine === "openai" ? "openai" : "gemini";
+      }
+
+      function wsUrl(name) {
+        const proto = location.protocol === "https:" ? "wss:" : "ws:";
+        const path = name === "openai" ? "/ws/openai" : "/ws/gemini";
+        return proto + "//" + location.host + path;
+      }
+
+      function loginRedirect() {
+        const next = location.pathname + location.search;
+        location.href = "/login?next=" + encodeURIComponent(next || "/");
+      }
+
+      function showEngine(name) {
+        engine = name;
+        captureRate = name === "openai" ? 24000 : 16000;
+        engineNote.textContent = engineLabel(name);
+      }
+
+      function pad(n) {
+        return String(n).padStart(2, "0");
+      }
+
+      function formatElapsed(ms) {
+        const sec = Math.max(0, Math.floor(ms / 1000));
+        return pad(Math.floor(sec / 60)) + ":" + pad(sec % 60);
+      }
+
+      function startTimer() {
+        if (timerHandle) return;
+        startedAt = Date.now();
+        timerHandle = setInterval(function () {
+          frozenDuration = formatElapsed(Date.now() - startedAt);
+          timerEl.textContent = frozenDuration;
+        }, 250);
+      }
+
+      function stopTimer() {
+        if (!timerHandle) return;
+        clearInterval(timerHandle);
+        timerHandle = 0;
+        if (startedAt) {
+          frozenDuration = formatElapsed(Date.now() - startedAt);
+          timerEl.textContent = frozenDuration;
+        }
+      }
+
+      function armEndButton() {
+        callBtn.textContent = "End Call";
+        callBtn.classList.add("end");
+        callBtn.setAttribute("aria-label", "End Call");
+        callBtn.disabled = false;
+      }
+
+      function armStartButton() {
+        callBtn.textContent = "Start Call";
+        callBtn.classList.remove("end");
+        callBtn.setAttribute("aria-label", "Start Call");
+        callBtn.disabled = false;
+      }
+
+      function bytesToBase64(bytes) {
+        let binary = "";
+        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+        return btoa(binary);
+      }
+
+      function floatToPcm16LE(float32) {
+        const buffer = new ArrayBuffer(float32.length * 2);
+        const view = new DataView(buffer);
+        for (let i = 0; i < float32.length; i++) {
+          let sample = float32[i];
+          if (sample > 1) sample = 1;
+          else if (sample < -1) sample = -1;
+          let val = sample < 0 ? Math.round(sample * 32768) : Math.round(sample * 32767);
+          if (val > 32767) val = 32767;
+          if (val < -32768) val = -32768;
+          view.setInt16(i * 2, val, true);
+        }
+        return new Uint8Array(buffer);
+      }
+
+      function resampleLinear(input, inRate, outRate) {
+        if (!input || !input.length) return new Float32Array(0);
+        if (inRate === outRate) return input instanceof Float32Array ? input : new Float32Array(input);
+        const ratio = inRate / outRate;
+        const outLen = Math.max(1, Math.round(input.length / ratio));
+        const out = new Float32Array(outLen);
+        const last = input.length - 1;
+        for (let i = 0; i < outLen; i++) {
+          const pos = Math.min(i * ratio, last);
+          const i0 = Math.floor(pos);
+          const i1 = Math.min(i0 + 1, last);
+          const frac = pos - i0;
+          out[i] = input[i0] * (1 - frac) + input[i1] * frac;
+        }
+        return out;
+      }
+
+      function sendPcm(float32) {
+        if (phase !== "live" || !ws || ws.readyState !== WebSocket.OPEN) return;
+        if (ws.bufferedAmount > 262144) return;
+        const inRate = captureCtx ? captureCtx.sampleRate : captureRate;
+        const down = resampleLinear(float32, inRate, captureRate);
+        if (!down.length) return;
+        const pcm = floatToPcm16LE(down);
+        ws.send(JSON.stringify({
+          type: "audio",
+          data: bytesToBase64(pcm),
+          sample_rate: captureRate
+        }));
+      }
+
+      function base64ToBytes(b64) {
+        const binary = atob(b64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        return bytes;
+      }
+
+      function flushPlayback() {
+        activeSources.forEach(function (src) {
+          try { src.onended = null; } catch (err) { /* already gone */ }
+          try { src.stop(0); } catch (err) { /* not started yet */ }
+          try { src.disconnect(); } catch (err) { /* already disconnected */ }
+        });
+        activeSources.clear();
+        nextPlayTime = 0;
+        avatarWrap.classList.remove("speaking");
+      }
+
+      function playPcm(b64, sampleRate) {
+        if (!b64 || !playbackCtx || phase !== "live") return;
+        const bytes = base64ToBytes(b64);
+        const usable = bytes.byteLength - (bytes.byteLength % 2);
+        if (usable < 2) return;
+        const view = new DataView(bytes.buffer, bytes.byteOffset, usable);
+        const frames = usable / 2;
+        const floats = new Float32Array(frames);
+        for (let i = 0; i < frames; i++) floats[i] = view.getInt16(i * 2, true) / 32768;
+        let rateOut = Number(sampleRate);
+        if (!rateOut || rateOut < 8000 || rateOut > 96000) rateOut = 24000;
+        if (playbackCtx.state === "suspended") playbackCtx.resume();
+        const audioBuffer = playbackCtx.createBuffer(1, floats.length, rateOut);
+        audioBuffer.getChannelData(0).set(floats);
+        const src = playbackCtx.createBufferSource();
+        src.buffer = audioBuffer;
+        src.connect(playbackCtx.destination);
+        const now = playbackCtx.currentTime;
+        if (nextPlayTime < now + 0.03) nextPlayTime = now + 0.08;
+        src.start(nextPlayTime);
+        nextPlayTime += audioBuffer.duration;
+        activeSources.add(src);
+        avatarWrap.classList.add("speaking");
+        setStatus("SHISHU is speaking...");
+        src.onended = function () {
+          activeSources.delete(src);
+          if (activeSources.size === 0 && phase === "live") {
+            avatarWrap.classList.remove("speaking");
+            setStatus("Listening...");
+          }
+        };
+      }
+
+      function mergeChunk(prev, chunk) {
+        chunk = String(chunk || "");
+        if (!prev) return chunk;
+        if (!chunk) return prev;
+        if (chunk.indexOf(prev) === 0) return chunk;
+        if (prev.slice(-chunk.length) === chunk) return prev;
+        const needsSpace = !/\s$/.test(prev) && !/^[\s,.;:!?।]/.test(chunk);
+        return prev + (needsSpace ? " " : "") + chunk;
+      }
+
+      function showCaption(role, text) {
+        if (role !== captionRole) {
+          captionRole = role || "";
+          captionText = "";
+        }
+        captionText = mergeChunk(captionText, text);
+        const who = role === "assistant" ? "SHISHU" : "You";
+        captionEl.textContent = captionText ? (who + ": " + captionText) : "";
+      }
+
+      function stopCapture() {
+        if (processor) {
+          processor.onaudioprocess = null;
+          try { processor.disconnect(); } catch (err) { /* ignore */ }
+          processor = null;
+        }
+        if (workletNode) {
+          workletNode.port.onmessage = null;
+          try { workletNode.disconnect(); } catch (err) { /* ignore */ }
+          workletNode = null;
+        }
+        if (micSource) {
+          try { micSource.disconnect(); } catch (err) { /* ignore */ }
+          micSource = null;
+        }
+        if (silentGain) {
+          try { silentGain.disconnect(); } catch (err) { /* ignore */ }
+          silentGain = null;
+        }
+        if (micStream) {
+          micStream.getTracks().forEach(function (track) { track.stop(); });
+          micStream = null;
+        }
+        if (captureCtx) {
+          captureCtx.close();
+          captureCtx = null;
+        }
+      }
+
+      function closeSocket() {
+        const reject = connectReject;
+        connectReject = null;
+        if (ws) {
+          const sock = ws;
+          ws = null;
+          sock.onopen = null;
+          sock.onmessage = null;
+          sock.onerror = null;
+          sock.onclose = null;
+          try { sock.close(); } catch (err) { /* ignore */ }
+        }
+        if (reject) reject(new Error("cancelled"));
+      }
+
+      function onSocketMessage(event) {
+        let msg;
+        try { msg = JSON.parse(event.data); } catch (err) { return; }
+        if (!msg || typeof msg.type !== "string") return;
+        if (msg.type === "session_started") {
+          callId = msg.call_id;
+          if (phase === "live") setStatus("Listening...");
+          startTimer();
+        } else if (msg.type === "audio") {
+          try { playPcm(msg.data, msg.sample_rate || 24000); } catch (err) { /* skip a bad chunk */ }
+        } else if (msg.type === "clear") {
+          flushPlayback();
+          if (phase === "live") setStatus("Listening...");
+        } else if (msg.type === "transcript") {
+          showCaption(msg.role, msg.text);
+        } else if (msg.type === "call_completed") {
+          showThanks(msg);
+        } else if (msg.type === "error") {
+          showError(msg.message || "The call hit an error.");
+        }
+      }
+
+      function onSocketClose() {
+        if (phase === "done") return;
+        if (phase === "summarizing") {
+          phase = "error";
+          waitEl.hidden = true;
+          setStatus("Tap Mic to Start Call in Hindi");
+          showError("The summary did not arrive. Check the admin dashboard for this call.");
+          armStartButton();
+          return;
+        }
+        if (phase === "live" || phase === "connecting") {
+          stopCapture();
+          flushPlayback();
+          avatarWrap.classList.remove("live", "speaking");
+          phase = "error";
+          setStatus("Tap Mic to Start Call in Hindi");
+          armStartButton();
+          showError("The call disconnected.");
+        }
+      }
+
+      function openSocket() {
+        socketOpened = false;
+        return new Promise(function (resolve, reject) {
+          connectReject = reject;
+          const sock = new WebSocket(wsUrl(engine));
+          ws = sock;
+          sock.onopen = function () {
+            socketOpened = true;
+            connectReject = null;
+            resolve();
+          };
+          sock.onmessage = onSocketMessage;
+          sock.onerror = function () {
+            if (!socketOpened) reject(new Error("Could not connect to the voice service."));
+          };
+          sock.onclose = onSocketClose;
+        });
+      }
+
+      function requestMic() {
+        return navigator.mediaDevices.getUserMedia({
+          audio: {
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          },
+          video: false
+        });
+      }
+
+      async function wireMic() {
+        if (!captureCtx || captureCtx.state === "closed") {
+          throw new Error("Microphone capture was interrupted.");
+        }
+        if (captureCtx.state === "suspended") await captureCtx.resume();
+        micSource = captureCtx.createMediaStreamSource(micStream);
+        silentGain = captureCtx.createGain();
+        silentGain.gain.value = 0;
+        if (typeof captureCtx.createScriptProcessor === "function") {
+          processor = captureCtx.createScriptProcessor(2048, 1, 1);
+          processor.onaudioprocess = function (event) {
+            sendPcm(event.inputBuffer.getChannelData(0));
+          };
+          micSource.connect(processor);
+          processor.connect(silentGain);
+        } else if (captureCtx.audioWorklet) {
+          const blob = new Blob([WORKLET_SOURCE], { type: "application/javascript" });
+          const url = URL.createObjectURL(blob);
+          try {
+            await captureCtx.audioWorklet.addModule(url);
+          } finally {
+            URL.revokeObjectURL(url);
+          }
+          workletNode = new AudioWorkletNode(captureCtx, "pcm-capture");
+          workletNode.port.onmessage = function (event) {
+            sendPcm(event.data);
+          };
+          micSource.connect(workletNode);
+          workletNode.connect(silentGain);
+        } else {
+          throw new Error("This browser cannot capture microphone audio.");
+        }
+        silentGain.connect(captureCtx.destination);
+      }
+
+      async function startCall(micPromise) {
+        clearError();
+        captionRole = "";
+        captionText = "";
+        captionEl.textContent = "";
+        callId = null;
+        setStatus("Listening...");
+        try {
+          const configPromise = fetch("/api/config", {
+            credentials: "same-origin",
+            headers: { "Accept": "application/json" }
+          });
+          const stream = await micPromise;
+          if (phase !== "connecting") {
+            stream.getTracks().forEach(function (track) { track.stop(); });
+            return;
+          }
+          micStream = stream;
+          const res = await configPromise;
+          if (phase !== "connecting") return;
+          if (res.status === 401) {
+            stopCapture();
+            loginRedirect();
+            return;
+          }
+          if (!res.ok) throw new Error("Could not read the voice engine setting.");
+          const cfg = await res.json();
+          if (phase !== "connecting") return;
+          showEngine(chosenEngine(cfg.active_engine));
+          await wireMic();
+          if (phase !== "connecting") {
+            stopCapture();
+            return;
+          }
+          await openSocket();
+          if (phase !== "connecting") return;
+          phase = "live";
+          avatarWrap.classList.add("live");
+          setStatus("Listening...");
+          startTimer();
+          armEndButton();
+        } catch (err) {
+          if (phase !== "connecting") return;
+          stopCapture();
+          closeSocket();
+          flushPlayback();
+          avatarWrap.classList.remove("live", "speaking");
+          if (playbackCtx) {
+            playbackCtx.close();
+            playbackCtx = null;
+          }
+          phase = "error";
+          setStatus("Tap Mic to Start Call in Hindi");
+          armStartButton();
+          const denied = err && (err.name === "NotAllowedError" || err.name === "NotFoundError");
+          showError(denied
+            ? "Allow the microphone to start the Hindi call."
+            : ((err && err.message) || "Could not start the call."));
+        }
+      }
+
+      function endCall() {
+        if (phase !== "live" && phase !== "connecting") return;
+        const sock = ws;
+        const open = sock && sock.readyState === WebSocket.OPEN;
+        stopCapture();
+        flushPlayback();
+        stopTimer();
+        avatarWrap.classList.remove("live", "speaking");
+        if (!open) {
+          phase = "idle";
+          closeSocket();
+          setStatus("Tap Mic to Start Call in Hindi");
+          waitEl.hidden = true;
+          armStartButton();
+          return;
+        }
+        phase = "summarizing";
+        setStatus("Preparing Doctor Summary...");
+        waitEl.hidden = false;
+        callBtn.disabled = true;
+        try {
+          sock.send(JSON.stringify({ type: "hangup" }));
+        } catch (err) {
+          showError("Could not end the call cleanly.");
+        }
+      }
+
+      function showThanks(msg) {
+        phase = "done";
+        stopCapture();
+        flushPlayback();
+        stopTimer();
+        callId = msg.call_id != null ? msg.call_id : callId;
+        waitEl.hidden = true;
+        stageEl.hidden = true;
+        summaryEl.textContent = msg.summary_mother || "";
+        const bits = [];
+        if (callId != null) bits.push("Call #" + callId);
+        bits.push(frozenDuration);
+        thanksSubEl.textContent = bits.join(" · ");
+        adminView.href = callId != null ? ("/admin?call=" + encodeURIComponent(callId)) : "/admin";
+        thanksEl.hidden = false;
+        clearError();
+      }
+
+      function resetForNewCall() {
+        closeSocket();
+        stopCapture();
+        flushPlayback();
+        stopTimer();
+        if (playbackCtx) {
+          playbackCtx.close();
+          playbackCtx = null;
+        }
+        phase = "idle";
+        callId = null;
+        startedAt = 0;
+        frozenDuration = "00:00";
+        timerEl.textContent = "00:00";
+        captionRole = "";
+        captionText = "";
+        captionEl.textContent = "";
+        summaryEl.textContent = "";
+        thanksEl.hidden = true;
+        stageEl.hidden = false;
+        waitEl.hidden = true;
+        avatarWrap.classList.remove("live", "speaking");
+        setStatus("Tap Mic to Start Call in Hindi");
+        armStartButton();
+        clearError();
+      }
+
+      callBtn.addEventListener("click", function () {
+        if (phase === "idle" || phase === "error") {
+          phase = "connecting";
+          armEndButton();
+          if (playbackCtx && playbackCtx.state !== "closed") playbackCtx.close();
+          playbackCtx = new AudioContext();
+          playbackCtx.resume();
+          if (captureCtx && captureCtx.state !== "closed") captureCtx.close();
+          captureCtx = new AudioContext();
+          captureCtx.resume();
+          startCall(requestMic());
+          return;
+        }
+        if (phase === "connecting" || phase === "live") endCall();
+      });
+
+      newCallBtn.addEventListener("click", resetForNewCall);
+
+      fetch("/api/config", { credentials: "same-origin", headers: { "Accept": "application/json" } })
+        .then(function (res) {
+          if (res.status === 401) {
+            loginRedirect();
+            return null;
+          }
+          if (!res.ok) return null;
+          return res.json();
+        })
+        .then(function (cfg) {
+          if (!cfg) return;
+          showEngine(chosenEngine(cfg.active_engine));
+        })
+        .catch(function () { /* the start button reports a real failure */ });
+    })();
+  </script>
+</body>
+</html>
