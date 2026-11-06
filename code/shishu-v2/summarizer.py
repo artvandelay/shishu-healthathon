@@ -3,12 +3,14 @@
 import json
 import os
 import re
+from pathlib import Path
 
 from dotenv import load_dotenv
 
 from prompts import DOCTOR_MOTHER_SUMMARY_PROMPT
 
-load_dotenv("/Users/jigar/projects/0n-going/SHISHU-healthathon-koita/.env")
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+load_dotenv()
 
 _REQUIRED_HEADINGS = (
     "### Patient Profile & Chief Complaint",
@@ -109,6 +111,26 @@ def _user_text(transcript: list[dict]) -> str:
     return " ".join(parts)
 
 
+_UNKNOWN_RE = re.compile(
+    r"\b(unknown|does not know|does not recall|don't know|do not know|not sure|not reported|not discussed)\b",
+    re.I,
+)
+_SECTION_DOMAINS = (
+    ("### Birth & Neonatal History", ("birth_nicu",)),
+    ("### Development, Growth & Physical Features", ("milestones",)),
+    ("### Systemic, Infections & Hematology", ("infections", "bleeding_joints", "metabolic_fasting")),
+    ("### Antenatal (Pregnancy) History", ("pregnancy",)),
+    (
+        "### Family & Pedigree History",
+        ("consanguinity", "family_infant_death", "family_history"),
+    ),
+)
+
+
+def _unknown_detail(detail: str) -> bool:
+    return bool(_UNKNOWN_RE.search(detail or ""))
+
+
 def _not_reported(value: object) -> bool:
     if not isinstance(value, dict):
         return False
@@ -166,7 +188,10 @@ def _supplement_from_transcript(
             True,
         )
 
-    infant_death = re.search(r"guzar gaya|guzar gayi|mar gaya|mrityu|passed away", lowered)
+    infant_death = re.search(
+        r"guzar gaya|guzar gaye|guzar gayi|mar gaya|mar gaye|mrityu|passed away",
+        lowered,
+    )
     young = re.search(r"mahine|month|saal se kam|under 1|1 saal", lowered)
     if infant_death and young:
         put(
@@ -176,6 +201,30 @@ def _supplement_from_transcript(
             else "A previous child died in infancy.",
             "positive",
             True,
+        )
+
+    admissions = re.search(
+        r"(hospital|bharti|भर्ती).{0,48}(baar|बार|teen|three|six|chhe|mahine|month)"
+        r"|(baar baar|बार-बार|repeated).{0,40}(hospital|bharti|भर्ती|admission)",
+        lowered,
+    )
+    antibiotics = re.search(r"antibiotic|drip se|iv antibiotic", lowered)
+    infections = findings.get("infections")
+    infections_detail = str(infections.get("detail") or "") if isinstance(infections, dict) else ""
+    if (admissions or antibiotics) and (
+        not isinstance(infections, dict)
+        or _not_reported(infections)
+        or _unknown_detail(infections_detail)
+    ):
+        findings["infections"] = {
+            "status": "positive",
+            "detail": "Repeated hospital stays or IV antibiotics were mentioned.",
+            "is_red_flag": True,
+        }
+        _add_flag(
+            red_flags,
+            "infections",
+            "Repeated hospital stays or IV antibiotics were mentioned.",
         )
 
 
@@ -196,6 +245,110 @@ def _fill_red_flag_section(doctor: str, red_flags: list[str]) -> str:
     return doctor[: match.start(2)] + lines + "\n" + doctor[match.end(2) :]
 
 
+def _similar_detail(left: str, right: str) -> bool:
+    a = (left or "").strip().lower()
+    b = (right or "").strip().lower()
+    if not a or not b:
+        return False
+    if a in b or b in a:
+        return True
+    ta = set(re.findall(r"[a-z0-9]{4,}", a))
+    tb = set(re.findall(r"[a-z0-9]{4,}", b))
+    if not ta or not tb:
+        return False
+    return len(ta & tb) / min(len(ta), len(tb)) >= 0.6
+
+
+def _dedupe_similar_flags(flags: list[str]) -> list[str]:
+    kept: list[str] = []
+    for flag in flags:
+        domain, _, detail = flag.partition(":")
+        duplicate = False
+        for prev in kept:
+            pdomain, _, pdetail = prev.partition(":")
+            if pdomain.strip() != domain.strip():
+                continue
+            if _similar_detail(detail, pdetail):
+                duplicate = True
+                break
+        if not duplicate:
+            kept.append(flag)
+    return kept
+
+
+def _reconcile_flags(findings: dict, red_flags: list[str]) -> list[str]:
+    """One red-flag line per domain, and only when that finding is actually a flag."""
+    locked_off: set[str] = set()
+    from_findings: list[tuple[str, str]] = []
+    for domain, value in findings.items():
+        if not isinstance(value, dict):
+            continue
+        key = str(domain)
+        detail = str(value.get("detail") or "").strip()
+        status = str(value.get("status") or "").lower()
+        if _unknown_detail(detail) or status == "negative":
+            value["is_red_flag"] = False
+            locked_off.add(key)
+            continue
+        if value.get("is_red_flag") and detail:
+            from_findings.append((key, detail))
+        else:
+            locked_off.add(key)
+    out: list[str] = []
+    covered: set[str] = set()
+    for domain, detail in from_findings:
+        _add_flag(out, domain, detail)
+        covered.add(domain)
+    for item in red_flags:
+        text = _flag_text(item)
+        domain, sep, detail = text.partition(":")
+        domain = domain.strip()
+        detail = detail.strip() if sep else ""
+        if not domain or domain in covered or domain in locked_off:
+            continue
+        if _unknown_detail(detail or text):
+            continue
+        _add_flag(out, domain, detail or text)
+    return _dedupe_similar_flags(out)
+
+
+def _fill_empty_sections(doctor: str, findings: dict) -> str:
+    for heading, domains in _SECTION_DOMAINS:
+        bullets: list[str] = []
+        for domain in domains:
+            value = findings.get(domain)
+            if not isinstance(value, dict):
+                continue
+            detail = str(value.get("detail") or "").strip()
+            status = str(value.get("status") or "").lower()
+            if not detail or status == "negative" or _unknown_detail(detail) or _not_reported(value):
+                continue
+            bullets.append(f"- {domain}: {detail}")
+        if not bullets:
+            continue
+        pattern = rf"({re.escape(heading)}\n)(.*?)(?=\n### )"
+        match = re.search(pattern, doctor, flags=re.S)
+        if not match:
+            continue
+        body = match.group(2).strip().lower().rstrip(".")
+        if body != "not reported":
+            continue
+        doctor = doctor[: match.start(2)] + "\n".join(bullets) + "\n" + doctor[match.end(2) :]
+    return doctor
+
+
+def _ensure_mother_covers_flags(mother: str, findings: dict) -> str:
+    text = (mother or "").strip()
+    death = findings.get("family_infant_death")
+    if not isinstance(death, dict) or not death.get("is_red_flag"):
+        return text
+    if _unknown_detail(str(death.get("detail") or "")):
+        return text
+    if re.search(r"गुजर|मृत्यु|guzar|died|death", text, re.I):
+        return text
+    return text + "\n\nआपने यह भी बताया कि परिवार में एक बच्चा छोटी उम्र में गुजर गया।"
+
+
 def _assemble(payload: dict, findings: dict, red_flags: list[str], transcript: list[dict]) -> dict:
     cleaned = _validate(payload)
     merged_findings = dict(findings or {})
@@ -211,7 +364,10 @@ def _assemble(payload: dict, findings: dict, red_flags: list[str], transcript: l
         if isinstance(value, dict) and value.get("is_red_flag"):
             _add_flag(merged_flags, str(domain), str(value.get("detail") or "").strip())
     _supplement_from_transcript(transcript, merged_findings, merged_flags)
+    merged_flags = _reconcile_flags(merged_findings, merged_flags)
     doctor = _fill_red_flag_section(cleaned["doctor_markdown"], merged_flags)
+    doctor = _fill_empty_sections(doctor, merged_findings)
+    mother = _ensure_mother_covers_flags(cleaned["mother_hindi"], merged_findings)
     if merged_findings.get("profile_child_gender", {}).get("detail", "").startswith("Male"):
         doctor = doctor.replace(
             "**Child's Gender:** Not reported",
@@ -224,7 +380,7 @@ def _assemble(payload: dict, findings: dict, red_flags: list[str], transcript: l
         )
     return {
         "summary_doctor": doctor,
-        "summary_mother": cleaned["mother_hindi"],
+        "summary_mother": mother,
         "findings": merged_findings,
         "red_flags": merged_flags,
     }

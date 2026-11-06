@@ -146,18 +146,17 @@
   <main class="card">
     <p class="mark">श</p>
     <h1>SHISHU — Pre-Consultation Voice Assistant</h1>
-    <p class="lede">Enter your name and the passcode to open a Hindi screening call or the clinical dashboard.</p>
+    <p class="lede">Enter your name and the passcode to open a Hindi pre-consultation call or the clinical dashboard.</p>
     <form id="login-form">
       <div class="field">
-        <label for="username">Your Name (or admin for Testing Mode)</label>
-        <input id="username" name="username" type="text" autocomplete="name" placeholder="Enter your name (or admin)" required>
+        <label for="username">Your name</label>
+        <input id="username" name="username" type="text" autocomplete="name" placeholder="Enter your name" required>
       </div>
       <div class="field">
         <label for="passcode">Passcode</label>
         <input id="passcode" name="passcode" type="password" autocomplete="current-password" required>
       </div>
       <button id="continue" type="submit">Continue</button>
-      <p class="hint">Open call: any name + shishu2026. Testing / admin: username admin + admin passcode.</p>
       <p id="error" class="error" role="alert" hidden></p>
     </form>
   </main>

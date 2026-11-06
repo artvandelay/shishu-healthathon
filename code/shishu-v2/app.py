@@ -1,10 +1,14 @@
 """SHISHU v2 HTTP and WebSocket entrypoint. Run with PYTHONPATH=code/shishu-v2."""
 
+import base64
+import hashlib
+import hmac
 import os
 import secrets
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import quote, unquote
+from urllib.parse import quote
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, WebSocket
@@ -44,35 +48,68 @@ def _match(supplied: str, expected: str) -> bool:
         return False
 
 
-def _role_from_auth_cookie(value: str | None) -> str:
-    if value in {"user", "admin"}:
-        return value
-    if _match(value or "", _admin_passcode()):
-        return "admin"
-    if _match(value or "", _passcode()):
-        return "user"
-    return ""
+def _cookie_secure(request: Request) -> bool:
+    forwarded = request.headers.get("x-forwarded-proto", "")
+    scheme = forwarded.split(",")[0].strip().lower() if forwarded else request.url.scheme
+    return scheme == "https"
+
+
+def _session_token(role: str, username: str) -> str:
+    exp = int(time.time()) + _COOKIE_MAX_AGE
+    user_b64 = base64.urlsafe_b64encode(username.encode()).decode().rstrip("=")
+    body = f"v1.{role}.{exp}.{user_b64}"
+    sig = hmac.new(
+        db.get_session_secret().encode(),
+        body.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{body}.{sig}"
+
+
+def _read_session(value: str | None) -> tuple[str, str]:
+    if not value or value in {"user", "admin"}:
+        return "", ""
+    parts = value.split(".")
+    if len(parts) != 5 or parts[0] != "v1":
+        return "", ""
+    body = ".".join(parts[:4])
+    expected = hmac.new(
+        db.get_session_secret().encode(),
+        body.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    try:
+        if not hmac.compare_digest(parts[4], expected):
+            return "", ""
+    except Exception:
+        return "", ""
+    role = parts[1]
+    if role not in {"user", "admin"}:
+        return "", ""
+    try:
+        exp = int(parts[2])
+    except ValueError:
+        return "", ""
+    if exp < int(time.time()):
+        return "", ""
+    pad = "=" * (-len(parts[3]) % 4)
+    try:
+        username = base64.urlsafe_b64decode(parts[3] + pad).decode()
+    except Exception:
+        return "", ""
+    return role, username or "Guest"
 
 
 def _authorized(value: str | None) -> bool:
-    return bool(_role_from_auth_cookie(value))
-
-
-def _cookie_user(raw: str | None) -> str:
-    if not raw:
-        return ""
-    try:
-        return unquote(raw)
-    except Exception:
-        return raw
+    role, _username = _read_session(value)
+    return role in {"user", "admin"}
 
 
 def _identity_from_cookies(cookies) -> tuple[str, str]:
-    role = cookies.get(ROLE_COOKIE) or _role_from_auth_cookie(cookies.get(COOKIE_NAME))
+    role, username = _read_session(cookies.get(COOKIE_NAME))
     if role not in {"user", "admin"}:
-        role = "user" if _authorized(cookies.get(COOKIE_NAME)) else ""
-    username = _cookie_user(cookies.get(USER_COOKIE)) or "Guest"
-    return role, username
+        return "", ""
+    return role, username or "Guest"
 
 
 def _require_admin(request: Request) -> None:
@@ -167,16 +204,28 @@ def admin_page(request: Request):
     return _page("admin.html")
 
 
-def _set_session(response: JSONResponse, role: str, username: str) -> None:
-    common = {
-        "httponly": True,
-        "samesite": "lax",
-        "path": "/",
-        "max_age": _COOKIE_MAX_AGE,
-    }
-    response.set_cookie(COOKIE_NAME, role, **common)
-    response.set_cookie(ROLE_COOKIE, role, **common)
-    response.set_cookie(USER_COOKIE, quote(username, safe=""), **common)
+def _set_session(response: JSONResponse, request: Request, role: str, username: str) -> None:
+    response.set_cookie(
+        COOKIE_NAME,
+        _session_token(role, username),
+        httponly=True,
+        samesite="lax",
+        secure=_cookie_secure(request),
+        path="/",
+        max_age=_COOKIE_MAX_AGE,
+    )
+
+
+def _clear_named_cookie(response: JSONResponse, name: str, secure: bool) -> None:
+    response.delete_cookie(name, path="/", secure=secure, samesite="lax")
+
+
+def _clear_session(response: JSONResponse, request: Request) -> None:
+    secure = _cookie_secure(request)
+    for name in (COOKIE_NAME, ROLE_COOKIE, USER_COOKIE):
+        _clear_named_cookie(response, name, False)
+        if secure:
+            _clear_named_cookie(response, name, True)
 
 
 @app.post("/api/login")
@@ -200,16 +249,14 @@ async def login(request: Request):
     else:
         return JSONResponse({"ok": False}, status_code=401)
     response = JSONResponse({"ok": True, "role": role, "username": username})
-    _set_session(response, role, username)
+    _set_session(response, request, role, username)
     return response
 
 
 @app.post("/api/logout")
-def logout():
+def logout(request: Request):
     response = JSONResponse({"ok": True})
-    response.delete_cookie(COOKIE_NAME, path="/")
-    response.delete_cookie(ROLE_COOKIE, path="/")
-    response.delete_cookie(USER_COOKIE, path="/")
+    _clear_session(response, request)
     return response
 
 

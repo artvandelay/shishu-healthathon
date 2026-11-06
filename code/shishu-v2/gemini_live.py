@@ -1,10 +1,11 @@
-"""Standalone Gemini Live pipeline for one SHISHU screening call (/ws/gemini)."""
+"""Standalone Gemini Live pipeline for one SHISHU pre-consultation call (/ws/gemini)."""
 
 import asyncio
 import base64
 import json
 import os
 import time
+from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import WebSocket, WebSocketDisconnect
@@ -14,28 +15,28 @@ from starlette.websockets import WebSocketState
 
 import audio_recorder
 import db
-from prompts import GEMINI_LIVE_SYSTEM_PROMPT
+from prompts import GEMINI_LIVE_SYSTEM_PROMPT, clean_assistant_caption
 from summarizer import generate_call_summaries
 
-_ENV_PATH = "/Users/jigar/projects/0n-going/SHISHU-healthathon-koita/.env"
+_ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 load_dotenv(_ENV_PATH)
 
 _INPUT_RATE = 16000
 _OUTPUT_RATE = 24000
 _WATCHDOG_INTERVAL_SEC = 0.5
 _GREETING = (
-    "Call connected. Greet the mother warmly in Hindi as SHISHU and ask her name."
+    "Start the call. Do not read this note aloud. "
+    "Say the Hindi greeting and ask only her name."
 )
 _WATCHDOG_NUDGE = (
-    "(Mother answered. Acknowledge briefly in Hindi and ask the next question.)"
+    "The mother is waiting. Do not read this note aloud. "
+    "Say one short Hindi question only."
 )
 _MANUAL_NUDGE = (
-    "(Mother finished speaking and is waiting. Respond warmly in simple Hindi "
-    "now and ask the next question.)"
+    "The mother is waiting. Do not read this note aloud. "
+    "Say one short Hindi question only."
 )
-_FINDING_RESULT = (
-    "recorded. Continue speaking to the mother in Hindi and ask the next question."
-)
+_FINDING_RESULT = "ok"
 
 _RECORD_FINDING_DECL = {
     "name": "record_finding",
@@ -371,6 +372,8 @@ async def _forward_transcript(
     if transcription is None:
         return ""
     text = transcription.text or ""
+    if role == "assistant":
+        text = clean_assistant_caption(text)
     if not text:
         return ""
     db.append_transcript(call_id, role, text)
@@ -413,7 +416,7 @@ async def _answer_function_calls(
         elif name == "end_call":
             telemetry["end_requested"] = True
             await _send_json(ws, ws_lock, {"type": "ending"})
-            body = {"result": "ending the call after this turn"}
+            body = {"result": "ok"}
             logged.append("end_call")
         elif name == "record_finding":
             args = _call_args(fc)

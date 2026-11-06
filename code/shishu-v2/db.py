@@ -1,5 +1,6 @@
 import json
 import os
+import secrets
 import sqlite3
 import threading
 import time
@@ -87,6 +88,14 @@ def _init_db() -> None:
                 cur.execute(f"ALTER TABLE calls ADD COLUMN {name} {decl}")
         cur.execute(
             """
+            CREATE TABLE IF NOT EXISTS server_secrets (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+            """
+        )
+        cur.execute(
+            """
             CREATE TABLE IF NOT EXISTS bug_reports (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 call_id INTEGER DEFAULT 0,
@@ -103,6 +112,23 @@ def _init_db() -> None:
 
 
 _init_db()
+
+
+def get_session_secret() -> str:
+    """Opaque HMAC key for login cookies. Not a setting, and not returned by the API."""
+    with _db_lock:
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM server_secrets WHERE key = ?", ("session",))
+        row = cur.fetchone()
+        if row and row["value"]:
+            return str(row["value"])
+        value = secrets.token_hex(32)
+        cur.execute(
+            "INSERT INTO server_secrets (key, value) VALUES (?, ?)",
+            ("session", value),
+        )
+        conn.commit()
+        return value
 
 
 def get_setting(key: str, default: str = "") -> str:

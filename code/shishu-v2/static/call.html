@@ -521,7 +521,7 @@
         <span class="ring r2"></span>
         <div class="avatar" aria-hidden="true"><img src="/static/shishu-logo.jpg" alt=""></div>
       </div>
-      <p id="status" role="status" aria-live="polite">Tap Mic to Start Call in Hindi</p>
+      <p id="status" role="status" aria-live="polite">Tap Start Call to begin in Hindi</p>
       <p id="timer">00:00</p>
       <div id="mic-meter" class="mic-meter" role="meter" aria-label="Microphone level" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
         <span id="mic-level" class="mic-level"></span>
@@ -1176,7 +1176,7 @@
           phase = "error";
           waitEl.hidden = true;
           leaveLiveChrome();
-          setStatus("Tap Mic to Start Call in Hindi");
+          setStatus("Tap Start Call to begin in Hindi");
           showError("The summary did not arrive. Check the admin dashboard for this call.");
           armStartButton();
           return;
@@ -1187,7 +1187,7 @@
           leaveLiveChrome();
           avatarWrap.classList.remove("live", "speaking");
           phase = "error";
-          setStatus("Tap Mic to Start Call in Hindi");
+          setStatus("Tap Start Call to begin in Hindi");
           armStartButton();
           showError("The call disconnected.");
         }
@@ -1323,7 +1323,7 @@
             playbackCtx = null;
           }
           phase = "error";
-          setStatus("Tap Mic to Start Call in Hindi");
+          setStatus("Tap Start Call to begin in Hindi");
           armStartButton();
           const denied = err && (err.name === "NotAllowedError" || err.name === "NotFoundError");
           showError(denied
@@ -1344,7 +1344,7 @@
         if (!open) {
           phase = "idle";
           closeSocket();
-          setStatus("Tap Mic to Start Call in Hindi");
+          setStatus("Tap Start Call to begin in Hindi");
           waitEl.hidden = true;
           armStartButton();
           return;
@@ -1418,7 +1418,7 @@
         stageEl.hidden = false;
         waitEl.hidden = true;
         avatarWrap.classList.remove("live", "speaking");
-        setStatus("Tap Mic to Start Call in Hindi");
+        setStatus("Tap Start Call to begin in Hindi");
         armStartButton();
         renderHud();
         clearError();
@@ -1426,6 +1426,17 @@
 
       function closeBug() {
         bugOverlay.hidden = true;
+      }
+
+      function resetBugDraft() {
+        bugNote.value = "";
+        bugCategory = "";
+        if (bugShot) bugShot.value = "";
+        window.__bugShot = "";
+        bugCats.querySelectorAll(".chip").forEach(function (btn) {
+          btn.classList.remove("on");
+          btn.setAttribute("aria-pressed", "false");
+        });
       }
 
       function openBug() {
@@ -1497,6 +1508,7 @@
           } catch (err) {
             copied = false;
           }
+          resetBugDraft();
           bugConfirm.textContent = copied ? "Saved. Snapshot copied." : "Saved. Could not copy the snapshot.";
           bugConfirm.hidden = false;
         } catch (err) {

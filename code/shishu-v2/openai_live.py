@@ -4,6 +4,7 @@ import json
 import os
 import re
 import time
+from pathlib import Path
 from typing import Any
 
 import websockets
@@ -16,7 +17,8 @@ import db
 import prompts
 import summarizer
 
-load_dotenv("/Users/jigar/projects/0n-going/SHISHU-healthathon-koita/.env")
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+load_dotenv()
 
 OPENAI_LIVE_VOICE_PROMPT = prompts.OPENAI_LIVE_VOICE_PROMPT
 OPENAI_RESPONSES_BACKEND_PROMPT = prompts.OPENAI_RESPONSES_BACKEND_PROMPT
@@ -28,12 +30,12 @@ LIVE_VOICE = "marin"
 LIVE_BACKEND_MODEL = "gpt-5.6-luna"
 SAMPLE_RATE = 24000
 GREETING = (
-    "Greet the caller now in Hindi. Introduce yourself as SHISHU and ask her name. "
-    "Then pause and listen."
+    "Start the call. Do not read this note aloud. "
+    "Greet her in Hindi as SHISHU and ask only her name. Then pause and listen."
 )
 _NUDGE_TEXT = (
-    "The mother has finished her answer and is waiting. "
-    "Reply now in simple Hindi, then ask the next screening question."
+    "The mother is waiting. Do not read this note aloud. "
+    "Reply with one short Hindi question only."
 )
 _WATCHDOG_POLL_SEC = 0.5
 _MAX_NUDGES_PER_TURN = 2
@@ -495,6 +497,10 @@ async def _handle_transcript(ws: WebSocket, state: _CallState, event: dict[str, 
     is_delta = event_type.endswith(".delta")
     if not is_delta:
         return
+    if role == "assistant":
+        text = prompts.clean_assistant_caption(text, exact=True)
+        if not text:
+            return
     state.streamed_roles.add(role)
     db.append_transcript(state.call_id, role, text, exact=True)
     await _send_browser(ws, {"type": "transcript", "role": role, "text": text})

@@ -1,5 +1,6 @@
 import os
 import threading
+import time
 import wave
 from array import array
 
@@ -63,6 +64,16 @@ class CallAudioRecorder:
         self._buffer = bytearray()
         self._lock = threading.Lock()
         self._closed = False
+        self._started = time.monotonic()
+        self._ended: float | None = None
+
+    def mark_ended(self) -> None:
+        if self._ended is None:
+            self._ended = time.monotonic()
+
+    def wall_seconds(self) -> int:
+        end = self._ended if self._ended is not None else time.monotonic()
+        return max(0, int(round(end - self._started)))
 
     def add_user_pcm(self, pcm_bytes: bytes, sample_rate: int) -> None:
         if self._closed or not pcm_bytes:
@@ -83,6 +94,7 @@ class CallAudioRecorder:
             self._buffer.extend(resampled)
 
     def save(self) -> tuple[str, int]:
+        self.mark_ended()
         with self._lock:
             self._closed = True
             raw_bytes = bytes(self._buffer)
@@ -96,6 +108,4 @@ class CallAudioRecorder:
             wf.setframerate(TARGET_RATE)
             wf.writeframes(raw_bytes)
 
-        total_samples = len(raw_bytes) // 2
-        duration_seconds = int(round(total_samples / TARGET_RATE))
-        return filename, duration_seconds
+        return filename, self.wall_seconds()
