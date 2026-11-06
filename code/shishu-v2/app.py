@@ -149,6 +149,11 @@ def static_login_page() -> FileResponse:
     return _page("login.html")
 
 
+@app.get("/static/shishu-logo.jpg")
+def shishu_logo() -> FileResponse:
+    return FileResponse(_STATIC / "shishu-logo.jpg", media_type="image/jpeg")
+
+
 @app.get("/")
 def call_page() -> FileResponse:
     return _page("call.html")

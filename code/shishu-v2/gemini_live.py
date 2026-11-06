@@ -76,6 +76,29 @@ _RECORD_FINDING_DECL = {
     },
 }
 
+_SET_PROGRESS_DECL = {
+    "name": "set_progress",
+    "behavior": "NON_BLOCKING",
+    "description": "Mark which question group you are about to ask. Call this before the first question of a group.",
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "group": {
+                "type": "STRING",
+                "description": "intro, story, birth, body, illness, pregnancy, family, or close",
+            }
+        },
+        "required": ["group"],
+    },
+}
+
+_END_CALL_DECL = {
+    "name": "end_call",
+    "behavior": "NON_BLOCKING",
+    "description": "Hang up after the approved closing sentence has been spoken. Do not call this before the closing.",
+    "parameters": {"type": "OBJECT", "properties": {}},
+}
+
 _TELEMETRY_EVENTS = {
     "session_started",
     "user_transcript",
@@ -149,7 +172,7 @@ def _live_config(settings: dict) -> types.LiveConnectConfig:
         context_window_compression=types.ContextWindowCompressionConfig(
             sliding_window=types.SlidingWindow()
         ),
-        tools=[{"function_declarations": [_RECORD_FINDING_DECL]}],
+        tools=[{"function_declarations": [_RECORD_FINDING_DECL, _SET_PROGRESS_DECL, _END_CALL_DECL]}],
     )
 
 
@@ -377,7 +400,22 @@ async def _answer_function_calls(
         if fc_id:
             seen.add(fc_id)
         name = getattr(fc, "name", None) or ""
-        if name == "record_finding":
+        if name == "set_progress":
+            group = str(_call_args(fc).get("group") or "")
+            telemetry["progress_group"] = group
+            await _send_json(
+                ws,
+                ws_lock,
+                {"type": "progress", "group": group},
+            )
+            body = {"result": "ok"}
+            logged.append("progress:" + group)
+        elif name == "end_call":
+            telemetry["end_requested"] = True
+            await _send_json(ws, ws_lock, {"type": "ending"})
+            body = {"result": "ending the call after this turn"}
+            logged.append("end_call")
+        elif name == "record_finding":
             args = _call_args(fc)
             domain = str(args.get("domain") or "")
             status = str(args.get("status") or "")
@@ -565,6 +603,8 @@ async def _handle_server_message(
     if server_content is not None and server_content.turn_complete:
         state.bot_speaking = False
         await _emit(ws, ws_lock, call_id, telemetry, "turn_complete", "")
+        if telemetry.get("end_requested"):
+            return False
 
     if getattr(response, "go_away", None) is not None:
         return False

@@ -129,13 +129,16 @@
       border-radius: 50%;
       display: grid;
       place-items: center;
-      background: #e7f4f1;
-      color: var(--teal);
-      font-size: 42px;
-      font-weight: 700;
+      background: #111;
+      overflow: hidden;
       position: relative;
       z-index: 1;
-      box-shadow: inset 0 0 0 1px rgba(14, 107, 99, 0.08);
+    }
+
+    .avatar img {
+      width: 86px;
+      height: 86px;
+      object-fit: contain;
     }
 
     #status {
@@ -507,6 +510,7 @@
       <button id="hud-toggle" class="header-btn" type="button" hidden>Testing HUD</button>
       <button id="bug-btn" class="header-btn" type="button">Report Bug</button>
       <a class="admin-link" href="/admin">Admin</a>
+      <button id="logout-btn" class="header-btn" type="button">Log out</button>
     </div>
   </header>
   <main>
@@ -515,7 +519,7 @@
       <div id="avatar-wrap" class="avatar-wrap">
         <span class="ring r1"></span>
         <span class="ring r2"></span>
-        <div class="avatar" aria-hidden="true">श</div>
+        <div class="avatar" aria-hidden="true"><img src="/static/shishu-logo.jpg" alt=""></div>
       </div>
       <p id="status" role="status" aria-live="polite">Tap Mic to Start Call in Hindi</p>
       <p id="timer">00:00</p>
@@ -551,7 +555,9 @@
         <div><span class="k">Tool calls</span> <span id="hud-tools">—</span></div>
         <div><span class="k">Watchdog nudges</span> <span id="hud-nudges">—</span></div>
         <div><span class="k">Audio in / out</span> <span id="hud-audio">—</span></div>
+        <div><span class="k">Flow step</span> <span id="hud-step">—</span></div>
       </div>
+      <p id="hud-flow" class="hud-label">intro · story · birth · body · illness · pregnancy · family · close</p>
       <p class="hud-label">Last 10 events</p>
       <ol id="hud-events" class="hud-events"></ol>
       <form id="hud-form" class="hud-send">
@@ -575,6 +581,8 @@
         <button class="chip" type="button" data-cat="Other" aria-pressed="false">Other</button>
       </div>
       <textarea id="bug-note" placeholder="Quick note (e.g. stuck after saying operation)"></textarea>
+      <label class="sub" for="bug-shot">Screenshot, if a picture is easier</label>
+      <input id="bug-shot" type="file" accept="image/*">
       <div class="bug-actions">
         <button id="bug-save" class="text-btn" type="button">Save Bug &amp; Copy Debug Snapshot</button>
         <button id="bug-close" class="ghost-btn" type="button">Close</button>
@@ -606,6 +614,11 @@
       const bugOverlay = document.getElementById("bug-overlay");
       const bugCats = document.getElementById("bug-cats");
       const bugNote = document.getElementById("bug-note");
+      const bugShot = document.getElementById("bug-shot");
+      const hudStep = document.getElementById("hud-step");
+      const logoutBtn = document.getElementById("logout-btn");
+      let flowGroup = "";
+      let summaryTimer = 0;
       const bugSave = document.getElementById("bug-save");
       const bugClose = document.getElementById("bug-close");
       const bugConfirm = document.getElementById("bug-confirm");
@@ -1040,6 +1053,7 @@
         hudTools.textContent = dash(telemetry.tool_calls);
         hudNudges.textContent = dash(telemetry.watchdog_nudges);
         hudAudio.textContent = dash(telemetry.audio_chunks_in) + " / " + dash(telemetry.audio_chunks_out);
+        if (hudStep) hudStep.textContent = flowGroup || telemetry.progress_group || "—";
         hudEvents.replaceChildren();
         recentEvents.forEach(function (evt) {
           const li = document.createElement("li");
@@ -1142,6 +1156,13 @@
           lastTelemetry = msg.telemetry || {};
           pushEvent(msg.last_event);
           renderHud();
+        } else if (msg.type === "progress") {
+          flowGroup = msg.group || "";
+          renderHud();
+        } else if (msg.type === "ending") {
+          setTimeout(function () {
+            if (phase === "live") endCall();
+          }, 3500);
         } else if (msg.type === "call_completed") {
           showThanks(msg);
         } else if (msg.type === "error") {
@@ -1332,6 +1353,15 @@
         setStatus("Preparing Doctor Summary...");
         waitEl.hidden = false;
         callBtn.disabled = true;
+        if (summaryTimer) clearTimeout(summaryTimer);
+        summaryTimer = setTimeout(function () {
+          if (phase === "summarizing") {
+            showThanks({
+              call_id: callId,
+              summary_mother: "Call ended. If the written summary is not here yet, open Admin and refresh this call."
+            });
+          }
+        }, 20000);
         try {
           sock.send(JSON.stringify({ type: "hangup" }));
         } catch (err) {
@@ -1340,6 +1370,8 @@
       }
 
       function showThanks(msg) {
+        if (summaryTimer) clearTimeout(summaryTimer);
+        summaryTimer = 0;
         phase = "done";
         stopCapture();
         flushPlayback();
@@ -1435,10 +1467,12 @@
           client_state: {
             phase: phase,
             engine: engine,
+            flowGroup: flowGroup,
             captureRate: captureRate,
             captionText: captionText,
             lastTelemetry: lastTelemetry,
-            recentEvents: recentEvents.slice()
+            recentEvents: recentEvents.slice(),
+            screenshot: window.__bugShot || ""
           }
         };
         const snapshot = JSON.stringify(payload, null, 2);
@@ -1499,6 +1533,44 @@
 
       bugBtn.addEventListener("click", openBug);
       bugClose.addEventListener("click", closeBug);
+      function shrinkShot(file) {
+        return new Promise(function (resolve) {
+          const img = new Image();
+          const url = URL.createObjectURL(file);
+          img.onload = function () {
+            const max = 900;
+            const scale = Math.min(1, max / Math.max(img.width, img.height));
+            const canvas = document.createElement("canvas");
+            canvas.width = Math.max(1, Math.round(img.width * scale));
+            canvas.height = Math.max(1, Math.round(img.height * scale));
+            canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+            URL.revokeObjectURL(url);
+            resolve(canvas.toDataURL("image/jpeg", 0.55));
+          };
+          img.onerror = function () {
+            URL.revokeObjectURL(url);
+            resolve("");
+          };
+          img.src = url;
+        });
+      }
+
+      if (bugShot) {
+        bugShot.addEventListener("change", function () {
+          const file = bugShot.files && bugShot.files[0];
+          if (!file) {
+            window.__bugShot = "";
+            return;
+          }
+          shrinkShot(file).then(function (data) { window.__bugShot = data; });
+        });
+      }
+
+      logoutBtn.addEventListener("click", async function () {
+        await fetch("/api/logout", { method: "POST", credentials: "same-origin" });
+        location.href = "/login";
+      });
+
       bugSave.addEventListener("click", saveBug);
       bugOverlay.addEventListener("click", function (event) {
         if (event.target === bugOverlay) closeBug();

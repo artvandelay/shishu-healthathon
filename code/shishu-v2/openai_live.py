@@ -103,6 +103,7 @@ class _CallState:
         self.event_seq = 0
         self.pending_tool_continue = False
         self.close_sent = False
+        self.end_at = 0.0
         self.connect_t0 = 0.0
         self.awaiting_bot_reply = False
         self.last_user_turn_ts = 0.0
@@ -216,7 +217,28 @@ def _session_start_payload(live_model: str, voice: str, backend_model: str) -> d
                                 },
                                 "required": ["domain", "status", "detail", "is_red_flag"],
                             },
-                        }
+                        },
+                        {
+                            "type": "function",
+                            "name": "set_progress",
+                            "description": "Mark the question group you are about to ask.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "group": {
+                                        "type": "string",
+                                        "description": "intro, story, birth, body, illness, pregnancy, family, or close",
+                                    }
+                                },
+                                "required": ["group"],
+                            },
+                        },
+                        {
+                            "type": "function",
+                            "name": "end_call",
+                            "description": "Hang up after the approved closing sentence has been spoken.",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
                     ],
                     "tool_choice": "auto",
                 },
@@ -480,6 +502,49 @@ async def _handle_transcript(ws: WebSocket, state: _CallState, event: dict[str, 
         await _arm_user_turn(ws, state, text)
 
 
+async def _handle_control_tool(
+    ws: WebSocket, oai_ws: Any, state: _CallState, item: dict[str, Any]
+) -> None:
+    raw_args = item.get("arguments")
+    if isinstance(raw_args, str):
+        try:
+            args = json.loads(raw_args or "{}")
+        except json.JSONDecodeError:
+            args = {}
+    elif isinstance(raw_args, dict):
+        args = raw_args
+    else:
+        args = {}
+    name = str(item.get("name") or "")
+    if name == "set_progress":
+        group = str(args.get("group") or "")
+        state.telemetry["progress_group"] = group
+        await _send_browser(ws, {"type": "progress", "group": group})
+        output = '{"status":"ok"}'
+    else:
+        state.end_at = time.monotonic() + 6
+        await _send_browser(ws, {"type": "ending"})
+        output = '{"status":"ending"}'
+    call_id = str(item.get("call_id") or "")
+    if not call_id:
+        return
+    state.tool_seq += 1
+    await _oai_send(
+        oai_ws,
+        state,
+        {
+            "type": "response.item.create",
+            "event_id": f"evt_tool_{state.tool_seq}",
+            "item": {
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": output,
+            },
+        },
+    )
+    state.pending_tool_continue = True
+
+
 async def _handle_record_finding(
     ws: WebSocket, oai_ws: Any, state: _CallState, item: dict[str, Any]
 ) -> None:
@@ -623,6 +688,8 @@ async def _openai_loop(ws: WebSocket, oai_ws: Any, state: _CallState) -> None:
         if not isinstance(event, dict):
             continue
         event_type = str(event.get("type") or "")
+        if state.end_at and time.monotonic() >= state.end_at:
+            return
         if event_type == "session.started":
             if state.started:
                 continue
@@ -685,12 +752,12 @@ async def _openai_loop(ws: WebSocket, oai_ws: Any, state: _CallState) -> None:
             inner_type = str(inner.get("type") or "")
             if inner_type == "response.output_item.done":
                 item = inner.get("item")
-                if (
-                    isinstance(item, dict)
-                    and item.get("type") == "function_call"
-                    and item.get("name") == "record_finding"
-                ):
-                    await _handle_record_finding(ws, oai_ws, state, item)
+                if isinstance(item, dict) and item.get("type") == "function_call":
+                    name = item.get("name")
+                    if name == "record_finding":
+                        await _handle_record_finding(ws, oai_ws, state, item)
+                    elif name in {"set_progress", "end_call"}:
+                        await _handle_control_tool(ws, oai_ws, state, item)
             elif inner_type == "response.completed" and state.pending_tool_continue:
                 state.pending_tool_continue = False
                 state.tool_seq += 1

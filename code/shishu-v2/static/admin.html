@@ -610,6 +610,7 @@
       <button id="settings-toggle" class="ghost" type="button" aria-expanded="false" aria-controls="settings-drawer">Settings & Tuning</button>
     </div>
     <a class="test" href="/">Test Call -&gt;</a>
+    <button id="logout-btn" class="ghost" type="button">Log out</button>
   </header>
   <div id="settings-drawer" class="settings" hidden>
     <form id="settings-form">
@@ -1568,6 +1569,10 @@
       });
       document.getElementById("print-report").addEventListener("click", printReport);
       document.getElementById("settings-toggle").addEventListener("click", toggleSettings);
+      document.getElementById("logout-btn").addEventListener("click", async function () {
+        await fetch("/api/logout", { method: "POST", credentials: "same-origin" });
+        location.href = "/login";
+      });
       document.getElementById("settings-form").addEventListener("submit", function (event) {
         saveSettings(event).catch(function (err) { showNotice(err.message || "Could not save settings."); });
       });
