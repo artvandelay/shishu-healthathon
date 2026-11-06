@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import os
+import re
 import time
 from pathlib import Path
 
@@ -127,6 +128,7 @@ class _TurnState:
         self.resume_handle = ""
         self.reconnect_requested = False
         self.last_user_text = ""
+        self.time_cue_sent = False
 
 
 class _SessionProxy:
@@ -339,6 +341,35 @@ def _audio_from_part(part: types.Part) -> tuple[bytes, int] | None:
     return pcm, _rate_from_mime(mime, _OUTPUT_RATE)
 
 
+def _pcm_rms(pcm: bytes) -> float:
+    count = len(pcm) // 2
+    if count <= 0:
+        return 0.0
+    total = 0
+    for index in range(0, count * 2, 2):
+        sample = int.from_bytes(pcm[index : index + 2], "little", signed=True)
+        total += sample * sample
+    return (total / count) ** 0.5 / 32768.0
+
+
+def _cancel_silence_close(state: _TurnState, telemetry: dict) -> None:
+    """A silence close is provisional until she speaks again."""
+    if telemetry.get("end_requested"):
+        return
+    if telemetry.get("close_reason") != "silence":
+        return
+    telemetry["force_close"] = False
+    telemetry["force_close_at"] = 0.0
+    telemetry["close_reason"] = ""
+    state.checked_in = False
+
+
+def _caller_heard(state: _TurnState, telemetry: dict) -> None:
+    """She is speaking now, so this is not a silent line."""
+    _cancel_silence_close(state, telemetry)
+    state.quiet_from = 0.0
+
+
 def _arm_user_turn(state: _TurnState, telemetry: dict) -> None:
     if not state.awaiting_bot_reply:
         telemetry["user_turns"] += 1
@@ -346,8 +377,33 @@ def _arm_user_turn(state: _TurnState, telemetry: dict) -> None:
     state.awaiting_bot_reply = True
     state.last_user_turn_ts = time.time()
     state.bot_replied_since_user = False
-    state.quiet_from = 0.0
+    _caller_heard(state, telemetry)
     state.checked_in = False
+
+
+_MARRIAGE_DETAIL_RE = re.compile(
+    r"\b(married|marriage|unmarried|shaadi)\b",
+    re.I,
+)
+_TOPIC_AS_DOMAIN = {
+    "intro_name": "profile_mother_name",
+    "intro_children": "profile_child_age",
+}
+
+
+def _normalize_finding(domain: str, detail: str, raw_topics: list) -> tuple[str, list]:
+    """A checklist id in domain still counts as covered, and is not a profile field."""
+    topics = list(raw_topics)
+    if domain in checklist._BY_ID or domain in checklist.GROUPS:
+        if domain not in topics:
+            topics.append(domain)
+        domain = _TOPIC_AS_DOMAIN.get(domain, "coverage")
+    marriage = "intro_married" in topics or bool(_MARRIAGE_DETAIL_RE.search(detail or ""))
+    if domain == "profile_mother_name" and marriage and "intro_name" not in topics:
+        domain = "coverage"
+        if "intro_married" not in topics:
+            topics.append("intro_married")
+    return domain, topics
 
 
 async def _emit(
@@ -467,6 +523,7 @@ async def _answer_function_calls(
             raw_topics = list(args.get("topic_ids") or [])
             if isinstance(args.get("topic_ids"), str):
                 raw_topics = [args["topic_ids"]]
+            domain, raw_topics = _normalize_finding(domain, detail, raw_topics)
             coverage = telemetry.setdefault("coverage", [])
             name_check = domain == "profile_mother_name" or "intro_name" in raw_topics
             name_invalid = name_check and (
@@ -550,8 +607,6 @@ async def _on_bot_audio(
     state.awaiting_bot_reply = False
     state.bot_replied_since_user = True
     state.bot_speaking = True
-    if not state.checked_in:
-        state.quiet_from = time.time()
     recorder.add_bot_pcm(pcm, rate)
     await _send_json(
         ws,
@@ -591,6 +646,7 @@ async def _handle_server_message(
     server_content = getattr(response, "server_content", None)
     if server_content is not None and server_content.interrupted:
         state.bot_speaking = False
+        _caller_heard(state, telemetry)
         telemetry["interruptions"] += 1
         await _send_json(ws, ws_lock, {"type": "clear"})
         await _emit(ws, ws_lock, call_id, telemetry, "interrupted", "interrupted")
@@ -666,6 +722,8 @@ async def _handle_server_message(
 
     if server_content is not None and server_content.turn_complete:
         state.bot_speaking = False
+        if not state.awaiting_bot_reply:
+            state.quiet_from = time.time()
         await _emit(ws, ws_lock, call_id, telemetry, "turn_complete", "")
 
     update = getattr(response, "session_resumption_update", None)
@@ -738,6 +796,11 @@ async def _gemini_loop(
             )
             return
         telemetry["reconnects"] = reconnects
+        state.bot_speaking = False
+        state.awaiting_bot_reply = False
+        state.quiet_from = time.time()
+        seen.clear()
+        cancelled.clear()
         await _emit(ws, ws_lock, call_id, telemetry, "reconnected", str(reconnects))
 
 
@@ -779,8 +842,9 @@ async def _watchdog_loop(
                 continue
             cue = ""
             reason = ""
-            if now - state.call_started_ts >= checklist.SOFT_LIMIT_SEC:
+            if now - state.call_started_ts >= checklist.SOFT_LIMIT_SEC and not state.time_cue_sent:
                 cue, reason = checklist.TIME_CLOSE_CUE, "time_limit"
+                state.time_cue_sent = True
             elif state.quiet_from > 0 and not state.bot_speaking and not state.awaiting_bot_reply:
                 quiet = now - state.quiet_from
                 if quiet >= checklist.SILENCE_CLOSE_SEC:
@@ -891,6 +955,8 @@ async def _browser_loop(
                     rate = _INPUT_RATE
                 telemetry["audio_chunks_in"] += 1
                 recorder.add_user_pcm(pcm, rate)
+                if _pcm_rms(pcm) >= 0.02:
+                    _caller_heard(state, telemetry)
                 try:
                     async with send_lock:
                         await session.send_realtime_input(
@@ -910,6 +976,9 @@ async def _browser_loop(
                     )
                     return
             elif kind == "speech_end":
+                _cancel_silence_close(state, telemetry)
+                if not state.awaiting_bot_reply and not state.bot_speaking:
+                    state.quiet_from = time.time()
                 try:
                     db.append_call_event(call_id, "speech_end", "")
                     db.update_call_telemetry(call_id, telemetry)

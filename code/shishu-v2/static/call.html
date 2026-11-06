@@ -897,20 +897,17 @@
 
       function trackSpeech(rms) {
         if (phase !== "live") return;
-        const botPlaying = activeSources.size > 0;
         const now = Date.now();
-        if (rms > 0.015 && !botPlaying) {
+        if (rms > 0.015) {
           userSpeaking = true;
           lastVoiceTs = now;
           speechEndAt = 0;
           nudgeBtn.classList.remove("hot");
           return;
         }
-        if (userSpeaking && !botPlaying && (now - lastVoiceTs) > 750) {
+        if (userSpeaking && (now - lastVoiceTs) > 750) {
           userSpeaking = false;
           emitSpeechEnd();
-        } else if (botPlaying) {
-          userSpeaking = false;
         }
       }
 

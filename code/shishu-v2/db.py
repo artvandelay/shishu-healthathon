@@ -130,6 +130,14 @@ def _init_db() -> None:
             )
             """
         )
+        cur.execute(
+            """
+            UPDATE calls
+            SET status = 'abandoned', ended_at = CURRENT_TIMESTAMP
+            WHERE status = 'active'
+              AND started_at < datetime('now', '-25 minutes')
+            """
+        )
         conn.commit()
 
 
@@ -251,6 +259,25 @@ def append_transcript(call_id: int, role: str, text: str, exact: bool = False) -
         conn.commit()
 
 
+def _person_name_detail(detail: str) -> bool:
+    text = (detail or "").strip().lower()
+    if not text:
+        return False
+    blocked = (
+        "married",
+        "marriage",
+        "unmarried",
+        "shaadi",
+        "child",
+        "children",
+        "not provided",
+        "not stated",
+        "not given",
+        "only said",
+    )
+    return not any(word in text for word in blocked)
+
+
 def record_finding_db(
     call_id: int, domain: str, status: str, detail: str, is_red_flag: bool = False
 ) -> dict:
@@ -296,7 +323,18 @@ def record_finding_db(
         }
         if domain in profile_col_map and detail:
             col = profile_col_map[domain]
-            cur.execute(f"UPDATE calls SET {col} = ? WHERE id = ?", (detail, call_id))
+            write_detail = detail
+            if domain == "profile_mother_name" and not _person_name_detail(detail):
+                cur.execute("SELECT mother_name FROM calls WHERE id = ?", (call_id,))
+                current = cur.fetchone()
+                current_name = str(current["mother_name"] or "") if current else ""
+                if _person_name_detail(current_name):
+                    write_detail = ""
+            if write_detail:
+                cur.execute(
+                    f"UPDATE calls SET {col} = ? WHERE id = ?",
+                    (write_detail, call_id),
+                )
 
         if is_red_flag:
             flag_str = f"{domain}: {detail}"

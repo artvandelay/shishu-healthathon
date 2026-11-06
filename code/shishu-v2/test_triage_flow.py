@@ -284,5 +284,52 @@ class Call223RegressionTests(unittest.TestCase):
         self.assertEqual(s["watchdog_timeout_sec"], 8.0)
 
 
+class Call226RegressionTests(unittest.TestCase):
+    def test_speaking_again_cancels_a_silence_close(self):
+        state = gemini_live._TurnState()
+        telemetry = gemini_live._new_telemetry("gemini-3.1-flash-live-preview", "Kore", 1300, 300, 0)
+        telemetry["force_close"] = True
+        telemetry["force_close_at"] = time.time() - 5
+        telemetry["close_reason"] = "silence"
+        gemini_live._arm_user_turn(state, telemetry)
+        self.assertFalse(telemetry["force_close"])
+        self.assertEqual(telemetry["close_reason"], "")
+        self.assertEqual(state.quiet_from, 0.0)
+
+    def test_a_topic_id_in_domain_still_marks_coverage(self):
+        telemetry = gemini_live._new_telemetry("gemini-3.1-flash-live-preview", "Kore", 1300, 300, 0)
+
+        class _Fc:
+            id = "fc_topic"
+            name = "record_finding"
+            args = {
+                "domain": "intro_married",
+                "status": "info",
+                "detail": "Mother is married.",
+                "is_red_flag": False,
+                "topic_ids": [],
+            }
+            will_continue = False
+
+        class _Sess:
+            async def send_tool_response(self, function_responses=None):
+                self.responses = function_responses
+
+        async def run():
+            await gemini_live._answer_function_calls(
+                _Sess(), asyncio.Lock(), _FakeWs(), asyncio.Lock(),
+                db.create_call("gemini"), telemetry, [_Fc()], set(), set(), "हो गई है।",
+            )
+
+        asyncio.run(run())
+        self.assertIn("intro_married", telemetry["coverage"])
+
+    def test_marriage_answer_does_not_replace_her_name(self):
+        call_id = db.create_call("gemini")
+        db.record_finding_db(call_id, "profile_mother_name", "info", "Mother's name is Aradhana.", False)
+        db.record_finding_db(call_id, "profile_mother_name", "info", "Mother is married.", False)
+        self.assertEqual(db.get_call(call_id)["mother_name"], "Mother's name is Aradhana.")
+
+
 if __name__ == "__main__":
     unittest.main()
