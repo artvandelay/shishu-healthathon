@@ -1,5 +1,7 @@
 """Triage topic checklist and per-call coverage helpers for SHISHU calls."""
 
+import re
+
 GROUPS: tuple[str, ...] = ("intro", "birth", "body", "illness", "pregnancy", "family", "close")
 
 TOPICS: tuple[dict, ...] = (
@@ -176,3 +178,42 @@ def incomplete_notes(coverage: list, reason: str) -> tuple[str, str]:
     )
     mother = "Yeh call adhoori rahi. Kripya jab samay mile, dobara call karke baaki sawal poore kar lijiye."
     return doctor, mother
+
+
+NAME_MISSING_NOTE = (
+    "Mother's name was not heard yet (she only said an incomplete fragment like 'Mera naam' or paused). "
+    "Do NOT move on. Gently ask in Hindi: 'Ji, aaram se bataiye, aapka poora naam kya hai?' "
+    "Do not read this note aloud."
+)
+
+_MISSING_NAME_DETAIL_RE = re.compile(
+    r"\b(not provided|not given|not stated|not mentioned|unknown|unspecified|"
+    r"did not|didn't|no name|incomplete|fragment|only said|unclear|pending)\b",
+    re.I,
+)
+_BARE_NAME_PHRASES = {
+    "मेरा नाम",
+    "मेरा नाम है",
+    "नाम",
+    "जी मेरा नाम",
+    "हाँ मेरा नाम",
+    "हां मेरा नाम",
+    "mera naam",
+    "mera naam hai",
+    "naam",
+    "my name",
+    "my name is",
+}
+
+
+def is_valid_name_detail(detail: str, last_user_text: str = "") -> bool:
+    d = (detail or "").strip()
+    if not d or _MISSING_NAME_DETAIL_RE.search(d):
+        return False
+    cleaned_user = re.sub(r"[.,!?;:।\-…]+", " ", (last_user_text or "").strip().lower())
+    cleaned_user = " ".join(cleaned_user.split())
+    if cleaned_user in _BARE_NAME_PHRASES:
+        return False
+    if d.lower() in _BARE_NAME_PHRASES:
+        return False
+    return True

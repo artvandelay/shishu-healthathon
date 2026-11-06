@@ -31,6 +31,21 @@ HINDI_MEDICAL_VOCAB: list[str] = [
     "gaanth",
     "ASHA",
     "ANM",
+    "haan",
+    "nahi",
+    "haan ji",
+    "nahi ji",
+    "theek hai",
+    "pata nahi",
+    "yaad nahi",
+    "mera naam",
+    "matlab",
+    "beta",
+    "beti",
+    "saal",
+    "mahine",
+    "normal",
+    "operation",
 ]
 
 CLINICAL_CLUSTERS_REFERENCE: str = """
@@ -66,6 +81,7 @@ CLARIFICATION POLICY (IF A QUESTION IS NOT ANSWERED OR IN DOUBT):
   * Then repeat the question gently.
 - If the mother's response is silent, vague, incomplete, off-topic, or does not clearly answer your specific question: DO NOT move on to the next question!
 - Acknowledge gently and clarify or repeat the SAME question in simpler words.
+- If the mother stops mid-sentence or gives an incomplete fragment (for example she only says "Mera naam", "Mera naam hai", "Haan woh", "Woh toh", "Matlab", or "Matlab jaise" and pauses to think): DO NOT say "Achha" or "Theek hai" and move on, and NEVER guess or invent her name or answer! Gently ask her to finish, for example: "Ji, aaram se bataiye, aapka poora naam kya hai?" or repeat the same question.
 - NEVER skip an unanswered question. Move on only after a clear "Haan", "Nahi", specific details, or a clear "Nahi pata".
 
 HOW TO HANDLE CALLER REPLIES:
@@ -124,6 +140,13 @@ Mother: Haan, parivaar mein ek bachche ko baar baar khoon chadhta hai, toh mujhe
 SHISHU: Aapki chinta samajh sakti hoon. Yeh baat main doctor ko zaroor bataungi. Aur kuch batana chahengi?
 Mother: Nahi, bas itna hi.
 
+Example F — unfinished or cut-off answer (wait for the real name/answer)
+SHISHU: Namaste, main Shishu hoon. Aapka naam bataiyega please?
+Mother: Mera naam...
+SHISHU: Ji, aaram se bataiye, aapka poora naam kya hai?
+Mother: Mera naam Kavita hai.
+SHISHU: Namaste Kavita ji. Aapki shaadi ho gayi hai, ya hone wali hai?
+
 12 NRROID GATE QUESTIONS
 These are internal gates. Do not recite them. Do not fold several gates into one spoken question. A yes, or a story that matches, is a positive gate. Then ask one short drill-down.
 1. NICU stay, preterm birth, or blue-light phototherapy for jaundice.
@@ -175,7 +198,7 @@ Parameters:
 - is_red_flag: true only for a positive NRROID gate; false for names, age, a normal cluster, and the chief complaint unless the complaint itself is a gate
 
 Map the question just asked. Do not file a "does not know" answer under a different domain.
-- Mother name, child name, age, beta/beti -> profile_* with status info, is_red_flag false
+- Mother name, child name, age, beta/beti -> profile_* with status info, is_red_flag false. NEVER log profile_mother_name or pass "intro_name" in topic_ids if she only said "Mera naam" without an actual name, and NEVER invent a name.
 - Why she came today -> chief_complaint. If that story is itself a gate (infections, poor growth, vision, transfusion), also record that gate domain. Do not leave infections empty when she described admissions, pneumonia, or IV antibiotics.
 - Birth, NICU, preterm, phototherapy, cord -> birth_nicu. BCG site blister, pus, or lump is also birth_nicu, and the detail must say BCG. Do not describe a BCG site as a NICU stay.
 - Milestones, regression, growth, tummy size, bones, vision, hearing -> milestones. Silvery hair is not milestones.
@@ -315,11 +338,12 @@ Rules:
 - Child transfusion maps to bleeding_joints and the detail must say transfusion. Knee or joint swelling that appears after a fall and settles in days maps to bleeding_joints with status positive and is_red_flag true. It is a red flag even when she says it gets better. Fits or death of a previous child under 1 year maps to family_infant_death with status positive and is_red_flag true.
 - "beta" means a boy. "beti" means a girl. If she says either word, profile_child_gender is info and must not say gender was not reported.
 - Names, age, and gender use status info. They are not red flags.
+- NEVER invent, guess, or copy a name from any example. If the mother did not state her actual name (for example she only said "Mera naam" and stopped), do NOT write "मेरा नाम ... है" in mother_hindi, omit profile_mother_name from extracted_findings, and write "Not reported." for the mother's name in doctor_markdown.
 - Omit any domain that was not discussed. Do not write a negative finding for "Not reported." The markdown section for an undiscussed topic still says "Not reported."
 - Every is_red_flag true finding must also be a string in red_flags, and must be listed under Positive Red Flags & NRROID Gate Alerts. That section says "Not reported." only when red_flags is empty.
 
 Worked mapping:
-- "Mera naam Shilpa hai, mera 7 saal ka beta hai" -> mother Shilpa, child age 7 years, gender male.
+- "Mera 7 saal ka beta hai" -> child age 7 years, gender male.
 - "girne par ghutne mein sujan aati hai jo 5 din mein theek hoti hai" -> bleeding_joints red flag.
 - "Pehle ek beta 5 mahine mein fits se guzar gaya" -> family_infant_death red flag.
 
@@ -380,3 +404,26 @@ def clean_assistant_caption(text: str, *, exact: bool = False) -> str:
     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
     cleaned = re.sub(r" *\n *", "\n", cleaned)
     return cleaned.strip()
+
+
+_FOREIGN_NO_RE = re.compile(
+    r"^\s*(?:e\s+n[aã]o|n[aã]o|nem|nein|네\.\s*아니|아니요|아니)\s*[.!?।]*\s*$",
+    re.I,
+)
+_FOREIGN_YES_RE = re.compile(r"^\s*(?:네|내)\s*[.!?।]*\s*$")
+_HANGUL_RE = re.compile(r"[\uAC00-\uD7AF\u1100-\u11FF\u3130-\u318F]+")
+
+
+def clean_user_caption(text: str) -> str:
+    """Normalize known foreign ASR mis-transcriptions of short Hindi replies."""
+    if not text:
+        return ""
+    raw = text.strip()
+    if _FOREIGN_NO_RE.match(raw):
+        return "नहीं।"
+    if _FOREIGN_YES_RE.match(raw):
+        return "हाँ।"
+    cleaned = re.sub(r"(\d+)\s*개월", r"\1 महीने", text)
+    cleaned = _HANGUL_RE.sub("", cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned).strip()
+    return cleaned

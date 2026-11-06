@@ -21,10 +21,10 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "openai_voice": "marin",
     "openai_backend_model": "gpt-5.6-luna",
     "vad_prefix_padding_ms": "300",
-    "vad_silence_ms": "650",
+    "vad_silence_ms": "1300",
     "vad_start_sensitivity": "HIGH",
-    "vad_end_sensitivity": "HIGH",
-    "watchdog_timeout_sec": "4.0",
+    "vad_end_sensitivity": "LOW",
+    "watchdog_timeout_sec": "8.0",
     "summary_model": "gemini-2.5-flash",
 }
 
@@ -66,6 +66,18 @@ def _init_db() -> None:
         )
         cur.execute(
             "UPDATE settings SET value = 'marin' WHERE key = 'openai_voice'",
+        )
+        cur.execute(
+            "UPDATE settings SET value = 'gemini' WHERE key = 'active_engine'",
+        )
+        cur.execute(
+            "UPDATE settings SET value = '1300' WHERE key = 'vad_silence_ms' AND value = '650'",
+        )
+        cur.execute(
+            "UPDATE settings SET value = 'LOW' WHERE key = 'vad_end_sensitivity' AND value = 'HIGH'",
+        )
+        cur.execute(
+            "UPDATE settings SET value = '8.0' WHERE key = 'watchdog_timeout_sec' AND value = '4.0'",
         )
         cur.execute(
             """
@@ -192,7 +204,7 @@ def create_call(
     model_used: str = "",
     voice_used: str = "",
 ) -> int:
-    mother = caller_name if caller_name and caller_name.strip().lower() != "admin" else ""
+    mother = ""
     with _db_lock:
         cur = conn.cursor()
         cur.execute(
@@ -309,22 +321,49 @@ def complete_call(
     audio_filename: str,
     summary_doctor: str,
     summary_mother: str,
+    findings: dict | None = None,
+    red_flags: list | None = None,
 ) -> None:
     with _db_lock:
         cur = conn.cursor()
-        cur.execute(
-            """
-            UPDATE calls
-            SET status = 'completed',
-                ended_at = CURRENT_TIMESTAMP,
-                duration_sec = ?,
-                audio_path = ?,
-                summary_doctor = ?,
-                summary_mother = ?
-            WHERE id = ?
-            """,
-            (duration_sec, audio_filename, summary_doctor, summary_mother, call_id),
-        )
+        if isinstance(findings, dict) and isinstance(red_flags, list):
+            cur.execute(
+                """
+                UPDATE calls
+                SET status = 'completed',
+                    ended_at = CURRENT_TIMESTAMP,
+                    duration_sec = ?,
+                    audio_path = ?,
+                    summary_doctor = ?,
+                    summary_mother = ?,
+                    findings_json = ?,
+                    red_flags_json = ?
+                WHERE id = ?
+                """,
+                (
+                    duration_sec,
+                    audio_filename,
+                    summary_doctor,
+                    summary_mother,
+                    json.dumps(findings, ensure_ascii=False),
+                    json.dumps(red_flags, ensure_ascii=False),
+                    call_id,
+                ),
+            )
+        else:
+            cur.execute(
+                """
+                UPDATE calls
+                SET status = 'completed',
+                    ended_at = CURRENT_TIMESTAMP,
+                    duration_sec = ?,
+                    audio_path = ?,
+                    summary_doctor = ?,
+                    summary_mother = ?
+                WHERE id = ?
+                """,
+                (duration_sec, audio_filename, summary_doctor, summary_mother, call_id),
+            )
         conn.commit()
 
 

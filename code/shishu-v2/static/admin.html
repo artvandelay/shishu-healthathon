@@ -605,8 +605,8 @@
     </div>
     <div class="engine" role="group" aria-label="Active voice engine">
       <span class="engine-label">Active Voice Engine</span>
-      <button id="eng-gemini" type="button" aria-pressed="false">Gemini 3.8 Live</button>
-      <button id="eng-openai" type="button" aria-pressed="false">OpenAI GPT-Live-1</button>
+      <button id="eng-gemini" type="button" aria-pressed="true">Gemini 3.1 Flash Live</button>
+      <button id="eng-openai" type="button" aria-pressed="false" disabled title="Deprecated — using Gemini Live">OpenAI GPT-Live-1 (Deprecated)</button>
       <button id="settings-toggle" class="ghost" type="button" aria-expanded="false" aria-controls="settings-drawer">Settings & Tuning</button>
     </div>
     <a class="test" href="/">Test Call -&gt;</a>
@@ -643,16 +643,16 @@
           <input id="set-vad-prefix" name="vad_prefix_padding_ms" type="number" min="0" step="1" value="300">
         </label>
         <label>VAD Silence Duration (ms)
-          <input id="set-vad-silence" name="vad_silence_ms" type="number" min="0" step="1" value="650">
+          <input id="set-vad-silence" name="vad_silence_ms" type="number" min="0" step="1" value="1300">
         </label>
         <label>VAD End Sensitivity
           <select id="set-vad-end" name="vad_end_sensitivity">
+            <option value="LOW" selected>LOW</option>
             <option value="HIGH">HIGH</option>
-            <option value="LOW">LOW</option>
           </select>
         </label>
         <label>Watchdog Auto-Nudge (sec)
-          <input id="set-watchdog" name="watchdog_timeout_sec" type="number" min="0" step="0.1" value="4.0">
+          <input id="set-watchdog" name="watchdog_timeout_sec" type="number" min="0" step="0.1" value="8.0">
         </label>
         <label>Post-Call Summary Model
           <select id="set-summary-model" name="summary_model">
@@ -1251,14 +1251,14 @@
         ensureOption(document.getElementById("set-openai-voice"), s.openai_voice || "marin");
         ensureOption(document.getElementById("set-openai-backend"), s.openai_backend_model || "gpt-5.6-luna");
         document.getElementById("set-vad-prefix").value = s.vad_prefix_padding_ms || "300";
-        document.getElementById("set-vad-silence").value = s.vad_silence_ms || "650";
-        document.getElementById("set-vad-end").value = s.vad_end_sensitivity === "LOW" ? "LOW" : "HIGH";
-        document.getElementById("set-watchdog").value = s.watchdog_timeout_sec || "4.0";
+        document.getElementById("set-vad-silence").value = s.vad_silence_ms || "1300";
+        document.getElementById("set-vad-end").value = s.vad_end_sensitivity === "HIGH" ? "HIGH" : "LOW";
+        document.getElementById("set-watchdog").value = s.watchdog_timeout_sec || "8.0";
         ensureOption(document.getElementById("set-summary-model"), s.summary_model || "gemini-2.5-flash");
       }
 
       function currentEngine() {
-        return openaiBtn.getAttribute("aria-pressed") === "true" ? "openai" : "gemini";
+        return "gemini";
       }
 
       function readSettingsForm() {

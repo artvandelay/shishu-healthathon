@@ -13,6 +13,7 @@ import checklist  # noqa: E402
 import db  # noqa: E402
 import gemini_live  # noqa: E402
 import prompts  # noqa: E402
+import summarizer  # noqa: E402
 
 
 class ChecklistTests(unittest.TestCase):
@@ -200,6 +201,87 @@ class CallTimerTests(unittest.TestCase):
         sess = asyncio.run(run())
         self.assertTrue(telemetry["end_requested"])
         self.assertEqual(sess.responses[0].response["result"], "ok")
+
+
+class Call223RegressionTests(unittest.TestCase):
+    def test_shilpa_removed_and_hallucinated_name_stripped(self):
+        self.assertNotIn("Shilpa", prompts.DOCTOR_MOTHER_SUMMARY_PROMPT)
+        shell = "".join(f"{h}\nNot reported.\n" for h in summarizer._REQUIRED_HEADINGS)
+        payload = {
+            "doctor_markdown": shell.replace(
+                "### Patient Profile & Chief Complaint\nNot reported.",
+                "### Patient Profile & Chief Complaint\nMother Shilpa has one child.",
+            ),
+            "mother_hindi": "मेरा नाम शिल्पा है। मेरे एक बच्चा है, जो अभी 3 साल का है।",
+            "extracted_findings": {
+                "profile_mother_name": {
+                    "status": "info",
+                    "detail": "Mother's name is Shilpa.",
+                    "is_red_flag": False,
+                }
+            },
+            "red_flags": [],
+        }
+        transcript = [
+            {"role": "assistant", "text": "Namaste, main Shishu hoon. Aapka naam bataiyega please?"},
+            {"role": "user", "text": "मेरा नाम"},
+        ]
+        out = summarizer._assemble(payload, {}, [], transcript)
+        self.assertNotIn("शिल्पा", out["summary_mother"])
+        self.assertNotIn("Shilpa", out["summary_doctor"])
+        self.assertNotIn("profile_mother_name", out["findings"])
+
+    def test_incomplete_name_fragment_keeps_intro_name_open(self):
+        telemetry = gemini_live._new_telemetry("gemini-3.1-flash-live-preview", "Kore", 1300, 300, 0)
+
+        class _Fc:
+            id = "fc_name"
+            name = "record_finding"
+            args = {
+                "domain": "profile_mother_name",
+                "status": "info",
+                "detail": "Mother did not state her name.",
+                "is_red_flag": False,
+                "topic_ids": ["intro_name"],
+            }
+            will_continue = False
+
+        class _Sess:
+            async def send_tool_response(self, function_responses=None):
+                self.responses = function_responses
+
+        async def run():
+            sess = _Sess()
+            await gemini_live._answer_function_calls(
+                sess,
+                asyncio.Lock(),
+                _FakeWs(),
+                asyncio.Lock(),
+                db.create_call("gemini", caller_name="PD"),
+                telemetry,
+                [_Fc()],
+                set(),
+                set(),
+                "मेरा नाम",
+            )
+            return sess
+
+        sess = asyncio.run(run())
+        self.assertNotIn("intro_name", telemetry["coverage"])
+        self.assertIn("poora naam", sess.responses[0].response["note"])
+
+    def test_user_caption_normalizes_foreign_no_and_hangul(self):
+        self.assertEqual(prompts.clean_user_caption("Não."), "नहीं।")
+        self.assertEqual(prompts.clean_user_caption("Nem."), "नहीं।")
+        self.assertEqual(prompts.clean_user_caption("Nein."), "नहीं।")
+        self.assertEqual(prompts.clean_user_caption("네. 아니."), "नहीं।")
+        self.assertEqual(prompts.clean_user_caption("9개월"), "9 महीने")
+
+    def test_vad_defaults_give_caller_thinking_room(self):
+        s = gemini_live._session_settings({})
+        self.assertEqual(s["silence_duration_ms"], 1300)
+        self.assertIn("LOW", str(s["end_sens"]).upper())
+        self.assertEqual(s["watchdog_timeout_sec"], 8.0)
 
 
 if __name__ == "__main__":

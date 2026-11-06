@@ -268,11 +268,13 @@ def logout(request: Request):
 @app.get("/api/config")
 def get_config(request: Request) -> dict:
     role, username = _identity_from_cookies(request.cookies)
+    settings = db.get_all_settings()
+    settings["active_engine"] = "gemini"
     return {
-        "active_engine": db.get_setting("active_engine", "gemini"),
+        "active_engine": "gemini",
         "role": role or "user",
         "username": username,
-        "settings": db.get_all_settings(),
+        "settings": settings,
     }
 
 
@@ -291,6 +293,7 @@ async def post_settings(request: Request):
         body = None
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="Expected a settings object")
+    body["active_engine"] = "gemini"
     settings = db.update_settings(body)
     return {"ok": True, "settings": settings}
 
@@ -305,8 +308,8 @@ async def set_config(request: Request):
     engine = body.get("active_engine") if isinstance(body, dict) else None
     if engine not in {"gemini", "openai"}:
         raise HTTPException(status_code=400, detail="active_engine must be gemini or openai")
-    db.set_setting("active_engine", engine)
-    return {"ok": True, "active_engine": engine}
+    db.set_setting("active_engine", "gemini")
+    return {"ok": True, "active_engine": "gemini"}
 
 
 @app.get("/api/bugs")

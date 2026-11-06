@@ -337,6 +337,36 @@ def _fill_empty_sections(doctor: str, findings: dict) -> str:
     return doctor
 
 
+_MOTHER_NAME_SENTENCE_RE = re.compile(
+    r"^\s*मेरा\s+नाम\s+([^\s।,]+(?:\s+[^\s।,]+)?)\s+है\s*[।,.!?]*\s*"
+)
+
+
+def _strip_unspoken_mother_name(
+    mother: str,
+    doctor: str,
+    merged_findings: dict,
+    transcript: list[dict],
+) -> tuple[str, str]:
+    user_blob = _user_text(transcript).strip()
+    user_lower = user_blob.lower()
+    recorded = merged_findings.get("profile_mother_name")
+    recorded_detail = str(recorded.get("detail") or "").strip() if isinstance(recorded, dict) else ""
+    if _unknown_detail(recorded_detail) or "shilpa" in recorded_detail.lower() and "shilpa" not in user_lower and "शिल्पा" not in user_blob:
+        merged_findings.pop("profile_mother_name", None)
+        recorded_detail = ""
+    match = _MOTHER_NAME_SENTENCE_RE.match(mother or "")
+    if match:
+        claimed = match.group(1).strip()
+        if not recorded_detail and (claimed not in user_blob or user_blob in {"मेरा नाम", "मेरा नाम।"}):
+            mother = (mother or "")[match.end():].strip()
+        elif claimed == "शिल्पा" and "शिल्पा" not in user_blob and "shilpa" not in user_lower:
+            mother = (mother or "")[match.end():].strip()
+    if "shilpa" not in user_lower and "शिल्पा" not in user_blob:
+        doctor = re.sub(r"(?i)\bshilpa\b", "Not reported", doctor or "")
+    return mother, doctor
+
+
 def _ensure_mother_covers_flags(mother: str, findings: dict) -> str:
     text = (mother or "").strip()
     death = findings.get("family_infant_death")
@@ -367,7 +397,10 @@ def _assemble(payload: dict, findings: dict, red_flags: list[str], transcript: l
     merged_flags = _reconcile_flags(merged_findings, merged_flags)
     doctor = _fill_red_flag_section(cleaned["doctor_markdown"], merged_flags)
     doctor = _fill_empty_sections(doctor, merged_findings)
-    mother = _ensure_mother_covers_flags(cleaned["mother_hindi"], merged_findings)
+    mother_raw, doctor = _strip_unspoken_mother_name(
+        cleaned["mother_hindi"], doctor, merged_findings, transcript
+    )
+    mother = _ensure_mother_covers_flags(mother_raw, merged_findings)
     if merged_findings.get("profile_child_gender", {}).get("detail", "").startswith("Male"):
         doctor = doctor.replace(
             "**Child's Gender:** Not reported",

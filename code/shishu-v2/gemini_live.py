@@ -16,7 +16,12 @@ from starlette.websockets import WebSocketState
 import audio_recorder
 import db
 import checklist
-from prompts import GEMINI_LIVE_SYSTEM_PROMPT, HINDI_MEDICAL_VOCAB, clean_assistant_caption
+from prompts import (
+    GEMINI_LIVE_SYSTEM_PROMPT,
+    HINDI_MEDICAL_VOCAB,
+    clean_assistant_caption,
+    clean_user_caption,
+)
 from summarizer import generate_call_summaries
 
 _ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
@@ -121,6 +126,7 @@ class _TurnState:
         self.call_started_ts = time.time()
         self.resume_handle = ""
         self.reconnect_requested = False
+        self.last_user_text = ""
 
 
 class _SessionProxy:
@@ -133,23 +139,23 @@ class _SessionProxy:
 
 def _session_settings(settings: dict) -> dict:
     start_low = settings.get("vad_start_sensitivity") == "LOW"
-    end_low = settings.get("vad_end_sensitivity") == "LOW"
+    end_high = settings.get("vad_end_sensitivity") == "HIGH"
     return {
         "model": settings.get("gemini_model") or "gemini-3.1-flash-live-preview",
         "voice": "Kore",
         "prefix_padding_ms": int(float(settings.get("vad_prefix_padding_ms") or 300)),
-        "silence_duration_ms": int(float(settings.get("vad_silence_ms") or 650)),
+        "silence_duration_ms": int(float(settings.get("vad_silence_ms") or 1300)),
         "start_sens": (
             types.StartSensitivity.START_SENSITIVITY_LOW
             if start_low
             else types.StartSensitivity.START_SENSITIVITY_HIGH
         ),
         "end_sens": (
-            types.EndSensitivity.END_SENSITIVITY_LOW
-            if end_low
-            else types.EndSensitivity.END_SENSITIVITY_HIGH
+            types.EndSensitivity.END_SENSITIVITY_HIGH
+            if end_high
+            else types.EndSensitivity.END_SENSITIVITY_LOW
         ),
-        "watchdog_timeout_sec": float(settings.get("watchdog_timeout_sec") or 4.0),
+        "watchdog_timeout_sec": float(settings.get("watchdog_timeout_sec") or 8.0),
     }
 
 
@@ -158,17 +164,21 @@ def _live_config(settings: dict, resume_handle: str | None = None) -> types.Live
     return types.LiveConnectConfig(
         response_modalities=[types.Modality.AUDIO],
         speech_config=types.SpeechConfig(
+            language_code="hi-IN",
             voice_config=types.VoiceConfig(
                 prebuilt_voice_config=types.PrebuiltVoiceConfig(
                     voice_name=chosen["voice"]
                 )
-            )
+            ),
         ),
         system_instruction=types.Content(
             parts=[types.Part(text=GEMINI_LIVE_SYSTEM_PROMPT)]
         ),
         input_audio_transcription=(
-            types.AudioTranscriptionConfig(custom_vocabulary=list(HINDI_MEDICAL_VOCAB))
+            types.AudioTranscriptionConfig(
+                language_codes=["hi-IN"],
+                custom_vocabulary=list(HINDI_MEDICAL_VOCAB),
+            )
             if chosen["model"].startswith("gemini-3")
             else types.AudioTranscriptionConfig()
         ),
@@ -402,6 +412,8 @@ async def _forward_transcript(
     text = transcription.text or ""
     if role == "assistant":
         text = clean_assistant_caption(text)
+    elif role == "user":
+        text = clean_user_caption(text)
     if not text:
         return ""
     db.append_transcript(call_id, role, text)
@@ -419,6 +431,7 @@ async def _answer_function_calls(
     calls: list,
     seen: set[str],
     cancelled: set[str],
+    last_user_text: str = "",
 ) -> None:
     responses: list[types.FunctionResponse] = []
     logged: list[str] = []
@@ -451,9 +464,19 @@ async def _answer_function_calls(
             status = str(args.get("status") or "")
             detail = str(args.get("detail") or "")
             is_red_flag = _as_bool(args.get("is_red_flag", False))
+            raw_topics = list(args.get("topic_ids") or [])
+            if isinstance(args.get("topic_ids"), str):
+                raw_topics = [args["topic_ids"]]
             coverage = telemetry.setdefault("coverage", [])
-            checklist.mark(coverage, args.get("topic_ids") or [])
-            if domain and domain != "coverage":
+            name_check = domain == "profile_mother_name" or "intro_name" in raw_topics
+            name_invalid = name_check and (
+                status == "negative"
+                or not checklist.is_valid_name_detail(detail, last_user_text)
+            )
+            if name_invalid:
+                raw_topics = [t for t in raw_topics if t != "intro_name"]
+            checklist.mark(coverage, raw_topics)
+            if domain and domain != "coverage" and not (name_invalid and domain == "profile_mother_name"):
                 db.record_finding_db(call_id, domain, status, detail, is_red_flag)
                 await _send_json(
                     ws,
@@ -469,7 +492,8 @@ async def _answer_function_calls(
             label = checklist.progress_label(coverage)
             telemetry["progress_group"] = label
             await _send_json(ws, ws_lock, {"type": "progress", "group": label})
-            body = {"result": "ok", "note": checklist.tool_note(coverage)}
+            note = checklist.NAME_MISSING_NOTE if name_invalid else checklist.tool_note(coverage)
+            body = {"result": "ok", "note": note}
             logged.append(domain or "record_finding")
         else:
             body = {"result": "ignored"}
@@ -580,6 +604,7 @@ async def _handle_server_message(
             server_content.input_transcription,
         )
         if user_text:
+            state.last_user_text = user_text
             _arm_user_turn(state, telemetry)
             await _emit(
                 ws, ws_lock, call_id, telemetry, "user_transcript", user_text
@@ -636,6 +661,7 @@ async def _handle_server_message(
             calls,
             seen,
             cancelled,
+            state.last_user_text,
         )
 
     if server_content is not None and server_content.turn_complete:
@@ -884,7 +910,6 @@ async def _browser_loop(
                     )
                     return
             elif kind == "speech_end":
-                _arm_user_turn(state, telemetry)
                 try:
                     db.append_call_event(call_id, "speech_end", "")
                     db.update_call_telemetry(call_id, telemetry)
@@ -924,6 +949,7 @@ async def _browser_loop(
                     ws_lock,
                     {"type": "transcript", "role": "user", "text": text},
                 )
+                state.last_user_text = text
                 _arm_user_turn(state, telemetry)
                 try:
                     async with send_lock:
@@ -975,11 +1001,14 @@ async def _finalize(
     red_flags = list(call.get("red_flags") or [])
     summary_doctor = ""
     summary_mother = ""
+    merged_findings = findings
     try:
         result = await generate_call_summaries(transcript, findings, red_flags)
         if isinstance(result, dict):
             summary_doctor = str(result.get("summary_doctor") or "")
             summary_mother = str(result.get("summary_mother") or "")
+            if isinstance(result.get("findings"), dict):
+                merged_findings = result["findings"]
             extra_flags = result.get("red_flags")
             if isinstance(extra_flags, list):
                 red_flags = [str(item) for item in extra_flags]
@@ -1006,6 +1035,8 @@ async def _finalize(
         filename,
         summary_doctor,
         summary_mother,
+        findings=merged_findings,
+        red_flags=red_flags,
     )
     await _send_json(
         ws,
