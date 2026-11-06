@@ -170,7 +170,7 @@ def create_call(
         return int(cur.lastrowid)
 
 
-def append_transcript(call_id: int, role: str, text: str) -> None:
+def append_transcript(call_id: int, role: str, text: str, exact: bool = False) -> None:
     if not text:
         return
     with _db_lock:
@@ -186,7 +186,9 @@ def append_transcript(call_id: int, role: str, text: str) -> None:
 
         if transcript and transcript[-1].get("role") == role:
             prev_text = transcript[-1].get("text", "")
-            if prev_text and not prev_text.endswith(" ") and not text.startswith(" "):
+            if exact:
+                transcript[-1]["text"] = prev_text + text
+            elif prev_text and not prev_text.endswith(" ") and not text.startswith(" "):
                 transcript[-1]["text"] = prev_text + " " + text
             else:
                 transcript[-1]["text"] = prev_text + text

@@ -27,10 +27,13 @@ LIVE_MODEL = "gpt-live-1"
 LIVE_VOICE = "marin"
 LIVE_BACKEND_MODEL = "gpt-5.6-luna"
 SAMPLE_RATE = 24000
-GREETING = "Greet the mother warmly in Hindi as SHISHU and ask her name."
+GREETING = (
+    "Greet the caller now in Hindi. Introduce yourself as SHISHU and ask her name. "
+    "Then pause and listen."
+)
 _NUDGE_TEXT = (
-    "The mother finished speaking and is waiting. "
-    "Respond warmly in Hindi now and ask the next question."
+    "The mother has finished her answer and is waiting. "
+    "Reply now in simple Hindi, then ask the next screening question."
 )
 _WATCHDOG_POLL_SEC = 0.5
 _MAX_NUDGES_PER_TURN = 2
@@ -97,6 +100,9 @@ class _CallState:
         self.send_lock = asyncio.Lock()
         self.tool_seq = 0
         self.nudge_seq = 0
+        self.event_seq = 0
+        self.pending_tool_continue = False
+        self.close_sent = False
         self.connect_t0 = 0.0
         self.awaiting_bot_reply = False
         self.last_user_turn_ts = 0.0
@@ -167,6 +173,11 @@ def _event_text(event: dict[str, Any]) -> str:
     return ""
 
 
+def _next_event_id(state: _CallState, name: str) -> str:
+    state.event_seq += 1
+    return f"evt_{name}_{state.event_seq}"
+
+
 def _session_start_payload(live_model: str, voice: str, backend_model: str) -> dict[str, Any]:
     return {
         "type": "session.start",
@@ -174,6 +185,13 @@ def _session_start_payload(live_model: str, voice: str, backend_model: str) -> d
         "session": {
             "model": live_model,
             "instructions": OPENAI_LIVE_VOICE_PROMPT,
+            "input": [
+                {
+                    "type": "message",
+                    "role": "developer",
+                    "content": [{"type": "input_text", "text": GREETING}],
+                }
+            ],
             "audio": {
                 "format": {"type": "audio/pcm", "rate": SAMPLE_RATE},
                 "output": {"voice": voice},
@@ -278,16 +296,17 @@ async def _emit_telemetry(
     return evt
 
 
-async def _append_commentary(oai_ws: Any, state: _CallState, content: str, event_id: str) -> None:
+async def _append_context(
+    oai_ws: Any, state: _CallState, kind: str, content: str, event_id: str
+) -> None:
     payload = {
-        "type": "session.commentary.append",
+        "type": kind,
         "event_id": event_id,
         "delegation_id": None,
         "content": content,
     }
     async with state.send_lock:
         if not state.session_ready:
-            state.pending_text.append(content)
             return
         await oai_ws.send(json.dumps(payload, ensure_ascii=False))
 
@@ -308,7 +327,9 @@ async def _send_nudge(ws: WebSocket, oai_ws: Any, state: _CallState, *, automati
     state.nudge_seq += 1
     event_id = f"evt_nudge_{state.nudge_seq}"
     try:
-        await _append_commentary(oai_ws, state, _NUDGE_TEXT, event_id)
+        await _append_context(
+            oai_ws, state, "session.instructions.append", _NUDGE_TEXT, event_id
+        )
     except Exception as exc:
         safe = _public_error(exc)
         _record_error(state, safe)
@@ -398,24 +419,35 @@ async def _browser_loop(ws: WebSocket, oai_ws: Any, state: _CallState) -> None:
             text = msg.get("text")
             if not isinstance(text, str) or not text.strip():
                 continue
-            db.append_transcript(state.call_id, "user", text)
+            db.append_transcript(state.call_id, "user", text, exact=True)
             await _send_browser(ws, {"type": "transcript", "role": "user", "text": text})
-            if state.bot_speaking:
-                state.bot_speaking = False
-                state.telemetry["interruptions"] += 1
-                await _send_browser(ws, {"type": "clear"})
-                await _emit_telemetry(ws, state, "interrupted", "user text")
-            commentary = {
-                "type": "session.commentary.append",
-                "event_id": "evt_user_text",
+            event_id = _next_event_id(state, "typed")
+            typed = {
+                "type": "response.item.create",
+                "event_id": event_id,
+                "item": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": text}],
+                },
+            }
+            fact = {
+                "type": "session.thinking.append",
+                "event_id": _next_event_id(state, "typed_fact"),
                 "delegation_id": None,
-                "content": text,
+                "content": f"The mother typed this answer. Treat it as her reply: {text}",
             }
             async with state.send_lock:
                 if not state.session_ready:
                     state.pending_text.append(text)
                 else:
-                    await oai_ws.send(json.dumps(commentary, ensure_ascii=False))
+                    await oai_ws.send(json.dumps(typed, ensure_ascii=False))
+                    await oai_ws.send(
+                        json.dumps(
+                            {"type": "response.create", "event_id": _next_event_id(state, "typed_run")}
+                        )
+                    )
+                    await oai_ws.send(json.dumps(fact, ensure_ascii=False))
             await _arm_user_turn(ws, state, text)
         elif kind == "speech_end":
             state.last_user_turn_ts = time.monotonic()
@@ -439,17 +471,11 @@ async def _handle_transcript(ws: WebSocket, state: _CallState, event: dict[str, 
     if not role or not text:
         return
     is_delta = event_type.endswith(".delta")
-    if not is_delta and role in state.streamed_roles:
+    if not is_delta:
         return
-    if is_delta:
-        state.streamed_roles.add(role)
-    db.append_transcript(state.call_id, role, text)
+    state.streamed_roles.add(role)
+    db.append_transcript(state.call_id, role, text, exact=True)
     await _send_browser(ws, {"type": "transcript", "role": role, "text": text})
-    if role == "user" and state.bot_speaking:
-        state.bot_speaking = False
-        state.telemetry["interruptions"] += 1
-        await _send_browser(ws, {"type": "clear"})
-        await _emit_telemetry(ws, state, "interrupted", "user transcript")
     if role == "user":
         await _arm_user_turn(ws, state, text)
 
@@ -487,6 +513,8 @@ async def _handle_record_finding(
     else:
         output = '{"status":"error","message":"missing domain"}'
     call_id = str(item.get("call_id") or "")
+    if not call_id:
+        return
     state.tool_seq += 1
     seq = state.tool_seq
     async with state.send_lock:
@@ -503,9 +531,7 @@ async def _handle_record_finding(
                 }
             )
         )
-        await oai_ws.send(
-            json.dumps({"type": "response.create", "event_id": f"evt_response_{seq}"})
-        )
+    state.pending_tool_continue = True
     state.telemetry["tool_calls"] += 1
     await _emit_telemetry(
         ws,
@@ -554,12 +580,32 @@ async def _on_session_started(oai_ws: Any, state: _CallState) -> None:
             await oai_ws.send(
                 json.dumps(
                     {
-                        "type": "session.commentary.append",
-                        "event_id": "evt_user_text",
-                        "delegation_id": None,
-                        "content": text,
+                        "type": "response.item.create",
+                        "event_id": _next_event_id(state, "typed"),
+                        "item": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": text}],
+                        },
                     },
                     ensure_ascii=False,
+                )
+            )
+            await oai_ws.send(
+                json.dumps(
+                    {
+                        "type": "session.thinking.append",
+                        "event_id": _next_event_id(state, "typed_fact"),
+                        "delegation_id": None,
+                        "content": f"The mother typed this answer. Treat it as her reply: {text}",
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        if state.pending_text:
+            await oai_ws.send(
+                json.dumps(
+                    {"type": "response.create", "event_id": _next_event_id(state, "typed_run")}
                 )
             )
         state.pending_text = []
@@ -636,13 +682,23 @@ async def _openai_loop(ws: WebSocket, oai_ws: Any, state: _CallState) -> None:
             inner = event.get("event")
             if not isinstance(inner, dict):
                 continue
-            if inner.get("type") != "response.output_item.done":
-                continue
-            item = inner.get("item")
-            if not isinstance(item, dict):
-                continue
-            if item.get("type") == "function_call" and item.get("name") == "record_finding":
-                await _handle_record_finding(ws, oai_ws, state, item)
+            inner_type = str(inner.get("type") or "")
+            if inner_type == "response.output_item.done":
+                item = inner.get("item")
+                if (
+                    isinstance(item, dict)
+                    and item.get("type") == "function_call"
+                    and item.get("name") == "record_finding"
+                ):
+                    await _handle_record_finding(ws, oai_ws, state, item)
+            elif inner_type == "response.completed" and state.pending_tool_continue:
+                state.pending_tool_continue = False
+                state.tool_seq += 1
+                await _oai_send(
+                    oai_ws,
+                    state,
+                    {"type": "response.create", "event_id": f"evt_response_{state.tool_seq}"},
+                )
             continue
         if event_type == "error":
             err = event.get("error")
@@ -673,9 +729,14 @@ async def _finalize(ws: WebSocket, oai_ws: Any, state: _CallState) -> None:
     if state.finalized:
         return
     state.finalized = True
-    if oai_ws is not None:
+    if oai_ws is not None and not state.close_sent:
+        state.close_sent = True
         try:
-            await _oai_send(oai_ws, state, {"type": "session.close", "event_id": "evt_close"})
+            await _oai_send(
+                oai_ws,
+                state,
+                {"type": "session.close", "event_id": _next_event_id(state, "close")},
+            )
         except Exception:
             pass
     try:
@@ -772,20 +833,37 @@ async def handle_openai_ws(
             browser_task = asyncio.create_task(_browser_loop(ws, oai_ws, state))
             openai_task = asyncio.create_task(_openai_loop(ws, oai_ws, state))
             watchdog_task = asyncio.create_task(_watchdog_loop(ws, oai_ws, state))
-            done, pending = await asyncio.wait(
-                {browser_task, openai_task, watchdog_task},
+            done, _pending = await asyncio.wait(
+                {browser_task, openai_task},
                 return_when=asyncio.FIRST_COMPLETED,
             )
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
-            for task in done:
-                exc = task.exception()
-                if exc and not isinstance(exc, asyncio.CancelledError):
+            watchdog_task.cancel()
+            if browser_task in done and not openai_task.done():
+                state.close_sent = True
+                try:
+                    await _oai_send(
+                        oai_ws,
+                        state,
+                        {"type": "session.close", "event_id": _next_event_id(state, "close")},
+                    )
+                    await asyncio.wait_for(openai_task, timeout=15)
+                except asyncio.TimeoutError:
+                    openai_task.cancel()
+                except Exception as exc:
                     safe = _public_error(exc)
                     _record_error(state, safe)
                     await _send_browser(ws, {"type": "error", "message": safe})
-                    await _emit_telemetry(ws, state, "error", safe)
+            else:
+                browser_task.cancel()
+            await asyncio.gather(browser_task, openai_task, watchdog_task, return_exceptions=True)
+            for task in (browser_task, openai_task):
+                if not task.cancelled() and task.done():
+                    exc = task.exception()
+                    if exc and not isinstance(exc, asyncio.CancelledError):
+                        safe = _public_error(exc)
+                        _record_error(state, safe)
+                        await _send_browser(ws, {"type": "error", "message": safe})
+                        await _emit_telemetry(ws, state, "error", safe)
             await _finalize(ws, oai_ws, state)
     except Exception as exc:
         if state.connect_t0 and not state.telemetry["connect_ms"]:
