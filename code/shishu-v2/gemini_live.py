@@ -15,7 +15,8 @@ from starlette.websockets import WebSocketState
 
 import audio_recorder
 import db
-from prompts import GEMINI_LIVE_SYSTEM_PROMPT, clean_assistant_caption
+import checklist
+from prompts import GEMINI_LIVE_SYSTEM_PROMPT, HINDI_MEDICAL_VOCAB, clean_assistant_caption
 from summarizer import generate_call_summaries
 
 _ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
@@ -41,8 +42,9 @@ _RECORD_FINDING_DECL = {
     "name": "record_finding",
     "behavior": "NON_BLOCKING",
     "description": (
-        "Record a clinical intake finding, patient profile field, or red flag "
-        "while continuing the Hindi conversation."
+        "Save the mother's answer and mark checklist topics as covered. "
+        "Invocation Condition: invoke once after every answer she gives, including nahi and nahi pata. "
+        "The result note lists the next open topics. Never read the result aloud."
     ),
     "parameters": {
         "type": "OBJECT",
@@ -54,7 +56,7 @@ _RECORD_FINDING_DECL = {
                     "profile_child_age, profile_child_gender, chief_complaint, "
                     "birth_nicu, milestones, bleeding_joints, metabolic_fasting, "
                     "infections, pregnancy, consanguinity, family_infant_death, "
-                    "family_history"
+                    "family_history, or coverage"
                 ),
             },
             "status": {
@@ -71,31 +73,23 @@ _RECORD_FINDING_DECL = {
                     "True if this is a positive clinical red flag or gate finding"
                 ),
             },
+            "topic_ids": {
+                "type": "ARRAY",
+                "items": {"type": "STRING"},
+                "description": "TOPIC CHECKLIST ids this answer covered, or a group name to skip a whole group",
+            },
         },
-        "required": ["domain", "status", "detail", "is_red_flag"],
-    },
-}
-
-_SET_PROGRESS_DECL = {
-    "name": "set_progress",
-    "behavior": "NON_BLOCKING",
-    "description": "Mark which question group you are about to ask. Call this before the first question of a group.",
-    "parameters": {
-        "type": "OBJECT",
-        "properties": {
-            "group": {
-                "type": "STRING",
-                "description": "intro, birth, body, illness, pregnancy, family, or close",
-            }
-        },
-        "required": ["group"],
+        "required": ["domain", "status", "detail", "is_red_flag", "topic_ids"],
     },
 }
 
 _END_CALL_DECL = {
     "name": "end_call",
     "behavior": "NON_BLOCKING",
-    "description": "Hang up after the approved closing sentence has been spoken. Do not call this before the closing.",
+    "description": (
+        "Hang up the call. Invocation Condition: invoke only after every checklist topic is covered, "
+        "open capture is done, and you have spoken the full closing. If the result is not_yet, keep asking the open topics."
+    ),
     "parameters": {"type": "OBJECT", "properties": {}},
 }
 
@@ -108,6 +102,9 @@ _TELEMETRY_EVENTS = {
     "interrupted",
     "watchdog_nudge",
     "manual_nudge",
+    "reconnected",
+    "silence_check_in",
+    "auto_close",
     "error",
 }
 
@@ -119,6 +116,19 @@ class _TurnState:
         self.bot_replied_since_user = False
         self.bot_speaking = False
         self.nudges_for_current_turn = 0
+        self.quiet_from = 0.0
+        self.checked_in = False
+        self.call_started_ts = time.time()
+        self.resume_handle = ""
+        self.reconnect_requested = False
+
+
+class _SessionProxy:
+    def __init__(self, session) -> None:
+        self.current = session
+
+    def __getattr__(self, name: str):
+        return getattr(self.current, name)
 
 
 def _session_settings(settings: dict) -> dict:
@@ -143,7 +153,7 @@ def _session_settings(settings: dict) -> dict:
     }
 
 
-def _live_config(settings: dict) -> types.LiveConnectConfig:
+def _live_config(settings: dict, resume_handle: str | None = None) -> types.LiveConnectConfig:
     chosen = _session_settings(settings)
     return types.LiveConnectConfig(
         response_modalities=[types.Modality.AUDIO],
@@ -157,7 +167,11 @@ def _live_config(settings: dict) -> types.LiveConnectConfig:
         system_instruction=types.Content(
             parts=[types.Part(text=GEMINI_LIVE_SYSTEM_PROMPT)]
         ),
-        input_audio_transcription=types.AudioTranscriptionConfig(),
+        input_audio_transcription=(
+            types.AudioTranscriptionConfig(custom_vocabulary=list(HINDI_MEDICAL_VOCAB))
+            if chosen["model"].startswith("gemini-3")
+            else types.AudioTranscriptionConfig()
+        ),
         output_audio_transcription=types.AudioTranscriptionConfig(),
         realtime_input_config=types.RealtimeInputConfig(
             turn_coverage=types.TurnCoverage.TURN_INCLUDES_ONLY_ACTIVITY,
@@ -172,7 +186,13 @@ def _live_config(settings: dict) -> types.LiveConnectConfig:
         context_window_compression=types.ContextWindowCompressionConfig(
             sliding_window=types.SlidingWindow()
         ),
-        tools=[{"function_declarations": [_RECORD_FINDING_DECL, _SET_PROGRESS_DECL, _END_CALL_DECL]}],
+        session_resumption=types.SessionResumptionConfig(handle=resume_handle or None),
+        tools=[{"function_declarations": [_RECORD_FINDING_DECL, _END_CALL_DECL]}],
+        thinking_config=(
+            types.ThinkingConfig(thinking_level="MINIMAL")
+            if chosen["model"].startswith("gemini-3.1")
+            else None
+        ),
     )
 
 
@@ -200,6 +220,13 @@ def _new_telemetry(
         "avg_latency_ms": 0,
         "max_latency_ms": 0,
         "last_interaction_status": "",
+        "coverage": [],
+        "end_refusals": 0,
+        "end_requested_at": 0.0,
+        "force_close": False,
+        "force_close_at": 0.0,
+        "close_reason": "",
+        "reconnects": 0,
         "errors": [],
     }
 
@@ -309,6 +336,8 @@ def _arm_user_turn(state: _TurnState, telemetry: dict) -> None:
     state.awaiting_bot_reply = True
     state.last_user_turn_ts = time.time()
     state.bot_replied_since_user = False
+    state.quiet_from = 0.0
+    state.checked_in = False
 
 
 async def _emit(
@@ -402,40 +431,45 @@ async def _answer_function_calls(
         if fc_id:
             seen.add(fc_id)
         name = getattr(fc, "name", None) or ""
-        if name == "set_progress":
-            group = str(_call_args(fc).get("group") or "")
-            telemetry["progress_group"] = group
-            await _send_json(
-                ws,
-                ws_lock,
-                {"type": "progress", "group": group},
-            )
-            body = {"result": "ok"}
-            logged.append("progress:" + group)
-        elif name == "end_call":
-            telemetry["end_requested"] = True
-            await _send_json(ws, ws_lock, {"type": "ending"})
-            body = {"result": "ok"}
-            logged.append("end_call")
+        if name == "end_call":
+            coverage = telemetry.setdefault("coverage", [])
+            ok, note = checklist.can_end(coverage)
+            refusals = int(telemetry.get("end_refusals") or 0)
+            if not ok and refusals < 2 and not telemetry.get("force_close"):
+                telemetry["end_refusals"] = refusals + 1
+                body = {"result": "not_yet", "note": note}
+                logged.append("end_call_refused")
+            else:
+                telemetry["end_requested"] = True
+                telemetry["end_requested_at"] = time.time()
+                await _send_json(ws, ws_lock, {"type": "ending"})
+                body = {"result": "ok"}
+                logged.append("end_call")
         elif name == "record_finding":
             args = _call_args(fc)
             domain = str(args.get("domain") or "")
             status = str(args.get("status") or "")
             detail = str(args.get("detail") or "")
             is_red_flag = _as_bool(args.get("is_red_flag", False))
-            db.record_finding_db(call_id, domain, status, detail, is_red_flag)
-            await _send_json(
-                ws,
-                ws_lock,
-                {
-                    "type": "finding",
-                    "domain": domain,
-                    "status": status,
-                    "detail": detail,
-                    "is_red_flag": is_red_flag,
-                },
-            )
-            body = {"result": _FINDING_RESULT}
+            coverage = telemetry.setdefault("coverage", [])
+            checklist.mark(coverage, args.get("topic_ids") or [])
+            if domain and domain != "coverage":
+                db.record_finding_db(call_id, domain, status, detail, is_red_flag)
+                await _send_json(
+                    ws,
+                    ws_lock,
+                    {
+                        "type": "finding",
+                        "domain": domain,
+                        "status": status,
+                        "detail": detail,
+                        "is_red_flag": is_red_flag,
+                    },
+                )
+            label = checklist.progress_label(coverage)
+            telemetry["progress_group"] = label
+            await _send_json(ws, ws_lock, {"type": "progress", "group": label})
+            body = {"result": "ok", "note": checklist.tool_note(coverage)}
             logged.append(domain or "record_finding")
         else:
             body = {"result": "ignored"}
@@ -492,6 +526,8 @@ async def _on_bot_audio(
     state.awaiting_bot_reply = False
     state.bot_replied_since_user = True
     state.bot_speaking = True
+    if not state.checked_in:
+        state.quiet_from = time.time()
     recorder.add_bot_pcm(pcm, rate)
     await _send_json(
         ws,
@@ -605,11 +641,14 @@ async def _handle_server_message(
     if server_content is not None and server_content.turn_complete:
         state.bot_speaking = False
         await _emit(ws, ws_lock, call_id, telemetry, "turn_complete", "")
-        if telemetry.get("end_requested"):
-            return False
 
+    update = getattr(response, "session_resumption_update", None)
+    if update is not None and getattr(update, "resumable", False) and getattr(update, "new_handle", None):
+        state.resume_handle = str(update.new_handle)
     if getattr(response, "go_away", None) is not None:
-        return False
+        if not state.resume_handle:
+            return False
+        state.reconnect_requested = True
     return True
 
 
@@ -623,11 +662,13 @@ async def _gemini_loop(
     telemetry: dict,
     state: _TurnState,
     recorder: audio_recorder.CallAudioRecorder,
+    reconnect,
 ) -> None:
     seen: set[str] = set()
     cancelled: set[str] = set()
-    try:
-        while not stop.is_set():
+    reconnects = 0
+    while not stop.is_set():
+        try:
             async for response in session.receive():
                 if stop.is_set():
                     return
@@ -647,13 +688,31 @@ async def _gemini_loop(
                 if not keep_going:
                     stop.set()
                     return
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        stop.set()
-        await _report_error(
-            ws, ws_lock, call_id, telemetry, "Gemini Live session ended"
-        )
+                if state.reconnect_requested:
+                    break
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            if stop.is_set() or not state.resume_handle:
+                stop.set()
+                await _report_error(
+                    ws, ws_lock, call_id, telemetry, "Gemini Live session ended"
+                )
+                return
+            state.reconnect_requested = True
+        if not state.reconnect_requested:
+            continue
+        state.reconnect_requested = False
+        reconnects += 1
+        ok = reconnects <= 5 and await reconnect(state.resume_handle)
+        if not ok:
+            stop.set()
+            await _report_error(
+                ws, ws_lock, call_id, telemetry, "Gemini Live could not reconnect"
+            )
+            return
+        telemetry["reconnects"] = reconnects
+        await _emit(ws, ws_lock, call_id, telemetry, "reconnected", str(reconnects))
 
 
 async def _watchdog_loop(
@@ -676,6 +735,54 @@ async def _watchdog_loop(
                 pass
             if stop.is_set():
                 return
+            now = time.time()
+            if now - state.call_started_ts >= checklist.HARD_LIMIT_SEC:
+                telemetry["close_reason"] = telemetry.get("close_reason") or "time_limit"
+                stop.set()
+                return
+            if telemetry.get("end_requested"):
+                if time.time() - float(telemetry.get("end_requested_at") or 0) > 30:
+                    stop.set()
+                    return
+                continue
+            if telemetry.get("force_close"):
+                if now - float(telemetry.get("force_close_at") or 0) > checklist.FORCE_END_GRACE_SEC:
+                    telemetry["end_requested"] = True
+                    telemetry["end_requested_at"] = now
+                    await _send_json(ws, ws_lock, {"type": "ending"})
+                continue
+            cue = ""
+            reason = ""
+            if now - state.call_started_ts >= checklist.SOFT_LIMIT_SEC:
+                cue, reason = checklist.TIME_CLOSE_CUE, "time_limit"
+            elif state.quiet_from > 0 and not state.bot_speaking and not state.awaiting_bot_reply:
+                quiet = now - state.quiet_from
+                if quiet >= checklist.SILENCE_CLOSE_SEC:
+                    cue, reason = checklist.SILENCE_CLOSE_CUE, "silence"
+                elif quiet >= checklist.CHECK_IN_SEC and not state.checked_in:
+                    cue = checklist.CHECK_IN_CUE
+            if cue:
+                if reason:
+                    telemetry["force_close"] = True
+                    telemetry["force_close_at"] = now
+                    telemetry["close_reason"] = reason
+                else:
+                    state.checked_in = True
+                try:
+                    async with send_lock:
+                        await session.send_realtime_input(text=cue)
+                except Exception:
+                    stop.set()
+                    return
+                await _emit(
+                    ws,
+                    ws_lock,
+                    call_id,
+                    telemetry,
+                    "auto_close" if reason else "silence_check_in",
+                    reason or "check_in",
+                )
+                continue
             if not state.awaiting_bot_reply or state.bot_speaking:
                 continue
             if state.bot_replied_since_user or state.last_user_turn_ts <= 0:
@@ -885,6 +992,14 @@ async def _finalize(
             "Post-call summary failed",
         )
 
+    if telemetry is not None:
+        doctor_note, mother_note = checklist.incomplete_notes(
+            telemetry.get("coverage") or [], str(telemetry.get("close_reason") or "")
+        )
+        if doctor_note:
+            summary_doctor = doctor_note + "\n\n" + summary_doctor
+        if mother_note:
+            summary_mother = (summary_mother + "\n\n" + mother_note).strip()
     db.complete_call(
         call_id,
         int(duration),
@@ -979,6 +1094,25 @@ async def handle_gemini_ws(
                 {"type": "error", "message": "Gemini Live connection failed"},
             )
             return
+        session = _SessionProxy(session)
+
+        async def _reconnect(handle: str) -> bool:
+            nonlocal session_ctx
+            try:
+                new_ctx, new_session, _ = await _connect_live(
+                    client, model, _live_config(settings, resume_handle=handle)
+                )
+            except Exception:
+                return False
+            old_ctx = session_ctx
+            async with send_lock:
+                session.current = new_session
+                session_ctx = new_ctx
+            try:
+                await old_ctx.__aexit__(None, None, None)
+            except Exception:
+                pass
+            return True
 
         call_id = db.create_call(
             model,
@@ -1028,6 +1162,7 @@ async def handle_gemini_ws(
                 telemetry,
                 state,
                 recorder,
+                _reconnect,
             )
         )
         watchdog_task = asyncio.create_task(

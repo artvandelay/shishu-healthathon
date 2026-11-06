@@ -13,6 +13,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
 import audio_recorder
+import checklist
 import db
 import prompts
 import summarizer
@@ -106,6 +107,10 @@ class _CallState:
         self.pending_tool_continue = False
         self.close_sent = False
         self.end_at = 0.0
+        self.quiet_from = 0.0
+        self.checked_in = False
+        self.call_started = time.monotonic()
+        self.force_close_at = 0.0
         self.connect_t0 = 0.0
         self.awaiting_bot_reply = False
         self.last_user_turn_ts = 0.0
@@ -128,6 +133,10 @@ class _CallState:
             "avg_latency_ms": 0,
             "max_latency_ms": 0,
             "errors": [],
+            "coverage": [],
+            "end_refusals": 0,
+            "force_close": False,
+            "close_reason": "",
         }
 
 
@@ -208,7 +217,7 @@ def _session_start_payload(live_model: str, voice: str, backend_model: str) -> d
                         {
                             "type": "function",
                             "name": "record_finding",
-                            "description": "Record a clinical intake finding, patient profile field, or red flag.",
+                            "description": "Save the mother's answer and the checklist topic ids it covered. Invoke after every answer.",
                             "parameters": {
                                 "type": "object",
                                 "properties": {
@@ -216,29 +225,15 @@ def _session_start_payload(live_model: str, voice: str, backend_model: str) -> d
                                     "status": {"type": "string"},
                                     "detail": {"type": "string"},
                                     "is_red_flag": {"type": "boolean"},
+                                    "topic_ids": {"type": "array", "items": {"type": "string"}},
                                 },
-                                "required": ["domain", "status", "detail", "is_red_flag"],
-                            },
-                        },
-                        {
-                            "type": "function",
-                            "name": "set_progress",
-                            "description": "Mark the question group you are about to ask.",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "group": {
-                                        "type": "string",
-                                        "description": "intro, birth, body, illness, pregnancy, family, or close",
-                                    }
-                                },
-                                "required": ["group"],
+                                "required": ["domain", "status", "detail", "is_red_flag", "topic_ids"],
                             },
                         },
                         {
                             "type": "function",
                             "name": "end_call",
-                            "description": "Hang up after the approved closing sentence has been spoken.",
+                            "description": "Hang up only after every checklist topic is covered and the full closing was spoken. If the output is not_yet, keep asking.",
                             "parameters": {"type": "object", "properties": {}},
                         },
                     ],
@@ -341,6 +336,8 @@ async def _arm_user_turn(ws: WebSocket, state: _CallState, text: str) -> None:
     state.last_user_turn_ts = time.monotonic()
     state.bot_replied_since_user = False
     state.saw_user_transcript = True
+    state.quiet_from = 0.0
+    state.checked_in = False
     if new_turn:
         state.nudges_for_current_turn = 0
         state.telemetry["user_turns"] += 1
@@ -363,11 +360,61 @@ async def _send_nudge(ws: WebSocket, oai_ws: Any, state: _CallState, *, automati
     await _emit_telemetry(ws, state, kind, _NUDGE_TEXT)
 
 
+async def _send_cue(ws: WebSocket, oai_ws: Any, state: _CallState, cue: str, kind: str) -> None:
+    state.nudge_seq += 1
+    try:
+        await _append_context(
+            oai_ws, state, "session.instructions.append", cue, f"evt_cue_{state.nudge_seq}"
+        )
+        await _oai_send(
+            oai_ws, state, {"type": "response.create", "event_id": _next_event_id(state, "cue")}
+        )
+    except Exception as exc:
+        _record_error(state, _public_error(exc))
+        return
+    await _emit_telemetry(ws, state, kind, cue[:120])
+
+
 async def _watchdog_loop(ws: WebSocket, oai_ws: Any, state: _CallState) -> None:
     try:
         while not state.finalized:
             await asyncio.sleep(_WATCHDOG_POLL_SEC)
             if state.finalized or not state.session_ready:
+                continue
+            now = time.monotonic()
+            if now - state.call_started >= checklist.HARD_LIMIT_SEC:
+                state.telemetry["close_reason"] = state.telemetry.get("close_reason") or "time_limit"
+                state.end_at = now
+                try:
+                    await oai_ws.close()
+                except Exception:
+                    pass
+                return
+            if state.end_at:
+                continue
+            if state.telemetry.get("force_close"):
+                if now - state.force_close_at > checklist.FORCE_END_GRACE_SEC:
+                    state.end_at = now + 30
+                    await _send_browser(ws, {"type": "ending"})
+                continue
+            cue = ""
+            reason = ""
+            if now - state.call_started >= checklist.SOFT_LIMIT_SEC:
+                cue, reason = checklist.TIME_CLOSE_CUE, "time_limit"
+            elif state.quiet_from > 0 and not state.awaiting_bot_reply:
+                quiet = now - state.quiet_from
+                if quiet >= checklist.SILENCE_CLOSE_SEC:
+                    cue, reason = checklist.SILENCE_CLOSE_CUE, "silence"
+                elif quiet >= checklist.CHECK_IN_SEC and not state.checked_in:
+                    cue = checklist.CHECK_IN_CUE
+            if cue:
+                if reason:
+                    state.telemetry["force_close"] = True
+                    state.telemetry["close_reason"] = reason
+                    state.force_close_at = now
+                else:
+                    state.checked_in = True
+                await _send_cue(ws, oai_ws, state, cue, "auto_close" if reason else "silence_check_in")
                 continue
             if not state.awaiting_bot_reply or state.bot_replied_since_user:
                 continue
@@ -528,9 +575,16 @@ async def _handle_control_tool(
         await _send_browser(ws, {"type": "progress", "group": group})
         output = '{"status":"ok"}'
     else:
-        state.end_at = time.monotonic() + 6
-        await _send_browser(ws, {"type": "ending"})
-        output = '{"status":"ending"}'
+        coverage = state.telemetry.setdefault("coverage", [])
+        ok, note = checklist.can_end(coverage)
+        refusals = int(state.telemetry.get("end_refusals") or 0)
+        if not ok and refusals < 2 and not state.telemetry.get("force_close"):
+            state.telemetry["end_refusals"] = refusals + 1
+            output = json.dumps({"status": "not_yet", "note": note}, ensure_ascii=False)
+        else:
+            state.end_at = time.monotonic() + 30
+            await _send_browser(ws, {"type": "ending"})
+            output = '{"status":"ending"}'
     call_id = str(item.get("call_id") or "")
     if not call_id:
         return
@@ -568,8 +622,10 @@ async def _handle_record_finding(
     status = str(args.get("status") or "")
     detail = str(args.get("detail") or "")
     is_red_flag = _as_bool(args.get("is_red_flag", False))
-    output = '{"status":"ok"}'
-    if domain:
+    coverage = state.telemetry.setdefault("coverage", [])
+    checklist.mark(coverage, args.get("topic_ids") or [])
+    output = json.dumps({"status": "ok", "note": checklist.tool_note(coverage)}, ensure_ascii=False)
+    if domain and domain != "coverage":
         db.record_finding_db(state.call_id, domain, status, detail, is_red_flag)
         await _send_browser(
             ws,
@@ -581,8 +637,11 @@ async def _handle_record_finding(
                 "is_red_flag": is_red_flag,
             },
         )
-    else:
+    elif not domain:
         output = '{"status":"error","message":"missing domain"}'
+    label = checklist.progress_label(coverage)
+    state.telemetry["progress_group"] = label
+    await _send_browser(ws, {"type": "progress", "group": label})
     call_id = str(item.get("call_id") or "")
     if not call_id:
         return
@@ -744,6 +803,8 @@ async def _openai_loop(ws: WebSocket, oai_ws: Any, state: _CallState) -> None:
             if first_utterance:
                 state.telemetry["bot_turns"] += 1
             state.bot_speaking = True
+            if not state.checked_in:
+                state.quiet_from = time.monotonic()
             await _send_browser(
                 ws,
                 {"type": "audio", "data": delta, "sample_rate": SAMPLE_RATE},
@@ -762,7 +823,7 @@ async def _openai_loop(ws: WebSocket, oai_ws: Any, state: _CallState) -> None:
                     name = item.get("name")
                     if name == "record_finding":
                         await _handle_record_finding(ws, oai_ws, state, item)
-                    elif name in {"set_progress", "end_call"}:
+                    elif name == "end_call":
                         await _handle_control_tool(ws, oai_ws, state, item)
             elif inner_type == "response.completed" and state.pending_tool_continue:
                 state.pending_tool_continue = False
@@ -834,6 +895,13 @@ async def _finalize(ws: WebSocket, oai_ws: Any, state: _CallState) -> None:
         safe = _public_error(exc)
         _record_error(state, safe)
         await _send_browser(ws, {"type": "error", "message": safe})
+    doctor_note, mother_note = checklist.incomplete_notes(
+        state.telemetry.get("coverage") or [], str(state.telemetry.get("close_reason") or "")
+    )
+    if doctor_note:
+        summary_doctor = doctor_note + "\n\n" + summary_doctor
+    if mother_note:
+        summary_mother = (summary_mother + "\n\n" + mother_note).strip()
     try:
         db.complete_call(state.call_id, duration, filename, summary_doctor, summary_mother)
     except Exception as exc:

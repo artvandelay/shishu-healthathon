@@ -32,4 +32,20 @@ in the intro can you explain a little bit more that they can answer question how
 
 if the voice is switched in admin then the prompt which has kore will not work? dont worry about voices actually just hard code it we dont need that flexibility and confion
 
+## 2026-11-06 — fixed prompt vs switching
+
+Source: chat.
+
+```
+the plan doesnt say how will you do this? will you switch the prompt long the way or same fixed promots?
+```
+
+## 2026-11-06 — three end conditions
+
+Source: chat.
+
+```
+no end the call after done with all question or 30 sec of silence (with a thanks and outro saying call back again to finish this, its incomplete) and next total no beyong 20 mins
+```
+
 

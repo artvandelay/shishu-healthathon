@@ -257,11 +257,24 @@ def record_finding_db(
         except Exception:
             red_flags = []
 
-        findings[domain] = {
-            "status": status,
-            "detail": detail,
-            "is_red_flag": bool(is_red_flag),
-        }
+        prev = findings.get(domain)
+        prev_positive = isinstance(prev, dict) and (
+            prev.get("is_red_flag") or prev.get("status") == "positive"
+        )
+        if prev_positive and not is_red_flag and status != "positive":
+            pass
+        elif prev_positive and status == "positive" and detail and detail not in str(prev.get("detail") or ""):
+            findings[domain] = {
+                "status": "positive",
+                "detail": f"{prev.get('detail')}; {detail}",
+                "is_red_flag": bool(prev.get("is_red_flag") or is_red_flag),
+            }
+        else:
+            findings[domain] = {
+                "status": status,
+                "detail": detail,
+                "is_red_flag": bool(is_red_flag),
+            }
 
         profile_col_map = {
             "profile_mother_name": "mother_name",

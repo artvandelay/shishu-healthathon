@@ -1162,9 +1162,7 @@
           flowGroup = msg.group || "";
           renderHud();
         } else if (msg.type === "ending") {
-          setTimeout(function () {
-            if (phase === "live") endCall();
-          }, 3500);
+          waitForPlaybackThenEnd();
         } else if (msg.type === "call_completed") {
           showThanks(msg);
         } else if (msg.type === "error") {
@@ -1332,6 +1330,28 @@
             ? "Allow the microphone to start the Hindi call."
             : ((err && err.message) || "Could not start the call."));
         }
+      }
+
+      function waitForPlaybackThenEnd() {
+        const startedAt = Date.now();
+        let quietSince = 0;
+        const timer = setInterval(function () {
+          if (phase !== "live") {
+            clearInterval(timer);
+            return;
+          }
+          const playing = activeSources.size > 0 || (playbackCtx && playbackCtx.currentTime < nextPlayTime);
+          if (playing) {
+            quietSince = 0;
+          } else if (!quietSince) {
+            quietSince = Date.now();
+          }
+          const quietLongEnough = quietSince && Date.now() - quietSince >= 2500;
+          if (quietLongEnough || Date.now() - startedAt >= 30000) {
+            clearInterval(timer);
+            endCall();
+          }
+        }, 250);
       }
 
       function endCall() {
