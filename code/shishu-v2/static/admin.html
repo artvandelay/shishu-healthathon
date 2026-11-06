@@ -137,7 +137,41 @@
       font-size: 12px;
     }
 
-    #call-list {
+    .side-tabs {
+      display: flex;
+      gap: 6px;
+      padding: 10px 12px 0;
+    }
+
+    .side-tabs button {
+      flex: 1;
+      border: 1px solid #d7cbbd;
+      background: #fff;
+      color: var(--ink);
+      border-radius: 999px;
+      min-height: 34px;
+      padding: 0 10px;
+      cursor: pointer;
+    }
+
+    .side-tabs button[aria-selected="true"] {
+      background: var(--teal);
+      border-color: var(--teal);
+      color: #fff;
+    }
+
+    #calls-pane,
+    #bugs-pane {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+    }
+
+    #call-list,
+    #bug-list {
+      flex: 1;
+      min-height: 0;
       overflow: auto;
       padding: 0 8px 16px;
       display: flex;
@@ -376,9 +410,161 @@
 
     button:focus-visible,
     a:focus-visible,
+    input:focus-visible,
+    select:focus-visible,
     .call-item:focus-visible {
       outline: 3px solid rgba(14, 107, 99, 0.35);
       outline-offset: 2px;
+    }
+
+    .settings {
+      background: var(--card);
+      border-bottom: 1px solid var(--line);
+      padding: 12px 16px 16px;
+    }
+
+    .settings-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+    }
+
+    .settings label,
+    .bug-form label {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: 650;
+      color: var(--muted);
+    }
+
+    .settings input,
+    .settings select,
+    .bug-form input,
+    .bug-form select {
+      font: inherit;
+      color: var(--ink);
+      background: #fff;
+      border: 1px solid #d7cbbd;
+      border-radius: 10px;
+      min-height: 36px;
+      padding: 6px 10px;
+    }
+
+    .settings-actions,
+    .bug-form {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
+      margin-top: 12px;
+    }
+
+    .bug-form { align-items: flex-end; }
+
+    .bug-form label:nth-child(2) { flex: 1; min-width: 180px; }
+
+    #save-settings {
+      border: 0;
+      background: var(--teal);
+      color: #fff;
+      border-radius: 999px;
+      min-height: 36px;
+      padding: 0 14px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    #save-settings:disabled,
+    #log-bug:disabled { opacity: 0.6; cursor: default; }
+
+    .confirm {
+      margin: 0;
+      color: var(--teal);
+      font-weight: 700;
+    }
+
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 10px;
+    }
+
+    .kpi {
+      background: #fbf7f1;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px 12px;
+    }
+
+    .kpi span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .kpi strong {
+      display: block;
+      margin-top: 4px;
+      font-size: 15px;
+      line-height: 1.35;
+    }
+
+    .latency-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-top: 8px;
+    }
+
+    .pill.warn {
+      background: #f8efd8;
+      color: var(--amber);
+    }
+
+    .trace { margin-top: 12px; }
+
+    .trace summary {
+      cursor: pointer;
+      font-weight: 700;
+    }
+
+    #event-table { overflow: auto; }
+
+    .bug-item {
+      background: #fff;
+      border: 1px solid #efe6db;
+      border-radius: 14px;
+      padding: 10px 12px;
+    }
+
+    .bug-link {
+      border: 0;
+      background: transparent;
+      color: var(--teal);
+      font-weight: 700;
+      padding: 0;
+      cursor: pointer;
+      text-decoration: underline;
+    }
+
+    .bug-note {
+      margin: 6px 0;
+      font-size: 14px;
+      white-space: pre-wrap;
+    }
+
+    .snapshot pre {
+      margin: 8px 0 0;
+      max-height: 180px;
+      overflow: auto;
+      font-size: 11px;
+      white-space: pre-wrap;
+      background: #fff;
+      border-radius: 8px;
+      padding: 8px;
     }
 
     @media (max-width: 980px) {
@@ -400,7 +586,9 @@
       body.printing .transcript,
       body.printing .actions,
       body.printing .empty,
-      body.printing .notice { display: none !important; }
+      body.printing .notice,
+      body.printing .settings,
+      body.printing .telemetry { display: none !important; }
       body.printing { height: auto; background: #fff; }
       body.printing .layout { display: block; }
       body.printing main { overflow: visible; padding: 0; }
@@ -419,17 +607,94 @@
       <span class="engine-label">Active Voice Engine</span>
       <button id="eng-gemini" type="button" aria-pressed="false">Gemini 3.8 Live</button>
       <button id="eng-openai" type="button" aria-pressed="false">OpenAI GPT-Live-1</button>
+      <button id="settings-toggle" class="ghost" type="button" aria-expanded="false" aria-controls="settings-drawer">Settings & Tuning</button>
     </div>
     <a class="test" href="/">Test Call -&gt;</a>
   </header>
+  <div id="settings-drawer" class="settings" hidden>
+    <form id="settings-form">
+      <div class="settings-grid">
+        <label>Gemini Model
+          <select id="set-gemini-model" name="gemini_model">
+            <option value="gemini-3.8-live">gemini-3.8-live (Default)</option>
+            <option value="gemini-2.5-flash-native-audio-preview-12-2025">gemini-2.5-flash-native-audio-preview-12-2025 (No Proactive Drop)</option>
+            <option value="gemini-3.1-flash-live-preview">gemini-3.1-flash-live-preview</option>
+          </select>
+        </label>
+        <label>Gemini Voice
+          <select id="set-gemini-voice" name="gemini_voice">
+            <option>Kore</option>
+            <option>Aoede</option>
+            <option>Puck</option>
+            <option>Charon</option>
+            <option>Fenrir</option>
+          </select>
+        </label>
+        <label>OpenAI Voice
+          <select id="set-openai-voice" name="openai_voice">
+            <option>marin</option>
+            <option>ash</option>
+            <option>coral</option>
+            <option>sage</option>
+            <option>verse</option>
+          </select>
+        </label>
+        <label>OpenAI Backend Model
+          <select id="set-openai-backend" name="openai_backend_model">
+            <option>gpt-5.6-luna</option>
+            <option>gpt-5.6-sol</option>
+          </select>
+        </label>
+        <label>VAD Prefix Padding (ms)
+          <input id="set-vad-prefix" name="vad_prefix_padding_ms" type="number" min="0" step="1" value="300">
+        </label>
+        <label>VAD Silence Duration (ms)
+          <input id="set-vad-silence" name="vad_silence_ms" type="number" min="0" step="1" value="650">
+        </label>
+        <label>VAD End Sensitivity
+          <select id="set-vad-end" name="vad_end_sensitivity">
+            <option value="HIGH">HIGH</option>
+            <option value="LOW">LOW</option>
+          </select>
+        </label>
+        <label>Watchdog Auto-Nudge (sec)
+          <input id="set-watchdog" name="watchdog_timeout_sec" type="number" min="0" step="0.1" value="4.0">
+        </label>
+        <label>Post-Call Summary Model
+          <select id="set-summary-model" name="summary_model">
+            <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+            <option value="gpt-4o-mini">gpt-4o-mini</option>
+          </select>
+        </label>
+      </div>
+      <div class="settings-actions">
+        <button id="save-settings" type="submit">Save Settings</button>
+        <p id="settings-confirm" class="confirm" role="status" hidden>Settings saved.</p>
+      </div>
+    </form>
+  </div>
   <div class="layout">
     <aside>
-      <div class="aside-head">
-        <h2>Calls</h2>
-        <button id="refresh" class="refresh" type="button">Refresh</button>
+      <div class="side-tabs" role="tablist" aria-label="Dashboard lists">
+        <button id="tab-calls" type="button" role="tab" aria-selected="true" aria-controls="calls-pane">Calls</button>
+        <button id="tab-bugs" type="button" role="tab" aria-selected="false" aria-controls="bugs-pane">Bug Reports</button>
       </div>
-      <p id="updated" class="updated"></p>
-      <div id="call-list"></div>
+      <div id="calls-pane" role="tabpanel">
+        <div class="aside-head">
+          <h2>Calls</h2>
+          <button id="refresh" class="refresh" type="button">Refresh</button>
+        </div>
+        <p id="updated" class="updated"></p>
+        <div id="call-list"></div>
+      </div>
+      <div id="bugs-pane" role="tabpanel" hidden>
+        <div class="aside-head">
+          <h2>Bug Reports</h2>
+          <button id="refresh-bugs" class="refresh" type="button">Refresh</button>
+        </div>
+        <p id="bugs-updated" class="updated"></p>
+        <div id="bug-list"></div>
+      </div>
     </aside>
     <main id="detail">
       <p id="notice" class="notice" role="status" hidden></p>
@@ -478,6 +743,35 @@
           <h3>Full Call Transcript</h3>
           <div id="transcript"></div>
         </section>
+        <section class="block telemetry" id="telemetry-block">
+          <div class="head-row">
+            <h3>Under-the-Hood Telemetry</h3>
+            <div class="actions">
+              <button id="copy-debug" class="ghost" type="button">Copy Full Debug Bundle</button>
+            </div>
+          </div>
+          <div id="telemetry-grid" class="kpi-grid"></div>
+          <details id="event-trace" class="trace">
+            <summary id="event-summary">Under-the-Hood Event Trace (0)</summary>
+            <div id="event-table"></div>
+          </details>
+          <form id="bug-form" class="bug-form">
+            <label>Category
+              <select id="bug-category">
+                <option>Model stuck / no reply</option>
+                <option>Clipped / misheard Hindi</option>
+                <option>Slow response</option>
+                <option>Wrong language</option>
+                <option>Repeated question</option>
+                <option>Other</option>
+              </select>
+            </label>
+            <label>Note
+              <input id="bug-note" type="text" placeholder="Quick note (optional)">
+            </label>
+            <button id="log-bug" class="ghost" type="submit">Log Bug on This Call</button>
+          </form>
+        </section>
       </article>
     </main>
   </div>
@@ -504,11 +798,14 @@
       const openaiBtn = document.getElementById("eng-openai");
 
       let calls = [];
+      let bugs = [];
       let selectedId = null;
       let selectedStatus = "";
       let current = null;
       let refreshTimer = 0;
       let loadingList = false;
+      let loadingBugs = false;
+      let settingsCache = {};
 
       function el(tag, className, text) {
         const node = document.createElement(tag);
@@ -639,6 +936,7 @@
       }
 
       function renderList() {
+        document.getElementById("tab-calls").textContent = "Calls (" + calls.length + ")";
         listEl.textContent = "";
         if (!calls.length) {
           listEl.appendChild(el("p", "empty", "No calls yet."));
@@ -826,7 +1124,356 @@
         motherEl.textContent = call.summary_mother || "The mother summary is not ready yet.";
         renderFindings(call.findings);
         renderTranscript(call.transcript);
+        renderTelemetry(call);
         renderList();
+      }
+
+      function dashNum(value, suffix) {
+        if (value == null || value === "") return "—";
+        const n = Number(value);
+        if (Number.isNaN(n)) return String(value);
+        const shown = Number.isInteger(n) ? String(n) : String(Math.round(n * 10) / 10);
+        return suffix ? shown + suffix : shown;
+      }
+
+      function kpi(label, value) {
+        const box = el("div", "kpi");
+        box.appendChild(el("span", "", label));
+        box.appendChild(el("strong", "", value));
+        return box;
+      }
+
+      function fmtOffset(sec) {
+        const totalTenths = Math.round(Math.max(0, Number(sec) || 0) * 10);
+        const tenths = totalTenths % 10;
+        const totalSec = Math.floor(totalTenths / 10);
+        return "+" + pad(Math.floor(totalSec / 60)) + ":" + pad(totalSec % 60) + "." + tenths;
+      }
+
+      function eventBadgeClass(type) {
+        if (type === "error" || type === "bug_reported") return "pill hot";
+        if (type === "watchdog_nudge" || type === "manual_nudge") return "pill warn";
+        if (type === "session_started" || type === "tool_call" || type === "bot_first_audio") return "badge";
+        if (type === "user_transcript") return "badge openai";
+        return "pill";
+      }
+
+      function renderTelemetry(call) {
+        const grid = document.getElementById("telemetry-grid");
+        grid.textContent = "";
+        const t = asObject(call.telemetry);
+        const caller = (call.caller_name || "—") + " (" + (call.user_role || "—") + ")";
+        const model = (call.model_used || call.engine || "—") + " · " + (call.voice_used || "default");
+        const latency = kpi(
+          "Turn Latency (Avg / Max)",
+          dashNum(t.avg_latency_ms, " ms") + " / " + dashNum(t.max_latency_ms, " ms")
+        );
+        const pills = el("div", "latency-pills");
+        asList(t.turn_latencies_ms).forEach(function (ms) {
+          pills.appendChild(el("span", "pill", dashNum(ms, " ms")));
+        });
+        if (pills.childNodes.length) latency.appendChild(pills);
+        grid.appendChild(kpi("Caller & Role", caller));
+        grid.appendChild(kpi("Model / Voice", model));
+        grid.appendChild(kpi("Connect Latency", dashNum(t.connect_ms, " ms")));
+        grid.appendChild(latency);
+        grid.appendChild(kpi("Turns (User / Bot)", dashNum(t.user_turns) + " / " + dashNum(t.bot_turns)));
+        grid.appendChild(kpi(
+          "Tool Calls & Nudges",
+          dashNum(t.tool_calls) + " findings / " + dashNum(t.watchdog_nudges) + " nudges"
+        ));
+        grid.appendChild(kpi(
+          "Audio Packets (In / Out)",
+          dashNum(t.audio_chunks_in) + " / " + dashNum(t.audio_chunks_out)
+        ));
+        renderEvents(asList(call.events));
+      }
+
+      function renderEvents(events) {
+        const summary = document.getElementById("event-summary");
+        const host = document.getElementById("event-table");
+        summary.textContent = "Under-the-Hood Event Trace (" + events.length + ")";
+        host.textContent = "";
+        if (!events.length) {
+          host.appendChild(el("p", "calm", "No events were recorded."));
+          return;
+        }
+        let origin = null;
+        events.forEach(function (evt) {
+          const t = Number(evt && evt.t);
+          if (!Number.isFinite(t)) return;
+          if (origin == null || t < origin) origin = t;
+        });
+        const table = el("table");
+        const head = el("tr");
+        ["Time", "Type", "Detail"].forEach(function (label) {
+          head.appendChild(el("th", "", label));
+        });
+        const thead = el("thead");
+        thead.appendChild(head);
+        table.appendChild(thead);
+        const tbody = el("tbody");
+        events.forEach(function (evt) {
+          const row = el("tr");
+          const t = Number(evt && evt.t);
+          const timeCell = el("td", "", Number.isFinite(t) && origin != null ? fmtOffset(t - origin) : "—");
+          if (Number.isFinite(t) && t > 1e9) timeCell.title = new Date(t * 1000).toLocaleString();
+          row.appendChild(timeCell);
+          const type = String((evt && (evt.type || evt.event)) || "event");
+          const typeCell = el("td");
+          typeCell.appendChild(el("span", eventBadgeClass(type), type));
+          row.appendChild(typeCell);
+          row.appendChild(el("td", "", evt && evt.detail != null ? String(evt.detail) : ""));
+          tbody.appendChild(row);
+        });
+        table.appendChild(tbody);
+        host.appendChild(table);
+      }
+
+      function ensureOption(select, value) {
+        const next = value == null || value === "" ? "" : String(value);
+        if (!next) return;
+        const exists = Array.prototype.some.call(select.options, function (opt) { return opt.value === next; });
+        if (!exists) {
+          const opt = document.createElement("option");
+          opt.value = next;
+          opt.textContent = next;
+          select.appendChild(opt);
+        }
+        select.value = next;
+      }
+
+      function unwrapSettings(data) {
+        if (data && data.settings && typeof data.settings === "object") return data.settings;
+        return data && typeof data === "object" ? data : {};
+      }
+
+      function applySettings(data) {
+        const s = unwrapSettings(data);
+        settingsCache = s;
+        if (s.active_engine) paintEngine(s.active_engine);
+        ensureOption(document.getElementById("set-gemini-model"), s.gemini_model || "gemini-3.8-live");
+        ensureOption(document.getElementById("set-gemini-voice"), s.gemini_voice || "Kore");
+        ensureOption(document.getElementById("set-openai-voice"), s.openai_voice || "marin");
+        ensureOption(document.getElementById("set-openai-backend"), s.openai_backend_model || "gpt-5.6-luna");
+        document.getElementById("set-vad-prefix").value = s.vad_prefix_padding_ms || "300";
+        document.getElementById("set-vad-silence").value = s.vad_silence_ms || "650";
+        document.getElementById("set-vad-end").value = s.vad_end_sensitivity === "LOW" ? "LOW" : "HIGH";
+        document.getElementById("set-watchdog").value = s.watchdog_timeout_sec || "4.0";
+        ensureOption(document.getElementById("set-summary-model"), s.summary_model || "gemini-2.5-flash");
+      }
+
+      function currentEngine() {
+        return openaiBtn.getAttribute("aria-pressed") === "true" ? "openai" : "gemini";
+      }
+
+      function readSettingsForm() {
+        return {
+          active_engine: currentEngine(),
+          gemini_model: document.getElementById("set-gemini-model").value,
+          gemini_voice: document.getElementById("set-gemini-voice").value,
+          openai_voice: document.getElementById("set-openai-voice").value,
+          openai_backend_model: document.getElementById("set-openai-backend").value,
+          vad_prefix_padding_ms: document.getElementById("set-vad-prefix").value,
+          vad_silence_ms: document.getElementById("set-vad-silence").value,
+          vad_end_sensitivity: document.getElementById("set-vad-end").value,
+          watchdog_timeout_sec: document.getElementById("set-watchdog").value,
+          summary_model: document.getElementById("set-summary-model").value
+        };
+      }
+
+      function toggleSettings() {
+        const drawer = document.getElementById("settings-drawer");
+        const btn = document.getElementById("settings-toggle");
+        const willOpen = drawer.hidden;
+        drawer.hidden = !willOpen;
+        btn.setAttribute("aria-expanded", willOpen ? "true" : "false");
+      }
+
+      async function loadSettings() {
+        const res = await api("/api/settings");
+        if (!res) return;
+        applySettings(await res.json());
+      }
+
+      async function saveSettings(event) {
+        event.preventDefault();
+        const btn = document.getElementById("save-settings");
+        const confirmEl = document.getElementById("settings-confirm");
+        confirmEl.hidden = true;
+        btn.disabled = true;
+        const payload = readSettingsForm();
+        try {
+          const res = await api("/api/settings", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          if (!res) return;
+          applySettings(await res.json());
+          if (!settingsCache.active_engine) settingsCache.active_engine = payload.active_engine;
+          confirmEl.hidden = false;
+          confirmEl.textContent = "Settings saved.";
+          showNotice("Settings saved.");
+        } catch (err) {
+          showNotice(err.message || "Could not save settings.");
+        } finally {
+          btn.disabled = false;
+        }
+      }
+
+      async function copyText(text, okMessage) {
+        try {
+          await navigator.clipboard.writeText(text);
+        } catch (err) {
+          const area = document.createElement("textarea");
+          area.value = text;
+          document.body.appendChild(area);
+          area.select();
+          document.execCommand("copy");
+          area.remove();
+        }
+        showNotice(okMessage);
+      }
+
+      function copyDebug() {
+        if (!current) return Promise.resolve();
+        const bundle = {
+          call_id: current.id,
+          telemetry: asObject(current.telemetry),
+          events: asList(current.events),
+          transcript: asList(current.transcript),
+          settings: settingsCache
+        };
+        return copyText(JSON.stringify(bundle, null, 2), "Debug bundle copied.");
+      }
+
+      function asBugs(data) {
+        if (Array.isArray(data)) return data;
+        if (data && Array.isArray(data.bugs)) return data.bugs;
+        return [];
+      }
+
+      function paintBugsTab() {
+        document.getElementById("tab-bugs").textContent = "Bug Reports (" + bugs.length + ")";
+      }
+
+      function showTab(name) {
+        const callsOn = name !== "bugs";
+        document.getElementById("tab-calls").setAttribute("aria-selected", callsOn ? "true" : "false");
+        document.getElementById("tab-bugs").setAttribute("aria-selected", callsOn ? "false" : "true");
+        document.getElementById("calls-pane").hidden = !callsOn;
+        document.getElementById("bugs-pane").hidden = callsOn;
+      }
+
+      function renderBugs() {
+        const list = document.getElementById("bug-list");
+        list.textContent = "";
+        paintBugsTab();
+        if (!bugs.length) {
+          list.appendChild(el("p", "empty", "No bug reports yet."));
+          return;
+        }
+        bugs.forEach(function (bug) {
+          const item = el("article", "bug-item");
+          const top = el("div", "row");
+          top.appendChild(el("span", "badge", bug.category || "Uncategorized"));
+          const callId = Number(bug.call_id) || 0;
+          if (callId > 0) {
+            const link = el("button", "bug-link", "Call #" + callId);
+            link.type = "button";
+            link.addEventListener("click", function () {
+              showTab("calls");
+              loadDetail(callId).catch(function (err) { showNotice(err.message); });
+            });
+            top.appendChild(link);
+          } else {
+            top.appendChild(el("span", "meta", "No call"));
+          }
+          item.appendChild(top);
+          const sec = Math.max(0, Math.round(Number(bug.call_elapsed_sec) || 0));
+          const bits = [fmtDuration(sec) + " (" + sec + "s)"];
+          const when = fmtTime(bug.created_at);
+          if (when) bits.push(when);
+          item.appendChild(el("p", "meta", bits.join(" · ")));
+          item.appendChild(el("p", "bug-note", bug.note || "No note."));
+          if (bug.snapshot && typeof bug.snapshot === "object") {
+            const details = document.createElement("details");
+            details.className = "snapshot";
+            const summary = document.createElement("summary");
+            summary.textContent = "Snapshot";
+            details.appendChild(summary);
+            const pre = document.createElement("pre");
+            pre.textContent = JSON.stringify(bug.snapshot, null, 2);
+            details.appendChild(pre);
+            item.appendChild(details);
+          }
+          const copy = el("button", "ghost", "Copy Bug JSON");
+          copy.type = "button";
+          copy.addEventListener("click", function () {
+            copyText(JSON.stringify(bug, null, 2), "Bug JSON copied.").catch(function (err) {
+              showNotice(err.message || "Could not copy the bug.");
+            });
+          });
+          item.appendChild(copy);
+          list.appendChild(item);
+        });
+      }
+
+      async function loadBugs() {
+        if (loadingBugs) return;
+        loadingBugs = true;
+        try {
+          const res = await api("/api/bugs");
+          if (!res) return;
+          bugs = asBugs(await res.json());
+          document.getElementById("bugs-updated").textContent = "Updated " + new Date().toLocaleTimeString(undefined, {
+            hour: "2-digit",
+            minute: "2-digit"
+          });
+          renderBugs();
+        } finally {
+          loadingBugs = false;
+        }
+      }
+
+      async function logBug(event) {
+        event.preventDefault();
+        if (!current) {
+          showNotice("Select a call before logging a bug.");
+          return;
+        }
+        const btn = document.getElementById("log-bug");
+        btn.disabled = true;
+        const callId = current.id;
+        try {
+          const res = await api("/api/bugs", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              call_id: callId,
+              category: document.getElementById("bug-category").value,
+              note: document.getElementById("bug-note").value.trim(),
+              call_elapsed_sec: Math.max(0, Math.round(Number(current.duration_sec) || 0)),
+              client_state: { source: "admin" }
+            })
+          });
+          if (!res) return;
+          const data = await res.json();
+          document.getElementById("bug-note").value = "";
+          showNotice("Bug logged on call #" + callId + ".");
+          if (data && data.bug) {
+            bugs = [data.bug].concat(bugs.filter(function (bug) { return bug.id !== data.bug.id; }));
+            renderBugs();
+          } else {
+            await loadBugs();
+          }
+          await loadDetail(callId);
+        } catch (err) {
+          showNotice(err.message || "Could not log the bug.");
+        } finally {
+          btn.disabled = false;
+        }
       }
 
       async function loadDetail(id) {
@@ -869,6 +1516,7 @@
           if (!res) return;
           const data = await res.json();
           paintEngine(data.active_engine || name);
+          settingsCache.active_engine = normalizeEngine(data.active_engine || name);
           showNotice("Active engine is now " + (normalizeEngine(data.active_engine || name) === "openai"
             ? "OpenAI GPT-Live-1."
             : "Gemini 3.8 Live."));
@@ -919,12 +1567,39 @@
         copyReport().catch(function (err) { showNotice(err.message || "Could not copy the report."); });
       });
       document.getElementById("print-report").addEventListener("click", printReport);
+      document.getElementById("settings-toggle").addEventListener("click", toggleSettings);
+      document.getElementById("settings-form").addEventListener("submit", function (event) {
+        saveSettings(event).catch(function (err) { showNotice(err.message || "Could not save settings."); });
+      });
+      document.getElementById("settings-form").addEventListener("input", function () {
+        document.getElementById("settings-confirm").hidden = true;
+      });
+      document.getElementById("tab-calls").addEventListener("click", function () { showTab("calls"); });
+      document.getElementById("tab-bugs").addEventListener("click", function () {
+        showTab("bugs");
+        loadBugs().catch(function (err) { showNotice(err.message || "Could not load bug reports."); });
+      });
+      document.getElementById("refresh-bugs").addEventListener("click", function () {
+        loadBugs().catch(function (err) { showNotice(err.message || "Could not load bug reports."); });
+      });
+      document.getElementById("copy-debug").addEventListener("click", function () {
+        copyDebug().catch(function (err) { showNotice(err.message || "Could not copy the debug bundle."); });
+      });
+      document.getElementById("bug-form").addEventListener("submit", function (event) {
+        logBug(event).catch(function (err) { showNotice(err.message || "Could not log the bug."); });
+      });
 
       async function boot() {
         const cfgRes = await api("/api/config");
         const callsRes = await api("/api/calls");
         if (!cfgRes || !callsRes) return;
         paintEngine((await cfgRes.json()).active_engine);
+        try {
+          await loadSettings();
+        } catch (err) {
+          applySettings({});
+          showNotice(err.message || "Settings are not available yet.");
+        }
         calls = asCalls(await callsRes.json());
         updatedEl.textContent = "Updated " + new Date().toLocaleTimeString(undefined, {
           hour: "2-digit",
@@ -934,6 +1609,7 @@
         const pick = calls.find(function (call) { return call.id === wanted; }) || calls[0];
         if (pick) await loadDetail(pick.id);
         else renderList();
+        loadBugs().catch(function (err) { showNotice(err.message || "Could not load bug reports."); });
         refreshTimer = setInterval(function () {
           refreshList().catch(function (err) { showNotice(err.message); });
         }, 15000);

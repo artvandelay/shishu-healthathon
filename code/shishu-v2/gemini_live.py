@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import os
+import time
 
 from dotenv import load_dotenv
 from fastapi import WebSocket, WebSocketDisconnect
@@ -13,18 +14,27 @@ from starlette.websockets import WebSocketState
 
 import audio_recorder
 import db
-from prompts import GEMINI_LIVE_SYSTEM_PROMPT, HINDI_MEDICAL_VOCAB
+from prompts import GEMINI_LIVE_SYSTEM_PROMPT
 from summarizer import generate_call_summaries
 
 _ENV_PATH = "/Users/jigar/projects/0n-going/SHISHU-healthathon-koita/.env"
 load_dotenv(_ENV_PATH)
 
-_ENGINE = "gemini-3.8-live"
-_FALLBACK_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
 _INPUT_RATE = 16000
 _OUTPUT_RATE = 24000
+_WATCHDOG_INTERVAL_SEC = 0.5
 _GREETING = (
     "Call connected. Greet the mother warmly in Hindi as SHISHU and ask her name."
+)
+_WATCHDOG_NUDGE = (
+    "(Mother answered. Acknowledge briefly in Hindi and ask the next question.)"
+)
+_MANUAL_NUDGE = (
+    "(Mother finished speaking and is waiting. Respond warmly in simple Hindi "
+    "now and ask the next question.)"
+)
+_FINDING_RESULT = (
+    "recorded. Continue speaking to the mother in Hindi and ask the next question."
 )
 
 _RECORD_FINDING_DECL = {
@@ -66,66 +76,119 @@ _RECORD_FINDING_DECL = {
     },
 }
 
+_TELEMETRY_EVENTS = {
+    "session_started",
+    "user_transcript",
+    "bot_first_audio",
+    "turn_complete",
+    "tool_call",
+    "interrupted",
+    "watchdog_nudge",
+    "manual_nudge",
+    "error",
+}
 
-def _live_config() -> dict:
-    base = {
-        "response_modalities": ["AUDIO"],
-        "system_instruction": GEMINI_LIVE_SYSTEM_PROMPT,
-        "speech_config": {
-            "voice_config": {"prebuilt_voice_config": {"voice_name": "Kore"}}
-        },
-        "output_audio_transcription": {},
-        "realtime_input_config": {
-            "automatic_activity_detection": {
-                "disabled": False,
-                "prefix_padding_ms": 40,
-                "silence_duration_ms": 700,
-            }
-        },
-        "tools": [{"function_declarations": [_RECORD_FINDING_DECL]}],
+
+class _TurnState:
+    def __init__(self) -> None:
+        self.awaiting_bot_reply = False
+        self.last_user_turn_ts = 0.0
+        self.bot_replied_since_user = False
+        self.bot_speaking = False
+        self.nudges_for_current_turn = 0
+
+
+def _session_settings(settings: dict) -> dict:
+    start_low = settings.get("vad_start_sensitivity") == "LOW"
+    end_low = settings.get("vad_end_sensitivity") == "LOW"
+    return {
+        "model": settings.get("gemini_model") or "gemini-3.8-live",
+        "voice": settings.get("gemini_voice") or "Kore",
+        "prefix_padding_ms": int(float(settings.get("vad_prefix_padding_ms") or 300)),
+        "silence_duration_ms": int(float(settings.get("vad_silence_ms") or 650)),
+        "start_sens": (
+            types.StartSensitivity.START_SENSITIVITY_LOW
+            if start_low
+            else types.StartSensitivity.START_SENSITIVITY_HIGH
+        ),
+        "end_sens": (
+            types.EndSensitivity.END_SENSITIVITY_LOW
+            if end_low
+            else types.EndSensitivity.END_SENSITIVITY_HIGH
+        ),
+        "watchdog_timeout_sec": float(settings.get("watchdog_timeout_sec") or 4.0),
     }
-    with_vocab = {
-        **base,
-        "input_audio_transcription": {
-            "custom_vocabulary": list(HINDI_MEDICAL_VOCAB),
-        },
+
+
+def _live_config(settings: dict) -> types.LiveConnectConfig:
+    chosen = _session_settings(settings)
+    return types.LiveConnectConfig(
+        response_modalities=[types.Modality.AUDIO],
+        speech_config=types.SpeechConfig(
+            voice_config=types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                    voice_name=chosen["voice"]
+                )
+            )
+        ),
+        system_instruction=types.Content(
+            parts=[types.Part(text=GEMINI_LIVE_SYSTEM_PROMPT)]
+        ),
+        input_audio_transcription=types.AudioTranscriptionConfig(),
+        output_audio_transcription=types.AudioTranscriptionConfig(),
+        realtime_input_config=types.RealtimeInputConfig(
+            turn_coverage=types.TurnCoverage.TURN_INCLUDES_ONLY_ACTIVITY,
+            automatic_activity_detection=types.AutomaticActivityDetection(
+                disabled=False,
+                start_of_speech_sensitivity=chosen["start_sens"],
+                end_of_speech_sensitivity=chosen["end_sens"],
+                prefix_padding_ms=chosen["prefix_padding_ms"],
+                silence_duration_ms=chosen["silence_duration_ms"],
+            ),
+        ),
+        context_window_compression=types.ContextWindowCompressionConfig(
+            sliding_window=types.SlidingWindow()
+        ),
+        tools=[{"function_declarations": [_RECORD_FINDING_DECL]}],
+    )
+
+
+def _new_telemetry(
+    model: str,
+    voice: str,
+    silence_ms: int,
+    prefix_ms: int,
+    connect_ms: int,
+) -> dict:
+    return {
+        "model": model,
+        "voice": voice,
+        "vad_silence_ms": silence_ms,
+        "vad_prefix_padding_ms": prefix_ms,
+        "connect_ms": connect_ms,
+        "user_turns": 0,
+        "bot_turns": 0,
+        "tool_calls": 0,
+        "audio_chunks_in": 0,
+        "audio_chunks_out": 0,
+        "interruptions": 0,
+        "watchdog_nudges": 0,
+        "turn_latencies_ms": [],
+        "avg_latency_ms": 0,
+        "max_latency_ms": 0,
+        "last_interaction_status": "",
+        "errors": [],
     }
-    try:
-        types.LiveConnectConfig(**with_vocab)
-    except Exception:
-        return {**base, "input_audio_transcription": {}}
-    return with_vocab
 
 
-def _primary_model() -> str:
-    model = os.environ.get("GEMINI_LIVE_MODEL", "gemini-3.8-live")
-    return model or "gemini-3.8-live"
-
-
-async def _connect_live(client: genai.Client, config: dict):
-    primary = _primary_model()
-    models = [primary]
-    if primary != _FALLBACK_MODEL:
-        models.append(_FALLBACK_MODEL)
-    last_error: Exception | None = None
-    for model in models:
-        ctx = client.aio.live.connect(model=model, config=config)
-        try:
-            session = await ctx.__aenter__()
-        except Exception as exc:
-            last_error = exc
-            continue
-        if getattr(session, "setup_complete", None) is None:
-            last_error = RuntimeError("Gemini Live setup did not complete")
-            try:
-                await ctx.__aexit__(None, None, None)
-            except Exception:
-                pass
-            continue
-        return ctx, session
-    if last_error is None:
-        last_error = RuntimeError("Gemini Live connection failed")
-    raise last_error
+def _refresh_latency(telemetry: dict) -> None:
+    latencies = telemetry.get("turn_latencies_ms") or []
+    if latencies:
+        telemetry["avg_latency_ms"] = int(round(sum(latencies) / len(latencies)))
+        telemetry["max_latency_ms"] = int(max(latencies))
+    else:
+        telemetry["avg_latency_ms"] = 0
+        telemetry["max_latency_ms"] = 0
 
 
 def _ws_connected(ws: WebSocket) -> bool:
@@ -216,22 +279,80 @@ def _audio_from_part(part: types.Part) -> tuple[bytes, int] | None:
     return pcm, _rate_from_mime(mime, _OUTPUT_RATE)
 
 
+def _arm_user_turn(state: _TurnState, telemetry: dict) -> None:
+    if not state.awaiting_bot_reply:
+        telemetry["user_turns"] += 1
+        state.nudges_for_current_turn = 0
+    state.awaiting_bot_reply = True
+    state.last_user_turn_ts = time.time()
+    state.bot_replied_since_user = False
+
+
+async def _emit(
+    ws: WebSocket,
+    ws_lock: asyncio.Lock,
+    call_id: int,
+    telemetry: dict,
+    event_type: str,
+    detail: str = "",
+    meta: dict | None = None,
+) -> None:
+    if event_type not in _TELEMETRY_EVENTS:
+        return
+    telemetry["last_interaction_status"] = event_type
+    _refresh_latency(telemetry)
+    try:
+        evt = db.append_call_event(call_id, event_type, detail, meta)
+    except Exception:
+        evt = {
+            "t": round(time.time(), 3),
+            "type": event_type,
+            "detail": detail or "",
+            "meta": meta or {},
+        }
+    try:
+        db.update_call_telemetry(call_id, telemetry)
+    except Exception:
+        pass
+    snapshot = json.loads(json.dumps(telemetry))
+    await _send_json(
+        ws,
+        ws_lock,
+        {"type": "telemetry", "telemetry": snapshot, "last_event": evt},
+    )
+
+
+async def _report_error(
+    ws: WebSocket,
+    ws_lock: asyncio.Lock,
+    call_id: int | None,
+    telemetry: dict | None,
+    message: str,
+) -> None:
+    if call_id is not None and telemetry is not None:
+        errors = telemetry.setdefault("errors", [])
+        errors.append(message)
+        if len(errors) > 50:
+            del errors[:-50]
+        await _emit(ws, ws_lock, call_id, telemetry, "error", message)
+    await _send_json(ws, ws_lock, {"type": "error", "message": message})
+
+
 async def _forward_transcript(
     ws: WebSocket,
     lock: asyncio.Lock,
     call_id: int,
     role: str,
     transcription: types.Transcription | None,
-) -> None:
+) -> str:
     if transcription is None:
-        return
+        return ""
     text = transcription.text or ""
     if not text:
-        return
+        return ""
     db.append_transcript(call_id, role, text)
-    await _send_json(
-        ws, lock, {"type": "transcript", "role": role, "text": text}
-    )
+    await _send_json(ws, lock, {"type": "transcript", "role": role, "text": text})
+    return text
 
 
 async def _answer_function_calls(
@@ -240,11 +361,13 @@ async def _answer_function_calls(
     ws: WebSocket,
     ws_lock: asyncio.Lock,
     call_id: int,
+    telemetry: dict,
     calls: list,
     seen: set[str],
     cancelled: set[str],
 ) -> None:
     responses: list[types.FunctionResponse] = []
+    logged: list[str] = []
     for fc in calls:
         fc_id = getattr(fc, "id", None) or ""
         if fc_id and (fc_id in cancelled or fc_id in seen):
@@ -272,9 +395,11 @@ async def _answer_function_calls(
                     "is_red_flag": is_red_flag,
                 },
             )
-            body = {"result": "logged"}
+            body = {"result": _FINDING_RESULT}
+            logged.append(domain or "record_finding")
         else:
             body = {"result": "ignored"}
+            logged.append(name or "ignored")
         if not fc_id:
             continue
         responses.append(
@@ -282,13 +407,67 @@ async def _answer_function_calls(
                 id=fc_id,
                 name=name or "record_finding",
                 response=body,
-                scheduling=types.FunctionResponseScheduling.SILENT,
+                scheduling=types.FunctionResponseScheduling.WHEN_IDLE,
             )
         )
+    for detail in logged:
+        telemetry["tool_calls"] += 1
+        await _emit(ws, ws_lock, call_id, telemetry, "tool_call", detail)
     if not responses:
         return
-    async with send_lock:
-        await session.send_tool_response(function_responses=responses)
+    try:
+        async with send_lock:
+            await session.send_tool_response(function_responses=responses)
+    except Exception:
+        await _report_error(
+            ws,
+            ws_lock,
+            call_id,
+            telemetry,
+            "Could not send the tool response to Gemini",
+        )
+
+
+async def _on_bot_audio(
+    ws: WebSocket,
+    ws_lock: asyncio.Lock,
+    call_id: int,
+    telemetry: dict,
+    state: _TurnState,
+    recorder: audio_recorder.CallAudioRecorder,
+    pcm: bytes,
+    rate: int,
+) -> None:
+    telemetry["audio_chunks_out"] += 1
+    first = not state.bot_replied_since_user
+    latency_ms = None
+    if first:
+        telemetry["bot_turns"] += 1
+        if state.awaiting_bot_reply and state.last_user_turn_ts > 0:
+            latency_ms = int((time.time() - state.last_user_turn_ts) * 1000)
+            if latency_ms < 0:
+                latency_ms = 0
+            telemetry["turn_latencies_ms"].append(latency_ms)
+        state.nudges_for_current_turn = 0
+    state.awaiting_bot_reply = False
+    state.bot_replied_since_user = True
+    state.bot_speaking = True
+    recorder.add_bot_pcm(pcm, rate)
+    await _send_json(
+        ws,
+        ws_lock,
+        {
+            "type": "audio",
+            "data": base64.b64encode(pcm).decode("ascii"),
+            "sample_rate": _OUTPUT_RATE,
+        },
+    )
+    if first:
+        detail = f"{latency_ms}ms" if latency_ms is not None else ""
+        meta = {"latency_ms": latency_ms} if latency_ms is not None else None
+        await _emit(
+            ws, ws_lock, call_id, telemetry, "bot_first_audio", detail, meta
+        )
 
 
 async def _handle_server_message(
@@ -298,6 +477,8 @@ async def _handle_server_message(
     ws: WebSocket,
     ws_lock: asyncio.Lock,
     call_id: int,
+    telemetry: dict,
+    state: _TurnState,
     recorder: audio_recorder.CallAudioRecorder,
     seen: set[str],
     cancelled: set[str],
@@ -309,7 +490,31 @@ async def _handle_server_message(
 
     server_content = getattr(response, "server_content", None)
     if server_content is not None and server_content.interrupted:
+        state.bot_speaking = False
+        telemetry["interruptions"] += 1
         await _send_json(ws, ws_lock, {"type": "clear"})
+        await _emit(ws, ws_lock, call_id, telemetry, "interrupted", "interrupted")
+
+    if server_content is not None:
+        user_text = await _forward_transcript(
+            ws,
+            ws_lock,
+            call_id,
+            "user",
+            server_content.input_transcription,
+        )
+        if user_text:
+            _arm_user_turn(state, telemetry)
+            await _emit(
+                ws, ws_lock, call_id, telemetry, "user_transcript", user_text
+            )
+        await _forward_transcript(
+            ws,
+            ws_lock,
+            call_id,
+            "assistant",
+            server_content.output_transcription,
+        )
 
     parts = []
     if (
@@ -326,35 +531,19 @@ async def _handle_server_message(
         audio = _audio_from_part(part)
         if audio is not None:
             pcm, rate = audio
-            recorder.add_bot_pcm(pcm, rate)
-            await _send_json(
+            await _on_bot_audio(
                 ws,
                 ws_lock,
-                {
-                    "type": "audio",
-                    "data": base64.b64encode(pcm).decode("ascii"),
-                    "sample_rate": _OUTPUT_RATE,
-                },
+                call_id,
+                telemetry,
+                state,
+                recorder,
+                pcm,
+                rate,
             )
         function_call = getattr(part, "function_call", None)
         if function_call is not None:
             part_calls.append(function_call)
-
-    if server_content is not None:
-        await _forward_transcript(
-            ws,
-            ws_lock,
-            call_id,
-            "user",
-            server_content.input_transcription,
-        )
-        await _forward_transcript(
-            ws,
-            ws_lock,
-            call_id,
-            "assistant",
-            server_content.output_transcription,
-        )
 
     tool_call = getattr(response, "tool_call", None)
     calls = list(part_calls)
@@ -367,10 +556,15 @@ async def _handle_server_message(
             ws,
             ws_lock,
             call_id,
+            telemetry,
             calls,
             seen,
             cancelled,
         )
+
+    if server_content is not None and server_content.turn_complete:
+        state.bot_speaking = False
+        await _emit(ws, ws_lock, call_id, telemetry, "turn_complete", "")
 
     if getattr(response, "go_away", None) is not None:
         return False
@@ -384,6 +578,8 @@ async def _gemini_loop(
     ws_lock: asyncio.Lock,
     stop: asyncio.Event,
     call_id: int,
+    telemetry: dict,
+    state: _TurnState,
     recorder: audio_recorder.CallAudioRecorder,
 ) -> None:
     seen: set[str] = set()
@@ -400,6 +596,8 @@ async def _gemini_loop(
                     ws,
                     ws_lock,
                     call_id,
+                    telemetry,
+                    state,
                     recorder,
                     seen,
                     cancelled,
@@ -411,9 +609,65 @@ async def _gemini_loop(
         raise
     except Exception:
         stop.set()
-        await _send_json(
-            ws, ws_lock, {"type": "error", "message": "Gemini Live session ended"}
+        await _report_error(
+            ws, ws_lock, call_id, telemetry, "Gemini Live session ended"
         )
+
+
+async def _watchdog_loop(
+    session,
+    send_lock: asyncio.Lock,
+    ws: WebSocket,
+    ws_lock: asyncio.Lock,
+    stop: asyncio.Event,
+    call_id: int,
+    telemetry: dict,
+    state: _TurnState,
+    watchdog_timeout_sec: float,
+) -> None:
+    try:
+        while not stop.is_set():
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=_WATCHDOG_INTERVAL_SEC)
+                return
+            except asyncio.TimeoutError:
+                pass
+            if stop.is_set():
+                return
+            if not state.awaiting_bot_reply or state.bot_speaking:
+                continue
+            if state.bot_replied_since_user or state.last_user_turn_ts <= 0:
+                continue
+            if state.nudges_for_current_turn >= 2:
+                continue
+            if time.time() - state.last_user_turn_ts < watchdog_timeout_sec:
+                continue
+            state.nudges_for_current_turn += 1
+            telemetry["watchdog_nudges"] += 1
+            state.last_user_turn_ts = time.time()
+            try:
+                async with send_lock:
+                    await session.send_realtime_input(text=_WATCHDOG_NUDGE)
+            except Exception:
+                await _report_error(
+                    ws,
+                    ws_lock,
+                    call_id,
+                    telemetry,
+                    "Watchdog nudge failed",
+                )
+                stop.set()
+                return
+            await _emit(
+                ws,
+                ws_lock,
+                call_id,
+                telemetry,
+                "watchdog_nudge",
+                _WATCHDOG_NUDGE,
+            )
+    except asyncio.CancelledError:
+        raise
 
 
 async def _browser_loop(
@@ -423,6 +677,8 @@ async def _browser_loop(
     ws_lock: asyncio.Lock,
     stop: asyncio.Event,
     call_id: int,
+    telemetry: dict,
+    state: _TurnState,
     recorder: audio_recorder.CallAudioRecorder,
 ) -> None:
     try:
@@ -438,15 +694,13 @@ async def _browser_loop(
             try:
                 payload = json.loads(raw)
             except json.JSONDecodeError:
-                await _send_json(
-                    ws, ws_lock, {"type": "error", "message": "Invalid JSON"}
+                await _report_error(
+                    ws, ws_lock, call_id, telemetry, "Invalid JSON"
                 )
                 continue
             if not isinstance(payload, dict):
-                await _send_json(
-                    ws,
-                    ws_lock,
-                    {"type": "error", "message": "Expected a JSON object"},
+                await _report_error(
+                    ws, ws_lock, call_id, telemetry, "Expected a JSON object"
                 )
                 continue
             kind = payload.get("type")
@@ -460,6 +714,7 @@ async def _browser_loop(
                     rate = _INPUT_RATE
                 if rate <= 0:
                     rate = _INPUT_RATE
+                telemetry["audio_chunks_in"] += 1
                 recorder.add_user_pcm(pcm, rate)
                 try:
                     async with send_lock:
@@ -471,15 +726,45 @@ async def _browser_loop(
                         )
                 except Exception:
                     stop.set()
-                    await _send_json(
+                    await _report_error(
                         ws,
                         ws_lock,
-                        {
-                            "type": "error",
-                            "message": "Could not forward audio to Gemini",
-                        },
+                        call_id,
+                        telemetry,
+                        "Could not forward audio to Gemini",
                     )
                     return
+            elif kind == "speech_end":
+                _arm_user_turn(state, telemetry)
+                try:
+                    db.append_call_event(call_id, "speech_end", "")
+                    db.update_call_telemetry(call_id, telemetry)
+                except Exception:
+                    pass
+            elif kind == "nudge":
+                if state.awaiting_bot_reply:
+                    state.last_user_turn_ts = time.time()
+                try:
+                    async with send_lock:
+                        await session.send_realtime_input(text=_MANUAL_NUDGE)
+                except Exception:
+                    stop.set()
+                    await _report_error(
+                        ws,
+                        ws_lock,
+                        call_id,
+                        telemetry,
+                        "Could not nudge Gemini",
+                    )
+                    return
+                await _emit(
+                    ws,
+                    ws_lock,
+                    call_id,
+                    telemetry,
+                    "manual_nudge",
+                    _MANUAL_NUDGE,
+                )
             elif kind == "text":
                 text = str(payload.get("text") or "").strip()
                 if not text:
@@ -490,26 +775,23 @@ async def _browser_loop(
                     ws_lock,
                     {"type": "transcript", "role": "user", "text": text},
                 )
+                _arm_user_turn(state, telemetry)
                 try:
                     async with send_lock:
-                        await session.send_client_content(
-                            turns={
-                                "role": "user",
-                                "parts": [{"text": text}],
-                            },
-                            turn_complete=True,
-                        )
+                        await session.send_realtime_input(text=text)
                 except Exception:
                     stop.set()
-                    await _send_json(
+                    await _report_error(
                         ws,
                         ws_lock,
-                        {
-                            "type": "error",
-                            "message": "Could not forward text to Gemini",
-                        },
+                        call_id,
+                        telemetry,
+                        "Could not forward text to Gemini",
                     )
                     return
+                await _emit(
+                    ws, ws_lock, call_id, telemetry, "user_transcript", text
+                )
             elif kind == "hangup":
                 stop.set()
                 return
@@ -521,6 +803,7 @@ async def _finalize(
     ws: WebSocket,
     ws_lock: asyncio.Lock,
     call_id: int,
+    telemetry: dict | None,
     recorder: audio_recorder.CallAudioRecorder,
 ) -> None:
     filename = ""
@@ -529,6 +812,13 @@ async def _finalize(
         filename, duration = recorder.save()
     except Exception:
         filename, duration = "", 0
+
+    if telemetry is not None:
+        _refresh_latency(telemetry)
+        try:
+            db.update_call_telemetry(call_id, telemetry)
+        except Exception:
+            pass
 
     call = db.get_call(call_id) or {}
     transcript = call.get("transcript") or []
@@ -545,10 +835,12 @@ async def _finalize(
             if isinstance(extra_flags, list):
                 red_flags = [str(item) for item in extra_flags]
     except Exception:
-        await _send_json(
+        await _report_error(
             ws,
             ws_lock,
-            {"type": "error", "message": "Post-call summary failed"},
+            call_id,
+            telemetry,
+            "Post-call summary failed",
         )
 
     db.complete_call(
@@ -575,26 +867,45 @@ async def _stop_tasks(*tasks: asyncio.Task | None) -> None:
     pending = [task for task in tasks if task is not None and not task.done()]
     for task in pending:
         task.cancel()
-    if tasks:
-        await asyncio.gather(
-            *[task for task in tasks if task is not None],
-            return_exceptions=True,
-        )
+    waiting = [task for task in tasks if task is not None]
+    if waiting:
+        await asyncio.gather(*waiting, return_exceptions=True)
 
 
-async def handle_gemini_ws(ws: WebSocket) -> None:
+async def _connect_live(client: genai.Client, model: str, config: types.LiveConnectConfig):
+    started = time.perf_counter()
+    ctx = client.aio.live.connect(model=model, config=config)
+    session = await ctx.__aenter__()
+    if getattr(session, "setup_complete", None) is None:
+        try:
+            await ctx.__aexit__(None, None, None)
+        except Exception:
+            pass
+        raise RuntimeError("Gemini Live setup did not complete")
+    connect_ms = int((time.perf_counter() - started) * 1000)
+    return ctx, session, connect_ms
+
+
+async def handle_gemini_ws(
+    ws: WebSocket, caller_name: str = "", user_role: str = "user"
+) -> None:
     load_dotenv(_ENV_PATH)
     if ws.client_state == WebSocketState.CONNECTING:
         await ws.accept()
 
+    caller_name = caller_name or ""
+    user_role = user_role or "user"
     ws_lock = asyncio.Lock()
     send_lock = asyncio.Lock()
     stop = asyncio.Event()
+    state = _TurnState()
     call_id: int | None = None
+    telemetry: dict | None = None
     recorder: audio_recorder.CallAudioRecorder | None = None
     session_ctx = None
     gemini_task: asyncio.Task | None = None
     browser_task: asyncio.Task | None = None
+    watchdog_task: asyncio.Task | None = None
     finalized = False
 
     try:
@@ -606,12 +917,19 @@ async def handle_gemini_ws(ws: WebSocket) -> None:
             )
             return
 
+        settings = db.get_all_settings()
+        chosen = _session_settings(settings)
+        model = chosen["model"]
+        voice = chosen["voice"]
+        config = _live_config(settings)
         client = genai.Client(
             api_key=os.environ["GEMINI_API_KEY"],
             http_options={"api_version": "v1beta"},
         )
         try:
-            session_ctx, session = await _connect_live(client, _live_config())
+            session_ctx, session, connect_ms = await _connect_live(
+                client, model, config
+            )
         except Exception:
             await _send_json(
                 ws,
@@ -620,7 +938,20 @@ async def handle_gemini_ws(ws: WebSocket) -> None:
             )
             return
 
-        call_id = db.create_call(_ENGINE)
+        call_id = db.create_call(
+            model,
+            caller_name=caller_name,
+            user_role=user_role,
+            model_used=model,
+            voice_used=voice,
+        )
+        telemetry = _new_telemetry(
+            model,
+            voice,
+            chosen["silence_duration_ms"],
+            chosen["prefix_padding_ms"],
+            connect_ms,
+        )
         recorder = audio_recorder.CallAudioRecorder(call_id)
         await _send_json(
             ws,
@@ -628,41 +959,77 @@ async def handle_gemini_ws(ws: WebSocket) -> None:
             {
                 "type": "session_started",
                 "call_id": call_id,
-                "engine": _ENGINE,
+                "engine": model,
+                "voice": voice,
+                "user_role": user_role,
+                "caller_name": caller_name,
                 "out_sample_rate": _OUTPUT_RATE,
             },
+        )
+        await _emit(
+            ws,
+            ws_lock,
+            call_id,
+            telemetry,
+            "session_started",
+            model,
         )
 
         gemini_task = asyncio.create_task(
             _gemini_loop(
-                session, send_lock, ws, ws_lock, stop, call_id, recorder
+                session,
+                send_lock,
+                ws,
+                ws_lock,
+                stop,
+                call_id,
+                telemetry,
+                state,
+                recorder,
+            )
+        )
+        watchdog_task = asyncio.create_task(
+            _watchdog_loop(
+                session,
+                send_lock,
+                ws,
+                ws_lock,
+                stop,
+                call_id,
+                telemetry,
+                state,
+                chosen["watchdog_timeout_sec"],
             )
         )
         try:
             async with send_lock:
-                await session.send_client_content(
-                    turns={
-                        "role": "user",
-                        "parts": [{"text": _GREETING}],
-                    },
-                    turn_complete=True,
-                )
+                await session.send_realtime_input(text=_GREETING)
         except Exception:
             stop.set()
-            await _send_json(
+            await _report_error(
                 ws,
                 ws_lock,
-                {"type": "error", "message": "Gemini Live greeting failed"},
+                call_id,
+                telemetry,
+                "Gemini Live greeting failed",
             )
             return
 
         browser_task = asyncio.create_task(
             _browser_loop(
-                session, send_lock, ws, ws_lock, stop, call_id, recorder
+                session,
+                send_lock,
+                ws,
+                ws_lock,
+                stop,
+                call_id,
+                telemetry,
+                state,
+                recorder,
             )
         )
         done, pending = await asyncio.wait(
-            {gemini_task, browser_task},
+            {gemini_task, browser_task, watchdog_task},
             return_when=asyncio.FIRST_COMPLETED,
         )
         stop.set()
@@ -670,9 +1037,8 @@ async def handle_gemini_ws(ws: WebSocket) -> None:
             task.cancel()
         await asyncio.gather(*done, *pending, return_exceptions=True)
     finally:
-        if gemini_task is not None or browser_task is not None:
-            stop.set()
-            await _stop_tasks(gemini_task, browser_task)
+        stop.set()
+        await _stop_tasks(gemini_task, browser_task, watchdog_task)
         if session_ctx is not None:
             try:
                 await session_ctx.__aexit__(None, None, None)
@@ -681,7 +1047,7 @@ async def handle_gemini_ws(ws: WebSocket) -> None:
         if call_id is not None and recorder is not None and not finalized:
             finalized = True
             try:
-                await _finalize(ws, ws_lock, call_id, recorder)
+                await _finalize(ws, ws_lock, call_id, telemetry, recorder)
             except Exception:
                 await _send_json(
                     ws,

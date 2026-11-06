@@ -38,6 +38,7 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
+      gap: 12px;
       padding: 18px 20px 0;
     }
 
@@ -48,13 +49,28 @@
       letter-spacing: -0.02em;
     }
 
-    .admin-link {
+    .header-actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .admin-link,
+    .header-btn {
       color: var(--muted);
       font-size: 13px;
       text-decoration: none;
+      background: transparent;
+      border: 0;
+      padding: 0;
+      font-family: inherit;
+      cursor: pointer;
     }
 
-    .admin-link:hover { color: var(--teal); }
+    .admin-link:hover,
+    .header-btn:hover { color: var(--teal); }
 
     main {
       width: min(460px, 100%);
@@ -137,6 +153,23 @@
       font-weight: 650;
     }
 
+    .mic-meter {
+      width: min(220px, 70%);
+      height: 8px;
+      margin: 10px 0 0;
+      border-radius: 999px;
+      background: #e7efe9;
+      overflow: hidden;
+    }
+
+    .mic-level {
+      display: block;
+      height: 100%;
+      width: 0%;
+      background: var(--green);
+      border-radius: inherit;
+    }
+
     #caption {
       min-height: 48px;
       margin: 14px 0 0;
@@ -179,9 +212,34 @@
 
     .call-btn:disabled { opacity: 0.65; cursor: wait; }
 
+    .nudge-btn {
+      margin-top: 14px;
+      min-height: 44px;
+      padding: 0 18px;
+      border-radius: 999px;
+      border: 1px solid #d7c4a8;
+      background: #fff;
+      color: var(--ink);
+      font: inherit;
+      font-size: 15px;
+      font-weight: 700;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+
+    .nudge-btn.hot {
+      background: #e07a2f;
+      border-color: #e07a2f;
+      color: #fff;
+      box-shadow: 0 0 0 4px rgba(224, 122, 47, 0.28);
+    }
+
     .call-btn:focus-visible,
     .admin-link:focus-visible,
-    .text-btn:focus-visible {
+    .header-btn:focus-visible,
+    .text-btn:focus-visible,
+    .nudge-btn:focus-visible,
+    .chip:focus-visible {
       outline: 3px solid rgba(14, 107, 99, 0.4);
       outline-offset: 3px;
     }
@@ -258,12 +316,198 @@
       text-align: left;
       line-height: 1.4;
     }
+
+    .hud {
+      margin-top: 22px;
+      padding: 14px;
+      text-align: left;
+      background: var(--card);
+      border: 1px solid #eadfd0;
+      border-radius: 16px;
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
+    .hud h2 {
+      margin: 0 0 8px;
+      font-size: 14px;
+    }
+
+    .hud-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px 12px;
+    }
+
+    .hud-grid .k {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      letter-spacing: 0.02em;
+    }
+
+    .hud-label {
+      margin: 12px 0 4px;
+      color: var(--muted);
+      font-size: 11px;
+      letter-spacing: 0.02em;
+    }
+
+    .hud-events {
+      margin: 0;
+      padding-left: 18px;
+      max-height: 140px;
+      overflow: auto;
+    }
+
+    .hud-events li { margin: 2px 0; word-break: break-word; }
+
+    .hud-send {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .hud-send input {
+      flex: 1;
+      min-width: 0;
+      min-height: 40px;
+      border-radius: 10px;
+      border: 1px solid #e0d4c4;
+      padding: 8px 10px;
+      font: inherit;
+      font-size: 14px;
+    }
+
+    .hud-send button {
+      border: 0;
+      border-radius: 10px;
+      background: var(--teal);
+      color: #fff;
+      font: inherit;
+      font-weight: 700;
+      padding: 0 12px;
+      cursor: pointer;
+    }
+
+    .hud-note {
+      margin: 8px 0 0;
+      color: var(--teal);
+      font-size: 12px;
+    }
+
+    .bug-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 20;
+      display: grid;
+      align-items: end;
+      justify-items: center;
+      padding: 16px;
+      background: rgba(28, 36, 48, 0.35);
+    }
+
+    .bug-card {
+      width: min(460px, 100%);
+      max-height: min(88vh, 640px);
+      overflow: auto;
+      padding: 16px;
+      text-align: left;
+      background: var(--card);
+      border-radius: 18px;
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.16);
+    }
+
+    .bug-card h2 {
+      margin: 0 0 6px;
+      font-size: 18px;
+    }
+
+    .bug-card .sub {
+      margin: 0 0 12px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
+    .chip-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .chip {
+      border: 1px solid #e0d4c4;
+      background: #fff;
+      color: var(--ink);
+      border-radius: 999px;
+      padding: 8px 12px;
+      font: inherit;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    .chip.on {
+      background: var(--teal);
+      border-color: var(--teal);
+      color: #fff;
+    }
+
+    .bug-card textarea {
+      width: 100%;
+      min-height: 72px;
+      margin-top: 12px;
+      padding: 10px 12px;
+      border: 1px solid #e0d4c4;
+      border-radius: 12px;
+      background: #fff;
+      color: var(--ink);
+      font: inherit;
+      font-size: 15px;
+      resize: vertical;
+    }
+
+    .bug-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .bug-actions .text-btn { line-height: 1.2; padding: 12px 14px; min-height: 48px; }
+
+    .ghost-btn {
+      min-height: 44px;
+      border: 0;
+      border-radius: 12px;
+      background: #e7f4f1;
+      color: var(--teal);
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .bug-confirm {
+      margin: 10px 0 0;
+      color: var(--green-dark);
+      font-size: 14px;
+    }
+
+    .bug-error {
+      margin: 10px 0 0;
+      color: var(--red-dark);
+      font-size: 14px;
+    }
   </style>
 </head>
 <body>
   <header>
     <h1>SHISHU (शिशु)</h1>
-    <a class="admin-link" href="/admin">Admin</a>
+    <div class="header-actions">
+      <button id="hud-toggle" class="header-btn" type="button" hidden>Testing HUD</button>
+      <button id="bug-btn" class="header-btn" type="button">Report Bug</button>
+      <a class="admin-link" href="/admin">Admin</a>
+    </div>
   </header>
   <main>
     <p id="engine-note" class="engine-note"></p>
@@ -275,9 +519,13 @@
       </div>
       <p id="status" role="status" aria-live="polite">Tap Mic to Start Call in Hindi</p>
       <p id="timer">00:00</p>
+      <div id="mic-meter" class="mic-meter" role="meter" aria-label="Microphone level" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <span id="mic-level" class="mic-level"></span>
+      </div>
       <p id="caption"></p>
       <p id="wait" hidden>Generating summary for your doctor...</p>
       <button id="call-btn" class="call-btn" type="button">Start Call</button>
+      <button id="nudge-btn" class="nudge-btn" type="button" hidden>Bot stuck? Tap to Nudge</button>
     </section>
     <section id="thanks" class="thanks" hidden>
       <h2 lang="hi">धन्यवाद</h2>
@@ -288,8 +536,53 @@
         <a id="admin-view" class="dash-link" href="/admin">View in Admin Dashboard</a>
       </div>
     </section>
+    <section id="hud" class="hud" hidden>
+      <h2>Testing HUD</h2>
+      <div class="hud-grid">
+        <div><span class="k">Call</span> <span id="hud-call">—</span></div>
+        <div><span class="k">Caller</span> <span id="hud-caller">—</span></div>
+        <div><span class="k">Role</span> <span id="hud-role">—</span></div>
+        <div><span class="k">Model</span> <span id="hud-model">—</span></div>
+        <div><span class="k">Voice</span> <span id="hud-voice">—</span></div>
+        <div><span class="k">Connect</span> <span id="hud-connect">—</span></div>
+        <div><span class="k">Last latency</span> <span id="hud-last-lat">—</span></div>
+        <div><span class="k">Avg latency</span> <span id="hud-avg-lat">—</span></div>
+        <div><span class="k">Turns (user / bot)</span> <span id="hud-turns">—</span></div>
+        <div><span class="k">Tool calls</span> <span id="hud-tools">—</span></div>
+        <div><span class="k">Watchdog nudges</span> <span id="hud-nudges">—</span></div>
+        <div><span class="k">Audio in / out</span> <span id="hud-audio">—</span></div>
+      </div>
+      <p class="hud-label">Last 10 events</p>
+      <ol id="hud-events" class="hud-events"></ol>
+      <form id="hud-form" class="hud-send">
+        <input id="hud-text" type="text" placeholder="Type to the bot" autocomplete="off">
+        <button type="submit">Send Text</button>
+      </form>
+      <p id="hud-send-note" class="hud-note" hidden></p>
+    </section>
     <p id="error" role="alert" hidden></p>
   </main>
+  <div id="bug-overlay" class="bug-overlay" hidden>
+    <div class="bug-card" role="dialog" aria-modal="true" aria-labelledby="bug-title">
+      <h2 id="bug-title">Report Bug</h2>
+      <p class="sub">The call keeps running. Pick what went wrong.</p>
+      <div id="bug-cats" class="chip-row" role="radiogroup" aria-label="Issue category">
+        <button class="chip" type="button" data-cat="Model stuck / no reply" aria-pressed="false">Model stuck / no reply</button>
+        <button class="chip" type="button" data-cat="Clipped / misheard Hindi" aria-pressed="false">Clipped / misheard Hindi</button>
+        <button class="chip" type="button" data-cat="Slow response" aria-pressed="false">Slow response</button>
+        <button class="chip" type="button" data-cat="Wrong language" aria-pressed="false">Wrong language</button>
+        <button class="chip" type="button" data-cat="Repeated question" aria-pressed="false">Repeated question</button>
+        <button class="chip" type="button" data-cat="Other" aria-pressed="false">Other</button>
+      </div>
+      <textarea id="bug-note" placeholder="Quick note (e.g. stuck after saying operation)"></textarea>
+      <div class="bug-actions">
+        <button id="bug-save" class="text-btn" type="button">Save Bug &amp; Copy Debug Snapshot</button>
+        <button id="bug-close" class="ghost-btn" type="button">Close</button>
+      </div>
+      <p id="bug-confirm" class="bug-confirm" role="status" hidden></p>
+      <p id="bug-error" class="bug-error" role="alert" hidden></p>
+    </div>
+  </div>
   <script>
     (function () {
       const statusEl = document.getElementById("status");
@@ -306,6 +599,35 @@
       const engineNote = document.getElementById("engine-note");
       const avatarWrap = document.getElementById("avatar-wrap");
       const newCallBtn = document.getElementById("new-call");
+      const micMeter = document.getElementById("mic-meter");
+      const micLevel = document.getElementById("mic-level");
+      const nudgeBtn = document.getElementById("nudge-btn");
+      const bugBtn = document.getElementById("bug-btn");
+      const bugOverlay = document.getElementById("bug-overlay");
+      const bugCats = document.getElementById("bug-cats");
+      const bugNote = document.getElementById("bug-note");
+      const bugSave = document.getElementById("bug-save");
+      const bugClose = document.getElementById("bug-close");
+      const bugConfirm = document.getElementById("bug-confirm");
+      const bugError = document.getElementById("bug-error");
+      const hudToggle = document.getElementById("hud-toggle");
+      const hudEl = document.getElementById("hud");
+      const hudCall = document.getElementById("hud-call");
+      const hudCaller = document.getElementById("hud-caller");
+      const hudRole = document.getElementById("hud-role");
+      const hudModel = document.getElementById("hud-model");
+      const hudVoice = document.getElementById("hud-voice");
+      const hudConnect = document.getElementById("hud-connect");
+      const hudLastLat = document.getElementById("hud-last-lat");
+      const hudAvgLat = document.getElementById("hud-avg-lat");
+      const hudTurns = document.getElementById("hud-turns");
+      const hudTools = document.getElementById("hud-tools");
+      const hudNudges = document.getElementById("hud-nudges");
+      const hudAudio = document.getElementById("hud-audio");
+      const hudEvents = document.getElementById("hud-events");
+      const hudForm = document.getElementById("hud-form");
+      const hudText = document.getElementById("hud-text");
+      const hudSendNote = document.getElementById("hud-send-note");
 
       const WORKLET_SOURCE = [
         "class PcmCapture extends AudioWorkletProcessor {",
@@ -355,6 +677,19 @@
       let captionText = "";
       let socketOpened = false;
       let connectReject = null;
+      let userRole = "user";
+      let callerName = "";
+      let modelName = "";
+      let voiceName = "";
+      let lastTelemetry = null;
+      const recentEvents = [];
+      let userSpeaking = false;
+      let lastVoiceTs = 0;
+      let speechEndAt = 0;
+      let nudgeWatch = 0;
+      let micSmooth = 0;
+      let bugCategory = "";
+      let hudNoteTimer = 0;
 
       function setStatus(text) {
         statusEl.hidden = false;
@@ -462,28 +797,120 @@
         return new Uint8Array(buffer);
       }
 
-      function resampleLinear(input, inRate, outRate) {
-        if (!input || !input.length) return new Float32Array(0);
-        if (inRate === outRate) return input instanceof Float32Array ? input : new Float32Array(input);
-        const ratio = inRate / outRate;
-        const outLen = Math.max(1, Math.round(input.length / ratio));
-        const out = new Float32Array(outLen);
-        const last = input.length - 1;
-        for (let i = 0; i < outLen; i++) {
-          const pos = Math.min(i * ratio, last);
-          const i0 = Math.floor(pos);
-          const i1 = Math.min(i0 + 1, last);
-          const frac = pos - i0;
-          out[i] = input[i0] * (1 - frac) + input[i1] * frac;
+      function downsampleBuffer(buffer, sampleRate, outSampleRate) {
+        if (!buffer || !buffer.length) return new Float32Array(0);
+        if (outSampleRate === sampleRate) return buffer;
+        const ratio = sampleRate / outSampleRate;
+        const newLength = Math.round(buffer.length / ratio);
+        const result = new Float32Array(newLength);
+        let offsetResult = 0;
+        let offsetBuffer = 0;
+        while (offsetResult < result.length) {
+          const nextOffsetBuffer = Math.round((offsetResult + 1) * ratio);
+          let accum = 0, count = 0;
+          for (let i = offsetBuffer; i < nextOffsetBuffer && i < buffer.length; i++) {
+            accum += buffer[i];
+            count++;
+          }
+          result[offsetResult] = count > 0 ? (accum / count) : 0;
+          offsetResult++;
+          offsetBuffer = nextOffsetBuffer;
         }
-        return out;
+        return result;
+      }
+
+      function rmsOf(float32) {
+        if (!float32 || !float32.length) return 0;
+        let sum = 0;
+        for (let i = 0; i < float32.length; i++) {
+          const sample = float32[i];
+          sum += sample * sample;
+        }
+        return Math.sqrt(sum / float32.length);
+      }
+
+      function paintMic(level) {
+        const pct = Math.max(0, Math.min(100, Math.round((level / 0.12) * 100)));
+        micLevel.style.width = pct + "%";
+        micMeter.setAttribute("aria-valuenow", String(pct));
+      }
+
+      function updateMicLevel(rms) {
+        micSmooth = micSmooth * 0.5 + rms * 0.5;
+        paintMic(micSmooth);
+      }
+
+      function resetMicLevel() {
+        micSmooth = 0;
+        paintMic(0);
+      }
+
+      function refreshNudgeHighlight() {
+        const stuck = phase === "live"
+          && speechEndAt > 0
+          && activeSources.size === 0
+          && (Date.now() - speechEndAt) > 4000;
+        nudgeBtn.classList.toggle("hot", stuck);
+      }
+
+      function startNudgeWatch() {
+        if (nudgeWatch) return;
+        nudgeWatch = setInterval(refreshNudgeHighlight, 250);
+      }
+
+      function stopNudgeWatch() {
+        if (!nudgeWatch) return;
+        clearInterval(nudgeWatch);
+        nudgeWatch = 0;
+      }
+
+      function leaveLiveChrome() {
+        stopNudgeWatch();
+        nudgeBtn.hidden = true;
+        nudgeBtn.classList.remove("hot");
+        userSpeaking = false;
+        speechEndAt = 0;
+        resetMicLevel();
+      }
+
+      function emitSpeechEnd() {
+        speechEndAt = Date.now();
+        refreshNudgeHighlight();
+        if (phase !== "live" || !ws || ws.readyState !== WebSocket.OPEN) return;
+        ws.send(JSON.stringify({ type: "speech_end" }));
+      }
+
+      function trackSpeech(rms) {
+        if (phase !== "live") return;
+        const botPlaying = activeSources.size > 0;
+        const now = Date.now();
+        if (rms > 0.015 && !botPlaying) {
+          userSpeaking = true;
+          lastVoiceTs = now;
+          speechEndAt = 0;
+          nudgeBtn.classList.remove("hot");
+          return;
+        }
+        if (userSpeaking && !botPlaying && (now - lastVoiceTs) > 750) {
+          userSpeaking = false;
+          emitSpeechEnd();
+        } else if (botPlaying) {
+          userSpeaking = false;
+        }
+      }
+
+      function onMicFrame(float32) {
+        const rms = rmsOf(float32);
+        updateMicLevel(rms);
+        trackSpeech(rms);
+        sendPcm(float32);
       }
 
       function sendPcm(float32) {
         if (phase !== "live" || !ws || ws.readyState !== WebSocket.OPEN) return;
         if (ws.bufferedAmount > 262144) return;
         const inRate = captureCtx ? captureCtx.sampleRate : captureRate;
-        const down = resampleLinear(float32, inRate, captureRate);
+        const down = downsampleBuffer(float32, inRate, captureRate);
         if (!down.length) return;
         const pcm = floatToPcm16LE(down);
         ws.send(JSON.stringify({
@@ -528,8 +955,10 @@
         const src = playbackCtx.createBufferSource();
         src.buffer = audioBuffer;
         src.connect(playbackCtx.destination);
+        speechEndAt = 0;
+        nudgeBtn.classList.remove("hot");
         const now = playbackCtx.currentTime;
-        if (nextPlayTime < now + 0.03) nextPlayTime = now + 0.08;
+        nextPlayTime = Math.max(now, nextPlayTime);
         src.start(nextPlayTime);
         nextPlayTime += audioBuffer.duration;
         activeSources.add(src);
@@ -562,6 +991,85 @@
         captionText = mergeChunk(captionText, text);
         const who = role === "assistant" ? "SHISHU" : "You";
         captionEl.textContent = captionText ? (who + ": " + captionText) : "";
+      }
+
+      function dash(value) {
+        return value === 0 || value ? String(value) : "—";
+      }
+
+      function msText(value) {
+        if (value === 0 || (typeof value === "number" && isFinite(value))) return String(Math.round(value)) + " ms";
+        return "—";
+      }
+
+      function lastLatency(telemetry) {
+        if (!telemetry) return "—";
+        const samples = telemetry.turn_latencies_ms;
+        if (Array.isArray(samples) && samples.length) return msText(samples[samples.length - 1]);
+        if (telemetry.last_latency_ms != null) return msText(Number(telemetry.last_latency_ms));
+        return "—";
+      }
+
+      function eventClock(t) {
+        if (typeof t !== "number" || !isFinite(t)) return "";
+        const ms = t > 1e12 ? t : t * 1000;
+        const when = new Date(ms);
+        if (isNaN(when.getTime())) return String(t);
+        return pad(when.getHours()) + ":" + pad(when.getMinutes()) + ":" + pad(when.getSeconds());
+      }
+
+      function pushEvent(evt) {
+        if (!evt || typeof evt !== "object") return;
+        const prev = recentEvents[recentEvents.length - 1];
+        if (prev && prev.t === evt.t && prev.type === evt.type && prev.detail === evt.detail) return;
+        recentEvents.push(evt);
+        if (recentEvents.length > 10) recentEvents.splice(0, recentEvents.length - 10);
+      }
+
+      function renderHud() {
+        const telemetry = lastTelemetry || {};
+        hudCall.textContent = callId != null ? ("#" + callId) : "—";
+        hudCaller.textContent = callerName || "—";
+        hudRole.textContent = userRole || "—";
+        hudModel.textContent = modelName || "—";
+        hudVoice.textContent = voiceName || "—";
+        hudConnect.textContent = msText(telemetry.connect_ms);
+        hudLastLat.textContent = lastLatency(lastTelemetry);
+        hudAvgLat.textContent = msText(telemetry.avg_latency_ms);
+        hudTurns.textContent = dash(telemetry.user_turns) + " / " + dash(telemetry.bot_turns);
+        hudTools.textContent = dash(telemetry.tool_calls);
+        hudNudges.textContent = dash(telemetry.watchdog_nudges);
+        hudAudio.textContent = dash(telemetry.audio_chunks_in) + " / " + dash(telemetry.audio_chunks_out);
+        hudEvents.replaceChildren();
+        recentEvents.forEach(function (evt) {
+          const li = document.createElement("li");
+          const bits = [];
+          const clock = eventClock(evt && evt.t);
+          if (clock) bits.push(clock);
+          if (evt && evt.type) bits.push(evt.type);
+          if (evt && evt.detail) bits.push(evt.detail);
+          li.textContent = bits.join(" · ") || "event";
+          hudEvents.appendChild(li);
+        });
+      }
+
+      function applyConfig(cfg) {
+        if (!cfg) return;
+        if (cfg.role) userRole = cfg.role;
+        if (cfg.username) callerName = cfg.username;
+        const isAdmin = userRole === "admin";
+        hudToggle.hidden = !isAdmin;
+        if (isAdmin) hudEl.hidden = false;
+        renderHud();
+      }
+
+      function showHudNote(text) {
+        hudSendNote.textContent = text;
+        hudSendNote.hidden = false;
+        if (hudNoteTimer) clearTimeout(hudNoteTimer);
+        hudNoteTimer = setTimeout(function () {
+          hudSendNote.hidden = true;
+        }, 2200);
       }
 
       function stopCapture() {
@@ -614,15 +1122,26 @@
         if (!msg || typeof msg.type !== "string") return;
         if (msg.type === "session_started") {
           callId = msg.call_id;
+          if (msg.caller_name) callerName = msg.caller_name;
+          if (msg.user_role) userRole = msg.user_role;
+          if (msg.engine) modelName = msg.engine;
+          if (msg.voice) voiceName = msg.voice;
+          renderHud();
           if (phase === "live") setStatus("Listening...");
           startTimer();
         } else if (msg.type === "audio") {
           try { playPcm(msg.data, msg.sample_rate || 24000); } catch (err) { /* skip a bad chunk */ }
         } else if (msg.type === "clear") {
           flushPlayback();
+          speechEndAt = 0;
+          nudgeBtn.classList.remove("hot");
           if (phase === "live") setStatus("Listening...");
         } else if (msg.type === "transcript") {
           showCaption(msg.role, msg.text);
+        } else if (msg.type === "telemetry") {
+          lastTelemetry = msg.telemetry || {};
+          pushEvent(msg.last_event);
+          renderHud();
         } else if (msg.type === "call_completed") {
           showThanks(msg);
         } else if (msg.type === "error") {
@@ -635,6 +1154,7 @@
         if (phase === "summarizing") {
           phase = "error";
           waitEl.hidden = true;
+          leaveLiveChrome();
           setStatus("Tap Mic to Start Call in Hindi");
           showError("The summary did not arrive. Check the admin dashboard for this call.");
           armStartButton();
@@ -643,6 +1163,7 @@
         if (phase === "live" || phase === "connecting") {
           stopCapture();
           flushPlayback();
+          leaveLiveChrome();
           avatarWrap.classList.remove("live", "speaking");
           phase = "error";
           setStatus("Tap Mic to Start Call in Hindi");
@@ -690,14 +1211,7 @@
         micSource = captureCtx.createMediaStreamSource(micStream);
         silentGain = captureCtx.createGain();
         silentGain.gain.value = 0;
-        if (typeof captureCtx.createScriptProcessor === "function") {
-          processor = captureCtx.createScriptProcessor(2048, 1, 1);
-          processor.onaudioprocess = function (event) {
-            sendPcm(event.inputBuffer.getChannelData(0));
-          };
-          micSource.connect(processor);
-          processor.connect(silentGain);
-        } else if (captureCtx.audioWorklet) {
+        if (captureCtx.audioWorklet) {
           const blob = new Blob([WORKLET_SOURCE], { type: "application/javascript" });
           const url = URL.createObjectURL(blob);
           try {
@@ -707,10 +1221,17 @@
           }
           workletNode = new AudioWorkletNode(captureCtx, "pcm-capture");
           workletNode.port.onmessage = function (event) {
-            sendPcm(event.data);
+            onMicFrame(event.data);
           };
           micSource.connect(workletNode);
           workletNode.connect(silentGain);
+        } else if (typeof captureCtx.createScriptProcessor === "function") {
+          processor = captureCtx.createScriptProcessor(2048, 1, 1);
+          processor.onaudioprocess = function (event) {
+            onMicFrame(event.inputBuffer.getChannelData(0));
+          };
+          micSource.connect(processor);
+          processor.connect(silentGain);
         } else {
           throw new Error("This browser cannot capture microphone audio.");
         }
@@ -723,6 +1244,14 @@
         captionText = "";
         captionEl.textContent = "";
         callId = null;
+        modelName = "";
+        voiceName = "";
+        lastTelemetry = null;
+        recentEvents.length = 0;
+        userSpeaking = false;
+        lastVoiceTs = 0;
+        speechEndAt = 0;
+        renderHud();
         setStatus("Listening...");
         try {
           const configPromise = fetch("/api/config", {
@@ -746,6 +1275,7 @@
           const cfg = await res.json();
           if (phase !== "connecting") return;
           showEngine(chosenEngine(cfg.active_engine));
+          applyConfig(cfg);
           await wireMic();
           if (phase !== "connecting") {
             stopCapture();
@@ -755,6 +1285,8 @@
           if (phase !== "connecting") return;
           phase = "live";
           avatarWrap.classList.add("live");
+          nudgeBtn.hidden = false;
+          startNudgeWatch();
           setStatus("Listening...");
           startTimer();
           armEndButton();
@@ -763,6 +1295,7 @@
           stopCapture();
           closeSocket();
           flushPlayback();
+          leaveLiveChrome();
           avatarWrap.classList.remove("live", "speaking");
           if (playbackCtx) {
             playbackCtx.close();
@@ -785,6 +1318,7 @@
         stopCapture();
         flushPlayback();
         stopTimer();
+        leaveLiveChrome();
         avatarWrap.classList.remove("live", "speaking");
         if (!open) {
           phase = "idle";
@@ -810,6 +1344,7 @@
         stopCapture();
         flushPlayback();
         stopTimer();
+        leaveLiveChrome();
         callId = msg.call_id != null ? msg.call_id : callId;
         waitEl.hidden = true;
         stageEl.hidden = true;
@@ -820,6 +1355,7 @@
         thanksSubEl.textContent = bits.join(" · ");
         adminView.href = callId != null ? ("/admin?call=" + encodeURIComponent(callId)) : "/admin";
         thanksEl.hidden = false;
+        renderHud();
         clearError();
       }
 
@@ -828,12 +1364,17 @@
         stopCapture();
         flushPlayback();
         stopTimer();
+        leaveLiveChrome();
         if (playbackCtx) {
           playbackCtx.close();
           playbackCtx = null;
         }
         phase = "idle";
         callId = null;
+        modelName = "";
+        voiceName = "";
+        lastTelemetry = null;
+        recentEvents.length = 0;
         startedAt = 0;
         frozenDuration = "00:00";
         timerEl.textContent = "00:00";
@@ -847,7 +1388,89 @@
         avatarWrap.classList.remove("live", "speaking");
         setStatus("Tap Mic to Start Call in Hindi");
         armStartButton();
+        renderHud();
         clearError();
+      }
+
+      function closeBug() {
+        bugOverlay.hidden = true;
+      }
+
+      function openBug() {
+        bugConfirm.hidden = true;
+        bugError.hidden = true;
+        bugOverlay.hidden = false;
+      }
+
+      async function copyText(text) {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(text);
+          return;
+        }
+        const area = document.createElement("textarea");
+        area.value = text;
+        area.setAttribute("readonly", "");
+        area.style.position = "fixed";
+        area.style.left = "-9999px";
+        document.body.appendChild(area);
+        area.select();
+        const ok = document.execCommand("copy");
+        area.remove();
+        if (!ok) throw new Error("copy failed");
+      }
+
+      async function saveBug() {
+        bugConfirm.hidden = true;
+        bugError.hidden = true;
+        if (!bugCategory) {
+          bugError.textContent = "Pick a category.";
+          bugError.hidden = false;
+          return;
+        }
+        const payload = {
+          call_id: callId != null ? Number(callId) : 0,
+          category: bugCategory,
+          note: bugNote.value.trim(),
+          call_elapsed_sec: startedAt ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000)) : 0,
+          client_state: {
+            phase: phase,
+            engine: engine,
+            captureRate: captureRate,
+            captionText: captionText,
+            lastTelemetry: lastTelemetry,
+            recentEvents: recentEvents.slice()
+          }
+        };
+        const snapshot = JSON.stringify(payload, null, 2);
+        bugSave.disabled = true;
+        try {
+          const res = await fetch("/api/bugs", {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "Content-Type": "application/json", "Accept": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          if (!res.ok) {
+            bugError.textContent = res.status === 401
+              ? "Sign in again to save this bug. The call is still open."
+              : "Could not save the bug. The call is still open.";
+            bugError.hidden = false;
+            return;
+          }
+          let copied = true;
+          try {
+            await copyText(snapshot);
+          } catch (err) {
+            copied = false;
+          }
+          bugConfirm.textContent = copied ? "Saved. Snapshot copied." : "Saved. Could not copy the snapshot.";
+          bugConfirm.hidden = false;
+        } catch (err) {
+          bugError.textContent = "Could not save the bug. The call is still open.";
+          bugError.hidden = false;
+        } finally {
+          bugSave.disabled = false;
+        }
       }
 
       callBtn.addEventListener("click", function () {
@@ -866,6 +1489,52 @@
         if (phase === "connecting" || phase === "live") endCall();
       });
 
+      nudgeBtn.addEventListener("click", function () {
+        if (phase !== "live" || !ws || ws.readyState !== WebSocket.OPEN) return;
+        ws.send(JSON.stringify({ type: "nudge" }));
+        speechEndAt = 0;
+        nudgeBtn.classList.remove("hot");
+        setStatus("Nudging SHISHU...");
+      });
+
+      bugBtn.addEventListener("click", openBug);
+      bugClose.addEventListener("click", closeBug);
+      bugSave.addEventListener("click", saveBug);
+      bugOverlay.addEventListener("click", function (event) {
+        if (event.target === bugOverlay) closeBug();
+      });
+      bugCats.addEventListener("click", function (event) {
+        const chip = event.target.closest("button[data-cat]");
+        if (!chip || !bugCats.contains(chip)) return;
+        bugCategory = chip.getAttribute("data-cat") || "";
+        bugCats.querySelectorAll(".chip").forEach(function (btn) {
+          const on = btn === chip;
+          btn.classList.toggle("on", on);
+          btn.setAttribute("aria-pressed", on ? "true" : "false");
+        });
+      });
+      document.addEventListener("keydown", function (event) {
+        if (event.key === "Escape" && !bugOverlay.hidden) closeBug();
+      });
+
+      hudToggle.addEventListener("click", function () {
+        hudEl.hidden = !hudEl.hidden;
+        if (!hudEl.hidden) renderHud();
+      });
+
+      hudForm.addEventListener("submit", function (event) {
+        event.preventDefault();
+        const text = hudText.value.trim();
+        if (!text) return;
+        if (phase !== "live" || !ws || ws.readyState !== WebSocket.OPEN) {
+          showHudNote("Start the call before sending text.");
+          return;
+        }
+        ws.send(JSON.stringify({ type: "text", text: text }));
+        hudText.value = "";
+        showHudNote("Sent.");
+      });
+
       newCallBtn.addEventListener("click", resetForNewCall);
 
       fetch("/api/config", { credentials: "same-origin", headers: { "Accept": "application/json" } })
@@ -880,6 +1549,7 @@
         .then(function (cfg) {
           if (!cfg) return;
           showEngine(chosenEngine(cfg.active_engine));
+          applyConfig(cfg);
         })
         .catch(function () { /* the start button reports a real failure */ });
     })();

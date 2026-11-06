@@ -71,6 +71,8 @@
       line-height: 1.45;
     }
 
+    .field + .field { margin-top: 14px; }
+
     label {
       display: block;
       margin-bottom: 8px;
@@ -122,6 +124,13 @@
       outline-offset: 2px;
     }
 
+    .hint {
+      margin: 12px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
     .error {
       margin: 12px 0 0;
       padding: 10px 12px;
@@ -137,18 +146,26 @@
   <main class="card">
     <p class="mark">श</p>
     <h1>SHISHU — Pre-Consultation Voice Assistant</h1>
-    <p class="lede">Enter the passcode to open a Hindi screening call or the clinical dashboard.</p>
+    <p class="lede">Enter your name and the passcode to open a Hindi screening call or the clinical dashboard.</p>
     <form id="login-form">
-      <label for="passcode">Passcode</label>
-      <input id="passcode" name="passcode" type="password" autocomplete="current-password" required>
+      <div class="field">
+        <label for="username">Your Name (or admin for Testing Mode)</label>
+        <input id="username" name="username" type="text" autocomplete="name" placeholder="Enter your name (or admin)" required>
+      </div>
+      <div class="field">
+        <label for="passcode">Passcode</label>
+        <input id="passcode" name="passcode" type="password" autocomplete="current-password" required>
+      </div>
       <button id="continue" type="submit">Continue</button>
+      <p class="hint">Open call: any name + shishu2026. Testing / admin: username admin + admin passcode.</p>
       <p id="error" class="error" role="alert" hidden></p>
     </form>
   </main>
   <script>
     (function () {
       const form = document.getElementById("login-form");
-      const input = document.getElementById("passcode");
+      const usernameInput = document.getElementById("username");
+      const passcodeInput = document.getElementById("passcode");
       const button = document.getElementById("continue");
       const error = document.getElementById("error");
 
@@ -166,9 +183,16 @@
       form.addEventListener("submit", async function (event) {
         event.preventDefault();
         error.hidden = true;
-        const passcode = input.value.trim();
+        const username = usernameInput.value.trim();
+        const passcode = passcodeInput.value.trim();
+        if (!username) {
+          showError("Enter your name to continue.");
+          usernameInput.focus();
+          return;
+        }
         if (!passcode) {
           showError("Enter the passcode to continue.");
+          passcodeInput.focus();
           return;
         }
         button.disabled = true;
@@ -177,11 +201,11 @@
             method: "POST",
             credentials: "same-origin",
             headers: { "Content-Type": "application/json", "Accept": "application/json" },
-            body: JSON.stringify({ passcode: passcode })
+            body: JSON.stringify({ username: username, passcode: passcode })
           });
           if (res.status === 401) {
-            showError("That passcode was not accepted.");
-            input.select();
+            showError("That name or passcode was not accepted.");
+            passcodeInput.select();
             return;
           }
           if (!res.ok) {
@@ -196,7 +220,7 @@
         }
       });
 
-      input.focus();
+      usernameInput.focus();
     })();
   </script>
 </body>
