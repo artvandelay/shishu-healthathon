@@ -863,7 +863,7 @@ async def handle_openai_ws(
 
     settings = db.get_all_settings()
     live_model = _setting_text(settings, "openai_model", LIVE_MODEL)
-    voice = _setting_text(settings, "openai_voice", LIVE_VOICE)
+    voice = LIVE_VOICE
     backend_model = _setting_text(settings, "openai_backend_model", LIVE_BACKEND_MODEL)
     try:
         watchdog_timeout_sec = float(settings.get("watchdog_timeout_sec") or 4.0)

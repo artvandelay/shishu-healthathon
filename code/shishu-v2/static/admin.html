@@ -624,21 +624,13 @@
           </select>
         </label>
         <label>Gemini Voice
-          <select id="set-gemini-voice" name="gemini_voice">
-            <option>Kore</option>
-            <option>Aoede</option>
-            <option>Puck</option>
-            <option>Charon</option>
-            <option>Fenrir</option>
+          <select id="set-gemini-voice" name="gemini_voice" disabled>
+            <option value="Kore" selected>Kore (Fixed Female Voice)</option>
           </select>
         </label>
         <label>OpenAI Voice
-          <select id="set-openai-voice" name="openai_voice">
-            <option>marin</option>
-            <option>ash</option>
-            <option>coral</option>
-            <option>sage</option>
-            <option>verse</option>
+          <select id="set-openai-voice" name="openai_voice" disabled>
+            <option value="marin" selected>marin (Fixed Female Voice)</option>
           </select>
         </label>
         <label>OpenAI Backend Model
@@ -1273,8 +1265,8 @@
         return {
           active_engine: currentEngine(),
           gemini_model: document.getElementById("set-gemini-model").value,
-          gemini_voice: document.getElementById("set-gemini-voice").value,
-          openai_voice: document.getElementById("set-openai-voice").value,
+          gemini_voice: "Kore",
+          openai_voice: "marin",
           openai_backend_model: document.getElementById("set-openai-backend").value,
           vad_prefix_padding_ms: document.getElementById("set-vad-prefix").value,
           vad_silence_ms: document.getElementById("set-vad-silence").value,

@@ -24,3 +24,12 @@ this 5 stage flow is too much cognitive load
 
 also note how @data/SHISHU medical documents/Revised_triage_questions_Hindi_Roman.docx they are not just asking technical questions but asking simple to understand non clinical things like did they have to be kept in "kaach ka box" instead of nicu since they might know its called that so try to mimic this as much as possible for this iteration
 
+## 2026-11-06 — Intro permission to answer short/long & fixed voice
+
+Source: chat.
+
+in the intro can you explain a little bit more that they can answer question however they like short or long and always can ask clarifying questions when in doubt 
+
+if the voice is switched in admin then the prompt which has kore will not work? dont worry about voices actually just hard code it we dont need that flexibility and confion
+
+

@@ -62,6 +62,12 @@ def _init_db() -> None:
             (DEFAULT_SETTINGS["gemini_model"],),
         )
         cur.execute(
+            "UPDATE settings SET value = 'Kore' WHERE key = 'gemini_voice'",
+        )
+        cur.execute(
+            "UPDATE settings SET value = 'marin' WHERE key = 'openai_voice'",
+        )
+        cur.execute(
             """
             CREATE TABLE IF NOT EXISTS calls (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,

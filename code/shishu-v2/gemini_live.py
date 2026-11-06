@@ -125,8 +125,8 @@ def _session_settings(settings: dict) -> dict:
     start_low = settings.get("vad_start_sensitivity") == "LOW"
     end_low = settings.get("vad_end_sensitivity") == "LOW"
     return {
-        "model": settings.get("gemini_model") or "gemini-3.8-live",
-        "voice": settings.get("gemini_voice") or "Kore",
+        "model": settings.get("gemini_model") or "gemini-3.1-flash-live-preview",
+        "voice": "Kore",
         "prefix_padding_ms": int(float(settings.get("vad_prefix_padding_ms") or 300)),
         "silence_duration_ms": int(float(settings.get("vad_silence_ms") or 650)),
         "start_sens": (

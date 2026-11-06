@@ -114,6 +114,14 @@ class PromptAndCopyTests(unittest.TestCase):
         import db
         self.assertEqual(db.DEFAULT_SETTINGS["gemini_model"], "gemini-3.1-flash-live-preview")
 
+    def test_intro_permits_short_or_long_and_clarifications_and_hardcoded_voices(self):
+        import gemini_live, openai_live
+        intro = prompts.CLINICAL_CLUSTERS_REFERENCE
+        self.assertIn("chhota ya lamba", intro)
+        self.assertIn("bejhijhak poochh sakti hain", intro)
+        self.assertEqual(gemini_live._session_settings({})["voice"], "Kore")
+        self.assertEqual(openai_live.LIVE_VOICE, "marin")
+
     def test_logo_png_is_served(self):
         html = (_HERE / "static" / "call.html").read_text(encoding="utf-8")
         self.assertIn('src="/static/shishu-logo.png"', html)
