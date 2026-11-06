@@ -7,6 +7,10 @@ After the call, the doctor gets an English report.
 The mother gets Hindi questions for her next visit.
 
 The current service is https://shishu-production.up.railway.app.
+Open that address.
+Enter any name on the login page.
+For a call, enter the passcode `shishu2026`.
+For the admin page, enter the passcode `shishu2026admin`.
 
 ## Requirements
 
