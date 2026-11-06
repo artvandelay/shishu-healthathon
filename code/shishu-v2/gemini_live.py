@@ -86,7 +86,7 @@ _SET_PROGRESS_DECL = {
         "properties": {
             "group": {
                 "type": "STRING",
-                "description": "intro, story, birth, body, illness, pregnancy, family, or close",
+                "description": "intro, birth, body, illness, pregnancy, family, or close",
             }
         },
         "required": ["group"],

@@ -229,7 +229,7 @@ def _session_start_payload(live_model: str, voice: str, backend_model: str) -> d
                                 "properties": {
                                     "group": {
                                         "type": "string",
-                                        "description": "intro, story, birth, body, illness, pregnancy, family, or close",
+                                        "description": "intro, birth, body, illness, pregnancy, family, or close",
                                     }
                                 },
                                 "required": ["group"],

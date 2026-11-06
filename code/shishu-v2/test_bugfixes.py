@@ -98,12 +98,24 @@ class PromptAndCopyTests(unittest.TestCase):
         text = prompts.CLINICAL_CLUSTERS_REFERENCE
         self.assertNotIn("naam, aur bachche ka naam aur umar", text)
         self.assertNotIn("naal se zyada khoon aaya, ya", text)
-        self.assertIn("Aapka naam kya hai?", text)
-        self.assertIn("Kya naal se zyada khoon aaya?", text)
-        self.assertIn("Kya naal girne mein teen hafte se zyada lage?", text)
+        self.assertIn("Aapka naam bataiyega please?", text)
+        self.assertIn("Naal girne par zyada khoon aaya tha?", text)
+        self.assertIn("Naal girne mein 3 hafte se zyada lage the?", text)
+        self.assertIn("kaanch ka box", text)
+        self.assertNotIn("intro, story, birth", prompts.GEMINI_LIVE_SYSTEM_PROMPT)
         self.assertIn("SPOKEN OUTPUT", prompts.GEMINI_LIVE_SYSTEM_PROMPT)
         self.assertIn("SPOKEN OUTPUT", prompts.OPENAI_LIVE_VOICE_PROMPT)
         self.assertNotIn("The same recap in Roman Hindi", prompts.DOCTOR_MOTHER_SUMMARY_PROMPT)
+
+    def test_logo_png_is_served(self):
+        html = (_HERE / "static" / "call.html").read_text(encoding="utf-8")
+        self.assertIn('src="/static/shishu-logo.png"', html)
+        self.assertIn("background: #ffffff", html)
+        client = TestClient(app.app)
+        res = client.get("/static/shishu-logo.png")
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.headers["content-type"].startswith("image/png"))
+        self.assertGreater(len(res.content), 1000)
 
     def test_caption_filter_drops_planner_notes_and_other_scripts(self):
         leaked = (

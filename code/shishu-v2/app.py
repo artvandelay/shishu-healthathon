@@ -191,6 +191,11 @@ def shishu_logo() -> FileResponse:
     return FileResponse(_STATIC / "shishu-logo.jpg", media_type="image/jpeg")
 
 
+@app.get("/static/shishu-logo.png")
+def shishu_logo_png() -> FileResponse:
+    return FileResponse(_STATIC / "shishu-logo.png", media_type="image/png")
+
+
 @app.get("/")
 def call_page() -> FileResponse:
     return _page("call.html")
