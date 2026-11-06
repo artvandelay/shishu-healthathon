@@ -15,7 +15,7 @@ _db_lock = threading.Lock()
 
 DEFAULT_SETTINGS: dict[str, str] = {
     "active_engine": "gemini",
-    "gemini_model": "gemini-3.8-live",
+    "gemini_model": "gemini-3.1-flash-live-preview",
     "gemini_voice": "Kore",
     "openai_model": "gpt-live-1",
     "openai_voice": "marin",
@@ -57,6 +57,10 @@ def _init_db() -> None:
                 "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
                 (key, value),
             )
+        cur.execute(
+            "UPDATE settings SET value = ? WHERE key = 'gemini_model' AND value = 'gemini-3.8-live'",
+            (DEFAULT_SETTINGS["gemini_model"],),
+        )
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS calls (

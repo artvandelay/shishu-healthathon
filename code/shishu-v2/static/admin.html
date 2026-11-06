@@ -617,9 +617,10 @@
       <div class="settings-grid">
         <label>Gemini Model
           <select id="set-gemini-model" name="gemini_model">
-            <option value="gemini-3.8-live">gemini-3.8-live (Default)</option>
-            <option value="gemini-2.5-flash-native-audio-preview-12-2025">gemini-2.5-flash-native-audio-preview-12-2025 (No Proactive Drop)</option>
-            <option value="gemini-3.1-flash-live-preview">gemini-3.1-flash-live-preview</option>
+            <option value="gemini-3.1-flash-live-preview">gemini-3.1-flash-live-preview (Latest &amp; Recommended)</option>
+            <option value="gemini-2.5-flash-native-audio-latest">gemini-2.5-flash-native-audio-latest</option>
+            <option value="gemini-3.8-live">gemini-3.8-live</option>
+            <option value="gemini-2.5-flash-native-audio-preview-12-2025">gemini-2.5-flash-native-audio-preview-12-2025</option>
           </select>
         </label>
         <label>Gemini Voice
@@ -1253,7 +1254,7 @@
         const s = unwrapSettings(data);
         settingsCache = s;
         if (s.active_engine) paintEngine(s.active_engine);
-        ensureOption(document.getElementById("set-gemini-model"), s.gemini_model || "gemini-3.8-live");
+        ensureOption(document.getElementById("set-gemini-model"), s.gemini_model || "gemini-3.1-flash-live-preview");
         ensureOption(document.getElementById("set-gemini-voice"), s.gemini_voice || "Kore");
         ensureOption(document.getElementById("set-openai-voice"), s.openai_voice || "marin");
         ensureOption(document.getElementById("set-openai-backend"), s.openai_backend_model || "gpt-5.6-luna");

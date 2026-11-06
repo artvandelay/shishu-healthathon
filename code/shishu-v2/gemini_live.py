@@ -25,16 +25,15 @@ _INPUT_RATE = 16000
 _OUTPUT_RATE = 24000
 _WATCHDOG_INTERVAL_SEC = 0.5
 _GREETING = (
-    "Start the call. Do not read this note aloud. "
-    "Say the Hindi greeting and ask only her name."
+    "Greet the caller now in Hindi: Namaste, main Shishu hoon. Aapka naam bataiyega please?"
 )
 _WATCHDOG_NUDGE = (
-    "The mother is waiting. Do not read this note aloud. "
-    "Say one short Hindi question only."
+    "Speak as SHISHU in Hindi only. If your previous question was not clearly answered, "
+    "gently repeat or clarify that same question. Never answer for the mother."
 )
 _MANUAL_NUDGE = (
-    "The mother is waiting. Do not read this note aloud. "
-    "Say one short Hindi question only."
+    "Speak as SHISHU in Hindi only. If your previous question was not clearly answered, "
+    "gently repeat or clarify that same question. Never answer for the mother."
 )
 _FINDING_RESULT = "ok"
 

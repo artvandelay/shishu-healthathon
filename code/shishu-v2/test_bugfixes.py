@@ -103,9 +103,16 @@ class PromptAndCopyTests(unittest.TestCase):
         self.assertIn("Naal girne mein 3 hafte se zyada lage the?", text)
         self.assertIn("kaanch ka box", text)
         self.assertNotIn("intro, story, birth", prompts.GEMINI_LIVE_SYSTEM_PROMPT)
+        self.assertIn("NEVER speak Spanish", prompts.GEMINI_LIVE_SYSTEM_PROMPT)
+        self.assertIn("NEVER ANSWER YOUR OWN QUESTIONS", prompts.GEMINI_LIVE_SYSTEM_PROMPT)
+        self.assertIn("CLARIFICATION POLICY", prompts.GEMINI_LIVE_SYSTEM_PROMPT)
         self.assertIn("SPOKEN OUTPUT", prompts.GEMINI_LIVE_SYSTEM_PROMPT)
         self.assertIn("SPOKEN OUTPUT", prompts.OPENAI_LIVE_VOICE_PROMPT)
         self.assertNotIn("The same recap in Roman Hindi", prompts.DOCTOR_MOTHER_SUMMARY_PROMPT)
+
+    def test_default_gemini_model_is_31_flash_live(self):
+        import db
+        self.assertEqual(db.DEFAULT_SETTINGS["gemini_model"], "gemini-3.1-flash-live-preview")
 
     def test_logo_png_is_served(self):
         html = (_HERE / "static" / "call.html").read_text(encoding="utf-8")
