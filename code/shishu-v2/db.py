@@ -300,7 +300,13 @@ def record_finding_db(
         prev_positive = isinstance(prev, dict) and (
             prev.get("is_red_flag") or prev.get("status") == "positive"
         )
-        if prev_positive and not is_red_flag and status != "positive":
+        keep_prev_mother_name = (
+            domain == "profile_mother_name"
+            and not _person_name_detail(detail)
+            and isinstance(prev, dict)
+            and _person_name_detail(str(prev.get("detail") or ""))
+        )
+        if keep_prev_mother_name or (prev_positive and not is_red_flag and status != "positive"):
             pass
         elif prev_positive and status == "positive" and detail and detail not in str(prev.get("detail") or ""):
             findings[domain] = {

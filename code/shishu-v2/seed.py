@@ -42,19 +42,14 @@ Mother and father were not related before marriage. A previous son died at 5 mon
 No NICU stay, no neonatal shock, no developmental regression, no organomegaly, no transfusion, no easy bruising, no consanguinity, and no drowsiness, vomiting, or fits when a meal is skipped.
 """
 
-_MOTHER_SHILPA = """Shilpa ji, aapke 7 saal ke bete Aarav ki jo baat aapne batayi, woh maine doctor ke liye note kar li hai.
+_MOTHER_SHILPA = """अगली बार जब आप डॉक्टर या स्वास्थ्य कार्यकर्ता (ASHA/ANM दीदी) से मिलें, तो ये सवाल ज़रूर पूछें:
 
-Janm: Aarav 9 mahine mein normal delivery se paida hua. NICU ki zaroorat nahi padi. Janam ke baad peeliya (jaundice) hui aur woh 3 din neeli roshni (phototherapy) par rahe. Naal 3 hafte se pehle gir gayi.
+1. जन्म के समय बच्चे को पीलिया के लिए 3 दिन नीली रोशनी (phototherapy) में रखना पड़ा था और सुनने-देखने की जाँच नहीं हुई थी — क्या अभी कोई जाँच ज़रूरी है?
+2. गिरने पर बच्चे के घुटने में सूजन आ जाती है जो 5–7 दिन में ठीक होती है — कृपया देखकर बताएँ कि क्या इसके लिए खून या जोड़ों की कोई जाँच करवानी चाहिए?
+3. प्रेग्नेंसी के समय से मुझे हाई बीपी और थायरॉइड की दवाई चल रही है और हमारा थैलेसीमिया टेस्ट नहीं हुआ है — मेरी और बच्चे की सेहत के लिए अभी कौन-सी जाँच करवानी चाहिए?
+4. हमारे परिवार में पहले एक बच्चा 5 महीने की उम्र में दौरे (फिट्स) से गुजर गया था — क्या इस बच्चे या आगे की देखभाल के लिए हमें डॉक्टर से कोई विशेष सलाह या जाँच पूछनी चाहिए?
 
-Shareer aur badhna: baithna, chalna aur bolna doosre bachchon ki tarah samay par hua. Koi purani aadat ya skill khoi nahi. Pet bada nahi ho raha. Khoon chadhane ki zaroorat nahi padi.
-
-Ghutne: girne par ghutne mein sujan aati hai, jo 5 se 7 din mein apne aap theek ho jaati hai. Zyada khoon nahi behata, aur aasani se neele nishan nahi padte.
-
-Garbh: pregnancy mein high BP aur thyroid tha. Delivery ke baad bhi dawai chal rahi hai. Scan normal rahe. Thalassemia test nahi hua. Delivery normal rahi.
-
-Parivaar: aap aur aapke pati shaadi se pehle rishtedaar nahi the. Aapka ek beta 5 mahine ki umar mein jhatke (fits) se guzar gaya. Sasural mein BP ki baat hai.
-
-Yeh sab batane ke liye dhanyavaad. Aapne jo bataaya, usmein se kuch baaton ki jaanch doctor ya health worker se karwaana achha rahega. Ho sakta hai yeh kuch gambheer na ho, lekin pakka kar lena behtar hai.
+नोट: ये सवाल आपकी अगली विज़िट में डॉक्टर या स्वास्थ्य कार्यकर्ता (ASHA/ANM दीदी) से चर्चा के लिए हैं। यह किसी बीमारी की पुष्टि (डायग्नोसिस) नहीं है — केवल डॉक्टर ही जाँच करके सही सलाह दे सकते हैं।
 """
 
 _DOCTOR_GEETA = """### Patient Profile & Chief Complaint
@@ -82,17 +77,13 @@ Parents were not related before marriage. No loss of a child. No infant death un
 Term hospital birth, no NICU, no phototherapy, no bleeding or joint swelling, no regression, no organomegaly, no transfusion, no consanguinity, no infant death, and no metabolic fasting crisis.
 """
 
-_MOTHER_GEETA = """Geeta ji, aapki 6 saal ki beti Ananya ke baare mein jo aapne bataya, woh maine doctor ke liye note kar liya hai.
+_MOTHER_GEETA = """अगली बार जब आप डॉक्टर या स्वास्थ्य कार्यकर्ता (ASHA/ANM दीदी) से मिलें, तो ये सवाल ज़रूर पूछें:
 
-Janm: Ananya 9 mahine mein hospital mein normal delivery se paida hui. NICU ki zaroorat nahi padi. Peeliya ke liye neeli roshni nahi chahiye padi. Naal se zyada khoon nahi bahaa, aur naal 3 hafte ke andar gir gayi. BCG ka nishan haath par nahi dikhta. BCG bachche ko janam ke baad lagayi jaane wali ek vaccine hai.
+1. बच्ची के हाथ पर BCG के टीके का निशान नहीं दिख रहा है और जन्म पर सुनने-देखने की जाँच नहीं हुई थी — कृपया टीकाकरण कार्ड देखकर बताएँ कि क्या कोई टीका या सामान्य जाँच बाकी है?
+2. क्या मुझे और मेरे पति को थैलेसीमिया या खून की किसी सामान्य जाँच के बारे में डॉक्टर से सलाह लेनी चाहिए?
+3. मेरी 6 साल की बच्ची की उम्र के हिसाब से उसका वज़न, लंबाई और खान-पान ठीक है या हमें किन बातों का ध्यान रखना चाहिए?
 
-Badhna: baithna, chalna aur bolna der se nahi hua. Koi skill khoi nahi. Pet bada nahi ho raha. Ghutne mein sujan nahi aati. Khoon chadhane ki zaroorat nahi padi. Baar-baar hospital nahi jaana pada.
-
-Garbh: pregnancy mein BP high tha, delivery ke baad theek ho gaya. Sugar ya thyroid ki baat nahi hai. Scan normal rahe. Thalassemia test nahi hua. Thalassemia ek aisi sthiti hai jismein khoon theek se nahi banta, aur iska test pehle se ho sakta hai. Doctor aapko bata denge ki test ki zaroorat hai ya nahi.
-
-Parivaar: aap aur pati shaadi se pehle rishtedaar nahi the. Koi bachcha chhote umar mein nahi guzra. Jhatke ki baat nahi hai.
-
-Jawaab dene ke liye dhanyavaad. Aapne jo bataaya, woh sab maine doctor ke liye note kar liya hai.
+नोट: इस बातचीत में कोई तुरंत चिंताजनक बात सामने नहीं आई है। ये सवाल आपकी अगली सामान्य विज़िट में डॉक्टर या स्वास्थ्य कार्यकर्ता (ASHA/ANM दीदी) से पूछने के लिए हैं।
 """
 
 _TURNS_SHILPA = [

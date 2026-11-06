@@ -701,6 +701,7 @@
       let userSpeaking = false;
       let lastVoiceTs = 0;
       let speechEndAt = 0;
+      let lastBotPlayEndAt = 0;
       let nudgeWatch = 0;
       let micSmooth = 0;
       let bugCategory = "";
@@ -888,6 +889,10 @@
         resetMicLevel();
       }
 
+      function isBotPlaying() {
+        return activeSources.size > 0 || (playbackCtx && playbackCtx.currentTime < nextPlayTime);
+      }
+
       function emitSpeechEnd() {
         speechEndAt = Date.now();
         refreshNudgeHighlight();
@@ -898,14 +903,16 @@
       function trackSpeech(rms) {
         if (phase !== "live") return;
         const now = Date.now();
-        if (rms > 0.015) {
+        const echoWindow = isBotPlaying() || (now - lastBotPlayEndAt) < 300;
+        const threshold = echoWindow ? 0.065 : 0.015;
+        if (rms > threshold) {
           userSpeaking = true;
           lastVoiceTs = now;
           speechEndAt = 0;
           nudgeBtn.classList.remove("hot");
           return;
         }
-        if (userSpeaking && (now - lastVoiceTs) > 750) {
+        if (userSpeaking && !isBotPlaying() && (now - lastVoiceTs) > 750) {
           userSpeaking = false;
           emitSpeechEnd();
         }
@@ -924,7 +931,8 @@
         const inRate = captureCtx ? captureCtx.sampleRate : captureRate;
         const down = downsampleBuffer(float32, inRate, captureRate);
         if (!down.length) return;
-        const pcm = floatToPcm16LE(down);
+        const muteEcho = (isBotPlaying() || (Date.now() - lastBotPlayEndAt) < 250) && !userSpeaking;
+        const pcm = floatToPcm16LE(muteEcho ? new Float32Array(down.length) : down);
         ws.send(JSON.stringify({
           type: "audio",
           data: bytesToBase64(pcm),
@@ -979,6 +987,7 @@
         src.onended = function () {
           activeSources.delete(src);
           if (activeSources.size === 0 && phase === "live") {
+            lastBotPlayEndAt = Date.now();
             avatarWrap.classList.remove("speaking");
             setStatus("Listening...");
           }
@@ -1377,7 +1386,7 @@
           if (phase === "summarizing") {
             showThanks({
               call_id: callId,
-              summary_mother: "Call ended. If the written summary is not here yet, open Admin and refresh this call."
+              summary_mother: "अगली बार जब आप डॉक्टर या स्वास्थ्य कार्यकर्ता (ASHA/ANM दीदी) से मिलें, तो ये सवाल ज़रूर पूछें:\n\n1. मेरे बच्चे की उम्र के हिसाब से उसका वज़न, लंबाई और सीखना-बढ़ना (बैठना, चलना, बोलना) ठीक चल रहा है या नहीं?\n2. बच्चे के सभी ज़रूरी टीके (टीकाकरण कार्ड के अनुसार, जैसे BCG) और सुनने-देखने की सामान्य जाँच पूरी है या कोई अगला टीका बाकी है?\n3. बच्चे के रोज़ के खान-पान और सेहत के लिए अभी मुझे किन बातों का ध्यान रखना चाहिए, और किन लक्षणों के दिखने पर तुरंत डॉक्टर या स्वास्थ्य कार्यकर्ता को दिखाना चाहिए?\n\nनोट: ये सवाल आपकी अगली विज़िट में डॉक्टर या स्वास्थ्य कार्यकर्ता (ASHA/ANM दीदी) से पूछने के लिए हैं। यह किसी बीमारी की पुष्टि (डायग्नोसिस) नहीं है।"
             });
           }
         }, 20000);

@@ -1,7 +1,0 @@
-fastapi
-uvicorn[standard]
-python-multipart
-python-dotenv
-google-genai
-twilio
-audioop-lts; python_version >= "3.13"

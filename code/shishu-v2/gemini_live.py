@@ -23,7 +23,7 @@ from prompts import (
     clean_assistant_caption,
     clean_user_caption,
 )
-from summarizer import generate_call_summaries
+from summarizer import default_mother_questions, generate_call_summaries
 
 _ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 load_dotenv(_ENV_PATH)
@@ -129,6 +129,7 @@ class _TurnState:
         self.reconnect_requested = False
         self.last_user_text = ""
         self.time_cue_sent = False
+        self.speech_end_waiting = False
 
 
 class _SessionProxy:
@@ -375,6 +376,7 @@ def _arm_user_turn(state: _TurnState, telemetry: dict) -> None:
         telemetry["user_turns"] += 1
         state.nudges_for_current_turn = 0
     state.awaiting_bot_reply = True
+    state.speech_end_waiting = False
     state.last_user_turn_ts = time.time()
     state.bot_replied_since_user = False
     _caller_heard(state, telemetry)
@@ -385,6 +387,31 @@ _MARRIAGE_DETAIL_RE = re.compile(
     r"\b(married|marriage|unmarried|shaadi)\b",
     re.I,
 )
+_CHILDREN_DETAIL_RE = re.compile(
+    r"\b(children|child|kids|years?\s+old|months?\s+old|saal|mahine|beta|beti|son|daughter)\b",
+    re.I,
+)
+_NO_MORE_USER_RE = re.compile(
+    r"^\s*(?:नहीं|नही|ना|बस|बस इतना ही|और कुछ नहीं|कुछ नहीं|nahi|no|bas|nothing)(?:\s*[.,!?;:।].*|\s+.*)?$",
+    re.I,
+)
+_VALID_DOMAINS = {
+    "profile_mother_name",
+    "profile_child_name",
+    "profile_child_age",
+    "profile_child_gender",
+    "chief_complaint",
+    "birth_nicu",
+    "milestones",
+    "bleeding_joints",
+    "metabolic_fasting",
+    "infections",
+    "pregnancy",
+    "consanguinity",
+    "family_infant_death",
+    "family_history",
+    "coverage",
+}
 _TOPIC_AS_DOMAIN = {
     "intro_name": "profile_mother_name",
     "intro_children": "profile_child_age",
@@ -392,17 +419,25 @@ _TOPIC_AS_DOMAIN = {
 
 
 def _normalize_finding(domain: str, detail: str, raw_topics: list) -> tuple[str, list]:
-    """A checklist id in domain still counts as covered, and is not a profile field."""
+    """A checklist id in domain still counts as covered, without erasing valid clinical domains."""
     topics = list(raw_topics)
-    if domain in checklist._BY_ID or domain in checklist.GROUPS:
+    if domain == "birth_nicu" and not topics:
+        topics.append("birth_nicu")
+    elif domain not in _VALID_DOMAINS and (domain in checklist._BY_ID or domain in checklist.GROUPS):
         if domain not in topics:
             topics.append(domain)
         domain = _TOPIC_AS_DOMAIN.get(domain, "coverage")
     marriage = "intro_married" in topics or bool(_MARRIAGE_DETAIL_RE.search(detail or ""))
-    if domain == "profile_mother_name" and marriage and "intro_name" not in topics:
-        domain = "coverage"
-        if "intro_married" not in topics:
-            topics.append("intro_married")
+    children_info = "intro_children" in topics or bool(_CHILDREN_DETAIL_RE.search(detail or ""))
+    if domain == "profile_mother_name" and "intro_name" not in topics:
+        if marriage:
+            domain = "coverage"
+            if "intro_married" not in topics:
+                topics.append("intro_married")
+        elif children_info:
+            domain = "profile_child_age"
+            if "intro_children" not in topics:
+                topics.append("intro_children")
     return domain, topics
 
 
@@ -532,6 +567,18 @@ async def _answer_function_calls(
             )
             if name_invalid:
                 raw_topics = [t for t in raw_topics if t != "intro_name"]
+            open_capture_hold = False
+            if (
+                "close_anything_else" in raw_topics
+                and not telemetry.get("open_capture_asked_more")
+                and domain == "chief_complaint"
+                and status in ("positive", "info")
+                and (last_user_text or "").strip()
+                and not _NO_MORE_USER_RE.match((last_user_text or "").strip())
+            ):
+                telemetry["open_capture_asked_more"] = True
+                raw_topics = [t for t in raw_topics if t != "close_anything_else"]
+                open_capture_hold = True
             checklist.mark(coverage, raw_topics)
             if domain and domain != "coverage" and not (name_invalid and domain == "profile_mother_name"):
                 db.record_finding_db(call_id, domain, status, detail, is_red_flag)
@@ -549,7 +596,16 @@ async def _answer_function_calls(
             label = checklist.progress_label(coverage)
             telemetry["progress_group"] = label
             await _send_json(ws, ws_lock, {"type": "progress", "group": label})
-            note = checklist.NAME_MISSING_NOTE if name_invalid else checklist.tool_note(coverage)
+            if name_invalid:
+                note = checklist.NAME_MISSING_NOTE
+            elif open_capture_hold:
+                note = (
+                    "Saved her concern for the doctor. Acknowledge it warmly in Hindi and ask ONLY "
+                    "'Aur kuch batana chahengi?' then STOP speaking and wait for her reply. "
+                    "Do NOT speak the closing yet. Keep your same warm female voice (Kore)."
+                )
+            else:
+                note = checklist.tool_note(coverage)
             body = {"result": "ok", "note": note}
             logged.append(domain or "record_finding")
         else:
@@ -605,6 +661,7 @@ async def _on_bot_audio(
             telemetry["turn_latencies_ms"].append(latency_ms)
         state.nudges_for_current_turn = 0
     state.awaiting_bot_reply = False
+    state.speech_end_waiting = False
     state.bot_replied_since_user = True
     state.bot_speaking = True
     recorder.add_bot_pcm(pcm, rate)
@@ -877,9 +934,19 @@ async def _watchdog_loop(
                 continue
             if state.bot_replied_since_user or state.last_user_turn_ts <= 0:
                 continue
+            effective_timeout = (
+                min(watchdog_timeout_sec, 3.5)
+                if state.speech_end_waiting
+                else watchdog_timeout_sec
+            )
             if state.nudges_for_current_turn >= 2:
+                if time.time() - state.last_user_turn_ts >= effective_timeout:
+                    state.awaiting_bot_reply = False
+                    state.speech_end_waiting = False
+                    if state.quiet_from <= 0:
+                        state.quiet_from = time.time()
                 continue
-            if time.time() - state.last_user_turn_ts < watchdog_timeout_sec:
+            if time.time() - state.last_user_turn_ts < effective_timeout:
                 continue
             state.nudges_for_current_turn += 1
             telemetry["watchdog_nudges"] += 1
@@ -977,7 +1044,13 @@ async def _browser_loop(
                     return
             elif kind == "speech_end":
                 _cancel_silence_close(state, telemetry)
-                if not state.awaiting_bot_reply and not state.bot_speaking:
+                if not state.bot_speaking:
+                    if not state.awaiting_bot_reply:
+                        state.awaiting_bot_reply = True
+                        state.speech_end_waiting = True
+                        state.last_user_turn_ts = time.time()
+                        state.bot_replied_since_user = False
+                        state.nudges_for_current_turn = 0
                     state.quiet_from = time.time()
                 try:
                     db.append_call_event(call_id, "speech_end", "")
@@ -1089,6 +1162,8 @@ async def _finalize(
             telemetry,
             "Post-call summary failed",
         )
+    if not summary_mother.strip():
+        summary_mother = default_mother_questions(merged_findings, red_flags)
 
     if telemetry is not None:
         doctor_note, mother_note = checklist.incomplete_notes(

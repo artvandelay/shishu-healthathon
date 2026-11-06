@@ -47,20 +47,20 @@ TOPICS: tuple[dict, ...] = (
     {"id": "preg_transfusion", "group": "pregnancy", "need": "blood transfusion in pregnancy, which pregnancy and which month", "words": "pregnancy mein khoon chadhana, kaunsa mahina"},
     {"id": "preg_delivery", "group": "pregnancy", "need": "delivery went without problems", "words": "delivery bina problem ke"},
     {"id": "fam_related", "group": "family", "need": "she and her husband were related before marriage", "words": "shaadi se pehle rishtedaar, cousin, ek hi khaandaan"},
-    {"id": "fam_miscarriage", "group": "family", "need": "miscarriage or abortion", "words": "garbh gira, garbh girwaana pada"},
-    {"id": "fam_infant_death", "group": "family", "need": "a child in the family died before 1 year, and why", "words": "ek saal se kam umar mein guzar gaya"},
-    {"id": "fam_fits_delay", "group": "family", "need": "someone in the family has fits, late milestones, or lost skills", "words": "parivaar mein jhatke, der se seekha, seekha hua bhool gaya"},
-    {"id": "fam_blind", "group": "family", "need": "blindness in the family", "words": "andhapan"},
-    {"id": "fam_deaf", "group": "family", "need": "poor or no hearing in the family", "words": "kam sunaai deta, bilkul nahi"},
-    {"id": "fam_transfusion", "group": "family", "need": "someone in the family needs blood transfusions", "words": "parivaar mein khoon chadhana"},
-    {"id": "fam_bleeding", "group": "family", "need": "someone in the family bleeds too much", "words": "zyada khoon behne ki problem"},
-    {"id": "fam_cancer", "group": "family", "need": "cancer in a child or anyone in the family", "words": "cancer"},
-    {"id": "fam_heart", "group": "family", "need": "heart disease in the family", "words": "dil ki kharaabi"},
-    {"id": "fam_kidney", "group": "family", "need": "kidney disease in the family", "words": "kidney ya gurde ki bimaari"},
-    {"id": "fam_bp_stroke", "group": "family", "need": "high BP, high cholesterol or stroke at a young age", "words": "kam umar mein BP, cholesterol, lakwa"},
-    {"id": "fam_maternal_side", "group": "family", "need": "on the mother's side: heavy bleeding, repeated infections, or dry itchy skin patches", "words": "maa ki taraf, zyada khoon, baar baar infection, khujli wale sookhe dhabbe"},
-    {"id": "fam_lumps", "group": "family", "need": "someone in the family has swellings or lumps on the body", "words": "badan pe sujan ya gaanthein"},
-    {"id": "fam_same_problem", "group": "family", "need": "only if any family answer was yes: someone has the same problem as her child", "words": "aapke bachche jaisa same problem", "optional": True},
+    {"id": "fam_miscarriage", "group": "family", "need": "miscarriage or abortion", "words": "aapka kabhi garbh gira, ya garbh girwaana pada"},
+    {"id": "fam_infant_death", "group": "family", "need": "a baby/child in the family died before 1 year, and why", "words": "parivaar mein kisi chhote bachche ka ek saal se kam umar mein guzar jaana"},
+    {"id": "fam_fits_delay", "group": "family", "need": "any child or adult in the family has fits, late milestones, or lost skills", "words": "parivaar mein kisi bachche ya bade ko jhatke, der se seekhna, ya seekha hua bhool jaana"},
+    {"id": "fam_blind", "group": "family", "need": "blindness in any child or adult in the family (not from old age)", "words": "parivaar mein kisi bachche ya bade ko bachpan ya kam umar se andhapan"},
+    {"id": "fam_deaf", "group": "family", "need": "poor or no hearing in any child or adult in the family (not from old age)", "words": "parivaar mein kisi bachche ya bade ko kam umar se kam sunaai dena ya bilkul na sunaai dena"},
+    {"id": "fam_transfusion", "group": "family", "need": "any child or adult in the family needs blood transfusions", "words": "parivaar mein kisi bachche ya bade ko baar baar khoon chadhana"},
+    {"id": "fam_bleeding", "group": "family", "need": "any child or adult in the family bleeds too much", "words": "parivaar mein kisi bachche ya bade ko zyada khoon behne ki problem"},
+    {"id": "fam_cancer", "group": "family", "need": "cancer in any child or adult in the family", "words": "parivaar mein kisi bachche ya bade ko cancer"},
+    {"id": "fam_heart", "group": "family", "need": "heart disease in any child or adult in the family", "words": "parivaar mein kisi bachche ya bade ko dil ki bimaari"},
+    {"id": "fam_kidney", "group": "family", "need": "kidney disease in any child or adult in the family", "words": "parivaar mein kisi bachche ya bade ko kidney ya gurde ki bimaari"},
+    {"id": "fam_bp_stroke", "group": "family", "need": "high BP, high cholesterol or stroke in any family member under 40-50 years of age", "words": "parivaar mein 40-50 saal se kam umar ke kisi bade ya bachche ko BP, cholesterol, ya lakwa"},
+    {"id": "fam_maternal_side", "group": "family", "need": "on the mother's side (maike mein kisi bachche ya bade ko): heavy bleeding, repeated infections, or dry itchy skin patches", "words": "maa ki taraf (maike mein) kisi bachche ya bade ko zyada khoon, baar baar infection, ya khujli wale sookhe dhabbe"},
+    {"id": "fam_lumps", "group": "family", "need": "any child or adult in the family has swellings or lumps on the body", "words": "parivaar mein kisi bachche ya bade ke badan pe sujan ya gaanthein"},
+    {"id": "fam_same_problem", "group": "family", "need": "only if any family answer was yes: someone has the same problem as her child", "words": "parivaar mein kisi bachche ya bade ko aapke bachche jaisi same problem", "optional": True},
     {"id": "close_anything_else", "group": "close", "need": "anything else she wants to tell the doctor", "words": "iske alawa kuch aur batana hai"},
 )
 
@@ -109,13 +109,16 @@ def tool_note(coverage: list) -> str:
     left = open_topics(coverage)
     if not left:
         return (
-            "All topics are covered. Speak the full closing now, then call end_call. "
-            "Do not read this note aloud."
+            "All topics are covered. Speak the full closing now in your same warm female voice (Kore) in Hindi, "
+            "then call end_call. Do not read this note aloud."
         )
-    nxt = "; ".join(f"{t['id']} = {t['need']} (her words: {t['words']})" for t in left[:2])
+    nxt = "; ".join(f"{t['id']} (Hindi: {t['words']} — {t['need']})" for t in left[:2])
     return (
         f"Saved. Next open topics: {nxt}. If her last answer was unclear, clarify it first. "
-        "Otherwise ask the next open topic as one short Hindi question. Do not read this note aloud."
+        "Otherwise ask ONLY the first open topic as one short Hindi question using the Hindi phrasing (never speak English words from this note). "
+        "Keep your exact same warm female voice (Kore) and pitch — never shift to a male voice. "
+        "If she has more than one child, say 'aapke kisi bhi bachche ko'; in family topics, explicitly say 'kisi bachche ya bade ko'. "
+        "Do not read this note aloud."
     )
 
 

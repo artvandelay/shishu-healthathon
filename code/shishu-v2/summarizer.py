@@ -341,6 +341,89 @@ _MOTHER_NAME_SENTENCE_RE = re.compile(
     r"^\s*मेरा\s+नाम\s+([^\s।,]+(?:\s+[^\s।,]+)?)\s+है\s*[।,.!?]*\s*"
 )
 
+MOTHER_QUESTIONS_HEADING = (
+    "अगली बार जब आप डॉक्टर या स्वास्थ्य कार्यकर्ता (ASHA/ANM दीदी) से मिलें, तो ये सवाल ज़रूर पूछें:"
+)
+MOTHER_FLAG_FOOTER = (
+    "नोट: ये सवाल आपकी अगली विज़िट में डॉक्टर या स्वास्थ्य कार्यकर्ता (ASHA/ANM दीदी) से चर्चा के लिए हैं। "
+    "यह किसी बीमारी की पुष्टि (डायग्नोसिस) नहीं है — केवल डॉक्टर ही जाँच करके सही सलाह दे सकते हैं।"
+)
+MOTHER_ROUTINE_FOOTER = (
+    "नोट: इस बातचीत में कोई तुरंत चिंताजनक बात सामने नहीं आई है। "
+    "ये सवाल आपकी अगली सामान्य विज़िट में डॉक्टर या स्वास्थ्य कार्यकर्ता (ASHA/ANM दीदी) से पूछने के लिए हैं।"
+)
+
+_DEFAULT_MOTHER_QUESTIONS: tuple[str, ...] = (
+    "मेरे बच्चे की उम्र के हिसाब से उसका वज़न, लंबाई और सीखना-बढ़ना (बैठना, चलना, बोलना) ठीक चल रहा है या नहीं?",
+    "बच्चे के सभी ज़रूरी टीके (टीकाकरण कार्ड के अनुसार, जैसे BCG) और सुनने-देखने की सामान्य जाँच पूरी है या कोई अगला टीका बाकी है?",
+    "बच्चे के रोज़ के खान-पान और सेहत के लिए अभी मुझे किन बातों का ध्यान रखना चाहिए, और किन लक्षणों के दिखने पर तुरंत डॉक्टर या स्वास्थ्य कार्यकर्ता को दिखाना चाहिए?",
+    "क्या परिवार या प्रेग्नेंसी की सामान्य सेहत के लिए खून की कमी (एनीमिया) या थैलेसीमिया जैसी किसी सामान्य जाँच की ज़रूरत है?",
+)
+
+_FLAG_DOMAIN_QUESTIONS: tuple[tuple[str, re.Pattern[str], str], ...] = (
+    (
+        "family_infant_death",
+        re.compile(r"गुजर|मृत्यु|guzar|died|death", re.I),
+        "हमारे परिवार में पहले एक बच्चा छोटी उम्र में गुजर गया था — क्या इस बच्चे की सेहत या आगे की देखभाल के लिए हमें डॉक्टर से कोई विशेष सलाह या जाँच पूछनी चाहिए?",
+    ),
+    (
+        "bleeding_joints",
+        re.compile(r"घुटने|जोड़|सूजन|खून|नील|sujan|ghutn|bleed|transfusion", re.I),
+        "बच्चे के गिरने पर घुटने या जोड़ में सूजन आने (या खून/नील से जुड़ी बात) के बारे में कृपया देखकर बताएँ कि क्या कोई जाँच करवानी चाहिए?",
+    ),
+    (
+        "infections",
+        re.compile(r"भर्ती|अस्पताल|इंफेक्शन|संक्रमण|बुखार|एंटीबायोटिक|निमोनिया|hospital|infection", re.I),
+        "बच्चे को बार-बार बुखार या इंफेक्शन के कारण अस्पताल में भर्ती होना पड़ा है — इससे बचाव के लिए हमें आगे क्या जाँच या सावधानी रखनी चाहिए?",
+    ),
+    (
+        "birth_nicu",
+        re.compile(r"पीलिया|नीली|रोशनी|NICU|काँच|कांच|टीके|BCG|नाल|गाँठ|गांठ|मवाद", re.I),
+        "जन्म के समय या BCG के टीके के बाद जो बात हुई थी (जैसे पीलिया की नीली रोशनी, NICU, नाल, या टीके की जगह पर सूजन/निशान) — क्या उसके लिए अभी बच्चे की कोई जाँच ज़रूरी है?",
+    ),
+    (
+        "milestones",
+        re.compile(r"बैठ|चल|बोल|वज़न|वजन|लंबाई|पेट|हड्डी|देखने|सुनने|बढ़त", re.I),
+        "बच्चे के बढ़ने, बैठने-चलने-बोलने, पेट के आकार या देखने-सुनने को जाँच कर कृपया बताएँ कि क्या किसी अतिरिक्त जाँच की ज़रूरत है?",
+    ),
+    (
+        "metabolic_fasting",
+        re.compile(r"सुस्ती|उल्टी|झटके|दौरे|पेशाब|गंध|भूख", re.I),
+        "खाना देर से मिलने या हल्के बुखार में बच्चे को सुस्ती, उल्टी या झटके जैसी जो दिक्कत हुई थी — ऐसे समय में हमें क्या करना चाहिए और क्या कोई जाँच ज़रूरी है?",
+    ),
+    (
+        "pregnancy",
+        re.compile(r"प्रेग्नेंसी|गर्भ|बीपी|BP|थायरॉइड|शुगर|स्कैन|थैलेसीमिया", re.I),
+        "प्रेग्नेंसी के समय रही बीपी, शुगर या थायरॉइड जैसी बात के लिए अभी माँ और बच्चे की कौन-सी नियमित जाँच करवानी चाहिए?",
+    ),
+    (
+        "consanguinity",
+        re.compile(r"रिश्तेदार|शादी", re.I),
+        "हमारी शादी रिश्तेदारी में हुई है — क्या बच्चे की सेहत के लिए डॉक्टर से कोई सामान्य परामर्श (काउंसलिंग) लेना अच्छा रहेगा?",
+    ),
+    (
+        "family_history",
+        re.compile(r"परिवार|खून|दौरे|झटके", re.I),
+        "परिवार में पहले जो सेहत से जुड़ी समस्या रही है, उसे ध्यान में रखते हुए क्या बच्चे के लिए कोई सामान्य जाँच पूछनी चाहिए?",
+    ),
+)
+
+_FORBIDDEN_DIAGNOSTIC_RE = re.compile(
+    r"(?i)\b(duchenne|pompe|wiskott[- ]?aldrich|mucopolysaccharidosis|mps\b|gaucher|"
+    r"hemophilia|haemophilia|primary immunodeficiency|scid\b|spinal muscular atrophy)\b|"
+    r"हीमोफीलिया|इम्यूनोडेफिशिएंसी|ड्यूशेन|पॉम्पे|म्यूकोपॉलीसेकेराइडोसिस"
+)
+_REPEAT_BACK_PREFIX_RE = re.compile(
+    r"^\s*(?:आपने\s+(?:यह\s+भी\s+)?बताया(?:\s+कि)?|मेरा\s+नाम\s+.*?\s+है|मेरे\s+एक\s+बच्चा\s+है)"
+)
+
+
+def _scrub_diagnostic_terms(text: str) -> str:
+    if not text:
+        return ""
+    cleaned = _FORBIDDEN_DIAGNOSTIC_RE.sub("स्वास्थ्य संबंधी जाँच", text)
+    return cleaned.replace("गुज़र", "गुजर")
+
 
 def _strip_unspoken_mother_name(
     mother: str,
@@ -364,19 +447,104 @@ def _strip_unspoken_mother_name(
             mother = (mother or "")[match.end():].strip()
     if "shilpa" not in user_lower and "शिल्पा" not in user_blob:
         doctor = re.sub(r"(?i)\bshilpa\b", "Not reported", doctor or "")
+        mother = re.sub(r"शिल्पा\s*(?:जी)?[,،:\s]*", "", mother or "").strip()
     return mother, doctor
 
 
-def _ensure_mother_covers_flags(mother: str, findings: dict) -> str:
-    text = (mother or "").strip()
-    death = findings.get("family_infant_death")
-    if not isinstance(death, dict) or not death.get("is_red_flag"):
-        return text
-    if _unknown_detail(str(death.get("detail") or "")):
-        return text
-    if re.search(r"गुजर|मृत्यु|guzar|died|death", text, re.I):
-        return text
-    return text + "\n\nआपने यह भी बताया कि परिवार में एक बच्चा छोटी उम्र में गुजर गया।"
+def _extract_question_lines(text: str) -> list[str]:
+    questions: list[str] = []
+    for raw_line in (text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        cleaned = re.sub(r"^(?:[\d१२३४५६७८९]+[\.\)\-:]|[•\-\*])\s*", "", line).strip()
+        if not cleaned or _REPEAT_BACK_PREFIX_RE.match(cleaned):
+            continue
+        if "?" in cleaned or "？" in cleaned:
+            cleaned = _scrub_diagnostic_terms(cleaned)
+            if cleaned not in questions:
+                questions.append(cleaned)
+    return questions
+
+
+def _has_any_red_flag(findings: dict, red_flags: list[str] | None = None) -> bool:
+    if red_flags:
+        return True
+    for value in (findings or {}).values():
+        if isinstance(value, dict) and value.get("is_red_flag") and not _unknown_detail(str(value.get("detail") or "")):
+            return True
+    return False
+
+
+def _ensure_mother_covers_flags(
+    mother: str,
+    findings: dict,
+    red_flags: list[str] | None = None,
+) -> str:
+    text = _scrub_diagnostic_terms((mother or "").strip())
+    questions = _extract_question_lines(text)
+    combined_q = "\n".join(questions)
+
+    for domain, pattern, fallback_q in _FLAG_DOMAIN_QUESTIONS:
+        entry = (findings or {}).get(domain)
+        flagged_in_list = any(str(f).startswith(f"{domain}:") for f in (red_flags or []))
+        is_flagged = (
+            isinstance(entry, dict)
+            and bool(entry.get("is_red_flag"))
+            and not _unknown_detail(str(entry.get("detail") or ""))
+        ) or flagged_in_list
+        if not is_flagged:
+            continue
+        if not pattern.search(combined_q):
+            questions.append(fallback_q)
+            combined_q = "\n".join(questions)
+
+    for default_q in _DEFAULT_MOTHER_QUESTIONS:
+        if len(questions) >= 3:
+            break
+        if default_q not in questions:
+            questions.append(default_q)
+
+    numbered = "\n".join(f"{idx}. {q}" for idx, q in enumerate(questions[:6], start=1))
+    footer = (
+        MOTHER_FLAG_FOOTER
+        if _has_any_red_flag(findings, red_flags)
+        else MOTHER_ROUTINE_FOOTER
+    )
+    return f"{MOTHER_QUESTIONS_HEADING}\n\n{numbered}\n\n{footer}"
+
+
+def default_mother_questions(
+    findings: dict | None = None,
+    red_flags: list[str] | None = None,
+) -> str:
+    """Build actionable Hindi questions for the mother even when no LLM summary ran."""
+    return _ensure_mother_covers_flags("", findings or {}, red_flags or [])
+
+
+def build_fallback_summaries(
+    transcript: list[dict],
+    findings: dict,
+    red_flags: list[str],
+) -> dict:
+    """Deterministic fallback when both LLM summary providers are unreachable."""
+    merged_findings = dict(findings or {})
+    merged_flags = [_flag_text(item) for item in (red_flags or []) if _flag_text(item)]
+    for domain, value in merged_findings.items():
+        if isinstance(value, dict) and value.get("is_red_flag"):
+            _add_flag(merged_flags, str(domain), str(value.get("detail") or "").strip())
+    _supplement_from_transcript(transcript, merged_findings, merged_flags)
+    merged_flags = _reconcile_flags(merged_findings, merged_flags)
+    shell = "\n".join(f"{heading}\nNot reported." for heading in _REQUIRED_HEADINGS)
+    doctor = _fill_red_flag_section(shell, merged_flags)
+    doctor = _fill_empty_sections(doctor, merged_findings)
+    mother = default_mother_questions(merged_findings, merged_flags)
+    return {
+        "summary_doctor": doctor,
+        "summary_mother": mother,
+        "findings": merged_findings,
+        "red_flags": merged_flags,
+    }
 
 
 def _assemble(payload: dict, findings: dict, red_flags: list[str], transcript: list[dict]) -> dict:
@@ -400,7 +568,7 @@ def _assemble(payload: dict, findings: dict, red_flags: list[str], transcript: l
     mother_raw, doctor = _strip_unspoken_mother_name(
         cleaned["mother_hindi"], doctor, merged_findings, transcript
     )
-    mother = _ensure_mother_covers_flags(mother_raw, merged_findings)
+    mother = _ensure_mother_covers_flags(mother_raw, merged_findings, merged_flags)
     if merged_findings.get("profile_child_gender", {}).get("detail", "").startswith("Male"):
         doctor = doctor.replace(
             "**Child's Gender:** Not reported",
@@ -471,5 +639,8 @@ async def generate_call_summaries(
         payload = await _from_gemini(user_content)
         return _assemble(payload, findings, red_flags, transcript)
     except Exception:
-        payload = await _from_openai(user_content)
-        return _assemble(payload, findings, red_flags, transcript)
+        try:
+            payload = await _from_openai(user_content)
+            return _assemble(payload, findings, red_flags, transcript)
+        except Exception:
+            return build_fallback_summaries(transcript, findings, red_flags)

@@ -331,5 +331,175 @@ class Call226RegressionTests(unittest.TestCase):
         self.assertEqual(db.get_call(call_id)["mother_name"], "Mother's name is Aradhana.")
 
 
+class MotherActionableQuestionsTests(unittest.TestCase):
+    def _shell(self) -> str:
+        return "".join(f"{h}\nNot reported.\n" for h in summarizer._REQUIRED_HEADINGS)
+
+    def test_nothing_flagged_still_gives_actionable_questions(self):
+        payload = {
+            "doctor_markdown": self._shell(),
+            "mother_hindi": "आपने बताया कि सब ठीक है।",
+            "extracted_findings": {},
+            "red_flags": [],
+        }
+        out = summarizer._assemble(payload, {}, [], [])
+        mother = out["summary_mother"]
+        self.assertNotIn("आपने बताया कि", mother)
+        self.assertIn("डॉक्टर या स्वास्थ्य कार्यकर्ता (ASHA/ANM दीदी) से मिलें", mother)
+        self.assertGreaterEqual(mother.count("?"), 3)
+        self.assertIn("1. ", mother)
+        self.assertIn("2. ", mother)
+        self.assertIn("3. ", mother)
+        self.assertIn("कोई तुरंत चिंताजनक बात सामने नहीं आई है", mother)
+
+    def test_red_flags_become_questions_and_never_cross_diagnostic_boundary(self):
+        payload = {
+            "doctor_markdown": self._shell(),
+            "mother_hindi": (
+                "1. क्या बच्चे को हीमोफीलिया (hemophilia) या Duchenne की जाँच करवानी चाहिए?\n"
+                "आपने बताया कि बच्चे के घुटने में सूजन आती है।"
+            ),
+            "extracted_findings": {
+                "bleeding_joints": {
+                    "status": "positive",
+                    "detail": "Knee swelling after falls resolving over 5 days.",
+                    "is_red_flag": True,
+                },
+                "family_infant_death": {
+                    "status": "positive",
+                    "detail": "Previous infant died at 5 months with fits.",
+                    "is_red_flag": True,
+                },
+            },
+            "red_flags": [],
+        }
+        out = summarizer._assemble(payload, {}, [], [])
+        mother = out["summary_mother"]
+        self.assertNotIn("हीमोफीलिया", mother)
+        self.assertNotIn("hemophilia", mother.lower())
+        self.assertNotIn("duchenne", mother.lower())
+        self.assertNotIn("आपने बताया कि", mother)
+        self.assertIn("गुजर", mother)
+        self.assertIn("यह किसी बीमारी की पुष्टि (डायग्नोसिस) नहीं है", mother)
+        self.assertGreaterEqual(mother.count("?"), 3)
+
+    def test_fallback_summaries_work_with_empty_call(self):
+        out = summarizer.build_fallback_summaries([], {}, [])
+        self.assertIn("1. ", out["summary_mother"])
+        self.assertGreaterEqual(out["summary_mother"].count("?"), 3)
+
+
+class Call228RegressionTests(unittest.TestCase):
+    def test_pregnancy_and_birth_nicu_domains_not_treated_as_group_skip(self):
+        domain, topics = gemini_live._normalize_finding(
+            "pregnancy",
+            "Mother had low hemoglobin in second pregnancy.",
+            ["body_blood_count"],
+        )
+        self.assertEqual(domain, "pregnancy")
+        self.assertEqual(topics, ["body_blood_count"])
+        self.assertNotIn("pregnancy", topics)
+
+        domain2, topics2 = gemini_live._normalize_finding(
+            "birth_nicu",
+            "Heavy cord bleeding on third child.",
+            ["birth_cord_bleed"],
+        )
+        self.assertEqual(domain2, "birth_nicu")
+        self.assertEqual(topics2, ["birth_cord_bleed"])
+
+    def test_children_detail_does_not_overwrite_mother_name(self):
+        call_id = db.create_call("gemini")
+        db.record_finding_db(call_id, "profile_mother_name", "info", "Mother's name is Jia.", False)
+        domain, topics = gemini_live._normalize_finding(
+            "profile_mother_name",
+            "Mother has three children, ages 10, 8, and 6 years old",
+            ["intro_children"],
+        )
+        self.assertEqual(domain, "profile_child_age")
+        self.assertIn("intro_children", topics)
+        db.record_finding_db(
+            call_id,
+            "profile_mother_name",
+            "info",
+            "Mother has three children, ages 10, 8, and 6 years old",
+            False,
+        )
+        call = db.get_call(call_id)
+        self.assertEqual(call["mother_name"], "Mother's name is Jia.")
+        self.assertEqual(call["findings"]["profile_mother_name"]["detail"], "Mother's name is Jia.")
+
+    def test_speech_end_waiting_triggers_fast_watchdog_nudge(self):
+        state = gemini_live._TurnState()
+        state.awaiting_bot_reply = True
+        state.speech_end_waiting = True
+        state.last_user_turn_ts = time.time() - 3.8
+        telemetry = gemini_live._new_telemetry("gemini-3.1-flash-live-preview", "Kore", 1300, 300, 0)
+        session, _, _ = _run_watchdog(state, telemetry)
+        self.assertEqual(session.texts, [gemini_live._WATCHDOG_NUDGE])
+        self.assertEqual(telemetry["watchdog_nudges"], 1)
+
+    def test_open_capture_concern_waits_for_aur_kuch_before_closing(self):
+        telemetry = gemini_live._new_telemetry("gemini-3.1-flash-live-preview", "Kore", 1300, 300, 0)
+        checklist.mark(telemetry["coverage"], [t for t in checklist.REQUIRED_IDS if t != "close_anything_else"])
+        call_id = db.create_call("gemini")
+
+        class _Fc1:
+            id = "fc_open_1"
+            name = "record_finding"
+            args = {
+                "domain": "chief_complaint",
+                "status": "positive",
+                "detail": "Mother wants to know if she can have another child at age 40.",
+                "is_red_flag": False,
+                "topic_ids": ["close_anything_else"],
+            }
+            will_continue = False
+
+        class _Fc2:
+            id = "fc_open_2"
+            name = "record_finding"
+            args = {
+                "domain": "coverage",
+                "status": "info",
+                "detail": "Nothing else to add.",
+                "is_red_flag": False,
+                "topic_ids": ["close_anything_else"],
+            }
+            will_continue = False
+
+        class _Sess:
+            async def send_tool_response(self, function_responses=None):
+                self.responses = function_responses
+
+        async def run():
+            s1, s2 = _Sess(), _Sess()
+            await gemini_live._answer_function_calls(
+                s1, asyncio.Lock(), _FakeWs(), asyncio.Lock(), call_id, telemetry,
+                [_Fc1()], set(), set(), "हां, यह बताना है कि अभी मैं और एक बच्चा कर सकती हूं कि नहीं?",
+            )
+            await gemini_live._answer_function_calls(
+                s2, asyncio.Lock(), _FakeWs(), asyncio.Lock(), call_id, telemetry,
+                [_Fc2()], set(), set(), "नहीं।",
+            )
+            return s1, s2
+
+        s1, s2 = asyncio.run(run())
+        self.assertIn("Aur kuch batana chahengi?", s1.responses[0].response["note"])
+        self.assertIn("Do NOT speak the closing yet", s1.responses[0].response["note"])
+        self.assertIn("All topics are covered", s2.responses[0].response["note"])
+
+    def test_prompt_and_checklist_rules_for_call228_feedback(self):
+        prompt = prompts.GEMINI_LIVE_SYSTEM_PROMPT
+        self.assertIn("NEVER SOUND JUDGMENTAL OR SURPRISED", prompt)
+        self.assertIn("MULTI-CHILD SCOPE RULE", prompt)
+        self.assertIn("aapke kisi bhi bachche ko", prompt)
+        self.assertIn("kisi bachche ya bade ko", prompt)
+        self.assertNotIn("Pehle bachche ke janm ke baare mein kuch sawal", prompt)
+        note = checklist.tool_note(["intro"])
+        self.assertIn("female voice (Kore)", note)
+        self.assertIn("aapke kisi bhi bachche ko", note)
+
+
 if __name__ == "__main__":
     unittest.main()
