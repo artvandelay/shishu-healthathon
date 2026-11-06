@@ -8,6 +8,7 @@ from pathlib import Path
 
 _TMP = tempfile.mkdtemp(prefix="shishu-bugfixes-")
 os.environ["DATA_DIR"] = _TMP
+os.environ.setdefault("ADMIN_PASSCODE", "unit-test-admin")
 
 import app  # noqa: E402
 import audio_recorder  # noqa: E402

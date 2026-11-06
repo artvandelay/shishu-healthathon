@@ -36,7 +36,7 @@ def _passcode() -> str:
 
 
 def _admin_passcode() -> str:
-    return os.environ.get("ADMIN_PASSCODE") or "shishu2026admin"
+    return os.environ.get("ADMIN_PASSCODE") or ""
 
 
 def _match(supplied: str, expected: str) -> bool:
