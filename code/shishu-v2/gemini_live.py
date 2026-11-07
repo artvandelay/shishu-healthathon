@@ -104,6 +104,7 @@ _TELEMETRY_EVENTS = {
     "interrupted",
     "watchdog_nudge",
     "manual_nudge",
+    "reconnecting",
     "reconnected",
     "silence_check_in",
     "auto_close",
@@ -1010,6 +1011,8 @@ async def _gemini_loop(
             continue
         state.reconnect_requested = False
         reconnects += 1
+        await _send_json(ws, ws_lock, {"type": "reconnecting", "attempt": reconnects})
+        await _emit(ws, ws_lock, call_id, telemetry, "reconnecting", str(reconnects))
         ok = reconnects <= 5 and await reconnect(state.resume_handle)
         if not ok:
             stop.set()
@@ -1025,6 +1028,7 @@ async def _gemini_loop(
         state.quiet_from = time.time()
         seen.clear()
         cancelled.clear()
+        await _send_json(ws, ws_lock, {"type": "reconnected", "attempt": reconnects})
         await _emit(ws, ws_lock, call_id, telemetry, "reconnected", str(reconnects))
 
 

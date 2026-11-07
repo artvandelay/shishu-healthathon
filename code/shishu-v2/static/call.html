@@ -117,10 +117,23 @@
     .avatar-wrap.live .ring.r2 { animation: pulse 2.4s ease-out 0.8s infinite; }
 
     .avatar-wrap.speaking .ring { border-color: rgba(224, 122, 47, 0.45); }
+    .avatar-wrap.reconnecting .ring {
+      border-color: rgba(224, 140, 40, 0.7);
+      animation: pulse-warm 1.4s ease-in-out infinite;
+    }
+    .avatar-wrap.thinking .ring {
+      border-color: rgba(14, 107, 99, 0.5);
+      animation: pulse-warm 1.6s ease-in-out infinite;
+    }
 
     @keyframes pulse {
       0% { transform: scale(0.86); opacity: 0.55; }
       100% { transform: scale(1.45); opacity: 0; }
+    }
+
+    @keyframes pulse-warm {
+      0%, 100% { transform: scale(0.92); opacity: 0.35; }
+      50% { transform: scale(1.18); opacity: 0.85; }
     }
 
     .avatar {
@@ -148,6 +161,15 @@
       font-size: 18px;
       font-weight: 680;
       line-height: 1.35;
+      transition: color 0.2s ease;
+    }
+
+    #status.reconnecting {
+      color: #b85e12;
+    }
+
+    #status.thinking {
+      color: var(--teal);
     }
 
     #timer {
@@ -708,10 +730,28 @@
       let micSmooth = 0;
       let bugCategory = "";
       let hudNoteTimer = 0;
+      let thinkingTimer = 0;
 
-      function setStatus(text) {
+      function setStatus(text, mode) {
         statusEl.hidden = false;
         statusEl.textContent = text;
+        statusEl.className = mode || "";
+      }
+
+      function clearThinkingWatch() {
+        if (thinkingTimer) clearTimeout(thinkingTimer);
+        thinkingTimer = 0;
+      }
+
+      function startThinkingWatch() {
+        clearThinkingWatch();
+        thinkingTimer = setTimeout(function () {
+          if (phase === "live" && !isBotPlaying() && !avatarWrap.classList.contains("reconnecting")) {
+            avatarWrap.classList.remove("speaking");
+            avatarWrap.classList.add("thinking");
+            setStatus("Thinking... (सुन रही है)", "thinking");
+          }
+        }, 900);
       }
 
       function showError(message) {
@@ -884,6 +924,8 @@
 
       function leaveLiveChrome() {
         stopNudgeWatch();
+        clearThinkingWatch();
+        avatarWrap.classList.remove("speaking", "thinking", "reconnecting");
         nudgeBtn.hidden = true;
         nudgeBtn.classList.remove("hot");
         userSpeaking = false;
@@ -904,6 +946,7 @@
         refreshNudgeHighlight();
         if (phase !== "live" || !ws || ws.readyState !== WebSocket.OPEN) return;
         ws.send(JSON.stringify({ type: "speech_end" }));
+        startThinkingWatch();
       }
 
       function trackSpeech(rms) {
@@ -963,6 +1006,7 @@
       }
 
       function flushPlayback() {
+        clearThinkingWatch();
         activeSources.forEach(function (src) {
           try { src.onended = null; } catch (err) { /* already gone */ }
           try { src.stop(0); } catch (err) { /* not started yet */ }
@@ -970,7 +1014,7 @@
         });
         activeSources.clear();
         nextPlayTime = 0;
-        avatarWrap.classList.remove("speaking");
+        avatarWrap.classList.remove("speaking", "thinking");
       }
 
       function playPcm(b64, sampleRate) {
@@ -991,6 +1035,8 @@
         src.buffer = audioBuffer;
         src.connect(audioCtx.destination);
         if (!isBotPlaying()) userSpeaking = false;
+        clearThinkingWatch();
+        avatarWrap.classList.remove("thinking", "reconnecting");
         speechEndAt = 0;
         nudgeBtn.classList.remove("hot");
         const now = audioCtx.currentTime;
@@ -1004,8 +1050,10 @@
           activeSources.delete(src);
           if (activeSources.size === 0 && phase === "live") {
             lastBotPlayEndAt = Date.now();
-            avatarWrap.classList.remove("speaking");
-            setStatus("Listening...");
+            avatarWrap.classList.remove("speaking", "thinking");
+            if (!avatarWrap.classList.contains("reconnecting")) {
+              setStatus("Listening...");
+            }
           }
         };
       }
@@ -1178,7 +1226,17 @@
           flushPlayback();
           speechEndAt = 0;
           nudgeBtn.classList.remove("hot");
-          if (phase === "live") setStatus("Listening...");
+          if (phase === "live" && !avatarWrap.classList.contains("reconnecting")) setStatus("Listening...");
+        } else if (msg.type === "reconnecting") {
+          clearThinkingWatch();
+          avatarWrap.classList.remove("speaking", "thinking");
+          avatarWrap.classList.add("reconnecting");
+          setStatus("Reconnecting... (लाइन जुड़ रही है)", "reconnecting");
+        } else if (msg.type === "reconnected") {
+          avatarWrap.classList.remove("reconnecting");
+          if (phase === "live" && !isBotPlaying()) {
+            setStatus("Listening...");
+          }
         } else if (msg.type === "transcript") {
           showCaption(msg.role, msg.text);
         } else if (msg.type === "telemetry") {
