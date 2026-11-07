@@ -24,7 +24,7 @@ TOPICS: tuple[dict, ...] = (
     {"id": "body_transfusion", "group": "body", "need": "child ever needed blood, and how many times", "words": "khoon chadhana pada, kitni baar"},
     {"id": "body_blood_count", "group": "body", "need": "doctor said the blood count is low or high", "words": "blood kam ya zyada"},
     {"id": "body_joint_swelling", "group": "body", "need": "painful knee or joint swelling after walking or play that settles in days or weeks", "words": "ghutno ya jodon mein sujan, dard, apne aap theek"},
-    {"id": "body_bleeding_bruise", "group": "body", "need": "heavy bleeding when a milk tooth fell or after injury; easy bruising; heavy periods in a girl", "words": "doodh ka daant girne par khoon, aasani se neel padna, periods mein zyada khoon"},
+    {"id": "body_bleeding_bruise", "group": "body", "need": "heavy bleeding after minor cuts or injury, or easy bruising; if girl 11+: heavy periods; if child 5+: tooth fall bleeding", "words": "chot lagne par zyada khoon behna, ya aasani se neel padna"},
     {"id": "body_private_parts", "group": "body", "need": "private parts do not look as they should", "words": "gupt ang waise nahi dikhte"},
     {"id": "body_lumps_birth", "group": "body", "need": "swellings or lumps on the body since birth", "words": "janm se sharir par sujan ya gaanthein"},
     {"id": "body_proportion", "group": "body", "need": "body parts out of proportion, arms or legs very short", "words": "haath pair sharir ke mukable bahut chhote"},
@@ -114,6 +114,8 @@ def tool_note(coverage: list) -> str:
         )
     t = left[0]
     nxt = f"{t['id']} (Hindi: {t['words']} — {t['need']})"
+    if t["id"] == "body_bleeding_bruise":
+        nxt += " [NOTE: Ask about cuts/scratches and easy bruising. NEVER ask about periods unless she specifically stated she has an older daughter aged 11+]"
     return (
         f"Saved. Next open topic: {nxt}. "
         "CRITICAL: If her last answer was 'Haan' or positive, or if you ALREADY started asking a follow-up question in this turn "
