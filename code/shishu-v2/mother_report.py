@@ -151,16 +151,73 @@ def _duration(seconds: int) -> str:
     return f"{secs} सेकंड"
 
 
+_CONS = (
+    ("ksh", "क्ष"), ("kh", "ख"), ("gh", "घ"), ("ng", "ङ"), ("chh", "छ"), ("ch", "च"),
+    ("jh", "झ"), ("j", "ज"), ("ny", "ञ"), ("th", "थ"), ("dh", "ध"), ("ph", "फ"),
+    ("bh", "भ"), ("sh", "श"), ("k", "क"), ("g", "ग"), ("t", "त"), ("d", "द"),
+    ("n", "न"), ("p", "प"), ("b", "ब"), ("m", "म"), ("y", "य"), ("r", "र"),
+    ("l", "ल"), ("v", "व"), ("w", "व"), ("s", "स"), ("h", "ह"), ("f", "फ"),
+)
+_VOW = (
+    ("aa", "ा", "आ"), ("ii", "ी", "ई"), ("ee", "ी", "ई"), ("uu", "ू", "ऊ"),
+    ("oo", "ू", "ऊ"), ("ai", "ै", "ऐ"), ("au", "ौ", "औ"), ("a", "", "अ"),
+    ("i", "ि", "इ"), ("u", "ु", "उ"), ("e", "े", "ए"), ("o", "ो", "ओ"),
+)
+_KEEP_LATIN = {"asha", "anm", "bcg", "icu", "nicu", "bp", "shishu"}
+
+
+def transliterate(word: str) -> str:
+    """Roman Indian name to Devanagari. Shilpa -> शिल्पा, Aarav -> आरव."""
+    s = (word or "").lower()
+    i = 0
+    out: list[str] = []
+    while i < len(s):
+        cons = next((pair for pair in _CONS if s.startswith(pair[0], i)), None)
+        if cons is None:
+            vow = next((item for item in _VOW if s.startswith(item[0], i)), None)
+            if vow is None:
+                out.append(s[i])
+                i += 1
+                continue
+            out.append(vow[2])
+            i += len(vow[0])
+            continue
+        i += len(cons[0])
+        vow = next((item for item in _VOW if s.startswith(item[0], i)), None)
+        if vow is None:
+            nxt = any(s.startswith(pair[0], i) for pair in _CONS)
+            out.append(cons[1] + ("्" if nxt else ""))
+            continue
+        i += len(vow[0])
+        matra = "ा" if vow[0] == "a" and i >= len(s) else vow[1]
+        out.append(cons[1] + matra)
+    return "".join(out)
+
+
+def hindi_text(text: str) -> str:
+    def one(match: re.Match) -> str:
+        word = match.group(0)
+        if word.lower() in _KEEP_LATIN:
+            return word
+        if word.lower() in {"year", "years"}:
+            return "साल"
+        if word.lower() in {"month", "months"}:
+            return "महीने"
+        return transliterate(word)
+
+    return re.sub(r"[A-Za-z]+", one, text or "")
+
+
 def _name(call: dict) -> str:
     raw = str(call.get("mother_name") or "").strip()
     raw = re.sub(r"(?i)^mother'?s name is\s+", "", raw).strip(" .")
     if raw and "not reported" not in raw.lower() and "does not" not in raw.lower():
-        return raw
+        return hindi_text(raw)
     finding = (call.get("findings") or {}).get("profile_mother_name")
     if isinstance(finding, dict):
         detail = re.sub(r"(?i)^mother'?s name is\s+", "", str(finding.get("detail") or "")).strip(" .")
         if detail and "not reported" not in detail.lower():
-            return detail
+            return hindi_text(detail)
     return "माँ"
 
 
@@ -185,9 +242,9 @@ def _child(call: dict) -> str:
         if isinstance(entry, dict):
             gender = str(entry.get("detail") or "").lower()
     if name and "not reported" not in name.lower():
-        bits.append(name.split(".")[0])
+        bits.append(hindi_text(name.split(".")[0]))
     if age and "not reported" not in age.lower() and "does not" not in age.lower():
-        bits.append(age)
+        bits.append(hindi_text(age))
     if "female" in gender or gender.startswith("girl") or "beti" in gender:
         bits.append("बेटी")
     elif "male" in gender or gender.startswith("boy") or "beta" in gender:
@@ -208,7 +265,7 @@ def _questions(summary_mother: str) -> list[str]:
 def _incomplete(call: dict) -> bool:
     telemetry = call.get("telemetry") or {}
     reason = str(telemetry.get("close_reason") or "")
-    if reason in {"silence", "time_limit"}:
+    if reason in {"silence", "time_limit", "emergency", "caller_stop"}:
         return True
     coverage = list(telemetry.get("coverage") or [])
     if not coverage:
@@ -237,7 +294,7 @@ def build(call: dict, extracted: dict | None = None) -> dict:
     else:
         date, clock = "", ""
     incomplete = _incomplete(call)
-    questions = _questions(str(call.get("summary_mother") or ""))
+    questions = [hindi_text(q) for q in _questions(str(call.get("summary_mother") or ""))]
     if _answer(answers, "preg_thalassemia") in {"no", "unknown"}:
         if not any("थैलेसीमिया" in q for q in questions):
             questions.append(THALASSEMIA_LINE)
@@ -246,6 +303,7 @@ def build(call: dict, extracted: dict | None = None) -> dict:
         for line in (extracted.get("yes_hindi") or [])
         if str(line).strip() and _has_hindi(str(line))
     ]
+    yes = [hindi_text(line) for line in yes]
     if not yes:
         for topic in checklist.TOPICS:
             if topic["id"].startswith("intro_"):
@@ -286,6 +344,7 @@ def build(call: dict, extracted: dict | None = None) -> dict:
         "duration": _duration(call.get("duration_sec") or 0),
         "status": "अधूरी कॉल" if incomplete else "पूर्ण कॉल",
         "incomplete": incomplete,
+        "emergency": str((call.get("telemetry") or {}).get("close_reason") or "") == "emergency",
         "questions": questions,
         "yes": yes,
         "groups": groups,
@@ -309,7 +368,12 @@ def render_html(report: dict) -> str:
     else:
         yes = '<p class="calm">इस कॉल में कोई बात हाँ में नहीं आई।</p>'
     band = ""
-    if report["incomplete"]:
+    if report.get("emergency"):
+        band = (
+            '<div class="band"><b>बच्चे को अभी तुरंत नज़दीकी अस्पताल ले जाइए, या 108 पर कॉल कीजिए।</b> '
+            "नीचे वही है जो इस कॉल में पूछा जा सका।</div>"
+        )
+    elif report["incomplete"]:
         band = (
             '<div class="band"><b>यह कॉल अधूरी रही।</b> '
             "नीचे वही है जो इस कॉल में पूछा जा सका। "

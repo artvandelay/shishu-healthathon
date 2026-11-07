@@ -89,7 +89,12 @@ class ReportTests(unittest.TestCase):
             _call(telemetry={"coverage": list(checklist.REQUIRED_IDS), "close_reason": ""}),
             {"answers": answers, "yes_hindi": ["जन्म के बाद तीन दिन नीली रोशनी में रहा।"]},
         )
+        self.assertEqual(mother_report.transliterate("Shilpa"), "शिल्पा")
+        self.assertEqual(mother_report.transliterate("Aarav"), "आरव")
         self.assertEqual(report["status"], "पूर्ण कॉल")
+        self.assertIn("शिल्पा", report["who"])
+        self.assertIn("आरव", report["who"])
+        self.assertNotIn("Shilpa", mother_report.render_html(report))
         self.assertEqual(report["yes"], ["जन्म के बाद तीन दिन नीली रोशनी में रहा।"])
         self.assertEqual(sum(1 for q in report["questions"] if "थैलेसीमिया" in q), 1)
         titles = [group["title"] for group in report["groups"]]
