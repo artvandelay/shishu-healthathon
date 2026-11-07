@@ -350,7 +350,8 @@ class MotherActionableQuestionsTests(unittest.TestCase):
         self.assertIn("1. ", mother)
         self.assertIn("2. ", mother)
         self.assertIn("3. ", mother)
-        self.assertIn("कोई तुरंत चिंताजनक बात सामने नहीं आई है", mother)
+        self.assertNotIn("कोई तुरंत चिंताजनक बात सामने नहीं आई है", mother)
+        self.assertIn("यह किसी बीमारी की पुष्टि (डायग्नोसिस) नहीं है", mother)
 
     def test_red_flags_become_questions_and_never_cross_diagnostic_boundary(self):
         payload = {

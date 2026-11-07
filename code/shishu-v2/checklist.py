@@ -2,6 +2,8 @@
 
 import re
 
+import question_flow
+
 GROUPS: tuple[str, ...] = ("intro", "birth", "body", "illness", "pregnancy", "family", "close")
 
 TOPICS: tuple[dict, ...] = (
@@ -105,7 +107,11 @@ def progress_label(coverage: list) -> str:
     return f"{current_group(coverage)} {done}/{len(REQUIRED_IDS)}"
 
 
-def tool_note(coverage: list) -> str:
+def _spoken_words(t: dict) -> str:
+    return question_flow.WIDE_WORDS.get(t["id"], t["words"])
+
+
+def tool_note(coverage: list, bridged: list | None = None) -> str:
     left = open_topics(coverage)
     if not left:
         return (
@@ -113,11 +119,25 @@ def tool_note(coverage: list) -> str:
             "then call end_call. Do not read this note aloud."
         )
     t = left[0]
-    nxt = f"{t['id']} (Hindi: {t['words']} — {t['need']})"
+    nxt = f"{t['id']} (Hindi: {_spoken_words(t)} — {t['need']})"
     if t["id"] == "body_bleeding_bruise":
         nxt += " [NOTE: Ask about cuts/scratches and easy bruising. NEVER ask about periods unless she specifically stated she has an older daughter aged 11+]"
+    drill = question_flow.DRILLS.get(t["id"])
+    if drill:
+        nxt += (
+            " [WIDE QUESTION FIRST: ask only the wide question above. ONLY if she says 'Haan', ask these "
+            "follow-ups ONE per turn, waiting for each answer: " + " | ".join(drill)
+            + ". If she says 'Nahi' or 'Nahi pata', move on.]"
+        )
+    bridge = ""
+    if bridged is not None and t["group"] in question_flow.GROUP_BRIDGE_GROUPS and t["group"] not in bridged:
+        bridged.append(t["group"])
+        bridge = (
+            f"NEW SECTION ({t['group']}): first say the {t['group'].capitalize()} GROUP BRIDGE from your "
+            "instructions in one short sentence, then ask the next open topic. "
+        )
     return (
-        f"Saved. Next open topic: {nxt}. "
+        f"Saved. {bridge}Next open topic: {nxt}. "
         "CRITICAL: If her last answer was 'Haan' or positive, or if you ALREADY started asking a follow-up question in this turn "
         "(such as asking the children's ages, how many weeks early, NICU stay, cause of death, or who in the family had cancer/BP), "
         "STOP SPEAKING IMMEDIATELY and WAIT for her answer! Do NOT say 'Theek hai' and move on to the next open topic in the same turn. "
@@ -135,8 +155,11 @@ def can_end(coverage: list) -> tuple[bool, str]:
         return True, ""
     names = ", ".join(t["id"] for t in left[:5])
     return False, (
-        f"Do not end the call yet. Still open: {names}. Say 'Bas ek-do sawal aur.' "
-        "and ask the next open topic in Hindi. Do not read this note aloud."
+        f"Do not end the call yet. Still open: {names}. "
+        "Do NOT say anything about ending the call or about questions being left. "
+        "If she reported an emergency danger sign happening now, speak the EMERGENCY line and call end_call with reason 'emergency'. "
+        "If she clearly asked to stop the call, speak the CALLER STOP line and call end_call with reason 'caller_stop'. "
+        "Otherwise ask the next open topic as one short Hindi question. Do not read this note aloud."
     )
 
 
@@ -148,7 +171,9 @@ def render_topic_list() -> str:
             if t["group"] != group:
                 continue
             extra = " (optional)" if t.get("optional") else ""
-            lines.append(f"- {t['id']}{extra}: {t['need']}. Her words: {t['words']}.")
+            drill = question_flow.DRILLS.get(t["id"])
+            follow = f" Only if yes, ask one per turn: {' | '.join(drill)}." if drill else ""
+            lines.append(f"- {t['id']}{extra}: {t['need']}. Her words: {_spoken_words(t)}.{follow}")
     return "\n".join(lines)
 
 
@@ -174,11 +199,22 @@ TIME_CLOSE_CUE = (
 _CLOSE_REASONS = {
     "silence": "the mother was silent for 30 seconds",
     "time_limit": "the 20-minute limit was reached",
+    "caller_stop": "the mother asked to stop the call",
 }
 
+EMERGENCY_MOTHER_NOTE = "बच्चे को अभी तुरंत नज़दीकी अस्पताल ले जाइए, या 108 पर कॉल कीजिए।"
 
-def incomplete_notes(coverage: list, reason: str) -> tuple[str, str]:
+
+def incomplete_notes(coverage: list, reason: str, detail: str = "") -> tuple[str, str]:
     left = open_topics(coverage)
+    if reason == "emergency":
+        said = (detail or "").strip()[:200]
+        quote = f' Caller said: "{said}".' if said else ""
+        doctor = (
+            f"> **EMERGENCY reported during call.**{quote} Caller was told to go to the nearest hospital now or call 108. "
+            f"Screening was stopped; {len(left)} of {len(REQUIRED_IDS)} topics were not asked."
+        )
+        return doctor, EMERGENCY_MOTHER_NOTE
     if not left:
         return "", ""
     why = _CLOSE_REASONS.get(reason, "the call ended early")

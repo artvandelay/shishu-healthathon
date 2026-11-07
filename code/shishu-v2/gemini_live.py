@@ -17,6 +17,7 @@ from starlette.websockets import WebSocketState
 import audio_recorder
 import db
 import checklist
+import question_flow
 from prompts import (
     GEMINI_LIVE_SYSTEM_PROMPT,
     HINDI_MEDICAL_VOCAB,
@@ -89,10 +90,21 @@ _RECORD_FINDING_DECL = {
 _END_CALL_DECL = {
     "name": "end_call",
     "description": (
-        "Hang up the call. Invocation Condition: invoke only after every checklist topic is covered, "
-        "open capture is done, and you have spoken the full closing. If the result is not_yet, keep asking the open topics."
+        "Hang up the call. Invocation Condition: invoke after every checklist topic is covered, "
+        "open capture is done, and you have spoken the full closing (reason complete). Two exceptions: if the "
+        "mother reports an emergency danger sign happening now, speak the EMERGENCY line and invoke with reason "
+        "emergency; if she clearly asks to stop the call, speak the CALLER STOP line and invoke with reason "
+        "caller_stop. If the result is not_yet, keep asking the open topics."
     ),
-    "parameters": {"type": "OBJECT", "properties": {}},
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "reason": {
+                "type": "STRING",
+                "description": "One of: complete (default, after the full closing), emergency (danger sign happening now), caller_stop (she clearly asked to stop).",
+            }
+        },
+    },
 }
 
 _TELEMETRY_EVENTS = {
@@ -125,6 +137,8 @@ class _TurnState:
         self.resume_handle = ""
         self.reconnect_requested = False
         self.last_user_text = ""
+        self.last_bot_text = ""
+        self.bot_text_since_user = ""
         self.time_cue_sent = False
         self.speech_end_waiting = False
         self.playback_ends_at = 0.0
@@ -646,6 +660,7 @@ async def _answer_function_calls(
     seen: set[str],
     cancelled: set[str],
     last_user_text: str = "",
+    last_bot_text: str = "",
 ) -> None:
     responses: list[types.FunctionResponse] = []
     logged: list[str] = []
@@ -662,24 +677,39 @@ async def _answer_function_calls(
         name = getattr(fc, "name", None) or ""
         if name == "end_call":
             coverage = telemetry.setdefault("coverage", [])
-            if telemetry.get("open_capture_asked_more"):
-                checklist.mark(coverage, ["close_anything_else"])
-            else:
-                remaining = [t["id"] for t in checklist.open_topics(coverage)]
-                if remaining == ["close_anything_else"] and _NO_MORE_USER_RE.match((last_user_text or "").strip()):
-                    checklist.mark(coverage, ["close_anything_else"])
-            ok, note = checklist.can_end(coverage)
-            refusals = int(telemetry.get("end_refusals") or 0)
-            if not ok and refusals < 2 and not telemetry.get("force_close"):
-                telemetry["end_refusals"] = refusals + 1
-                body = {"result": "not_yet", "note": note}
-                logged.append("end_call_refused")
-            else:
+            end_reason = str(_call_args(fc).get("reason") or "complete").strip().lower()
+            if end_reason not in ("complete", "emergency", "caller_stop"):
+                end_reason = "complete"
+            if end_reason == "complete" and telemetry.get("emergency_seen") and checklist.open_topics(coverage):
+                end_reason = "emergency"
+            if end_reason in ("emergency", "caller_stop"):
+                telemetry["close_reason"] = end_reason
+                if end_reason == "emergency" and not telemetry.get("emergency_detail"):
+                    telemetry["emergency_detail"] = (last_user_text or "")[:300]
                 telemetry["end_requested"] = True
                 telemetry["end_requested_at"] = time.time()
                 ws_messages.append({"type": "ending"})
                 body = {"result": "ok"}
-                logged.append("end_call")
+                logged.append(f"end_call_{end_reason}")
+            else:
+                if telemetry.get("open_capture_asked_more"):
+                    checklist.mark(coverage, ["close_anything_else"])
+                else:
+                    remaining = [t["id"] for t in checklist.open_topics(coverage)]
+                    if remaining == ["close_anything_else"] and _NO_MORE_USER_RE.match((last_user_text or "").strip()):
+                        checklist.mark(coverage, ["close_anything_else"])
+                ok, note = checklist.can_end(coverage)
+                refusals = int(telemetry.get("end_refusals") or 0)
+                if not ok and not telemetry.get("force_close"):
+                    telemetry["end_refusals"] = refusals + 1
+                    body = {"result": "not_yet", "note": note}
+                    logged.append("end_call_refused")
+                else:
+                    telemetry["end_requested"] = True
+                    telemetry["end_requested_at"] = time.time()
+                    ws_messages.append({"type": "ending"})
+                    body = {"result": "ok"}
+                    logged.append("end_call")
         elif name == "record_finding":
             args = _call_args(fc)
             domain = str(args.get("domain") or "")
@@ -692,6 +722,9 @@ async def _answer_function_calls(
             domain, raw_topics = _normalize_finding(
                 domain, detail, raw_topics, last_user_text, status
             )
+            confused = question_flow.is_confused_reply(last_user_text)
+            if confused:
+                raw_topics = []
             coverage = telemetry.setdefault("coverage", [])
             name_check = domain == "profile_mother_name" or "intro_name" in raw_topics
             name_invalid = name_check and (
@@ -731,8 +764,30 @@ async def _answer_function_calls(
                 telemetry["open_capture_asked_more"] = True
                 raw_topics = [t for t in raw_topics if t != "close_anything_else"]
                 open_capture_hold = True
+            section_hold = ""
+            drill_hold = ""
+            first_open = checklist.open_topics(coverage)
+            if not confused and last_bot_text and first_open:
+                cur = first_open[0]["id"]
+                cur_group = first_open[0]["group"]
+                checked = telemetry.setdefault("section_checked", [])
+                if cur in question_flow.SECTION_FIRST and cur in raw_topics and cur not in checked:
+                    checked.append(cur)
+                    if not question_flow.bot_asked(cur, last_bot_text):
+                        raw_topics = [
+                            t for t in raw_topics
+                            if t != cur and not (t in checklist._BY_ID and checklist._BY_ID[t]["group"] == cur_group)
+                        ]
+                        section_hold = cur
+            if not confused and status != "negative" and question_flow.is_bare_yes(last_user_text):
+                asked = telemetry.setdefault("drill_asked", [])
+                for tid in list(raw_topics):
+                    if tid in question_flow.DRILLS and tid not in asked:
+                        asked.append(tid)
+                        raw_topics = [t for t in raw_topics if t != tid]
+                        drill_hold = drill_hold or tid
             checklist.mark(coverage, raw_topics)
-            if domain and domain != "coverage" and not (name_invalid and domain == "profile_mother_name"):
+            if domain and domain != "coverage" and not (name_invalid and domain == "profile_mother_name") and not confused and not section_hold:
                 db_records.append((domain, status, detail, is_red_flag))
                 ws_messages.append(
                     {
@@ -746,7 +801,9 @@ async def _answer_function_calls(
             label = checklist.progress_label(coverage)
             telemetry["progress_group"] = label
             ws_messages.append({"type": "progress", "group": label})
-            if name_invalid:
+            if confused:
+                note = question_flow.CONFUSED_NOTE
+            elif name_invalid:
                 note = checklist.NAME_MISSING_NOTE
             elif ages_missing:
                 note = checklist.CHILDREN_AGES_MISSING_NOTE
@@ -758,8 +815,12 @@ async def _answer_function_calls(
                     "'Aur kuch batana chahengi?' then STOP speaking and wait for her reply. "
                     "Do NOT speak the closing yet. Keep your same warm female voice (Kore)."
                 )
+            elif section_hold:
+                note = question_flow.section_note(section_hold)
+            elif drill_hold:
+                note = question_flow.drill_note(drill_hold)
             else:
-                note = checklist.tool_note(coverage)
+                note = checklist.tool_note(coverage, telemetry.setdefault("bridged_groups", []))
             body = {"result": "ok", "note": note}
             logged.append(domain or "record_finding")
         else:
@@ -879,18 +940,26 @@ async def _handle_server_message(
             server_content.input_transcription,
         )
         if user_text:
+            if state.bot_text_since_user:
+                state.last_bot_text = state.bot_text_since_user
+                state.bot_text_since_user = ""
             state.last_user_text = user_text
+            if question_flow.is_emergency_text(user_text):
+                telemetry["emergency_seen"] = True
+                telemetry["emergency_detail"] = user_text[:300]
             _arm_user_turn(state, telemetry)
             await _emit(
                 ws, ws_lock, call_id, telemetry, "user_transcript", user_text
             )
-        await _forward_transcript(
+        bot_text = await _forward_transcript(
             ws,
             ws_lock,
             call_id,
             "assistant",
             server_content.output_transcription,
         )
+        if bot_text:
+            state.bot_text_since_user = (state.bot_text_since_user + " " + bot_text).strip()[-600:]
 
     parts = []
     if (
@@ -937,6 +1006,7 @@ async def _handle_server_message(
             seen,
             cancelled,
             state.last_user_text,
+            last_bot_text=state.last_bot_text,
         )
         if not telemetry.get("end_requested"):
             _arm_waiting_reply(state, speech_end_waiting=False)
@@ -1343,13 +1413,17 @@ async def _finalize(
         summary_mother = default_mother_questions(merged_findings, red_flags)
 
     if telemetry is not None:
+        close_reason = str(telemetry.get("close_reason") or "")
         doctor_note, mother_note = checklist.incomplete_notes(
-            telemetry.get("coverage") or [], str(telemetry.get("close_reason") or "")
+            telemetry.get("coverage") or [], close_reason, str(telemetry.get("emergency_detail") or "")
         )
         if doctor_note:
             summary_doctor = doctor_note + "\n\n" + summary_doctor
         if mother_note:
-            summary_mother = (summary_mother + "\n\n" + mother_note).strip()
+            if close_reason == "emergency":
+                summary_mother = (mother_note + "\n\n" + summary_mother).strip()
+            else:
+                summary_mother = (summary_mother + "\n\n" + mother_note).strip()
     db.complete_call(
         call_id,
         int(duration),
