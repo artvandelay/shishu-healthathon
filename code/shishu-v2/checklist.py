@@ -33,7 +33,7 @@ TOPICS: tuple[dict, ...] = (
     {"id": "body_thumb", "group": "body", "need": "small or missing thumb or finger", "words": "angootha ya ungli chhoti ya nahi hai"},
     {"id": "body_growth", "group": "body", "need": "growing like other children", "words": "baaki bachchon jaisa badh raha hai"},
     {"id": "body_limb_pain", "group": "body", "need": "repeated joint or limb pain that needs hospital", "words": "haath pair mein baar baar dard, hospital jaana"},
-    {"id": "body_puberty", "group": "body", "need": "only if any child is 10 or older: have puberty changes started in the body; if every child is under 10, do not ask and mark this covered", "words": "agar koi bachcha 10 saal ya usse bada hai, toh kya shareer mein badhti umar ke badlaav shuru ho gaye hain"},
+    {"id": "body_puberty", "group": "body", "need": "only if any child is 10 or older: have puberty changes started; if yes, ask whether they came earlier or later than other children; if every child is under 10, do not ask and mark this covered", "words": "agar koi bachcha 10 saal ya usse bada hai, toh kya shareer mein badhti umar ke badlaav shuru ho gaye hain"},
     {"id": "ill_admissions", "group": "illness", "need": "admitted to hospital again and again", "words": "baar baar hospital mein bharti"},
     {"id": "ill_iv_antibiotics", "group": "illness", "need": "repeated infections that needed drip or IV antibiotics", "words": "baar baar infection, drip ya nas mein dawai"},
     {"id": "ill_odor", "group": "illness", "need": "urine or stool smells strange, unlike other children", "words": "peshaab ya potty mein ajeeb badboo"},

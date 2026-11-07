@@ -38,7 +38,7 @@ DRILLS: dict[str, list[str]] = {
     "body_joint_swelling": ["kaun se jod mein, aur kitne din mein theek hota hai?"],
     "body_bleeding_bruise": ["kya hota hai — khoon der tak behta hai, ya neel padte hain?", "kitni baar hua hai?"],
     "body_limb_pain": ["kitni baar hospital jaana pada?"],
-    "body_puberty": ["yeh kaun se bachche mein shuru hua, jo 10 saal ya usse bada hai?"],
+    "body_puberty": ["kya yeh baaki bachchon se pehle aaya, ya baad mein aaya?"],
     "ill_admissions": ["kitni baar bharti karna pada, aur kis wajah se?"],
     "ill_iv_antibiotics": ["kitni baar, aur kaunsa infection tha, jaise pneumonia?"],
     "ill_sudden": ["kab hua tha, aur kya hua tha?"],
