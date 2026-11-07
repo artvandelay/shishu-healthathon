@@ -25,7 +25,7 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "vad_start_sensitivity": "HIGH",
     "vad_end_sensitivity": "HIGH",
     "watchdog_timeout_sec": "8.0",
-    "summary_model": "gemini-2.5-flash",
+    "summary_model": "gemini-3.8-flash",
 }
 
 _CALL_EXTRA_COLUMNS = (
@@ -84,6 +84,9 @@ def _init_db() -> None:
         )
         cur.execute(
             "UPDATE settings SET value = '8.0' WHERE key = 'watchdog_timeout_sec' AND value = '4.0'",
+        )
+        cur.execute(
+            "UPDATE settings SET value = 'gemini-3.8-flash' WHERE key = 'summary_model' AND value = 'gemini-2.5-flash'",
         )
         cur.execute(
             """
@@ -615,9 +618,18 @@ def get_call(call_id: int) -> dict | None:
         return _row_to_call_dict(row)
 
 
-def list_calls(limit: int = 50) -> list[dict]:
+_LIST_COLUMNS = (
+    "id", "engine", "mother_name", "child_name", "child_age", "child_gender",
+    "status", "started_at", "ended_at", "duration_sec", "red_flags_json",
+    "caller_name", "user_role", "model_used", "voice_used",
+)
+
+
+def list_calls() -> list[dict]:
+    """Every call, without transcripts or findings. The detail view loads those."""
+    cols = ", ".join(_LIST_COLUMNS)
     with _db_lock:
         cur = conn.cursor()
-        cur.execute("SELECT * FROM calls ORDER BY id DESC LIMIT ?", (limit,))
+        cur.execute(f"SELECT {cols} FROM calls ORDER BY id DESC")
         rows = cur.fetchall()
         return [_row_to_call_dict(r) for r in rows]

@@ -232,8 +232,15 @@
     }
 
     .people {
-      margin-top: 4px;
+      margin-top: 2px;
       font-size: 14px;
+    }
+
+    .caller {
+      margin-top: 6px;
+      color: var(--navy);
+      font-size: 14px;
+      font-weight: 750;
     }
 
     .meta {
@@ -635,66 +642,10 @@
       <span class="engine-label">Active Voice Engine</span>
       <button id="eng-gemini" type="button" aria-pressed="true">Gemini 3.1 Flash Live</button>
       <button id="eng-openai" type="button" aria-pressed="false" disabled title="Deprecated — using Gemini Live">OpenAI GPT-Live-1 (Deprecated)</button>
-      <button id="settings-toggle" class="ghost" type="button" aria-expanded="false" aria-controls="settings-drawer">Settings & Tuning</button>
     </div>
     <a class="test" href="/">Test Call -&gt;</a>
     <button id="logout-btn" class="ghost" type="button">Log out</button>
   </header>
-  <div id="settings-drawer" class="settings" hidden>
-    <form id="settings-form">
-      <div class="settings-grid">
-        <label>Gemini Model
-          <select id="set-gemini-model" name="gemini_model">
-            <option value="gemini-3.1-flash-live-preview">gemini-3.1-flash-live-preview (Latest &amp; Recommended)</option>
-            <option value="gemini-2.5-flash-native-audio-latest">gemini-2.5-flash-native-audio-latest</option>
-            <option value="gemini-3.8-live">gemini-3.8-live</option>
-            <option value="gemini-2.5-flash-native-audio-preview-12-2025">gemini-2.5-flash-native-audio-preview-12-2025</option>
-          </select>
-        </label>
-        <label>Gemini Voice
-          <select id="set-gemini-voice" name="gemini_voice" disabled>
-            <option value="Kore" selected>Kore (Fixed Female Voice)</option>
-          </select>
-        </label>
-        <label>OpenAI Voice
-          <select id="set-openai-voice" name="openai_voice" disabled>
-            <option value="marin" selected>marin (Fixed Female Voice)</option>
-          </select>
-        </label>
-        <label>OpenAI Backend Model
-          <select id="set-openai-backend" name="openai_backend_model">
-            <option>gpt-5.6-luna</option>
-            <option>gpt-5.6-sol</option>
-          </select>
-        </label>
-        <label>VAD Prefix Padding (ms)
-          <input id="set-vad-prefix" name="vad_prefix_padding_ms" type="number" min="0" step="1" value="300">
-        </label>
-        <label>VAD Silence Duration (ms)
-          <input id="set-vad-silence" name="vad_silence_ms" type="number" min="0" step="1" value="750">
-        </label>
-        <label>VAD End Sensitivity
-          <select id="set-vad-end" name="vad_end_sensitivity">
-            <option value="LOW">LOW</option>
-            <option value="HIGH" selected>HIGH</option>
-          </select>
-        </label>
-        <label>Watchdog Auto-Nudge (sec)
-          <input id="set-watchdog" name="watchdog_timeout_sec" type="number" min="0" step="0.1" value="8.0">
-        </label>
-        <label>Post-Call Summary Model
-          <select id="set-summary-model" name="summary_model">
-            <option value="gemini-2.5-flash">gemini-2.5-flash</option>
-            <option value="gpt-4o-mini">gpt-4o-mini</option>
-          </select>
-        </label>
-      </div>
-      <div class="settings-actions">
-        <button id="save-settings" type="submit">Save Settings</button>
-        <p id="settings-confirm" class="confirm" role="status" hidden>Settings saved.</p>
-      </div>
-    </form>
-  </div>
   <div class="layout">
     <aside>
       <div class="side-tabs" role="tablist" aria-label="Dashboard lists">
@@ -827,6 +778,7 @@
       let current = null;
       let refreshTimer = 0;
       let loadingList = false;
+      let refreshQueued = false;
       let loadingBugs = false;
       let settingsCache = {};
 
@@ -901,12 +853,14 @@
         return "gemini";
       }
 
-      function engineBadge(engine) {
-        const v = String(engine || "").toLowerCase();
+      function engineBadge(call) {
+        const model = String((call && call.model_used) || "").trim();
+        const engine = String((call && call.engine) || call || "").toLowerCase();
+        const v = (model || engine).toLowerCase();
         if (!v) return "—";
         if (v.indexOf("openai") !== -1 || v.indexOf("gpt") !== -1) return "gpt-live-1";
-        if (v.indexOf("gemini") !== -1) return "gemini-3.8-live";
-        return String(engine);
+        if (v.indexOf("gemini-3.1") !== -1 || v.indexOf("gemini") !== -1) return "Gemini 3.1 Flash Live";
+        return model || String(call.engine || call);
       }
 
       function flagCount(call) {
@@ -937,6 +891,11 @@
           hour: "2-digit",
           minute: "2-digit"
         });
+      }
+
+      function callerLine(call) {
+        const name = String(call.caller_name || "").trim();
+        return name ? "Logged in as " + name : "Login name not recorded";
       }
 
       function people(call) {
@@ -979,9 +938,10 @@
           pill.setAttribute("aria-label", count + " red flags");
           top.appendChild(pill);
           btn.appendChild(top);
+          btn.appendChild(el("div", "caller", callerLine(call)));
           btn.appendChild(el("div", "people", people(call)));
           const meta = el("div", "meta");
-          const badgeName = engineBadge(call.engine);
+          const badgeName = engineBadge(call);
           const badge = el("span", badgeName === "gpt-live-1" ? "badge openai" : "badge", badgeName);
           meta.appendChild(badge);
           meta.appendChild(el("span", "", fmtDuration(call.duration_sec)));
@@ -1129,9 +1089,10 @@
         reportEl.hidden = false;
         titleEl.textContent = "Call #" + call.id;
         const meta = [
+          callerLine(call),
           people(call),
           call.child_gender || "",
-          engineBadge(call.engine),
+          engineBadge(call),
           fmtDuration(call.duration_sec),
           fmtTime(call.started_at),
           call.status || ""
@@ -1284,7 +1245,7 @@
         document.getElementById("set-vad-silence").value = s.vad_silence_ms || "750";
         document.getElementById("set-vad-end").value = s.vad_end_sensitivity === "LOW" ? "LOW" : "HIGH";
         document.getElementById("set-watchdog").value = s.watchdog_timeout_sec || "8.0";
-        ensureOption(document.getElementById("set-summary-model"), s.summary_model || "gemini-2.5-flash");
+        ensureOption(document.getElementById("set-summary-model"), s.summary_model || "gemini-3.8-flash");
       }
 
       function currentEngine() {
@@ -1510,21 +1471,33 @@
       }
 
       async function refreshList() {
-        if (loadingList) return;
+        if (loadingList) {
+          refreshQueued = true;
+          return;
+        }
         loadingList = true;
+        const btn = document.getElementById("refresh");
+        const label = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = "Refreshing...";
         try {
-          const res = await api("/api/calls");
-          if (!res) return;
-          calls = asCalls(await res.json());
-          updatedEl.textContent = "Updated " + new Date().toLocaleTimeString(undefined, {
-            hour: "2-digit",
-            minute: "2-digit"
-          });
-          renderList();
-          const currentRow = calls.find(function (call) { return call.id === selectedId; });
-          if (currentRow && currentRow.status !== selectedStatus) await loadDetail(selectedId);
+          do {
+            refreshQueued = false;
+            const res = await api("/api/calls", { cache: "no-store" });
+            if (!res) return;
+            calls = asCalls(await res.json());
+            updatedEl.textContent = "Updated " + new Date().toLocaleTimeString(undefined, {
+              hour: "2-digit",
+              minute: "2-digit"
+            });
+            renderList();
+            const currentRow = calls.find(function (call) { return call.id === selectedId; });
+            if (currentRow && currentRow.status !== selectedStatus) await loadDetail(selectedId);
+          } while (refreshQueued);
         } finally {
           loadingList = false;
+          btn.disabled = false;
+          btn.textContent = label;
         }
       }
 
@@ -1543,7 +1516,7 @@
           settingsCache.active_engine = normalizeEngine(data.active_engine || name);
           showNotice("Active engine is now " + (normalizeEngine(data.active_engine || name) === "openai"
             ? "OpenAI GPT-Live-1."
-            : "Gemini 3.8 Live."));
+            : "Gemini 3.1 Flash Live."));
         } catch (err) {
           showNotice(err.message || "Could not change the voice engine.");
         } finally {
@@ -1591,16 +1564,9 @@
         copyReport().catch(function (err) { showNotice(err.message || "Could not copy the report."); });
       });
       document.getElementById("print-report").addEventListener("click", printReport);
-      document.getElementById("settings-toggle").addEventListener("click", toggleSettings);
       document.getElementById("logout-btn").addEventListener("click", async function () {
         await fetch("/api/logout", { method: "POST", credentials: "same-origin" });
         location.href = "/login";
-      });
-      document.getElementById("settings-form").addEventListener("submit", function (event) {
-        saveSettings(event).catch(function (err) { showNotice(err.message || "Could not save settings."); });
-      });
-      document.getElementById("settings-form").addEventListener("input", function () {
-        document.getElementById("settings-confirm").hidden = true;
       });
       document.getElementById("tab-calls").addEventListener("click", function () { showTab("calls"); });
       document.getElementById("tab-bugs").addEventListener("click", function () {
@@ -1619,15 +1585,9 @@
 
       async function boot() {
         const cfgRes = await api("/api/config");
-        const callsRes = await api("/api/calls");
+        const callsRes = await api("/api/calls", { cache: "no-store" });
         if (!cfgRes || !callsRes) return;
         paintEngine((await cfgRes.json()).active_engine);
-        try {
-          await loadSettings();
-        } catch (err) {
-          applySettings({});
-          showNotice(err.message || "Settings are not available yet.");
-        }
         calls = asCalls(await callsRes.json());
         updatedEl.textContent = "Updated " + new Date().toLocaleTimeString(undefined, {
           hour: "2-digit",
