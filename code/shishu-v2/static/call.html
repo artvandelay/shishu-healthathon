@@ -3,21 +3,25 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#0e6b63">
+  <meta name="theme-color" content="#1b2a4a">
   <title>SHISHU — Call</title>
   <style>
     :root {
       color-scheme: light;
-      --ink: #1c2430;
-      --muted: #5e6975;
-      --line: #eadfD0;
-      --card: #fffdf9;
-      --teal: #0e6b63;
-      --green: #1c8c4e;
-      --green-dark: #146b3b;
-      --red: #c5342a;
-      --red-dark: #9d281f;
-      --cream: #f4eee4;
+      --ink: #1b2a4a;
+      --muted: #5c6e84;
+      --line: #e2e8f0;
+      --bg: #f8fafc;
+      --card: #ffffff;
+      --navy: #1b2a4a;
+      --navy-dark: #121d33;
+      --navy-soft: #eef4f9;
+      --yellow: #e89d2d;
+      --yellow-dark: #cf861b;
+      --yellow-soft: #fef6e9;
+      --red: #dc2626;
+      --red-dark: #b91c1c;
+      --red-soft: #fef2f2;
     }
 
     * { box-sizing: border-box; }
@@ -30,8 +34,8 @@
       color: var(--ink);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Nirmala UI", "Noto Sans Devanagari", sans-serif;
       background:
-        radial-gradient(800px 360px at 50% -10%, #f8dcc4 0%, transparent 60%),
-        var(--cream);
+        radial-gradient(800px 360px at 50% -10%, #fef3df 0%, transparent 60%),
+        var(--bg);
     }
 
     header {
@@ -70,7 +74,7 @@
     }
 
     .admin-link:hover,
-    .header-btn:hover { color: var(--teal); }
+    .header-btn:hover { color: var(--yellow); }
 
     main {
       width: min(460px, 100%);
@@ -107,7 +111,7 @@
       position: absolute;
       inset: 18px;
       border-radius: 50%;
-      border: 2px solid rgba(14, 107, 99, 0.18);
+      border: 2px solid rgba(27, 42, 74, 0.16);
       opacity: 0;
     }
 
@@ -116,13 +120,13 @@
     .avatar-wrap.live .ring.r1 { animation: pulse 2.4s ease-out infinite; }
     .avatar-wrap.live .ring.r2 { animation: pulse 2.4s ease-out 0.8s infinite; }
 
-    .avatar-wrap.speaking .ring { border-color: rgba(224, 122, 47, 0.45); }
+    .avatar-wrap.speaking .ring { border-color: rgba(232, 157, 45, 0.6); }
     .avatar-wrap.reconnecting .ring {
-      border-color: rgba(224, 140, 40, 0.7);
+      border-color: rgba(232, 157, 45, 0.9);
       animation: pulse-warm 1.4s ease-in-out infinite;
     }
     .avatar-wrap.thinking .ring {
-      border-color: rgba(14, 107, 99, 0.5);
+      border-color: rgba(27, 42, 74, 0.55);
       animation: pulse-warm 1.6s ease-in-out infinite;
     }
 
@@ -143,8 +147,8 @@
       display: grid;
       place-items: center;
       background: #ffffff;
-      border: 1.5px solid rgba(27, 42, 74, 0.12);
-      box-shadow: 0 4px 18px rgba(0, 0, 0, 0.08);
+      border: 1.5px solid rgba(27, 42, 74, 0.15);
+      box-shadow: 0 4px 18px rgba(27, 42, 74, 0.08);
       overflow: hidden;
       position: relative;
       z-index: 1;
@@ -165,11 +169,11 @@
     }
 
     #status.reconnecting {
-      color: #b85e12;
+      color: var(--yellow-dark);
     }
 
     #status.thinking {
-      color: var(--teal);
+      color: var(--navy);
     }
 
     #timer {
@@ -185,7 +189,7 @@
       height: 8px;
       margin: 10px 0 0;
       border-radius: 999px;
-      background: #e7efe9;
+      background: var(--navy-soft);
       overflow: hidden;
     }
 
@@ -193,7 +197,7 @@
       display: block;
       height: 100%;
       width: 0%;
-      background: var(--green);
+      background: var(--yellow);
       border-radius: inherit;
     }
 
@@ -207,7 +211,7 @@
 
     #wait {
       margin: 8px 0 0;
-      color: var(--teal);
+      color: var(--navy);
       font-size: 15px;
     }
 
@@ -217,22 +221,22 @@
       margin-top: 18px;
       border: 0;
       border-radius: 50%;
-      background: var(--green);
+      background: var(--yellow);
       color: #fff;
       font: inherit;
       font-size: 20px;
       font-weight: 750;
       letter-spacing: 0.01em;
       cursor: pointer;
-      box-shadow: 0 12px 30px rgba(20, 107, 59, 0.22);
+      box-shadow: 0 12px 30px rgba(232, 157, 45, 0.35);
       touch-action: manipulation;
     }
 
-    .call-btn:hover { background: var(--green-dark); }
+    .call-btn:hover { background: var(--yellow-dark); }
 
     .call-btn.end {
       background: var(--red);
-      box-shadow: 0 12px 30px rgba(197, 52, 42, 0.22);
+      box-shadow: 0 12px 30px rgba(220, 38, 38, 0.28);
     }
 
     .call-btn.end:hover { background: var(--red-dark); }
@@ -244,7 +248,7 @@
       min-height: 44px;
       padding: 0 18px;
       border-radius: 999px;
-      border: 1px solid #d7c4a8;
+      border: 1px solid var(--line);
       background: #fff;
       color: var(--ink);
       font: inherit;
@@ -255,10 +259,10 @@
     }
 
     .nudge-btn.hot {
-      background: #e07a2f;
-      border-color: #e07a2f;
+      background: var(--yellow);
+      border-color: var(--yellow);
       color: #fff;
-      box-shadow: 0 0 0 4px rgba(224, 122, 47, 0.28);
+      box-shadow: 0 0 0 4px rgba(232, 157, 45, 0.28);
     }
 
     .call-btn:focus-visible,
@@ -267,7 +271,7 @@
     .text-btn:focus-visible,
     .nudge-btn:focus-visible,
     .chip:focus-visible {
-      outline: 3px solid rgba(14, 107, 99, 0.4);
+      outline: 3px solid rgba(27, 42, 74, 0.35);
       outline-offset: 3px;
     }
 
@@ -275,10 +279,10 @@
       margin-top: 12px;
       padding: 26px 22px 22px;
       background: var(--card);
-      border: 1px solid #eadfD0;
+      border: 1px solid var(--line);
       border-radius: 22px;
       text-align: left;
-      box-shadow: 0 16px 40px rgba(70, 46, 20, 0.06);
+      box-shadow: 0 16px 40px rgba(27, 42, 74, 0.06);
     }
 
     .thanks h2 {
@@ -322,24 +326,27 @@
     .text-btn {
       width: 100%;
       border: 0;
-      background: var(--teal);
+      background: var(--navy);
       color: #fff;
       font: inherit;
       font-weight: 700;
       cursor: pointer;
     }
 
+    .text-btn:hover { background: var(--navy-dark); }
+
     .dash-link {
-      color: var(--teal);
-      background: #e7f4f1;
+      color: var(--navy);
+      background: var(--navy-soft);
     }
 
     #error {
       margin: 16px 0 0;
       padding: 12px 14px;
       border-radius: 12px;
-      background: #fdecea;
-      color: #9d2c24;
+      background: var(--red-soft);
+      color: var(--red-dark);
+      border: 1px solid #fecaca;
       text-align: left;
       line-height: 1.4;
     }
@@ -349,7 +356,7 @@
       padding: 14px;
       text-align: left;
       background: var(--card);
-      border: 1px solid #eadfd0;
+      border: 1px solid var(--line);
       border-radius: 16px;
       font-size: 13px;
       line-height: 1.4;
@@ -400,7 +407,7 @@
       min-width: 0;
       min-height: 40px;
       border-radius: 10px;
-      border: 1px solid #e0d4c4;
+      border: 1px solid var(--line);
       padding: 8px 10px;
       font: inherit;
       font-size: 14px;
@@ -409,7 +416,7 @@
     .hud-send button {
       border: 0;
       border-radius: 10px;
-      background: var(--teal);
+      background: var(--navy);
       color: #fff;
       font: inherit;
       font-weight: 700;
@@ -417,9 +424,11 @@
       cursor: pointer;
     }
 
+    .hud-send button:hover { background: var(--navy-dark); }
+
     .hud-note {
       margin: 8px 0 0;
-      color: var(--teal);
+      color: var(--navy);
       font-size: 12px;
     }
 
@@ -431,7 +440,7 @@
       align-items: end;
       justify-items: center;
       padding: 16px;
-      background: rgba(28, 36, 48, 0.35);
+      background: rgba(27, 42, 74, 0.4);
     }
 
     .bug-card {
@@ -442,7 +451,7 @@
       text-align: left;
       background: var(--card);
       border-radius: 18px;
-      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.16);
+      box-shadow: 0 16px 40px rgba(27, 42, 74, 0.16);
     }
 
     .bug-card h2 {
@@ -464,7 +473,7 @@
     }
 
     .chip {
-      border: 1px solid #e0d4c4;
+      border: 1px solid var(--line);
       background: #fff;
       color: var(--ink);
       border-radius: 999px;
@@ -475,8 +484,8 @@
     }
 
     .chip.on {
-      background: var(--teal);
-      border-color: var(--teal);
+      background: var(--navy);
+      border-color: var(--navy);
       color: #fff;
     }
 
@@ -485,7 +494,7 @@
       min-height: 72px;
       margin-top: 12px;
       padding: 10px 12px;
-      border: 1px solid #e0d4c4;
+      border: 1px solid var(--line);
       border-radius: 12px;
       background: #fff;
       color: var(--ink);
@@ -507,17 +516,20 @@
       min-height: 44px;
       border: 0;
       border-radius: 12px;
-      background: #e7f4f1;
-      color: var(--teal);
+      background: var(--navy-soft);
+      color: var(--navy);
       font: inherit;
       font-weight: 700;
       cursor: pointer;
     }
 
+    .ghost-btn:hover { background: #dce7f2; }
+
     .bug-confirm {
       margin: 10px 0 0;
-      color: var(--green-dark);
+      color: var(--yellow-dark);
       font-size: 14px;
+      font-weight: 600;
     }
 
     .bug-error {

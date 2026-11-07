@@ -3,22 +3,26 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#0e6b63">
+  <meta name="theme-color" content="#1b2a4a">
   <title>SHISHU — Clinical Dashboard</title>
   <style>
     :root {
       color-scheme: light;
-      --ink: #1c2430;
-      --muted: #5c6772;
-      --line: #e6dccf;
-      --bg: #f4efe6;
-      --card: #fffdf9;
-      --teal: #0e6b63;
-      --teal-soft: #e7f4f1;
-      --red: #a3261e;
-      --red-bg: #fdecea;
-      --red-line: #f0b2ab;
-      --amber: #8a5a12;
+      --ink: #1b2a4a;
+      --muted: #5c6e84;
+      --line: #e2e8f0;
+      --bg: #f8fafc;
+      --card: #ffffff;
+      --navy: #1b2a4a;
+      --navy-dark: #121d33;
+      --navy-soft: #eef4f9;
+      --yellow: #e89d2d;
+      --yellow-dark: #cf861b;
+      --yellow-soft: #fef6e9;
+      --red: #dc2626;
+      --red-bg: #fef2f2;
+      --red-line: #fecaca;
+      --amber: #b45309;
     }
 
     * { box-sizing: border-box; }
@@ -75,7 +79,7 @@
     .engine button,
     .refresh,
     .ghost {
-      border: 1px solid #d7cbbd;
+      border: 1px solid var(--line);
       background: #fff;
       color: var(--ink);
       border-radius: 999px;
@@ -85,15 +89,15 @@
     }
 
     .engine button[aria-pressed="true"] {
-      background: var(--teal);
-      border-color: var(--teal);
+      background: var(--navy);
+      border-color: var(--navy);
       color: #fff;
     }
 
     .test {
       margin-left: auto;
       text-decoration: none;
-      background: var(--teal);
+      background: var(--yellow);
       color: #fff;
       border-radius: 999px;
       min-height: 36px;
@@ -101,6 +105,8 @@
       font-weight: 700;
       white-space: nowrap;
     }
+
+    .test:hover { background: var(--yellow-dark); }
 
     .layout {
       flex: 1;
@@ -112,7 +118,7 @@
       width: 340px;
       flex: none;
       border-right: 1px solid var(--line);
-      background: #fbf7f1;
+      background: var(--navy-soft);
       display: flex;
       flex-direction: column;
       min-height: 0;
@@ -145,7 +151,7 @@
 
     .side-tabs button {
       flex: 1;
-      border: 1px solid #d7cbbd;
+      border: 1px solid var(--line);
       background: #fff;
       color: var(--ink);
       border-radius: 999px;
@@ -155,8 +161,8 @@
     }
 
     .side-tabs button[aria-selected="true"] {
-      background: var(--teal);
-      border-color: var(--teal);
+      background: var(--navy);
+      border-color: var(--navy);
       color: #fff;
     }
 
@@ -191,8 +197,8 @@
     }
 
     .call-item.selected {
-      border-color: var(--teal);
-      box-shadow: inset 0 0 0 1px var(--teal);
+      border-color: var(--navy);
+      box-shadow: inset 0 0 0 1px var(--navy);
     }
 
     .row {
@@ -233,8 +239,8 @@
     }
 
     .badge {
-      background: var(--teal-soft);
-      color: var(--teal);
+      background: var(--navy-soft);
+      color: var(--navy);
     }
 
     .badge.openai {
@@ -307,7 +313,7 @@
     audio { width: min(480px, 100%); }
 
     .download {
-      color: var(--teal);
+      color: var(--navy);
       font-weight: 700;
     }
 
@@ -395,12 +401,12 @@
 
     .turn {
       padding: 8px 0;
-      border-bottom: 1px solid #f0e7dc;
+      border-bottom: 1px solid #eef2f6;
     }
 
     .turn strong { font-size: 12px; letter-spacing: 0.03em; }
 
-    .turn.shishu strong { color: var(--teal); }
+    .turn.shishu strong { color: var(--navy); }
 
     .turn p {
       margin: 4px 0 0;
@@ -413,7 +419,7 @@
     input:focus-visible,
     select:focus-visible,
     .call-item:focus-visible {
-      outline: 3px solid rgba(14, 107, 99, 0.35);
+      outline: 3px solid rgba(27, 42, 74, 0.35);
       outline-offset: 2px;
     }
 
@@ -446,7 +452,7 @@
       font: inherit;
       color: var(--ink);
       background: #fff;
-      border: 1px solid #d7cbbd;
+      border: 1px solid var(--line);
       border-radius: 10px;
       min-height: 36px;
       padding: 6px 10px;
@@ -467,7 +473,7 @@
 
     #save-settings {
       border: 0;
-      background: var(--teal);
+      background: var(--navy);
       color: #fff;
       border-radius: 999px;
       min-height: 36px;
@@ -476,12 +482,14 @@
       cursor: pointer;
     }
 
+    #save-settings:hover { background: var(--navy-dark); }
+
     #save-settings:disabled,
     #log-bug:disabled { opacity: 0.6; cursor: default; }
 
     .confirm {
       margin: 0;
-      color: var(--teal);
+      color: var(--yellow-dark);
       font-weight: 700;
     }
 
@@ -492,7 +500,7 @@
     }
 
     .kpi {
-      background: #fbf7f1;
+      background: var(--navy-soft);
       border: 1px solid var(--line);
       border-radius: 12px;
       padding: 10px 12px;
@@ -520,8 +528,8 @@
     }
 
     .pill.warn {
-      background: #f8efd8;
-      color: var(--amber);
+      background: var(--yellow-soft);
+      color: var(--yellow-dark);
     }
 
     .trace { margin-top: 12px; }
@@ -535,7 +543,7 @@
 
     .bug-item {
       background: #fff;
-      border: 1px solid #efe6db;
+      border: 1px solid var(--line);
       border-radius: 14px;
       padding: 10px 12px;
     }
@@ -543,7 +551,7 @@
     .bug-link {
       border: 0;
       background: transparent;
-      color: var(--teal);
+      color: var(--navy);
       font-weight: 700;
       padding: 0;
       cursor: pointer;

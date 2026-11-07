@@ -3,19 +3,23 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#0e6b63">
+  <meta name="theme-color" content="#1b2a4a">
   <title>SHISHU — Pre-Consultation Voice Assistant</title>
   <style>
     :root {
       color-scheme: light;
-      --ink: #1d2430;
-      --muted: #5c6672;
-      --line: #e4d8c8;
-      --card: #fffdf9;
-      --teal: #0e6b63;
-      --teal-dark: #0a524c;
-      --danger: #9d2c24;
-      --danger-bg: #fdecea;
+      --ink: #1b2a4a;
+      --muted: #5c6e84;
+      --line: #e2e8f0;
+      --bg: #f8fafc;
+      --card: #ffffff;
+      --navy: #1b2a4a;
+      --navy-dark: #121d33;
+      --yellow: #e89d2d;
+      --yellow-dark: #cf861b;
+      --yellow-soft: #fef6e9;
+      --danger: #dc2626;
+      --danger-bg: #fef2f2;
     }
 
     * { box-sizing: border-box; }
@@ -31,9 +35,9 @@
       color: var(--ink);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Nirmala UI", "Noto Sans Devanagari", sans-serif;
       background:
-        radial-gradient(900px 420px at 0% -10%, #f6d7b8 0%, transparent 60%),
-        radial-gradient(800px 420px at 100% 0%, #d7eee6 0%, transparent 55%),
-        #f3ecdf;
+        radial-gradient(900px 420px at 0% -10%, #fef3df 0%, transparent 60%),
+        radial-gradient(800px 420px at 100% 0%, #eef4f9 0%, transparent 55%),
+        var(--bg);
     }
 
     .card {
@@ -42,7 +46,7 @@
       border: 1px solid var(--line);
       border-radius: 22px;
       padding: 32px 28px 28px;
-      box-shadow: 0 18px 50px rgba(70, 46, 20, 0.08);
+      box-shadow: 0 18px 50px rgba(27, 42, 74, 0.08);
     }
 
     .mark {
@@ -52,9 +56,10 @@
       display: grid;
       place-items: center;
       border-radius: 50%;
-      background: #e7f4f1;
-      color: var(--teal);
+      background: var(--yellow-soft);
+      color: var(--yellow-dark);
       font-weight: 750;
+      font-size: 20px;
       letter-spacing: 0.02em;
     }
 
@@ -84,7 +89,7 @@
       width: 100%;
       min-height: 52px;
       padding: 12px 14px;
-      border: 1px solid #d9cbb8;
+      border: 1px solid var(--line);
       border-radius: 12px;
       background: #fff;
       color: var(--ink);
@@ -93,8 +98,8 @@
     }
 
     input:focus {
-      outline: 3px solid rgba(14, 107, 99, 0.28);
-      border-color: var(--teal);
+      outline: 3px solid rgba(27, 42, 74, 0.25);
+      border-color: var(--navy);
     }
 
     button {
@@ -103,7 +108,7 @@
       min-height: 52px;
       border: 0;
       border-radius: 12px;
-      background: var(--teal);
+      background: var(--navy);
       color: #fff;
       font: inherit;
       font-size: 17px;
@@ -111,7 +116,7 @@
       cursor: pointer;
     }
 
-    button:hover { background: var(--teal-dark); }
+    button:hover { background: var(--navy-dark); }
 
     button:disabled {
       opacity: 0.7;
@@ -120,7 +125,7 @@
 
     button:focus-visible,
     input:focus-visible {
-      outline: 3px solid rgba(14, 107, 99, 0.35);
+      outline: 3px solid rgba(27, 42, 74, 0.35);
       outline-offset: 2px;
     }
 
