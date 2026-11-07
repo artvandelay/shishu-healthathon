@@ -157,7 +157,30 @@ class ReportTests(unittest.TestCase):
         html = mother_report.render_html(report)
         self.assertIn("यह कॉल अधूरी रही", html)
         self.assertIn("अभी नहीं पूछा गया", html)
+        self.assertIn(checklist.question_hi("ill_admissions") + "</span><span class=\"ans\">पूछा नहीं गया", html)
         self.assertNotIn(checklist.question_hi("ill_admissions") + "</span><span class=\"ans\">नहीं", html)
+        self.assertNotIn(checklist.question_hi("birth_nicu") + "</span><span class=\"ans\">नहीं", html)
+
+
+class UngroundedNoTests(unittest.TestCase):
+    def test_a_greeting_only_call_does_not_print_no(self):
+        answers = {
+            topic["id"]: {"answer": "no", "evidence": "माँ ने बताया कि ऐसा नहीं हुआ।"}
+            for topic in checklist.TOPICS
+        }
+        call = _call(
+            transcript=[{"role": "assistant", "text": "Namaste, aapka naam bataiyega?"}],
+            telemetry={"coverage": [], "close_reason": ""},
+            summary_mother="",
+        )
+        report = mother_report.build(call, {"answers": answers, "yes_hindi": []})
+        html = mother_report.render_html(report)
+        self.assertTrue(report["incomplete"])
+        self.assertEqual(report["groups"], [])
+        self.assertIn("पूछा नहीं गया", html)
+        self.assertNotIn('class="ans">नहीं', html)
+        self.assertIn("कोई जवाब दर्ज नहीं हुआ", html)
+        self.assertIn("अधूरी कॉल", html)
 
 
 class PdfTests(unittest.TestCase):

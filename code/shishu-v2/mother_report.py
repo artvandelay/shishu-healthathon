@@ -270,9 +270,9 @@ def _incomplete(call: dict) -> bool:
     reason = str(telemetry.get("close_reason") or "")
     if reason in {"silence", "time_limit", "emergency", "caller_stop"}:
         return True
-    coverage = list(telemetry.get("coverage") or [])
-    if not coverage:
+    if "coverage" not in telemetry:
         return False
+    coverage = list(telemetry.get("coverage") or [])
     return bool(checklist.open_topics(coverage))
 
 
@@ -287,6 +287,39 @@ def _answer(answers: dict, topic_id: str) -> str:
     return str(entry or "")
 
 
+def _user_text(call: dict) -> str:
+    parts = []
+    for turn in call.get("transcript") or []:
+        if str(turn.get("role") or "") != "user":
+            continue
+        text = str(turn.get("text") or "").strip()
+        if text:
+            parts.append(text)
+    return " ".join(parts).lower()
+
+
+def _covered(call: dict) -> set[str]:
+    telemetry = call.get("telemetry") or {}
+    return {str(topic_id) for topic_id in (telemetry.get("coverage") or [])}
+
+
+def ground_kind(call: dict, topic_id: str, answers: dict) -> str:
+    """A yes, no, or unknown counts only if she said it, or the live call recorded it.
+
+    A model that fills in 'no' for a question she never heard is not an answer.
+    """
+    entry = (answers or {}).get(topic_id) or {}
+    kind = _answer(answers, topic_id)
+    if kind not in {"yes", "no", "unknown"}:
+        return "unknown" if topic_id in _covered(call) else "not_asked"
+    evidence = str(entry.get("evidence") or "").strip().lower() if isinstance(entry, dict) else ""
+    said = _user_text(call)
+    quoted = len(evidence) >= 12 and evidence in said
+    if quoted or topic_id in _covered(call):
+        return kind
+    return "not_asked"
+
+
 def build(call: dict, extracted: dict | None = None) -> dict:
     extracted = extracted or {}
     answers = extracted.get("answers") or {}
@@ -298,7 +331,7 @@ def build(call: dict, extracted: dict | None = None) -> dict:
         date, clock = "", ""
     incomplete = _incomplete(call)
     questions = [hindi_text(q) for q in _questions(str(call.get("summary_mother") or ""))]
-    if _answer(answers, "preg_thalassemia") in {"no", "unknown"}:
+    if ground_kind(call, "preg_thalassemia", answers) in {"no", "unknown"}:
         if not any("थैलेसीमिया" in q for q in questions):
             questions.append(THALASSEMIA_LINE)
     yes = [
@@ -307,11 +340,18 @@ def build(call: dict, extracted: dict | None = None) -> dict:
         if str(line).strip() and _has_hindi(str(line))
     ]
     yes = [hindi_text(line) for line in yes]
-    if not yes:
+    grounded_yes = any(
+        ground_kind(call, topic["id"], answers) == "yes"
+        for topic in checklist.TOPICS
+        if not topic["id"].startswith("intro_")
+    )
+    if not grounded_yes and not _user_text(call).strip():
+        yes = []
+    if not yes and _user_text(call).strip():
         for topic in checklist.TOPICS:
             if topic["id"].startswith("intro_"):
                 continue
-            if _answer(answers, topic["id"]) != "yes":
+            if ground_kind(call, topic["id"], answers) != "yes":
                 continue
             line = checklist.question_hi(topic["id"]).rstrip("?").strip()
             if line.startswith("क्या "):
@@ -320,24 +360,27 @@ def build(call: dict, extracted: dict | None = None) -> dict:
                 yes.append(line)
     groups = []
     unknown = []
+    unasked = []
     not_asked_groups: list[str] = []
     for group in checklist.DETAIL_GROUPS:
         nos = []
-        missed = False
+        missed = []
         for topic in checklist.TOPICS:
             if topic["group"] != group:
                 continue
-            kind = _answer(answers, topic["id"])
+            kind = ground_kind(call, topic["id"], answers)
             if kind == "no":
                 nos.append(checklist.question_hi(topic["id"]))
             elif kind == "unknown":
                 unknown.append(checklist.question_hi(topic["id"]))
             elif kind == "not_asked" and not topic.get("optional"):
-                missed = True
+                missed.append(checklist.question_hi(topic["id"]))
         if nos:
             groups.append({"title": checklist.GROUP_HI[group], "items": nos})
-        if incomplete and missed:
-            not_asked_groups.append(checklist.GROUP_HI[group])
+        if missed:
+            unasked.append({"title": checklist.GROUP_HI[group], "items": missed})
+            if incomplete:
+                not_asked_groups.append(checklist.GROUP_HI[group])
     child = _child(call)
     who = _name(call) + (f" · {child}" if child else "")
     return {
@@ -352,6 +395,7 @@ def build(call: dict, extracted: dict | None = None) -> dict:
         "yes": yes,
         "groups": groups,
         "unknown": unknown,
+        "unasked": unasked,
         "not_asked": not_asked_groups,
         "started": when,
     }
@@ -368,6 +412,8 @@ def render_html(report: dict) -> str:
     questions = "\n".join(f"<li>{html.escape(q)}</li>" for q in report["questions"])
     if report["yes"]:
         yes = '<ul class="yes">' + "".join(f"<li>{html.escape(line)}</li>" for line in report["yes"]) + "</ul>"
+    elif report.get("unasked") and not report["groups"]:
+        yes = '<p class="calm">इस कॉल में कोई जवाब दर्ज नहीं हुआ।</p>'
     else:
         yes = '<p class="calm">इस कॉल में कोई बात हाँ में नहीं आई।</p>'
     band = ""
@@ -399,10 +445,16 @@ def render_html(report: dict) -> str:
                 + html.escape(question)
                 + '</span><span class="ans">पता नहीं</span></div>'
             )
-    if report["not_asked"]:
-        chips = "".join(f'<span class="chip">{html.escape(name)}</span>' for name in report["not_asked"])
+    if report.get("unasked"):
         rows.append('<div class="group">अभी नहीं पूछा गया</div>')
-        rows.append(f'<div class="chips">{chips}</div>')
+        for group in report["unasked"]:
+            rows.append(f'<div class="group">{html.escape(group["title"])}</div>')
+            for question in group["items"]:
+                rows.append(
+                    '<div class="no-row"><span>'
+                    + html.escape(question)
+                    + '</span><span class="ans">पूछा नहीं गया</span></div>'
+                )
     meta = " · ".join(
         bit
         for bit in (report["date"], report["time"], report["duration"], report["status"])
