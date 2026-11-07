@@ -64,6 +64,26 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(user.get("/api/calls").status_code, 403)
         bug = user.post("/api/bugs", json={"category": "test", "note": "check", "call_id": 0})
         self.assertEqual(bug.status_code, 200)
+        self.assertNotIn("snapshot", bug.json()["bug"])
+
+    def test_bug_report_does_not_copy_another_callers_transcript(self):
+        import db
+
+        owner = db.create_call("gemini", caller_name="Owner")
+        db.append_transcript(owner, "user", "Secret line from Owner.")
+        db.complete_call(owner, 10, "", "note", "note")
+        user = TestClient(app.app)
+        logged = user.post("/api/login", json={"username": "Other", "passcode": app._passcode()})
+        self.assertEqual(logged.status_code, 200)
+        filed = user.post("/api/bugs", json={"category": "test", "note": "peek", "call_id": owner})
+        self.assertEqual(filed.status_code, 200)
+        self.assertNotIn("snapshot", filed.json()["bug"])
+        admin = TestClient(app.app)
+        admin.post("/api/login", json={"username": "admin", "passcode": app._admin_passcode()})
+        listed = admin.get("/api/bugs")
+        self.assertEqual(listed.status_code, 200)
+        match = next(item for item in listed.json() if item["call_id"] == owner)
+        self.assertEqual(match["snapshot"]["last_transcript"], [])
 
         forged = TestClient(app.app)
         denied = forged.get("/api/calls", headers={"Cookie": "shishu_auth=admin"})

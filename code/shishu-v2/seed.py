@@ -3,16 +3,9 @@
 import array
 import math
 import os
-import shutil
-import subprocess
 import wave
 
 import db
-
-SAMPLE_MP4 = (
-    "/Users/jigar/projects/0n-going/SHISHU-healthathon-koita/"
-    "data/SHISHU Call/audio/Sample call recording-1Nov_Part 1.mp4"
-)
 
 _DOCTOR_SHILPA = """### Patient Profile & Chief Complaint
 Mother: Shilpa. Child: Aarav, 7-year-old boy. This was a pre-consultation screening, not an acute emergency visit. The history a doctor should see first is neonatal jaundice treated with phototherapy, knee swelling for 5–7 days after falls, high blood pressure and thyroid disease that continued after delivery, and a previous son who died at 5 months with fits.
@@ -226,12 +219,6 @@ _FINDINGS_GEETA = [
 ]
 
 
-def _wav_duration_sec(path: str) -> int:
-    with wave.open(path, "rb") as handle:
-        rate = handle.getframerate() or 1
-        return max(1, int(handle.getnframes() / rate))
-
-
 def _write_placeholder_wav(path: str, seconds: int = 3) -> int:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     rate = 24000
@@ -248,34 +235,7 @@ def _write_placeholder_wav(path: str, seconds: int = 3) -> int:
     return seconds
 
 
-def _convert_sample_or_placeholder(path: str) -> int:
-    """Write call audio from the Nov 1 sample, or a 3-second wav if it is missing."""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    if shutil.which("ffmpeg") and os.path.isfile(SAMPLE_MP4):
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-loglevel",
-                "error",
-                "-i",
-                SAMPLE_MP4,
-                "-vn",
-                "-ac",
-                "1",
-                "-ar",
-                "24000",
-                "-c:a",
-                "pcm_s16le",
-                path,
-            ],
-            check=True,
-        )
-        return _wav_duration_sec(path)
-    return _write_placeholder_wav(path, 3)
-
-
-def _seed_call(turns, findings, summary_doctor, summary_mother, use_sample_audio: bool) -> int:
+def _seed_call(turns, findings, summary_doctor, summary_mother) -> int:
     call_id = db.create_call("gemini")
     for role, text in turns:
         db.append_transcript(call_id, role, text)
@@ -283,10 +243,7 @@ def _seed_call(turns, findings, summary_doctor, summary_mother, use_sample_audio
         db.record_finding_db(call_id, domain, status, detail, is_red_flag)
     audio_file = f"call_{call_id}.wav"
     audio_path = os.path.join(db.DATA_DIR, "audio", audio_file)
-    if use_sample_audio:
-        duration = _convert_sample_or_placeholder(audio_path)
-    else:
-        duration = _write_placeholder_wav(audio_path, 3)
+    duration = _write_placeholder_wav(audio_path, 3)
     db.complete_call(call_id, duration, audio_file, summary_doctor, summary_mother)
     return call_id
 
@@ -294,5 +251,5 @@ def _seed_call(turns, findings, summary_doctor, summary_mother, use_sample_audio
 def ensure_seeded() -> None:
     if db.list_calls():
         return
-    _seed_call(_TURNS_SHILPA, _FINDINGS_SHILPA, _DOCTOR_SHILPA, _MOTHER_SHILPA, True)
-    _seed_call(_TURNS_GEETA, _FINDINGS_GEETA, _DOCTOR_GEETA, _MOTHER_GEETA, False)
+    _seed_call(_TURNS_SHILPA, _FINDINGS_SHILPA, _DOCTOR_SHILPA, _MOTHER_SHILPA)
+    _seed_call(_TURNS_GEETA, _FINDINGS_GEETA, _DOCTOR_GEETA, _MOTHER_GEETA)

@@ -557,8 +557,9 @@ def create_bug_report(
     note: str,
     call_elapsed_sec: int = 0,
     extra_snapshot: dict | None = None,
+    include_call_body: bool = False,
 ) -> dict:
-    call = get_call(call_id) if call_id and call_id > 0 else None
+    call = get_call(call_id) if include_call_body and call_id and call_id > 0 else None
     transcript = (call or {}).get("transcript") or []
     snapshot = {
         "settings": get_all_settings(),
@@ -585,7 +586,7 @@ def create_bug_report(
         )
         bug_id = int(cur.lastrowid)
         conn.commit()
-    if call_id and call_id > 0:
+    if include_call_body and call_id and call_id > 0:
         append_call_event(call_id, "bug_reported", f"{category}: {note}".strip(": "))
     return {
         "id": bug_id,
@@ -594,7 +595,6 @@ def create_bug_report(
         "category": category or "",
         "note": note or "",
         "call_elapsed_sec": int(call_elapsed_sec or 0),
-        "snapshot": snapshot,
     }
 
 

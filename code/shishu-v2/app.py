@@ -120,6 +120,16 @@ def _require_admin(request: Request) -> None:
         raise HTTPException(status_code=403, detail="Admin login required")
 
 
+def _owns_call(role: str, username: str, call_id: int) -> bool:
+    if call_id <= 0 or role == "admin":
+        return role == "admin" and call_id > 0
+    call = db.get_call(call_id)
+    if call is None:
+        return False
+    owner = str(call.get("caller_name") or "").strip()
+    return bool(username) and owner == username
+
+
 def _audio_dir() -> Path:
     return (Path(db.DATA_DIR) / "audio").resolve()
 
@@ -345,6 +355,7 @@ async def post_bug(request: Request):
         str(body.get("note") or ""),
         elapsed,
         extra,
+        _owns_call(role, username, call_id),
     )
     return {"ok": True, "bug": bug}
 
