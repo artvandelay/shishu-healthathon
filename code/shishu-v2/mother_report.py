@@ -235,6 +235,9 @@ def _child(call: dict) -> str:
         entry = findings.get("profile_child_age")
         if isinstance(entry, dict):
             age = str(entry.get("detail") or "").strip()
+    m_age = re.search(r"(\d+\s*(?:years?|months?|साल|महीने))", age, re.I)
+    if m_age and len(age.split()) > 3:
+        age = m_age.group(1)
     age = re.sub(r"(?i)\byears?\b", "साल", age)
     age = re.sub(r"(?i)\bmonths?\b", "महीने", age)
     if not gender:

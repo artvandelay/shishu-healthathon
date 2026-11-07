@@ -437,6 +437,37 @@ def complete_call(
         conn.commit()
 
 
+def save_doctor_summary(
+    call_id: int,
+    summary_doctor: str,
+    findings: dict | None = None,
+    red_flags: list | None = None,
+) -> None:
+    """Write the English doctor note after the call. Leave the mother text alone."""
+    with _db_lock:
+        cur = conn.cursor()
+        if isinstance(findings, dict) and isinstance(red_flags, list):
+            cur.execute(
+                """
+                UPDATE calls
+                SET summary_doctor = ?, findings_json = ?, red_flags_json = ?
+                WHERE id = ?
+                """,
+                (
+                    summary_doctor or "",
+                    json.dumps(findings, ensure_ascii=False),
+                    json.dumps(red_flags, ensure_ascii=False),
+                    call_id,
+                ),
+            )
+        else:
+            cur.execute(
+                "UPDATE calls SET summary_doctor = ? WHERE id = ?",
+                (summary_doctor or "", call_id),
+            )
+        conn.commit()
+
+
 def get_answers(call_id: int) -> dict | None:
     with _db_lock:
         cur = conn.cursor()

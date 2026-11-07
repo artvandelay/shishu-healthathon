@@ -74,6 +74,39 @@ class ExtractorTests(unittest.TestCase):
         self.assertTrue(out["yes_hindi"])
 
 
+class MotherPathTests(unittest.TestCase):
+    def test_mother_summary_uses_extractor_questions(self):
+        text = answer_extractor.mother_summary(
+            {
+                "questions_hindi": [
+                    "क्या जन्म के ऑपरेशन के लिए अभी जाँच करवाएँ?",
+                    "क्या चार बार खून चढ़ने पर डॉक्टर को बताएँ?",
+                    "क्या प्रेग्नेंसी के बीपी के लिए जाँच बाकी है?",
+                ]
+            }
+        )
+        self.assertIn("ऑपरेशन", text)
+        self.assertIn("1. ", text)
+
+    def test_short_question_list_uses_the_default(self):
+        text = answer_extractor.mother_summary({"questions_hindi": ["क्या एक ही सवाल?"]})
+        self.assertIn("वज़न", text)
+
+    def test_doctor_save_leaves_the_mother_text(self):
+        call_id = db.create_call("gemini")
+        db.complete_call(call_id, 10, "", "", "1. क्या जाँच करवाएँ?")
+        db.save_doctor_summary(
+            call_id,
+            "### Patient Profile & Chief Complaint\nNoted.",
+            {"birth_nicu": {"status": "positive", "detail": "NICU", "is_red_flag": True}},
+            ["birth_nicu: NICU"],
+        )
+        call = db.get_call(call_id)
+        self.assertIn("जाँच", call["summary_mother"])
+        self.assertIn("Patient Profile", call["summary_doctor"])
+        self.assertEqual(call["findings"]["birth_nicu"]["detail"], "NICU")
+
+
 class ReportTests(unittest.TestCase):
     def test_red_flags_add_thalassemia_once_and_group_the_nos(self):
         answers = {

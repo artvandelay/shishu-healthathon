@@ -14,6 +14,7 @@ from google import genai
 from google.genai import types
 from starlette.websockets import WebSocketState
 
+import answer_extractor
 import audio_recorder
 import db
 import checklist
@@ -24,7 +25,9 @@ from prompts import (
     clean_assistant_caption,
     clean_user_caption,
 )
-from summarizer import default_mother_questions, generate_call_summaries
+from summarizer import generate_call_summaries
+
+_background_tasks: set[asyncio.Task] = set()
 
 _ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 load_dotenv(_ENV_PATH)
@@ -1363,6 +1366,50 @@ async def _browser_loop(
         raise
 
 
+def _spawn_doctor_note(
+    call_id: int,
+    transcript: list,
+    findings: dict,
+    red_flags: list,
+    telemetry: dict | None,
+) -> None:
+    task = asyncio.create_task(
+        _write_doctor_note(call_id, transcript, findings, red_flags, telemetry)
+    )
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+async def _write_doctor_note(
+    call_id: int,
+    transcript: list,
+    findings: dict,
+    red_flags: list,
+    telemetry: dict | None,
+) -> None:
+    try:
+        result = await generate_call_summaries(transcript, findings, red_flags)
+    except Exception:
+        return
+    if not isinstance(result, dict):
+        return
+    summary_doctor = str(result.get("summary_doctor") or "")
+    merged_findings = result.get("findings") if isinstance(result.get("findings"), dict) else findings
+    merged_flags = result.get("red_flags") if isinstance(result.get("red_flags"), list) else red_flags
+    if telemetry is not None:
+        doctor_note, _mother_note = checklist.incomplete_notes(
+            telemetry.get("coverage") or [],
+            str(telemetry.get("close_reason") or ""),
+            str(telemetry.get("emergency_detail") or ""),
+        )
+        if doctor_note:
+            summary_doctor = doctor_note + "\n\n" + summary_doctor
+    try:
+        db.save_doctor_summary(call_id, summary_doctor, merged_findings, list(merged_flags))
+    except Exception:
+        return
+
+
 async def _finalize(
     ws: WebSocket,
     ws_lock: asyncio.Lock,
@@ -1385,40 +1432,26 @@ async def _finalize(
             pass
 
     call = db.get_call(call_id) or {}
-    transcript = call.get("transcript") or []
-    findings = call.get("findings") or {}
+    transcript = list(call.get("transcript") or [])
+    findings = dict(call.get("findings") or {})
     red_flags = list(call.get("red_flags") or [])
-    summary_doctor = ""
-    summary_mother = ""
-    merged_findings = findings
     try:
-        result = await generate_call_summaries(transcript, findings, red_flags)
-        if isinstance(result, dict):
-            summary_doctor = str(result.get("summary_doctor") or "")
-            summary_mother = str(result.get("summary_mother") or "")
-            if isinstance(result.get("findings"), dict):
-                merged_findings = result["findings"]
-            extra_flags = result.get("red_flags")
-            if isinstance(extra_flags, list):
-                red_flags = [str(item) for item in extra_flags]
+        extracted = await answer_extractor.cached_answers(call)
     except Exception:
+        extracted = answer_extractor.fallback_from_call(call)
         await _report_error(
             ws,
             ws_lock,
             call_id,
             telemetry,
-            "Post-call summary failed",
+            "Mother report extract failed",
         )
-    if not summary_mother.strip():
-        summary_mother = default_mother_questions(merged_findings, red_flags)
-
+    summary_mother = answer_extractor.mother_summary(extracted, findings, red_flags)
     if telemetry is not None:
         close_reason = str(telemetry.get("close_reason") or "")
-        doctor_note, mother_note = checklist.incomplete_notes(
+        _doctor_note, mother_note = checklist.incomplete_notes(
             telemetry.get("coverage") or [], close_reason, str(telemetry.get("emergency_detail") or "")
         )
-        if doctor_note:
-            summary_doctor = doctor_note + "\n\n" + summary_doctor
         if mother_note:
             if close_reason == "emergency":
                 summary_mother = (mother_note + "\n\n" + summary_mother).strip()
@@ -1428,18 +1461,18 @@ async def _finalize(
         call_id,
         int(duration),
         filename,
-        summary_doctor,
+        "",
         summary_mother,
-        findings=merged_findings,
+        findings=findings,
         red_flags=red_flags,
     )
+    _spawn_doctor_note(call_id, transcript, findings, red_flags, telemetry)
     await _send_json(
         ws,
         ws_lock,
         {
             "type": "call_completed",
             "call_id": call_id,
-            "summary_doctor": summary_doctor,
             "summary_mother": summary_mother,
             "red_flags": red_flags,
         },

@@ -14,7 +14,7 @@ load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 load_dotenv()
 
 _ANSWERS = ("yes", "no", "unknown", "not_asked")
-_VERSION = 2
+_VERSION = 4
 
 _DOMAIN_TOPIC = {
     "birth_nicu": "birth_nicu",
@@ -34,20 +34,29 @@ You read a finished SHISHU screening call. You do not talk to the mother.
 For every topic id, set answer to one of: yes, no, unknown, not_asked.
 - not_asked: the bot never asked it, and she did not answer it in her own story.
 - unknown: she said she does not know, or does not remember.
-- no: she said it did not happen, or said it was normal. A normal delivery, a full-term birth, growing like other children, a normal scan, a delivery without problems, being married, and having children are no, not yes.
-- yes: only when the screened problem in that topic happened. Examples: NICU or blue light, knee swelling, high BP or thyroid in pregnancy, a child in the family who died young.
-A later clear answer replaces an earlier one. Do not invent. Intro topics (name, marriage, children) are never yes.
+- no: she said it did not happen, or said it was normal. A normal delivery, a full-term birth, a normal newborn hearing/vision test, growing like other children, a normal scan, a delivery without problems, being married, and having children are no, not yes.
+- yes: only when a screened clinical concern or positive history happened (for example: C-section or preterm birth, NICU or blue light, blood transfusions, low hemoglobin, knee swelling, high BP/sugar/thyroid or transfusion in pregnancy, consanguinity, miscarriage or infant death, or a family member needing transfusions).
+A later clear answer replaces an earlier one. Do not invent. Intro topics (name, marriage, children, bridge) and close_anything_else are never yes.
 
-yes_hindi is a list of short Hindi (Devanagari) sentences, one for each yes that a doctor should hear. No disease names. No nos. No English.
+yes_hindi is a list of complete, self-contained Hindi (Devanagari) sentences — ONLY for topics where you set answer to "yes" (clinical concerns or positive findings a doctor should notice).
+- Do NOT put marriage, number of children, normal hearing/vision test, normal growth, normal scan, uncomplicated delivery, or close_anything_else in yes_hindi. If a topic's answer is "no", it must NEVER appear in yes_hindi.
+- Every item in yes_hindi MUST state BOTH what the question/topic was AND what the mother answered (for example: "जन्म के तरीके के सवाल पर माँ ने बताया कि बच्चे का जन्म 8 महीने में ऑपरेशन से हुआ था क्योंकि बच्चा बहुत छोटा था।" or "बच्चे को खून चढ़ाने के सवाल पर माँ ने बताया कि अब तक चार बार खून चढ़ाना पड़ा है और हीमोग्लोबिन कम रहता है।").
+- NEVER output a bare reply or raw transcript quote without the question context (never write "हाँ।", "हां।", "ऑपरेशन", "वह 8 महीने में पैदा हो गया था।", or "मेरे कैसे तो मौसी होती है।").
+- Write in clear, natural Hindi (Devanagari). No disease names. No nos. No English.
 
-Return JSON only: {"answers": {"topic_id": {"answer": "no", "evidence": "short quote"}}, "yes_hindi": ["..."]}
+questions_hindi is 3 to 6 Hindi questions she should ask a doctor or ASHA/ANM at the next visit.
+Each item is one full question and ends with ?.
+Base them on the yes answers. Do not name a disease. Do not say this is a diagnosis.
+
+Return JSON only: {"answers": {"topic_id": {"answer": "no", "evidence": "short quote"}}, "yes_hindi": ["..."], "questions_hindi": ["..."]}
 """.strip()
 
 
 def _topics_brief() -> str:
     lines = []
     for topic in checklist.TOPICS:
-        lines.append(f"{topic['id']}: {topic['need']}")
+        q_hi = checklist.question_hi(topic["id"])
+        lines.append(f"{topic['id']} ({q_hi}): {topic['need']}")
     return "\n".join(lines)
 
 
@@ -96,7 +105,21 @@ def parse_payload(text: str) -> dict:
         line = summarizer._scrub_diagnostic_terms(str(item).strip())
         if line and line not in yes_hindi:
             yes_hindi.append(line)
-    return {"version": _VERSION, "answers": answers, "yes_hindi": yes_hindi}
+    questions_hindi: list[str] = []
+    for item in data.get("questions_hindi") or []:
+        line = summarizer._scrub_diagnostic_terms(str(item).strip())
+        if not line:
+            continue
+        if "?" not in line and "？" not in line:
+            line = line.rstrip("।") + "?"
+        if line not in questions_hindi:
+            questions_hindi.append(line)
+    return {
+        "version": _VERSION,
+        "answers": answers,
+        "yes_hindi": yes_hindi,
+        "questions_hindi": questions_hindi[:6],
+    }
 
 
 def fallback_from_call(call: dict) -> dict:
@@ -138,7 +161,33 @@ def fallback_from_call(call: dict) -> dict:
         line = summarizer._scrub_diagnostic_terms(line.strip())
         if line and not topic_id.startswith("intro_"):
             yes_hindi.append(line)
-    return {"version": _VERSION, "answers": answers, "yes_hindi": yes_hindi}
+    return {
+        "version": _VERSION,
+        "answers": answers,
+        "yes_hindi": yes_hindi,
+        "questions_hindi": [],
+    }
+
+
+def mother_summary(
+    extracted: dict,
+    findings: dict | None = None,
+    red_flags: list | None = None,
+) -> str:
+    """Hindi question list for the mother PDF. Does not write the doctor note."""
+    questions = [
+        str(item).strip()
+        for item in (extracted or {}).get("questions_hindi") or []
+        if str(item).strip()
+    ]
+    if len(questions) < 3:
+        return summarizer.default_mother_questions(findings, red_flags)
+    numbered = "\n".join(f"{idx}. {question}" for idx, question in enumerate(questions[:6], start=1))
+    return (
+        f"{summarizer.MOTHER_QUESTIONS_HEADING}\n\n"
+        f"{numbered}\n\n"
+        f"{summarizer.MOTHER_FLAG_FOOTER}"
+    )
 
 
 def _user_content(call: dict) -> str:

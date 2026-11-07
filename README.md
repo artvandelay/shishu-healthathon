@@ -3,13 +3,40 @@
 SHISHU is a Hindi voice app for a pre-consultation call.
 A mother speaks with the app before she meets a doctor or a health worker.
 The live call uses Gemini.
-After the call, the doctor gets an English report.
-The mother gets Hindi questions for her next visit.
+After the call, the mother gets a Hindi PDF.
+The doctor gets an English note.
+You can read the code and the sample reports here.
+You do not need to run the demo.
 
-The current service is https://shishu-production.up.railway.app.
-Open that address.
-Enter any name on the login page.
-For a call, enter the passcode `shishu2026`.
+## Where the call lives
+
+`code/shishu-v2/checklist.py` holds the topic list.
+`code/shishu-v2/question_flow.py` holds the question order.
+`code/shishu-v2/prompts.py` holds the words for the model.
+`code/shishu-v2/gemini_live.py` runs the live call.
+`code/shishu-v2/mother_report.py` builds the Hindi PDF for the mother.
+`code/shishu-v2/summarizer.py` builds the English note for the doctor.
+
+The mother PDF stays in Hindi.
+The doctor note stays in English.
+`mother_report.py` does not give the mother an English PDF.
+
+## Sample reports
+
+The sample files are in `review/samples/`.
+
+`review/samples/SHISHU-sample-red-flags.pdf` is the Hindi PDF from call 253.
+That is the file the mother gets.
+The call was not complete.
+The PDF is not a diagnosis.
+
+`review/samples/SHISHU-sample-red-flags-en.pdf` is the same report in English.
+Open this file if you do not read Hindi.
+
+`review/samples/SHISHU-sample-no-flags.pdf` is a Hindi sample with no yes answers.
+`review/samples/SHISHU-sample-incomplete.pdf` is a short Hindi sample from a call that ended early.
+
+A live service is optional: https://shishu-production.up.railway.app
 
 ## Requirements
 
@@ -103,8 +130,18 @@ railway deployment list --limit 1 --json
 
 A status of `SUCCESS` means that the new version is in service.
 
+## Optional live service
+
+You do not need the live service to read this repo.
+The service address is https://shishu-production.up.railway.app.
+Open that address.
+Enter any name on the login page.
+For a call, enter the passcode `shishu2026`.
+
 ## Files that stay off GitHub
 
 This repo does not track private notes, call transcripts, medical source files, or old app versions.
 Those files can stay on this computer.
 `.gitignore` blocks a new commit of those files.
+The sample reports in `review/samples/` stay in the repo.
+The `plan/` ignore rule does not apply to `review/`.
