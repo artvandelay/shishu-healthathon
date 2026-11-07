@@ -522,7 +522,7 @@ class Call228RegressionTests(unittest.TestCase):
 
         _, topics2 = gemini_live._normalize_finding(
             "pregnancy",
-            "Mother clarified she has not been pregnant.",
+            "Mother clarified she has never been pregnant.",
             ["preg_conditions"],
             "No, I haven't been pregnant.",
         )
@@ -542,8 +542,8 @@ class Call228RegressionTests(unittest.TestCase):
         checklist.mark(cov_unmarried, ["intro_name"] + topics_unmarried)
         self.assertIn("intro_children", cov_unmarried)
         self.assertIn("fam_related", cov_unmarried)
-        self.assertIn("fam_miscarriage", cov_unmarried)
-        checklist.mark(cov_unmarried, ["intro_bridge", "preg_thalassemia"])
+        self.assertNotIn("fam_miscarriage", cov_unmarried)
+        checklist.mark(cov_unmarried, ["intro_bridge", "preg_thalassemia", "fam_miscarriage"])
         self.assertEqual(checklist.open_topics(cov_unmarried)[0]["id"], "fam_infant_death")
 
         leaked = (
@@ -551,6 +551,53 @@ class Call228RegressionTests(unittest.TestCase):
             "Aapka naam bataiyega please?"
         )
         self.assertEqual(prompts.clean_assistant_caption(leaked), "Aapka naam bataiyega please?")
+
+    def test_call243_end_call_succeeds_after_open_capture_hold(self):
+        telemetry = gemini_live._new_telemetry("gemini-3.1-flash-live-preview", "Kore", 750, 300, 0)
+        checklist.mark(telemetry["coverage"], [t for t in checklist.REQUIRED_IDS if t != "close_anything_else"])
+        call_id = db.create_call("gemini")
+
+        class _FcConcern:
+            id = "fc_concern"
+            name = "record_finding"
+            args = {
+                "domain": "chief_complaint",
+                "status": "positive",
+                "detail": "Mother is concerned about child's cough and cold.",
+                "is_red_flag": False,
+                "topic_ids": ["close_anything_else"],
+            }
+            will_continue = False
+
+        class _FcEnd:
+            id = "fc_end"
+            name = "end_call"
+            args = {}
+            will_continue = False
+
+        class _Sess:
+            async def send_tool_response(self, function_responses=None):
+                self.responses = function_responses
+
+        async def run():
+            s1, s2 = _Sess(), _Sess()
+            ws = _FakeWs()
+            await gemini_live._answer_function_calls(
+                s1, asyncio.Lock(), ws, asyncio.Lock(), call_id, telemetry,
+                [_FcConcern()], set(), set(), "बच्चे को कोल्ड या कफ क्यों आ रहा है?",
+            )
+            await gemini_live._answer_function_calls(
+                s2, asyncio.Lock(), ws, asyncio.Lock(), call_id, telemetry,
+                [_FcEnd()], set(), set(), "नो थैंक्स।",
+            )
+            return s2, ws
+
+        s2, ws = asyncio.run(run())
+        self.assertEqual(s2.responses[0].response["result"], "ok")
+        self.assertTrue(telemetry["end_requested"])
+        self.assertIn("close_anything_else", telemetry["coverage"])
+        self.assertEqual(telemetry["end_refusals"], 0)
+        self.assertTrue(any(m.get("type") == "ending" for m in ws.sent))
 
 
 if __name__ == "__main__":

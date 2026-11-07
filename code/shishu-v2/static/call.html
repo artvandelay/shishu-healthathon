@@ -911,7 +911,7 @@
         if (phase !== "live") return;
         const now = Date.now();
         const playing = isBotPlaying();
-        const threshold = playing ? 0.075 : ((now - lastBotPlayEndAt) < ECHO_TAIL_MS ? 0.035 : 0.014);
+        const threshold = playing ? 0.075 : ((now - lastBotPlayEndAt) < ECHO_TAIL_MS ? 0.035 : 0.011);
         if (rms > threshold) {
           userSpeaking = true;
           lastVoiceTs = now;
@@ -919,7 +919,7 @@
           nudgeBtn.classList.remove("hot");
           return;
         }
-        if (!playing && userSpeaking && (now - lastVoiceTs) > 600) {
+        if (!playing && userSpeaking && (now - lastVoiceTs) > 550) {
           userSpeaking = false;
           emitSpeechEnd();
         }
@@ -929,7 +929,7 @@
         const rms = rmsOf(float32);
         updateMicLevel(rms);
         trackSpeech(rms);
-        sendPcm(float32, rms);
+        sendPcm(float32);
       }
 
       function silentPcmBase64(samples) {
@@ -940,15 +940,14 @@
         return silenceB64;
       }
 
-      function sendPcm(float32, rms) {
+      function sendPcm(float32) {
         if (phase !== "live" || !ws || ws.readyState !== WebSocket.OPEN) return;
         if (ws.bufferedAmount > 262144) return;
         const inRate = captureCtx ? captureCtx.sampleRate : captureRate;
         const down = downsampleBuffer(float32, inRate, captureRate);
         if (!down.length) return;
         const now = Date.now();
-        const quietTail = !userSpeaking && lastVoiceTs > 0 && (now - lastVoiceTs) > 350 && rms < 0.012;
-        const muteFrame = (isBotAudible(now) && !userSpeaking) || quietTail;
+        const muteFrame = isBotAudible(now) && !userSpeaking;
         const b64 = muteFrame ? silentPcmBase64(down.length) : bytesToBase64(floatToPcm16LE(down));
         ws.send(JSON.stringify({
           type: "audio",

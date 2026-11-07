@@ -330,7 +330,7 @@ def _fill_empty_sections(doctor: str, findings: dict) -> str:
         match = re.search(pattern, doctor, flags=re.S)
         if not match:
             continue
-        body = match.group(2).strip().lower().rstrip(".")
+        body = re.sub(r"^[\-\*\s]+", "", match.group(2).strip()).lower().rstrip(".")
         if body != "not reported":
             continue
         doctor = doctor[: match.start(2)] + "\n".join(bullets) + "\n" + doctor[match.end(2) :]

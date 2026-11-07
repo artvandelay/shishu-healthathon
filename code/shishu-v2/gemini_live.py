@@ -445,6 +445,12 @@ _UNMARRIED_RE = re.compile(
     r"|शादी\s+नहीं\s+हुई|अविवाहित|नो,\s*इट्स\s+नॉट",
     re.I,
 )
+_EVER_PREGNANT_NO_RE = re.compile(
+    r"\b(never\s+(?:been\s+)?pregnant|haven'?t\s+(?:ever\s+)?been\s+pregnant|"
+    r"have\s+not\s+(?:ever\s+)?been\s+pregnant|never\s+conceived)\b"
+    r"|कभी\s+प्रेग्नेंट\s+नहीं|कभी\s+गर्भवती\s+नहीं",
+    re.I,
+)
 _NEVER_PREGNANT_RE = re.compile(
     r"\b(never\s+(?:been\s+)?pregnant|haven'?t\s+been\s+pregnant|have\s+not\s+been\s+pregnant|"
     r"not\s+pregnant|wasn'?t\s+pregnant|was\s+not\s+pregnant|no\s+pregnancy|"
@@ -481,10 +487,12 @@ _TOPIC_AS_DOMAIN = {
     "intro_children": "profile_child_age",
     "profile_children": "profile_child_age",
     "profile_married": "coverage",
+    "consaguinity": "consanguinity",
 }
 _DOMAIN_AS_TOPIC = {
     "profile_children": "intro_children",
     "profile_married": "intro_married",
+    "consaguinity": "fam_related",
 }
 
 
@@ -528,12 +536,13 @@ def _normalize_finding(
         "intro_children" in topics and status == "negative"
     )
     never_preg_now = bool(_NEVER_PREGNANT_RE.search(combined_text))
+    ever_preg_no = bool(_EVER_PREGNANT_NO_RE.search(combined_text))
     allow_group_skip = bool(_NO_CHILD_RE.search(combined_text)) or unmarried_now or no_child_now or never_preg_now
     if not allow_group_skip:
         topics = [t for t in topics if str(t).strip() not in checklist.GROUPS]
     else:
         if unmarried_now:
-            for item in ("intro_children", "birth", "body", "illness", *_PREG_DELIVERY_TOPICS, "fam_related", "fam_miscarriage"):
+            for item in ("intro_children", "birth", "body", "illness", *_PREG_DELIVERY_TOPICS, "fam_related"):
                 if item not in topics:
                     topics.append(item)
         if no_child_now:
@@ -544,9 +553,11 @@ def _normalize_finding(
                 if pt not in topics:
                     topics.append(pt)
         if never_preg_now:
-            for pt in (*_PREG_DELIVERY_TOPICS, "fam_miscarriage"):
+            for pt in _PREG_DELIVERY_TOPICS:
                 if pt not in topics:
                     topics.append(pt)
+            if ever_preg_no and "fam_miscarriage" not in topics:
+                topics.append("fam_miscarriage")
             if domain == "pregnancy" or any(str(t).startswith("preg_") for t in topics):
                 if "pregnancy" not in topics:
                     topics.append("pregnancy")
@@ -651,6 +662,12 @@ async def _answer_function_calls(
         name = getattr(fc, "name", None) or ""
         if name == "end_call":
             coverage = telemetry.setdefault("coverage", [])
+            if telemetry.get("open_capture_asked_more"):
+                checklist.mark(coverage, ["close_anything_else"])
+            else:
+                remaining = [t["id"] for t in checklist.open_topics(coverage)]
+                if remaining == ["close_anything_else"] and _NO_MORE_USER_RE.match((last_user_text or "").strip()):
+                    checklist.mark(coverage, ["close_anything_else"])
             ok, note = checklist.can_end(coverage)
             refusals = int(telemetry.get("end_refusals") or 0)
             if not ok and refusals < 2 and not telemetry.get("force_close"):

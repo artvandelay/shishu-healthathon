@@ -311,13 +311,30 @@ def record_finding_db(
             and isinstance(prev, dict)
             and _person_name_detail(str(prev.get("detail") or ""))
         )
+        prev_detail = str(prev.get("detail") or "").strip() if isinstance(prev, dict) else ""
+        prev_status = str(prev.get("status") or "").lower() if isinstance(prev, dict) else ""
         if keep_prev_mother_name or (prev_positive and not is_red_flag and status != "positive"):
             pass
-        elif prev_positive and status == "positive" and detail and detail not in str(prev.get("detail") or ""):
+        elif prev_positive and status == "positive" and detail and detail not in prev_detail:
             findings[domain] = {
                 "status": "positive",
-                "detail": f"{prev.get('detail')}; {detail}",
+                "detail": f"{prev_detail}; {detail}",
                 "is_red_flag": bool(prev.get("is_red_flag") or is_red_flag),
+            }
+        elif (
+            domain not in ("profile_mother_name", "profile_child_name", "profile_child_age", "profile_child_gender")
+            and isinstance(prev, dict)
+            and not prev_positive
+            and status != "positive"
+            and prev_detail
+            and detail
+            and detail not in prev_detail
+        ):
+            merged_status = "info" if "info" in (prev_status, status.lower()) else status
+            findings[domain] = {
+                "status": merged_status,
+                "detail": f"{prev_detail}; {detail}",
+                "is_red_flag": False,
             }
         else:
             findings[domain] = {
