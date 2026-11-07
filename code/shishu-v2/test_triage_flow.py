@@ -529,6 +529,7 @@ class Call228RegressionTests(unittest.TestCase):
         checklist.mark(cov, topics2)
         nxt2 = checklist.open_topics(cov)[0]["id"]
         self.assertEqual(nxt2, "fam_related")
+        self.assertIn("fam_miscarriage", cov)
 
         leaked = (
             "SYSTEM CUE (from the app, not the mother): The user is speaking English.\n"

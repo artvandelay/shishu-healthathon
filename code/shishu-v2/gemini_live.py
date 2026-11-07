@@ -442,8 +442,8 @@ _NO_CHILD_ONLY_RE = re.compile(
 _NEVER_PREGNANT_RE = re.compile(
     r"\b(never\s+(?:been\s+)?pregnant|haven'?t\s+been\s+pregnant|have\s+not\s+been\s+pregnant|"
     r"not\s+pregnant|wasn'?t\s+pregnant|was\s+not\s+pregnant|no\s+pregnancy|"
-    r"not\s+currently\s+pregnant|unmarried|not\s+married|to\s+be\s+married)\b"
-    r"|प्रेग्नेंट\s+नहीं|गर्भवती\s+नहीं|शादी\s+नहीं\s+हुई|शादी\s+होने\s+वाली",
+    r"not\s+currently\s+pregnant)\b"
+    r"|प्रेग्नेंट\s+नहीं|गर्भवती\s+नहीं",
     re.I,
 )
 _PREG_DELIVERY_TOPICS = (
@@ -525,7 +525,7 @@ def _normalize_finding(
                 if pt not in topics:
                     topics.append(pt)
         if _NEVER_PREGNANT_RE.search(combined_text):
-            for pt in _PREG_DELIVERY_TOPICS:
+            for pt in (*_PREG_DELIVERY_TOPICS, "fam_miscarriage"):
                 if pt not in topics:
                     topics.append(pt)
             if domain == "pregnancy" or any(str(t).startswith("preg_") for t in topics):
@@ -888,7 +888,7 @@ async def _handle_server_message(
         state.bot_speaking = False
         if not state.awaiting_bot_reply:
             state.quiet_from = max(time.time(), state.playback_ends_at)
-        if not calls or telemetry.get("end_requested"):
+        if not state.awaiting_bot_reply or telemetry.get("end_requested"):
             await _emit(ws, ws_lock, call_id, telemetry, "turn_complete", "")
 
     update = getattr(response, "session_resumption_update", None)
