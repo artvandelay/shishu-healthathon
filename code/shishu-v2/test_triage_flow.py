@@ -52,8 +52,8 @@ class PromptTests(unittest.TestCase):
             self.assertIn(tid, text)
         self.assertIn("UNMISTAKABLY IN HINDI", text)
         self.assertIn("Aapko iske alawa doctor ke liye kuch aur batana hai?", text)
-        self.assertIn("doctor ke liye poori report", text)
-        self.assertIn("chhota sa message", text)
+        self.assertIn("Aapki report taiyaar ho rahi hai, kripya is page par bane rahiye", text)
+        self.assertIn("Ab tak ki report is page par taiyaar ho rahi hai", text)
         self.assertIn("STYLE EXAMPLES FROM REAL CALLS", text)
         for other in (
             text,

@@ -35,6 +35,7 @@ _CALL_EXTRA_COLUMNS = (
     ("voice_used", "TEXT DEFAULT ''"),
     ("telemetry_json", "TEXT DEFAULT '{}'"),
     ("events_json", "TEXT DEFAULT '[]'"),
+    ("answers_json", "TEXT DEFAULT ''"),
 )
 
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -430,6 +431,33 @@ def complete_call(
                 """,
                 (duration_sec, audio_filename, summary_doctor, summary_mother, call_id),
             )
+        conn.commit()
+
+
+def get_answers(call_id: int) -> dict | None:
+    with _db_lock:
+        cur = conn.cursor()
+        cur.execute("SELECT answers_json FROM calls WHERE id = ?", (call_id,))
+        row = cur.fetchone()
+    if not row:
+        return None
+    raw = (row["answers_json"] or "").strip()
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def save_answers(call_id: int, payload: dict) -> None:
+    with _db_lock:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE calls SET answers_json = ? WHERE id = ?",
+            (json.dumps(payload, ensure_ascii=False), call_id),
+        )
         conn.commit()
 
 

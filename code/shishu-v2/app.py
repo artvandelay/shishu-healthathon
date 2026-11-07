@@ -12,14 +12,16 @@ from urllib.parse import quote
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, WebSocket
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(_REPO_ROOT / ".env")
 load_dotenv()
 
+import answer_extractor
 import db
 import gemini_live
+import mother_report
 import openai_live
 import seed
 
@@ -360,6 +362,30 @@ def get_call(call_id: int, request: Request):
     if call is None:
         raise HTTPException(status_code=404, detail="Call not found")
     return call
+
+
+@app.get("/api/calls/{call_id}/mother.pdf")
+async def mother_pdf(call_id: int, request: Request):
+    call = db.get_call(call_id)
+    if call is None:
+        raise HTTPException(status_code=404, detail="Call not found")
+    if str(call.get("status") or "") == "active":
+        raise HTTPException(status_code=409, detail="Call is still running")
+    role, username = _identity_from_cookies(request.cookies)
+    owner = role == "user" and (call.get("caller_name") or "") == username
+    if role != "admin" and not owner:
+        raise HTTPException(status_code=403, detail="Not allowed")
+    try:
+        answers = await answer_extractor.cached_answers(call)
+        pdf = mother_report.render_pdf(mother_report.build(call, answers))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Could not build the report") from exc
+    name = mother_report.filename(call)
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+    )
 
 
 @app.get("/api/audio/{call_id}")

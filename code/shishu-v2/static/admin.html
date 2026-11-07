@@ -50,7 +50,18 @@
       border-bottom: 1px solid var(--line);
     }
 
-    .brand { min-width: 160px; }
+    .brand {
+      min-width: 180px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .brand img {
+      width: 36px;
+      height: 36px;
+      object-fit: contain;
+    }
 
     .brand strong {
       display: block;
@@ -86,6 +97,12 @@
       min-height: 36px;
       padding: 0 12px;
       cursor: pointer;
+    }
+
+    a.ghost {
+      display: inline-flex;
+      align-items: center;
+      text-decoration: none;
     }
 
     .engine button[aria-pressed="true"] {
@@ -608,8 +625,11 @@
 <body>
   <header class="topbar">
     <div class="brand">
-      <strong>SHISHU</strong>
-      <span>Clinical dashboard</span>
+      <img src="/static/shishu-logo.png" alt="">
+      <div>
+        <strong>SHISHU</strong>
+        <span>Clinical dashboard</span>
+      </div>
     </div>
     <div class="engine" role="group" aria-label="Active voice engine">
       <span class="engine-label">Active Voice Engine</span>
@@ -726,6 +746,7 @@
               <div class="actions">
                 <button id="copy-report" class="ghost" type="button">Copy Report</button>
                 <button id="print-report" class="ghost" type="button">Print PDF</button>
+                <a id="mother-pdf" class="ghost" href="/api/calls/0/mother.pdf">Mother PDF</a>
               </div>
             </div>
             <div id="doctor" class="md"></div>
@@ -1120,6 +1141,7 @@
         player.src = src;
         download.href = src;
         download.setAttribute("download", "call_" + call.id + ".wav");
+        document.getElementById("mother-pdf").href = "/api/calls/" + encodeURIComponent(call.id) + "/mother.pdf";
         audioNote.hidden = true;
         renderFlags(call.red_flags);
         doctorEl.innerHTML = renderMarkdown(call.summary_doctor || "");

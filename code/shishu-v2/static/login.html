@@ -49,18 +49,25 @@
       box-shadow: 0 18px 50px rgba(27, 42, 74, 0.08);
     }
 
-    .mark {
-      margin: 0 0 14px;
-      width: 52px;
-      height: 52px;
-      display: grid;
-      place-items: center;
-      border-radius: 50%;
-      background: var(--yellow-soft);
-      color: var(--yellow-dark);
-      font-weight: 750;
-      font-size: 20px;
-      letter-spacing: 0.02em;
+    .lockup {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin: 0 0 16px;
+    }
+
+    .lockup img {
+      width: 48px;
+      height: 48px;
+      object-fit: contain;
+    }
+
+    .lockup h1 { margin: 0; }
+
+    .lockup .hi {
+      margin: 2px 0 0;
+      color: var(--muted);
+      font-size: 14px;
     }
 
     h1 {
@@ -149,8 +156,13 @@
 </head>
 <body>
   <main class="card">
-    <p class="mark">श</p>
-    <h1>SHISHU — Pre-Consultation Voice Assistant</h1>
+    <div class="lockup">
+      <img src="/static/shishu-logo.png" alt="">
+      <div>
+        <h1>SHISHU</h1>
+        <p class="hi">शिशु</p>
+      </div>
+    </div>
     <p class="lede">Enter your name and the passcode to open a Hindi pre-consultation call or the clinical dashboard.</p>
     <form id="login-form">
       <div class="field">

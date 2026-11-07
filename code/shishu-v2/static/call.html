@@ -53,6 +53,18 @@
       letter-spacing: -0.02em;
     }
 
+    .lockup {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .lockup img {
+      width: 36px;
+      height: 36px;
+      object-fit: contain;
+    }
+
     .header-actions {
       display: flex;
       flex-wrap: wrap;
@@ -327,10 +339,24 @@
       width: 100%;
       border: 0;
       background: var(--navy);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
       color: #fff;
       font: inherit;
       font-weight: 700;
+      line-height: 1.2;
       cursor: pointer;
+    }
+
+    .text-btn img {
+      width: 22px;
+      height: 22px;
+      object-fit: contain;
+      background: #fff;
+      border-radius: 6px;
+      padding: 2px;
     }
 
     .text-btn:hover { background: var(--navy-dark); }
@@ -541,7 +567,7 @@
 </head>
 <body>
   <header>
-    <h1>SHISHU (शिशु)</h1>
+    <h1 class="lockup"><img src="/static/shishu-logo.png" alt="">SHISHU (शिशु)</h1>
     <div class="header-actions">
       <button id="hud-toggle" class="header-btn" type="button" hidden>Testing HUD</button>
       <button id="bug-btn" class="header-btn" type="button">Report Bug</button>
@@ -563,7 +589,7 @@
         <span id="mic-level" class="mic-level"></span>
       </div>
       <p id="caption"></p>
-      <p id="wait" hidden>Generating summary for your doctor...</p>
+      <p id="wait" hidden>आपकी रिपोर्ट तैयार हो रही है, कृपया इस पेज पर बने रहिए।</p>
       <button id="call-btn" class="call-btn" type="button">Start Call</button>
       <button id="nudge-btn" class="nudge-btn" type="button" hidden>जवाब नहीं आया? यहाँ दबाएँ</button>
     </section>
@@ -572,6 +598,8 @@
       <p id="thanks-sub" class="sub"></p>
       <p id="summary" class="summary" lang="hi"></p>
       <div class="thanks-actions">
+        <button id="share-pdf" class="text-btn" type="button" hidden><img src="/static/shishu-logo.png" alt="">शेयर करें</button>
+        <button id="retry-pdf" class="text-btn" type="button" hidden>रिपोर्ट दोबारा बनाएँ</button>
         <button id="new-call" class="text-btn" type="button">Start New Call</button>
         <a id="admin-view" class="dash-link" href="/admin" hidden>View in Admin Dashboard</a>
       </div>
@@ -1265,7 +1293,7 @@
         } else if (msg.type === "ending") {
           waitForPlaybackThenEnd();
         } else if (msg.type === "call_completed") {
-          showThanks(msg);
+          prepareShare(msg);
         } else if (msg.type === "error") {
           showError(msg.message || "The call hit an error.");
         }
@@ -1276,7 +1304,7 @@
       function onSocketClose() {
         if (phase === "done") return;
         if (phase === "summarizing") {
-          showThanks({
+          prepareShare({
             call_id: callId,
             summary_mother: FALLBACK_MOTHER_QUESTIONS
           });
@@ -1490,7 +1518,7 @@
           return;
         }
         phase = "summarizing";
-        setStatus("Preparing Doctor Summary...");
+        setStatus("आपकी रिपोर्ट तैयार हो रही है");
         waitEl.hidden = false;
         callBtn.disabled = true;
         if (summaryTimer) clearTimeout(summaryTimer);
@@ -1498,15 +1526,77 @@
           if (phase === "summarizing") {
             showThanks({
               call_id: callId,
-              summary_mother: FALLBACK_MOTHER_QUESTIONS
+              summary_mother: FALLBACK_MOTHER_QUESTIONS,
+              pdf_failed: true
             });
           }
-        }, 20000);
+        }, 60000);
         try {
           sock.send(JSON.stringify({ type: "hangup" }));
         } catch (err) {
           showError("Could not end the call cleanly.");
         }
+      }
+
+      let pdfFile = null;
+
+      function pdfName(res) {
+        const header = res.headers.get("Content-Disposition") || "";
+        const match = /filename="?([^";]+)"?/.exec(header);
+        return (match && match[1]) || "SHISHU.pdf";
+      }
+
+      function fetchMotherPdf(id) {
+        return fetch("/api/calls/" + encodeURIComponent(id) + "/mother.pdf", { credentials: "same-origin" })
+          .then(function (res) {
+            if (!res.ok) throw new Error("pdf");
+            const name = pdfName(res);
+            return res.blob().then(function (blob) {
+              return new File([blob], name, { type: "application/pdf" });
+            });
+          });
+      }
+
+      function prepareShare(msg) {
+        const id = msg.call_id != null ? msg.call_id : callId;
+        if (id == null) {
+          showThanks(Object.assign({ pdf_failed: true }, msg));
+          return;
+        }
+        waitEl.hidden = false;
+        fetchMotherPdf(id).then(function (file) {
+          if (phase !== "summarizing" && phase !== "done") return;
+          showThanks(Object.assign({ pdfFile: file }, msg));
+        }).catch(function () {
+          if (phase !== "summarizing" && phase !== "done") return;
+          showThanks(Object.assign({ pdf_failed: true }, msg));
+        });
+      }
+
+      function sharePdf() {
+        if (!pdfFile) return;
+        const shareable = navigator.canShare && navigator.canShare({ files: [pdfFile] });
+        if (shareable) {
+          navigator.share({ files: [pdfFile], title: "SHISHU" }).catch(function (err) {
+            if (!err || err.name === "AbortError") return;
+            showError("इस फ़ोन पर शेयर नहीं खुल पाया। फ़ाइल डाउनलोड हो रही है।");
+            downloadPdf();
+          });
+          return;
+        }
+        downloadPdf();
+      }
+
+      function downloadPdf() {
+        if (!pdfFile) return;
+        const url = URL.createObjectURL(pdfFile);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = pdfFile.name;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
       }
 
       function showThanks(msg) {
@@ -1526,6 +1616,9 @@
         bits.push(frozenDuration);
         thanksSubEl.textContent = bits.join(" · ");
         adminView.href = callId != null ? ("/admin?call=" + encodeURIComponent(callId)) : "/admin";
+        pdfFile = msg.pdfFile || null;
+        document.getElementById("share-pdf").hidden = !pdfFile;
+        document.getElementById("retry-pdf").hidden = !msg.pdf_failed;
         thanksEl.hidden = false;
         renderHud();
         clearError();
@@ -1549,6 +1642,9 @@
         captionText = "";
         captionEl.textContent = "";
         summaryEl.textContent = "";
+        pdfFile = null;
+        document.getElementById("share-pdf").hidden = true;
+        document.getElementById("retry-pdf").hidden = true;
         thanksEl.hidden = true;
         stageEl.hidden = false;
         waitEl.hidden = true;
@@ -1755,6 +1851,14 @@
       });
 
       newCallBtn.addEventListener("click", resetForNewCall);
+      document.getElementById("share-pdf").addEventListener("click", sharePdf);
+      document.getElementById("retry-pdf").addEventListener("click", function () {
+        thanksEl.hidden = true;
+        stageEl.hidden = false;
+        waitEl.hidden = false;
+        phase = "summarizing";
+        prepareShare({ call_id: callId, summary_mother: summaryEl.textContent });
+      });
 
       fetch("/api/config", { credentials: "same-origin", headers: { "Accept": "application/json" } })
         .then(function (res) {
