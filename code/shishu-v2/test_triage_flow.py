@@ -438,7 +438,7 @@ class Call228RegressionTests(unittest.TestCase):
         session, _, _ = _run_watchdog(state, telemetry)
         self.assertEqual(session.texts, [gemini_live._WATCHDOG_NUDGE])
         self.assertEqual(telemetry["watchdog_nudges"], 1)
-        self.assertIn("SYSTEM CUE", gemini_live._WATCHDOG_NUDGE)
+        self.assertNotIn("SYSTEM CUE", gemini_live._WATCHDOG_NUDGE)
         self.assertIn("NEVER say 'Nahi' or 'Haan'", gemini_live._WATCHDOG_NUDGE)
 
     def test_open_capture_concern_waits_for_aur_kuch_before_closing(self):
@@ -505,8 +505,36 @@ class Call228RegressionTests(unittest.TestCase):
         cfg = gemini_live._live_config({})
         self.assertEqual(cfg.temperature, 0.5)
         self.assertFalse(cfg.enable_affective_dialog)
-        self.assertEqual(cfg.context_window_compression.trigger_tokens, 10000)
-        self.assertEqual(cfg.context_window_compression.sliding_window.target_tokens, 6000)
+        self.assertIsNone(cfg.context_window_compression.trigger_tokens)
+        self.assertIsNone(cfg.context_window_compression.sliding_window.target_tokens)
+
+    def test_call230_no_children_and_not_pregnant_skips_child_and_preg_delivery_topics(self):
+        _, topics = gemini_live._normalize_finding(
+            "profile_child_age",
+            "Mother is married but has no children.",
+            ["intro_married", "intro_children"],
+            "मेरी शादी हो गई है। बच्चे नहीं है।",
+        )
+        cov = []
+        checklist.mark(cov, ["intro_name", "intro_bridge"] + topics)
+        nxt = checklist.open_topics(cov)[0]["id"]
+        self.assertEqual(nxt, "preg_thalassemia")
+
+        _, topics2 = gemini_live._normalize_finding(
+            "pregnancy",
+            "Mother clarified she has not been pregnant.",
+            ["preg_conditions"],
+            "No, I haven't been pregnant.",
+        )
+        checklist.mark(cov, topics2)
+        nxt2 = checklist.open_topics(cov)[0]["id"]
+        self.assertEqual(nxt2, "fam_related")
+
+        leaked = (
+            "SYSTEM CUE (from the app, not the mother): The user is speaking English.\n"
+            "Aapka naam bataiyega please?"
+        )
+        self.assertEqual(prompts.clean_assistant_caption(leaked), "Aapka naam bataiyega please?")
 
 
 if __name__ == "__main__":

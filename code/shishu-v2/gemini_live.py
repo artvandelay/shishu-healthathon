@@ -35,7 +35,7 @@ _GREETING = (
     "Greet the caller now in Hindi: Namaste, main Shishu hoon. Aapka naam bataiyega please?"
 )
 _WATCHDOG_NUDGE = (
-    "SYSTEM CUE (from the app, not the mother): speak as SHISHU in Hindi only in your same warm female voice (Kore). "
+    "Speak as SHISHU in Hindi only in your same warm female voice (Kore). "
     "If your previous question was not clearly answered, gently repeat or clarify that single question. "
     "NEVER say 'Nahi' or 'Haan' yourself, and never answer for the mother."
 )
@@ -198,8 +198,7 @@ def _live_config(settings: dict, resume_handle: str | None = None) -> types.Live
             ),
         ),
         context_window_compression=types.ContextWindowCompressionConfig(
-            trigger_tokens=10000,
-            sliding_window=types.SlidingWindow(target_tokens=6000),
+            sliding_window=types.SlidingWindow()
         ),
         session_resumption=types.SessionResumptionConfig(handle=resume_handle or None),
         tools=[{"function_declarations": [_RECORD_FINDING_DECL, _END_CALL_DECL]}],
@@ -425,10 +424,34 @@ _NO_MORE_USER_RE = re.compile(
     re.I,
 )
 _NO_CHILD_RE = re.compile(
-    r"\b(no\s+child|no\s+children|childless|0\s+children|zero\s+children|"
-    r"unmarried|not\s+married|never\s+pregnant|to\s+be\s+married)\b"
-    r"|बच्चे\s+नहीं|कोई\s+बच्चा\s+नहीं|शादी\s+होने\s+वाली",
+    r"\b(no\s+child|no\s+children|don'?t\s+have\s+(?:any\s+)?children|do\s+not\s+have\s+(?:any\s+)?children|"
+    r"childless|0\s+children|zero\s+children|"
+    r"unmarried|not\s+married|never\s+(?:been\s+)?pregnant|haven'?t\s+been\s+pregnant|"
+    r"have\s+not\s+been\s+pregnant|not\s+pregnant|wasn'?t\s+pregnant|was\s+not\s+pregnant|"
+    r"to\s+be\s+married)\b"
+    r"|बच्चे\s+नहीं|कोई\s+बच्चा\s+नहीं|बच्चा\s+नहीं\s+है|चिल्ड्रन"
+    r"|प्रेग्नेंट\s+नहीं|गर्भवती\s+नहीं|शादी\s+नहीं\s+हुई|शादी\s+होने\s+वाली",
     re.I,
+)
+_NO_CHILD_ONLY_RE = re.compile(
+    r"\b(no\s+child|no\s+children|don'?t\s+have\s+(?:any\s+)?children|do\s+not\s+have\s+(?:any\s+)?children|"
+    r"childless|0\s+children|zero\s+children)\b"
+    r"|बच्चे\s+नहीं|कोई\s+बच्चा\s+नहीं|बच्चा\s+नहीं\s+है|डोंट\s+हैव\s+चिल्ड्रन",
+    re.I,
+)
+_NEVER_PREGNANT_RE = re.compile(
+    r"\b(never\s+(?:been\s+)?pregnant|haven'?t\s+been\s+pregnant|have\s+not\s+been\s+pregnant|"
+    r"not\s+pregnant|wasn'?t\s+pregnant|was\s+not\s+pregnant|no\s+pregnancy|"
+    r"not\s+currently\s+pregnant|unmarried|not\s+married|to\s+be\s+married)\b"
+    r"|प्रेग्नेंट\s+नहीं|गर्भवती\s+नहीं|शादी\s+नहीं\s+हुई|शादी\s+होने\s+वाली",
+    re.I,
+)
+_PREG_DELIVERY_TOPICS = (
+    "preg_conditions",
+    "preg_scan",
+    "preg_heart",
+    "preg_transfusion",
+    "preg_delivery",
 )
 _VALID_DOMAINS = {
     "profile_mother_name",
@@ -489,9 +512,25 @@ def _normalize_finding(
             domain = "profile_child_age"
             if "intro_children" not in topics:
                 topics.append("intro_children")
-    allow_group_skip = bool(_NO_CHILD_RE.search(f"{detail} {last_user_text}"))
+    combined_text = f"{detail} {last_user_text}"
+    allow_group_skip = bool(_NO_CHILD_RE.search(combined_text))
     if not allow_group_skip:
         topics = [t for t in topics if str(t).strip() not in checklist.GROUPS]
+    else:
+        if _NO_CHILD_ONLY_RE.search(combined_text):
+            for grp in ("birth", "body", "illness"):
+                if grp not in topics:
+                    topics.append(grp)
+            for pt in _PREG_DELIVERY_TOPICS:
+                if pt not in topics:
+                    topics.append(pt)
+        if _NEVER_PREGNANT_RE.search(combined_text):
+            for pt in _PREG_DELIVERY_TOPICS:
+                if pt not in topics:
+                    topics.append(pt)
+            if domain == "pregnancy" or any(str(t).startswith("preg_") for t in topics):
+                if "pregnancy" not in topics:
+                    topics.append("pregnancy")
     return domain, topics
 
 
