@@ -531,6 +531,21 @@ class Call228RegressionTests(unittest.TestCase):
         self.assertEqual(nxt2, "fam_related")
         self.assertIn("fam_miscarriage", cov)
 
+        _, topics_unmarried = gemini_live._normalize_finding(
+            "coverage",
+            "Mother is not married.",
+            ["intro_married"],
+            "नहीं।",
+            "negative",
+        )
+        cov_unmarried = []
+        checklist.mark(cov_unmarried, ["intro_name"] + topics_unmarried)
+        self.assertIn("intro_children", cov_unmarried)
+        self.assertIn("fam_related", cov_unmarried)
+        self.assertIn("fam_miscarriage", cov_unmarried)
+        checklist.mark(cov_unmarried, ["intro_bridge", "preg_thalassemia"])
+        self.assertEqual(checklist.open_topics(cov_unmarried)[0]["id"], "fam_infant_death")
+
         leaked = (
             "SYSTEM CUE (from the app, not the mother): The user is speaking English.\n"
             "Aapka naam bataiyega please?"

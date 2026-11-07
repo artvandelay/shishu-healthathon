@@ -426,17 +426,23 @@ _NO_MORE_USER_RE = re.compile(
 _NO_CHILD_RE = re.compile(
     r"\b(no\s+child|no\s+children|don'?t\s+have\s+(?:any\s+)?children|do\s+not\s+have\s+(?:any\s+)?children|"
     r"childless|0\s+children|zero\s+children|"
-    r"unmarried|not\s+married|never\s+(?:been\s+)?pregnant|haven'?t\s+been\s+pregnant|"
+    r"unmarried|not\s+married|never\s+married|single|"
+    r"never\s+(?:been\s+)?pregnant|haven'?t\s+been\s+pregnant|"
     r"have\s+not\s+been\s+pregnant|not\s+pregnant|wasn'?t\s+pregnant|was\s+not\s+pregnant|"
     r"to\s+be\s+married)\b"
     r"|बच्चे\s+नहीं|कोई\s+बच्चा\s+नहीं|बच्चा\s+नहीं\s+है|चिल्ड्रन"
-    r"|प्रेग्नेंट\s+नहीं|गर्भवती\s+नहीं|शादी\s+नहीं\s+हुई|शादी\s+होने\s+वाली",
+    r"|प्रेग्नेंट\s+नहीं|गर्भवती\s+नहीं|शादी\s+नहीं\s+हुई|शादी\s+होने\s+वाली|अविवाहित",
     re.I,
 )
 _NO_CHILD_ONLY_RE = re.compile(
     r"\b(no\s+child|no\s+children|don'?t\s+have\s+(?:any\s+)?children|do\s+not\s+have\s+(?:any\s+)?children|"
     r"childless|0\s+children|zero\s+children)\b"
     r"|बच्चे\s+नहीं|कोई\s+बच्चा\s+नहीं|बच्चा\s+नहीं\s+है|डोंट\s+हैव\s+चिल्ड्रन",
+    re.I,
+)
+_UNMARRIED_RE = re.compile(
+    r"\b(unmarried|not\s+married|never\s+married|single|not\s+yet\s+married)\b"
+    r"|शादी\s+नहीं\s+हुई|अविवाहित|नो,\s*इट्स\s+नॉट",
     re.I,
 )
 _NEVER_PREGNANT_RE = re.compile(
@@ -487,6 +493,7 @@ def _normalize_finding(
     detail: str,
     raw_topics: list,
     last_user_text: str = "",
+    status: str = "",
 ) -> tuple[str, list]:
     """A checklist id in domain still counts as covered, without erasing valid clinical domains."""
     topics = list(raw_topics)
@@ -513,18 +520,30 @@ def _normalize_finding(
             if "intro_children" not in topics:
                 topics.append("intro_children")
     combined_text = f"{detail} {last_user_text}"
-    allow_group_skip = bool(_NO_CHILD_RE.search(combined_text))
+    user_no = bool(_NO_MORE_USER_RE.match((last_user_text or "").strip()))
+    unmarried_now = bool(_UNMARRIED_RE.search(combined_text)) or (
+        "intro_married" in topics and (status == "negative" or user_no)
+    )
+    no_child_now = bool(_NO_CHILD_ONLY_RE.search(combined_text)) or (
+        "intro_children" in topics and status == "negative"
+    )
+    never_preg_now = bool(_NEVER_PREGNANT_RE.search(combined_text))
+    allow_group_skip = bool(_NO_CHILD_RE.search(combined_text)) or unmarried_now or no_child_now or never_preg_now
     if not allow_group_skip:
         topics = [t for t in topics if str(t).strip() not in checklist.GROUPS]
     else:
-        if _NO_CHILD_ONLY_RE.search(combined_text):
+        if unmarried_now:
+            for item in ("intro_children", "birth", "body", "illness", *_PREG_DELIVERY_TOPICS, "fam_related", "fam_miscarriage"):
+                if item not in topics:
+                    topics.append(item)
+        if no_child_now:
             for grp in ("birth", "body", "illness"):
                 if grp not in topics:
                     topics.append(grp)
             for pt in _PREG_DELIVERY_TOPICS:
                 if pt not in topics:
                     topics.append(pt)
-        if _NEVER_PREGNANT_RE.search(combined_text):
+        if never_preg_now:
             for pt in (*_PREG_DELIVERY_TOPICS, "fam_miscarriage"):
                 if pt not in topics:
                     topics.append(pt)
@@ -654,7 +673,7 @@ async def _answer_function_calls(
             if isinstance(args.get("topic_ids"), str):
                 raw_topics = [args["topic_ids"]]
             domain, raw_topics = _normalize_finding(
-                domain, detail, raw_topics, last_user_text
+                domain, detail, raw_topics, last_user_text, status
             )
             coverage = telemetry.setdefault("coverage", [])
             name_check = domain == "profile_mother_name" or "intro_name" in raw_topics
