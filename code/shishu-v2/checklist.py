@@ -112,10 +112,12 @@ def tool_note(coverage: list) -> str:
             "All topics are covered. Speak the full closing now in your same warm female voice (Kore) in Hindi, "
             "then call end_call. Do not read this note aloud."
         )
-    nxt = "; ".join(f"{t['id']} (Hindi: {t['words']} — {t['need']})" for t in left[:2])
+    t = left[0]
+    nxt = f"{t['id']} (Hindi: {t['words']} — {t['need']})"
     return (
-        f"Saved. Next open topics: {nxt}. If her last answer was unclear, clarify it first. "
-        "Otherwise ask ONLY the first open topic as one short Hindi question using the Hindi phrasing (never speak English words from this note). "
+        f"Saved. Next open topic: {nxt}. If her last answer was unclear, clarify it first. "
+        "Otherwise ask ONLY this single open topic as ONE short Hindi question (never combine two questions in one turn, and never speak English words from this note). "
+        "NEVER say 'Nahi' or 'Haan' at the end of your question. "
         "Keep your exact same warm female voice (Kore) and pitch — never shift to a male voice. "
         "If she has more than one child, say 'aapke kisi bhi bachche ko'; in family topics, explicitly say 'kisi bachche ya bade ko'. "
         "Do not read this note aloud."
@@ -179,7 +181,7 @@ def incomplete_notes(coverage: list, reason: str) -> tuple[str, str]:
     doctor = (
         f"> **Incomplete call:** {why}. {len(left)} of {len(REQUIRED_IDS)} topics were not asked: {ids}."
     )
-    mother = "Yeh call adhoori rahi. Kripya jab samay mile, dobara call karke baaki sawal poore kar lijiye."
+    mother = "यह कॉल अधूरी रही। कृपया जब समय मिले, दोबारा कॉल (dobara call) करके बाकी सवाल पूरे कर लीजिए।"
     return doctor, mother
 
 

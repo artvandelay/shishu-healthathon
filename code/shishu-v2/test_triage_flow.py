@@ -279,8 +279,8 @@ class Call223RegressionTests(unittest.TestCase):
 
     def test_vad_defaults_give_caller_thinking_room(self):
         s = gemini_live._session_settings({})
-        self.assertEqual(s["silence_duration_ms"], 1300)
-        self.assertIn("LOW", str(s["end_sens"]).upper())
+        self.assertEqual(s["silence_duration_ms"], 750)
+        self.assertIn("HIGH", str(s["end_sens"]).upper())
         self.assertEqual(s["watchdog_timeout_sec"], 8.0)
 
 
@@ -433,11 +433,13 @@ class Call228RegressionTests(unittest.TestCase):
         state = gemini_live._TurnState()
         state.awaiting_bot_reply = True
         state.speech_end_waiting = True
-        state.last_user_turn_ts = time.time() - 3.8
-        telemetry = gemini_live._new_telemetry("gemini-3.1-flash-live-preview", "Kore", 1300, 300, 0)
+        state.last_user_turn_ts = time.time() - 6.3
+        telemetry = gemini_live._new_telemetry("gemini-3.1-flash-live-preview", "Kore", 750, 300, 0)
         session, _, _ = _run_watchdog(state, telemetry)
         self.assertEqual(session.texts, [gemini_live._WATCHDOG_NUDGE])
         self.assertEqual(telemetry["watchdog_nudges"], 1)
+        self.assertIn("SYSTEM CUE", gemini_live._WATCHDOG_NUDGE)
+        self.assertIn("NEVER say 'Nahi' or 'Haan'", gemini_live._WATCHDOG_NUDGE)
 
     def test_open_capture_concern_waits_for_aur_kuch_before_closing(self):
         telemetry = gemini_live._new_telemetry("gemini-3.1-flash-live-preview", "Kore", 1300, 300, 0)
@@ -499,6 +501,12 @@ class Call228RegressionTests(unittest.TestCase):
         note = checklist.tool_note(["intro"])
         self.assertIn("female voice (Kore)", note)
         self.assertIn("aapke kisi bhi bachche ko", note)
+        self.assertNotIn("birth_term", note)
+        cfg = gemini_live._live_config({})
+        self.assertEqual(cfg.temperature, 0.5)
+        self.assertFalse(cfg.enable_affective_dialog)
+        self.assertEqual(cfg.context_window_compression.trigger_tokens, 10000)
+        self.assertEqual(cfg.context_window_compression.sliding_window.target_tokens, 6000)
 
 
 if __name__ == "__main__":

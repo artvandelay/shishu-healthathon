@@ -35,13 +35,11 @@ _GREETING = (
     "Greet the caller now in Hindi: Namaste, main Shishu hoon. Aapka naam bataiyega please?"
 )
 _WATCHDOG_NUDGE = (
-    "Speak as SHISHU in Hindi only. If your previous question was not clearly answered, "
-    "gently repeat or clarify that same question. Never answer for the mother."
+    "SYSTEM CUE (from the app, not the mother): speak as SHISHU in Hindi only in your same warm female voice (Kore). "
+    "If your previous question was not clearly answered, gently repeat or clarify that single question. "
+    "NEVER say 'Nahi' or 'Haan' yourself, and never answer for the mother."
 )
-_MANUAL_NUDGE = (
-    "Speak as SHISHU in Hindi only. If your previous question was not clearly answered, "
-    "gently repeat or clarify that same question. Never answer for the mother."
-)
+_MANUAL_NUDGE = _WATCHDOG_NUDGE
 _FINDING_RESULT = "ok"
 
 _RECORD_FINDING_DECL = {
@@ -130,6 +128,7 @@ class _TurnState:
         self.last_user_text = ""
         self.time_cue_sent = False
         self.speech_end_waiting = False
+        self.playback_ends_at = 0.0
 
 
 class _SessionProxy:
@@ -142,21 +141,21 @@ class _SessionProxy:
 
 def _session_settings(settings: dict) -> dict:
     start_low = settings.get("vad_start_sensitivity") == "LOW"
-    end_high = settings.get("vad_end_sensitivity") == "HIGH"
+    end_low = settings.get("vad_end_sensitivity") == "LOW"
     return {
         "model": settings.get("gemini_model") or "gemini-3.1-flash-live-preview",
         "voice": "Kore",
         "prefix_padding_ms": int(float(settings.get("vad_prefix_padding_ms") or 300)),
-        "silence_duration_ms": int(float(settings.get("vad_silence_ms") or 1300)),
+        "silence_duration_ms": int(float(settings.get("vad_silence_ms") or 750)),
         "start_sens": (
             types.StartSensitivity.START_SENSITIVITY_LOW
             if start_low
             else types.StartSensitivity.START_SENSITIVITY_HIGH
         ),
         "end_sens": (
-            types.EndSensitivity.END_SENSITIVITY_HIGH
-            if end_high
-            else types.EndSensitivity.END_SENSITIVITY_LOW
+            types.EndSensitivity.END_SENSITIVITY_LOW
+            if end_low
+            else types.EndSensitivity.END_SENSITIVITY_HIGH
         ),
         "watchdog_timeout_sec": float(settings.get("watchdog_timeout_sec") or 8.0),
     }
@@ -166,6 +165,8 @@ def _live_config(settings: dict, resume_handle: str | None = None) -> types.Live
     chosen = _session_settings(settings)
     return types.LiveConnectConfig(
         response_modalities=[types.Modality.AUDIO],
+        temperature=0.5,
+        enable_affective_dialog=False,
         speech_config=types.SpeechConfig(
             language_code="hi-IN",
             voice_config=types.VoiceConfig(
@@ -197,7 +198,8 @@ def _live_config(settings: dict, resume_handle: str | None = None) -> types.Live
             ),
         ),
         context_window_compression=types.ContextWindowCompressionConfig(
-            sliding_window=types.SlidingWindow()
+            trigger_tokens=10000,
+            sliding_window=types.SlidingWindow(target_tokens=6000),
         ),
         session_resumption=types.SessionResumptionConfig(handle=resume_handle or None),
         tools=[{"function_declarations": [_RECORD_FINDING_DECL, _END_CALL_DECL]}],
@@ -371,16 +373,43 @@ def _caller_heard(state: _TurnState, telemetry: dict) -> None:
     state.quiet_from = 0.0
 
 
-def _arm_user_turn(state: _TurnState, telemetry: dict) -> None:
-    if not state.awaiting_bot_reply:
-        telemetry["user_turns"] += 1
-        state.nudges_for_current_turn = 0
+def _arm_waiting_reply(
+    state: _TurnState,
+    *,
+    speech_end_waiting: bool = False,
+    now_ts: float | None = None,
+) -> None:
     state.awaiting_bot_reply = True
-    state.speech_end_waiting = False
-    state.last_user_turn_ts = time.time()
+    state.speech_end_waiting = speech_end_waiting
+    state.last_user_turn_ts = now_ts if now_ts is not None else time.time()
     state.bot_replied_since_user = False
+    state.nudges_for_current_turn = 0
+
+
+def _arm_user_turn(state: _TurnState, telemetry: dict) -> None:
+    if not state.awaiting_bot_reply or state.speech_end_waiting:
+        telemetry["user_turns"] += 1
+    _arm_waiting_reply(state, speech_end_waiting=False)
     _caller_heard(state, telemetry)
     state.checked_in = False
+
+
+async def _send_realtime_safe(
+    session,
+    send_lock: asyncio.Lock,
+    state: _TurnState,
+    stop: asyncio.Event,
+    **kwargs,
+) -> bool:
+    try:
+        async with send_lock:
+            await session.send_realtime_input(**kwargs)
+        return True
+    except Exception:
+        if state.resume_handle and not stop.is_set():
+            state.reconnect_requested = True
+            return True
+        return False
 
 
 _MARRIAGE_DETAIL_RE = re.compile(
@@ -393,6 +422,12 @@ _CHILDREN_DETAIL_RE = re.compile(
 )
 _NO_MORE_USER_RE = re.compile(
     r"^\s*(?:नहीं|नही|ना|बस|बस इतना ही|और कुछ नहीं|कुछ नहीं|nahi|no|bas|nothing)(?:\s*[.,!?;:।].*|\s+.*)?$",
+    re.I,
+)
+_NO_CHILD_RE = re.compile(
+    r"\b(no\s+child|no\s+children|childless|0\s+children|zero\s+children|"
+    r"unmarried|not\s+married|never\s+pregnant|to\s+be\s+married)\b"
+    r"|बच्चे\s+नहीं|कोई\s+बच्चा\s+नहीं|शादी\s+होने\s+वाली",
     re.I,
 )
 _VALID_DOMAINS = {
@@ -415,13 +450,29 @@ _VALID_DOMAINS = {
 _TOPIC_AS_DOMAIN = {
     "intro_name": "profile_mother_name",
     "intro_children": "profile_child_age",
+    "profile_children": "profile_child_age",
+    "profile_married": "coverage",
+}
+_DOMAIN_AS_TOPIC = {
+    "profile_children": "intro_children",
+    "profile_married": "intro_married",
 }
 
 
-def _normalize_finding(domain: str, detail: str, raw_topics: list) -> tuple[str, list]:
+def _normalize_finding(
+    domain: str,
+    detail: str,
+    raw_topics: list,
+    last_user_text: str = "",
+) -> tuple[str, list]:
     """A checklist id in domain still counts as covered, without erasing valid clinical domains."""
     topics = list(raw_topics)
-    if domain == "birth_nicu" and not topics:
+    if domain in _TOPIC_AS_DOMAIN and domain not in _VALID_DOMAINS:
+        mapped_topic = _DOMAIN_AS_TOPIC.get(domain, domain)
+        if mapped_topic in checklist._BY_ID and mapped_topic not in topics:
+            topics.append(mapped_topic)
+        domain = _TOPIC_AS_DOMAIN[domain]
+    elif domain == "birth_nicu" and not topics:
         topics.append("birth_nicu")
     elif domain not in _VALID_DOMAINS and (domain in checklist._BY_ID or domain in checklist.GROUPS):
         if domain not in topics:
@@ -438,6 +489,9 @@ def _normalize_finding(domain: str, detail: str, raw_topics: list) -> tuple[str,
             domain = "profile_child_age"
             if "intro_children" not in topics:
                 topics.append("intro_children")
+    allow_group_skip = bool(_NO_CHILD_RE.search(f"{detail} {last_user_text}"))
+    if not allow_group_skip:
+        topics = [t for t in topics if str(t).strip() not in checklist.GROUPS]
     return domain, topics
 
 
@@ -526,6 +580,8 @@ async def _answer_function_calls(
 ) -> None:
     responses: list[types.FunctionResponse] = []
     logged: list[str] = []
+    db_records: list[tuple[str, str, str, bool]] = []
+    ws_messages: list[dict] = []
     for fc in calls:
         fc_id = getattr(fc, "id", None) or ""
         if fc_id and (fc_id in cancelled or fc_id in seen):
@@ -546,7 +602,7 @@ async def _answer_function_calls(
             else:
                 telemetry["end_requested"] = True
                 telemetry["end_requested_at"] = time.time()
-                await _send_json(ws, ws_lock, {"type": "ending"})
+                ws_messages.append({"type": "ending"})
                 body = {"result": "ok"}
                 logged.append("end_call")
         elif name == "record_finding":
@@ -558,7 +614,9 @@ async def _answer_function_calls(
             raw_topics = list(args.get("topic_ids") or [])
             if isinstance(args.get("topic_ids"), str):
                 raw_topics = [args["topic_ids"]]
-            domain, raw_topics = _normalize_finding(domain, detail, raw_topics)
+            domain, raw_topics = _normalize_finding(
+                domain, detail, raw_topics, last_user_text
+            )
             coverage = telemetry.setdefault("coverage", [])
             name_check = domain == "profile_mother_name" or "intro_name" in raw_topics
             name_invalid = name_check and (
@@ -581,21 +639,19 @@ async def _answer_function_calls(
                 open_capture_hold = True
             checklist.mark(coverage, raw_topics)
             if domain and domain != "coverage" and not (name_invalid and domain == "profile_mother_name"):
-                db.record_finding_db(call_id, domain, status, detail, is_red_flag)
-                await _send_json(
-                    ws,
-                    ws_lock,
+                db_records.append((domain, status, detail, is_red_flag))
+                ws_messages.append(
                     {
                         "type": "finding",
                         "domain": domain,
                         "status": status,
                         "detail": detail,
                         "is_red_flag": is_red_flag,
-                    },
+                    }
                 )
             label = checklist.progress_label(coverage)
             telemetry["progress_group"] = label
-            await _send_json(ws, ws_lock, {"type": "progress", "group": label})
+            ws_messages.append({"type": "progress", "group": label})
             if name_invalid:
                 note = checklist.NAME_MISSING_NOTE
             elif open_capture_hold:
@@ -621,15 +677,21 @@ async def _answer_function_calls(
                 scheduling=types.FunctionResponseScheduling.WHEN_IDLE,
             )
         )
+    send_failed = False
+    if responses:
+        try:
+            async with send_lock:
+                await session.send_tool_response(function_responses=responses)
+        except Exception:
+            send_failed = True
+    for domain, status, detail, is_red_flag in db_records:
+        db.record_finding_db(call_id, domain, status, detail, is_red_flag)
+    for payload in ws_messages:
+        await _send_json(ws, ws_lock, payload)
     for detail in logged:
         telemetry["tool_calls"] += 1
         await _emit(ws, ws_lock, call_id, telemetry, "tool_call", detail)
-    if not responses:
-        return
-    try:
-        async with send_lock:
-            await session.send_tool_response(function_responses=responses)
-    except Exception:
+    if send_failed:
         await _report_error(
             ws,
             ws_lock,
@@ -664,6 +726,8 @@ async def _on_bot_audio(
     state.speech_end_waiting = False
     state.bot_replied_since_user = True
     state.bot_speaking = True
+    dur = len(pcm) / max(1, 2 * rate)
+    state.playback_ends_at = max(time.time(), state.playback_ends_at) + dur
     recorder.add_bot_pcm(pcm, rate)
     await _send_json(
         ws,
@@ -703,6 +767,7 @@ async def _handle_server_message(
     server_content = getattr(response, "server_content", None)
     if server_content is not None and server_content.interrupted:
         state.bot_speaking = False
+        state.playback_ends_at = 0.0
         _caller_heard(state, telemetry)
         telemetry["interruptions"] += 1
         await _send_json(ws, ws_lock, {"type": "clear"})
@@ -776,12 +841,16 @@ async def _handle_server_message(
             cancelled,
             state.last_user_text,
         )
+        if not telemetry.get("end_requested"):
+            _arm_waiting_reply(state, speech_end_waiting=False)
+            state.quiet_from = 0.0
 
     if server_content is not None and server_content.turn_complete:
         state.bot_speaking = False
         if not state.awaiting_bot_reply:
-            state.quiet_from = time.time()
-        await _emit(ws, ws_lock, call_id, telemetry, "turn_complete", "")
+            state.quiet_from = max(time.time(), state.playback_ends_at)
+        if not calls or telemetry.get("end_requested"):
+            await _emit(ws, ws_lock, call_id, telemetry, "turn_complete", "")
 
     update = getattr(response, "session_resumption_update", None)
     if update is not None and getattr(update, "resumable", False) and getattr(update, "new_handle", None):
@@ -855,6 +924,8 @@ async def _gemini_loop(
         telemetry["reconnects"] = reconnects
         state.bot_speaking = False
         state.awaiting_bot_reply = False
+        state.speech_end_waiting = False
+        state.playback_ends_at = 0.0
         state.quiet_from = time.time()
         seen.clear()
         cancelled.clear()
@@ -915,12 +986,14 @@ async def _watchdog_loop(
                     telemetry["close_reason"] = reason
                 else:
                     state.checked_in = True
-                try:
-                    async with send_lock:
-                        await session.send_realtime_input(text=cue)
-                except Exception:
+                ok = await _send_realtime_safe(
+                    session, send_lock, state, stop, text=cue
+                )
+                if not ok:
                     stop.set()
                     return
+                if state.reconnect_requested:
+                    continue
                 await _emit(
                     ws,
                     ws_lock,
@@ -935,7 +1008,7 @@ async def _watchdog_loop(
             if state.bot_replied_since_user or state.last_user_turn_ts <= 0:
                 continue
             effective_timeout = (
-                min(watchdog_timeout_sec, 3.5)
+                min(watchdog_timeout_sec, 6.0)
                 if state.speech_end_waiting
                 else watchdog_timeout_sec
             )
@@ -951,10 +1024,10 @@ async def _watchdog_loop(
             state.nudges_for_current_turn += 1
             telemetry["watchdog_nudges"] += 1
             state.last_user_turn_ts = time.time()
-            try:
-                async with send_lock:
-                    await session.send_realtime_input(text=_WATCHDOG_NUDGE)
-            except Exception:
+            ok = await _send_realtime_safe(
+                session, send_lock, state, stop, text=_WATCHDOG_NUDGE
+            )
+            if not ok:
                 await _report_error(
                     ws,
                     ws_lock,
@@ -964,6 +1037,8 @@ async def _watchdog_loop(
                 )
                 stop.set()
                 return
+            if state.reconnect_requested:
+                continue
             await _emit(
                 ws,
                 ws_lock,
@@ -1024,15 +1099,17 @@ async def _browser_loop(
                 recorder.add_user_pcm(pcm, rate)
                 if _pcm_rms(pcm) >= 0.02:
                     _caller_heard(state, telemetry)
-                try:
-                    async with send_lock:
-                        await session.send_realtime_input(
-                            audio=types.Blob(
-                                data=pcm,
-                                mime_type=f"audio/pcm;rate={rate}",
-                            )
-                        )
-                except Exception:
+                ok = await _send_realtime_safe(
+                    session,
+                    send_lock,
+                    state,
+                    stop,
+                    audio=types.Blob(
+                        data=pcm,
+                        mime_type=f"audio/pcm;rate={rate}",
+                    ),
+                )
+                if not ok:
                     stop.set()
                     await _report_error(
                         ws,
@@ -1044,26 +1121,24 @@ async def _browser_loop(
                     return
             elif kind == "speech_end":
                 _cancel_silence_close(state, telemetry)
-                if not state.bot_speaking:
+                now_ts = time.time()
+                if not state.bot_speaking and now_ts >= state.playback_ends_at - 0.1:
                     if not state.awaiting_bot_reply:
-                        state.awaiting_bot_reply = True
-                        state.speech_end_waiting = True
-                        state.last_user_turn_ts = time.time()
-                        state.bot_replied_since_user = False
-                        state.nudges_for_current_turn = 0
-                    state.quiet_from = time.time()
+                        _arm_waiting_reply(
+                            state, speech_end_waiting=True, now_ts=now_ts
+                        )
+                    state.quiet_from = max(now_ts, state.playback_ends_at)
                 try:
                     db.append_call_event(call_id, "speech_end", "")
-                    db.update_call_telemetry(call_id, telemetry)
                 except Exception:
                     pass
             elif kind == "nudge":
                 if state.awaiting_bot_reply:
                     state.last_user_turn_ts = time.time()
-                try:
-                    async with send_lock:
-                        await session.send_realtime_input(text=_MANUAL_NUDGE)
-                except Exception:
+                ok = await _send_realtime_safe(
+                    session, send_lock, state, stop, text=_MANUAL_NUDGE
+                )
+                if not ok:
                     stop.set()
                     await _report_error(
                         ws,
@@ -1073,6 +1148,8 @@ async def _browser_loop(
                         "Could not nudge Gemini",
                     )
                     return
+                if state.reconnect_requested:
+                    continue
                 await _emit(
                     ws,
                     ws_lock,
@@ -1273,12 +1350,18 @@ async def handle_gemini_ws(
 
         async def _reconnect(handle: str) -> bool:
             nonlocal session_ctx
-            try:
-                new_ctx, new_session, _ = await _connect_live(
-                    client, model, _live_config(settings, resume_handle=handle)
-                )
-            except Exception:
-                return False
+            new_ctx = None
+            new_session = None
+            for attempt in range(3):
+                try:
+                    new_ctx, new_session, _ = await _connect_live(
+                        client, model, _live_config(settings, resume_handle=handle)
+                    )
+                    break
+                except Exception:
+                    if attempt == 2:
+                        return False
+                    await asyncio.sleep(0.4 * (attempt + 1))
             old_ctx = session_ctx
             async with send_lock:
                 session.current = new_session

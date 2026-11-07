@@ -698,11 +698,14 @@
       let voiceName = "";
       let lastTelemetry = null;
       const recentEvents = [];
+      const ECHO_TAIL_MS = 120;
       let userSpeaking = false;
       let lastVoiceTs = 0;
       let speechEndAt = 0;
       let lastBotPlayEndAt = 0;
       let nudgeWatch = 0;
+      let silenceLen = 0;
+      let silenceB64 = "";
       let micSmooth = 0;
       let bugCategory = "";
       let hudNoteTimer = 0;
@@ -893,6 +896,10 @@
         return activeSources.size > 0 || (playbackCtx && playbackCtx.currentTime < nextPlayTime);
       }
 
+      function isBotAudible(now) {
+        return isBotPlaying() || (now - lastBotPlayEndAt) < ECHO_TAIL_MS;
+      }
+
       function emitSpeechEnd() {
         speechEndAt = Date.now();
         refreshNudgeHighlight();
@@ -903,8 +910,8 @@
       function trackSpeech(rms) {
         if (phase !== "live") return;
         const now = Date.now();
-        const echoWindow = isBotPlaying() || (now - lastBotPlayEndAt) < 300;
-        const threshold = echoWindow ? 0.065 : 0.015;
+        const playing = isBotPlaying();
+        const threshold = playing ? 0.075 : ((now - lastBotPlayEndAt) < ECHO_TAIL_MS ? 0.035 : 0.014);
         if (rms > threshold) {
           userSpeaking = true;
           lastVoiceTs = now;
@@ -912,7 +919,7 @@
           nudgeBtn.classList.remove("hot");
           return;
         }
-        if (userSpeaking && !isBotPlaying() && (now - lastVoiceTs) > 750) {
+        if (!playing && userSpeaking && (now - lastVoiceTs) > 600) {
           userSpeaking = false;
           emitSpeechEnd();
         }
@@ -922,20 +929,30 @@
         const rms = rmsOf(float32);
         updateMicLevel(rms);
         trackSpeech(rms);
-        sendPcm(float32);
+        sendPcm(float32, rms);
       }
 
-      function sendPcm(float32) {
+      function silentPcmBase64(samples) {
+        if (samples !== silenceLen) {
+          silenceLen = samples;
+          silenceB64 = bytesToBase64(new Uint8Array(samples * 2));
+        }
+        return silenceB64;
+      }
+
+      function sendPcm(float32, rms) {
         if (phase !== "live" || !ws || ws.readyState !== WebSocket.OPEN) return;
         if (ws.bufferedAmount > 262144) return;
         const inRate = captureCtx ? captureCtx.sampleRate : captureRate;
         const down = downsampleBuffer(float32, inRate, captureRate);
         if (!down.length) return;
-        const muteEcho = (isBotPlaying() || (Date.now() - lastBotPlayEndAt) < 250) && !userSpeaking;
-        const pcm = floatToPcm16LE(muteEcho ? new Float32Array(down.length) : down);
+        const now = Date.now();
+        const quietTail = !userSpeaking && lastVoiceTs > 0 && (now - lastVoiceTs) > 350 && rms < 0.012;
+        const muteFrame = (isBotAudible(now) && !userSpeaking) || quietTail;
+        const b64 = muteFrame ? silentPcmBase64(down.length) : bytesToBase64(floatToPcm16LE(down));
         ws.send(JSON.stringify({
           type: "audio",
-          data: bytesToBase64(pcm),
+          data: b64,
           sample_rate: captureRate
         }));
       }
@@ -975,6 +992,7 @@
         const src = playbackCtx.createBufferSource();
         src.buffer = audioBuffer;
         src.connect(playbackCtx.destination);
+        if (!isBotPlaying()) userSpeaking = false;
         speechEndAt = 0;
         nudgeBtn.classList.remove("hot");
         const now = playbackCtx.currentTime;
@@ -1176,15 +1194,15 @@
         }
       }
 
+      const FALLBACK_MOTHER_QUESTIONS = "अगली बार जब आप डॉक्टर या स्वास्थ्य कार्यकर्ता (ASHA/ANM दीदी) से मिलें, तो ये सवाल ज़रूर पूछें:\n\n1. मेरे बच्चे की उम्र के हिसाब से उसका वज़न, लंबाई और सीखना-बढ़ना (बैठना, चलना, बोलना) ठीक चल रहा है या नहीं?\n2. बच्चे के सभी ज़रूरी टीके (टीकाकरण कार्ड के अनुसार, जैसे BCG) और सुनने-देखने की सामान्य जाँच पूरी है या कोई अगला टीका बाकी है?\n3. बच्चे के रोज़ के खान-पान और सेहत के लिए अभी मुझे किन बातों का ध्यान रखना चाहिए, और किन लक्षणों के दिखने पर तुरंत डॉक्टर या स्वास्थ्य कार्यकर्ता को दिखाना चाहिए?\n\nनोट: ये सवाल आपकी अगली विज़िट में डॉक्टर या स्वास्थ्य कार्यकर्ता (ASHA/ANM दीदी) से पूछने के लिए हैं। यह किसी बीमारी की पुष्टि (डायग्नोसिस) नहीं है।";
+
       function onSocketClose() {
         if (phase === "done") return;
         if (phase === "summarizing") {
-          phase = "error";
-          waitEl.hidden = true;
-          leaveLiveChrome();
-          setStatus("Tap Start Call to begin in Hindi");
-          showError("The summary did not arrive. Check the admin dashboard for this call.");
-          armStartButton();
+          showThanks({
+            call_id: callId,
+            summary_mother: FALLBACK_MOTHER_QUESTIONS
+          });
           return;
         }
         if (phase === "live" || phase === "connecting") {
@@ -1235,7 +1253,31 @@
           throw new Error("Microphone capture was interrupted.");
         }
         if (captureCtx.state === "suspended") await captureCtx.resume();
+        captureCtx.onstatechange = function () {
+          if (phase === "live" && captureCtx && captureCtx.state === "suspended") {
+            captureCtx.resume().catch(function () {});
+          }
+        };
         micSource = captureCtx.createMediaStreamSource(micStream);
+        const primaryTrack = micStream.getAudioTracks()[0];
+        if (primaryTrack) {
+          primaryTrack.addEventListener("ended", function () {
+            if (phase !== "live") return;
+            requestMic().then(function (newStream) {
+              if (phase !== "live" || !captureCtx) {
+                newStream.getTracks().forEach(function (t) { t.stop(); });
+                return;
+              }
+              try { if (micSource) micSource.disconnect(); } catch (e) {}
+              micStream = newStream;
+              micSource = captureCtx.createMediaStreamSource(newStream);
+              if (workletNode) micSource.connect(workletNode);
+              else if (processor) micSource.connect(processor);
+            }).catch(function () {
+              showError("Microphone disconnected. Reconnect your mic or tap End Call.");
+            });
+          });
+        }
         silentGain = captureCtx.createGain();
         silentGain.gain.value = 0;
         if (captureCtx.audioWorklet) {
@@ -1386,7 +1428,7 @@
           if (phase === "summarizing") {
             showThanks({
               call_id: callId,
-              summary_mother: "अगली बार जब आप डॉक्टर या स्वास्थ्य कार्यकर्ता (ASHA/ANM दीदी) से मिलें, तो ये सवाल ज़रूर पूछें:\n\n1. मेरे बच्चे की उम्र के हिसाब से उसका वज़न, लंबाई और सीखना-बढ़ना (बैठना, चलना, बोलना) ठीक चल रहा है या नहीं?\n2. बच्चे के सभी ज़रूरी टीके (टीकाकरण कार्ड के अनुसार, जैसे BCG) और सुनने-देखने की सामान्य जाँच पूरी है या कोई अगला टीका बाकी है?\n3. बच्चे के रोज़ के खान-पान और सेहत के लिए अभी मुझे किन बातों का ध्यान रखना चाहिए, और किन लक्षणों के दिखने पर तुरंत डॉक्टर या स्वास्थ्य कार्यकर्ता को दिखाना चाहिए?\n\nनोट: ये सवाल आपकी अगली विज़िट में डॉक्टर या स्वास्थ्य कार्यकर्ता (ASHA/ANM दीदी) से पूछने के लिए हैं। यह किसी बीमारी की पुष्टि (डायग्नोसिस) नहीं है।"
+              summary_mother: FALLBACK_MOTHER_QUESTIONS
             });
           }
         }, 20000);
