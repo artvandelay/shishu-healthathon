@@ -115,8 +115,11 @@ def tool_note(coverage: list) -> str:
     t = left[0]
     nxt = f"{t['id']} (Hindi: {t['words']} — {t['need']})"
     return (
-        f"Saved. Next open topic: {nxt}. If her last answer was unclear, clarify it first. "
-        "Otherwise ask ONLY this single open topic as ONE short Hindi question (never combine two questions in one turn, and never speak English words from this note). "
+        f"Saved. Next open topic: {nxt}. "
+        "CRITICAL: If her last answer was 'Haan' or positive, or if you ALREADY started asking a follow-up question in this turn "
+        "(such as asking the children's ages, how many weeks early, NICU stay, cause of death, or who in the family had cancer/BP), "
+        "STOP SPEAKING IMMEDIATELY and WAIT for her answer! Do NOT say 'Theek hai' and move on to the next open topic in the same turn. "
+        "Otherwise, if no follow-up is pending, ask ONLY this single open topic as ONE short Hindi question (never combine two questions in one turn, and never speak English words from this note). "
         "NEVER say 'Nahi' or 'Haan' at the end of your question. "
         "Keep your exact same warm female voice (Kore) and pitch — never shift to a male voice. "
         "If she has more than one child, say 'aapke kisi bhi bachche ko'; in family topics, explicitly say 'kisi bachche ya bade ko'. "
@@ -190,6 +193,31 @@ NAME_MISSING_NOTE = (
     "Do NOT move on. Gently ask in Hindi: 'Ji, aaram se bataiye, aapka poora naam kya hai?' "
     "Do not read this note aloud."
 )
+CHILDREN_AGES_MISSING_NOTE = (
+    "She stated how many children she has, but has NOT given their ages yet. "
+    "Do NOT say the intro bridge and do NOT move on yet! "
+    "If you already asked 'Un sabhi bachchon ki umar kya-kya hai?' in this turn, STOP SPEAKING NOW and wait for her answer. "
+    "Otherwise ask ONLY: 'Ji, bahut achha. Un sabhi bachchon ki umar kya-kya hai?' and wait for her reply. "
+    "Do not read this note aloud."
+)
+PRETERM_NICU_FOLLOWUP_NOTE = (
+    "She reported a preterm or post-term birth, so we still need to know by how many weeks/months AND whether any child needed NICU ('kaanch ka box') or blue light for jaundice. "
+    "If you already asked that follow-up in this turn, STOP SPEAKING NOW and wait for her answer. "
+    "Otherwise ask how early/late the baby was born and whether the baby needed 'kaanch ka box' (NICU), then wait for her reply. "
+    "Do not read this note aloud."
+)
+
+_CHILD_AGE_PRESENT_RE = re.compile(
+    r"\b(year|years|yr|yrs|month|months|mo|mos|day|days|week|weeks|saal|mahin\w*|haft\w*|din|"
+    r"no\s+child|no\s+children|childless|0\s+children|zero\s+children|none)\b"
+    r"|साल|महीने|महीना|हफ्ते|हफ्ता|दिन|वरस|बच्चे\s+नहीं|कोई\s+बच्चा\s+नहीं",
+    re.I,
+)
+
+
+def has_child_age_detail(detail: str, last_user_text: str = "") -> bool:
+    blob = f"{detail or ''} {last_user_text or ''}"
+    return bool(_CHILD_AGE_PRESENT_RE.search(blob))
 
 _MISSING_NAME_DETAIL_RE = re.compile(
     r"\b(not provided|not given|not stated|not mentioned|unknown|unspecified|"

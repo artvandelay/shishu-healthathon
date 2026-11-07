@@ -599,6 +599,61 @@ class Call228RegressionTests(unittest.TestCase):
         self.assertEqual(telemetry["end_refusals"], 0)
         self.assertTrue(any(m.get("type") == "ending" for m in ws.sent))
 
+    def test_call247_blocking_tools_and_missing_ages_and_preterm_hold(self):
+        self.assertNotIn("behavior", gemini_live._RECORD_FINDING_DECL)
+        self.assertNotIn("behavior", gemini_live._END_CALL_DECL)
+        telemetry = gemini_live._new_telemetry("gemini-3.1-flash-live-preview", "Kore", 750, 300, 0)
+        checklist.mark(telemetry["coverage"], ["intro_name", "intro_married"])
+        call_id = db.create_call("gemini")
+
+        class _FcCountOnly:
+            id = "fc_count"
+            name = "record_finding"
+            args = {
+                "domain": "profile_child_age",
+                "status": "info",
+                "detail": "Mother has 6 children.",
+                "is_red_flag": False,
+                "topic_ids": ["intro_children"],
+            }
+            will_continue = False
+
+        class _FcPretermBoth:
+            id = "fc_preterm"
+            name = "record_finding"
+            args = {
+                "domain": "birth_nicu",
+                "status": "positive",
+                "detail": "Last child born preterm.",
+                "is_red_flag": True,
+                "topic_ids": ["birth_term", "birth_nicu"],
+            }
+            will_continue = False
+
+        class _Sess:
+            async def send_tool_response(self, function_responses=None):
+                self.responses = function_responses
+
+        async def run():
+            s1, s2 = _Sess(), _Sess()
+            ws = _FakeWs()
+            await gemini_live._answer_function_calls(
+                s1, asyncio.Lock(), ws, asyncio.Lock(), call_id, telemetry,
+                [_FcCountOnly()], set(), set(), "छह",
+            )
+            checklist.mark(telemetry["coverage"], ["intro_children", "intro_bridge", "birth_mode"])
+            await gemini_live._answer_function_calls(
+                s2, asyncio.Lock(), ws, asyncio.Lock(), call_id, telemetry,
+                [_FcPretermBoth()], set(), set(), "जो मेरे सबसे लास्ट वाले बच्चे हैं, वह समय से पहले हो गया था।",
+            )
+            return s1, s2
+
+        s1, s2 = asyncio.run(run())
+        self.assertIn("umar kya-kya hai", s1.responses[0].response["note"])
+        self.assertIsNone(s1.responses[0].scheduling)
+        self.assertNotIn("birth_nicu", telemetry["coverage"])
+        self.assertIn("kaanch ka box", s2.responses[0].response["note"])
+
 
 if __name__ == "__main__":
     unittest.main()

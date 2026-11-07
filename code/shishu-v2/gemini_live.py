@@ -44,7 +44,6 @@ _FINDING_RESULT = "ok"
 
 _RECORD_FINDING_DECL = {
     "name": "record_finding",
-    "behavior": "NON_BLOCKING",
     "description": (
         "Save the mother's answer and mark checklist topics as covered. "
         "Invocation Condition: invoke once after every answer she gives, including nahi and nahi pata. "
@@ -89,7 +88,6 @@ _RECORD_FINDING_DECL = {
 
 _END_CALL_DECL = {
     "name": "end_call",
-    "behavior": "NON_BLOCKING",
     "description": (
         "Hang up the call. Invocation Condition: invoke only after every checklist topic is covered, "
         "open capture is done, and you have spoken the full closing. If the result is not_yet, keep asking the open topics."
@@ -529,15 +527,16 @@ def _normalize_finding(
                 topics.append("intro_children")
     combined_text = f"{detail} {last_user_text}"
     user_no = bool(_NO_MORE_USER_RE.match((last_user_text or "").strip()))
-    unmarried_now = bool(_UNMARRIED_RE.search(combined_text)) or (
-        "intro_married" in topics and (status == "negative" or user_no)
+    unmarried_now = (
+        "intro_married" in topics
+        and (status == "negative" or user_no or bool(_UNMARRIED_RE.search(combined_text)))
     )
     no_child_now = bool(_NO_CHILD_ONLY_RE.search(combined_text)) or (
         "intro_children" in topics and status == "negative"
     )
     never_preg_now = bool(_NEVER_PREGNANT_RE.search(combined_text))
     ever_preg_no = bool(_EVER_PREGNANT_NO_RE.search(combined_text))
-    allow_group_skip = bool(_NO_CHILD_RE.search(combined_text)) or unmarried_now or no_child_now or never_preg_now
+    allow_group_skip = unmarried_now or no_child_now or never_preg_now
     if not allow_group_skip:
         topics = [t for t in topics if str(t).strip() not in checklist.GROUPS]
     else:
@@ -700,6 +699,25 @@ async def _answer_function_calls(
             )
             if name_invalid:
                 raw_topics = [t for t in raw_topics if t != "intro_name"]
+            ages_missing = (
+                "intro_children" in raw_topics
+                and status != "negative"
+                and not telemetry.get("children_ages_asked")
+                and not checklist.has_child_age_detail(detail, last_user_text)
+            )
+            if ages_missing:
+                telemetry["children_ages_asked"] = True
+                raw_topics = [t for t in raw_topics if t != "intro_children"]
+            preterm_nicu_hold = (
+                "birth_term" in raw_topics
+                and "birth_nicu" in raw_topics
+                and status == "positive"
+                and not telemetry.get("preterm_nicu_asked")
+                and not re.search(r"\b(nicu|icu|box|phototherapy|light|jaundice)\b|बॉक्स|लाइट|पीलिया", f"{detail} {last_user_text}", re.I)
+            )
+            if preterm_nicu_hold:
+                telemetry["preterm_nicu_asked"] = True
+                raw_topics = [t for t in raw_topics if t not in ("birth_term", "birth_nicu")]
             open_capture_hold = False
             if (
                 "close_anything_else" in raw_topics
@@ -729,6 +747,10 @@ async def _answer_function_calls(
             ws_messages.append({"type": "progress", "group": label})
             if name_invalid:
                 note = checklist.NAME_MISSING_NOTE
+            elif ages_missing:
+                note = checklist.CHILDREN_AGES_MISSING_NOTE
+            elif preterm_nicu_hold:
+                note = checklist.PRETERM_NICU_FOLLOWUP_NOTE
             elif open_capture_hold:
                 note = (
                     "Saved her concern for the doctor. Acknowledge it warmly in Hindi and ask ONLY "
@@ -749,7 +771,6 @@ async def _answer_function_calls(
                 id=fc_id,
                 name=name or "record_finding",
                 response=body,
-                scheduling=types.FunctionResponseScheduling.WHEN_IDLE,
             )
         )
     send_failed = False
