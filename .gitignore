@@ -21,6 +21,5 @@ SHISHU_Round_2_Owner_Working_Draft.pptx
 # Old versions. This app does not use them.
 code/bad-v1/
 infra/
-# Only the plan/ directory. review/ is the reviewer reading surface.
 plan/
 architecture/

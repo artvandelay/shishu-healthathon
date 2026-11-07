@@ -23,18 +23,20 @@ The doctor note stays in English.
 
 ## Sample reports
 
-The sample files are in `review/samples/`.
+The sample files are in `docs/samples/`.
 
-`review/samples/SHISHU-sample-red-flags.pdf` is the Hindi PDF from call 253.
+`docs/samples/SHISHU-sample-red-flags.pdf` is the Hindi PDF from call 253.
 That is the file the mother gets.
 The call was not complete.
 The PDF is not a diagnosis.
 
-`review/samples/SHISHU-sample-red-flags-en.pdf` is the same report in English.
+`docs/samples/SHISHU-sample-red-flags-en.pdf` is the same report in English.
 Open this file if you do not read Hindi.
 
-`review/samples/SHISHU-sample-no-flags.pdf` is a Hindi sample with no yes answers.
-`review/samples/SHISHU-sample-incomplete.pdf` is a short Hindi sample from a call that ended early.
+`docs/samples/SHISHU-sample-no-flags.pdf` is a Hindi sample with no yes answers.
+`docs/samples/SHISHU-sample-incomplete.pdf` is a short Hindi sample from a call that ended early.
+
+The call consent is `docs/SHISHU-consent.pdf`.
 
 A live service is optional: https://shishu-production.up.railway.app
 
@@ -143,5 +145,5 @@ For a call, enter the passcode `shishu2026`.
 This repo does not track private notes, call transcripts, medical source files, or old app versions.
 Those files can stay on this computer.
 `.gitignore` blocks a new commit of those files.
-The sample reports in `review/samples/` stay in the repo.
-The `plan/` ignore rule does not apply to `review/`.
+The sample reports in `docs/samples/` stay in the repo.
+The consent file in `docs/` stays in the repo.
