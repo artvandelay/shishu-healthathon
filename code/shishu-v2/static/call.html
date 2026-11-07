@@ -920,7 +920,8 @@
         const stuck = phase === "live"
           && speechEndAt > 0
           && activeSources.size === 0
-          && (Date.now() - speechEndAt) > 4000;
+          && (Date.now() - speechEndAt) > 3000;
+        nudgeBtn.hidden = !stuck;
         nudgeBtn.classList.toggle("hot", stuck);
       }
 
@@ -940,7 +941,7 @@
         clearThinkingWatch();
         avatarWrap.classList.remove("speaking", "thinking", "reconnecting");
         nudgeBtn.hidden = true;
-        nudgeBtn.classList.remove("hot");
+        nudgeBtn.classList.remove("hot"); nudgeBtn.hidden = true;
         userSpeaking = false;
         speechEndAt = 0;
         resetMicLevel();
@@ -971,7 +972,7 @@
           userSpeaking = true;
           lastVoiceTs = now;
           speechEndAt = 0;
-          nudgeBtn.classList.remove("hot");
+          nudgeBtn.classList.remove("hot"); nudgeBtn.hidden = true;
           return;
         }
         if (!playing && userSpeaking && (now - lastVoiceTs) > 550) {
@@ -1051,7 +1052,7 @@
         clearThinkingWatch();
         avatarWrap.classList.remove("thinking", "reconnecting");
         speechEndAt = 0;
-        nudgeBtn.classList.remove("hot");
+        nudgeBtn.classList.remove("hot"); nudgeBtn.hidden = true;
         const now = audioCtx.currentTime;
         nextPlayTime = Math.max(now, nextPlayTime);
         src.start(nextPlayTime);
@@ -1240,7 +1241,7 @@
         } else if (msg.type === "clear") {
           flushPlayback();
           speechEndAt = 0;
-          nudgeBtn.classList.remove("hot");
+          nudgeBtn.classList.remove("hot"); nudgeBtn.hidden = true;
           if (phase === "live" && !avatarWrap.classList.contains("reconnecting")) setStatus("Listening...");
         } else if (msg.type === "reconnecting") {
           clearThinkingWatch();
@@ -1430,7 +1431,6 @@
           if (phase !== "connecting") return;
           phase = "live";
           avatarWrap.classList.add("live");
-          nudgeBtn.hidden = false;
           startNudgeWatch();
           setStatus("Listening...");
           startTimer();
@@ -1674,7 +1674,7 @@
         if (phase !== "live" || !ws || ws.readyState !== WebSocket.OPEN) return;
         ws.send(JSON.stringify({ type: "nudge" }));
         speechEndAt = 0;
-        nudgeBtn.classList.remove("hot");
+        nudgeBtn.classList.remove("hot"); nudgeBtn.hidden = true;
         setStatus("Nudging SHISHU...");
       });
 
