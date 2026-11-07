@@ -545,7 +545,7 @@
     <div class="header-actions">
       <button id="hud-toggle" class="header-btn" type="button" hidden>Testing HUD</button>
       <button id="bug-btn" class="header-btn" type="button">Report Bug</button>
-      <a class="admin-link" href="/admin">Admin</a>
+      <a id="admin-link" class="admin-link" href="/admin" hidden>Admin</a>
       <button id="logout-btn" class="header-btn" type="button">Log out</button>
     </div>
   </header>
@@ -573,7 +573,7 @@
       <p id="summary" class="summary" lang="hi"></p>
       <div class="thanks-actions">
         <button id="new-call" class="text-btn" type="button">Start New Call</button>
-        <a id="admin-view" class="dash-link" href="/admin">View in Admin Dashboard</a>
+        <a id="admin-view" class="dash-link" href="/admin" hidden>View in Admin Dashboard</a>
       </div>
     </section>
     <section id="hud" class="hud" hidden>
@@ -639,6 +639,7 @@
       const summaryEl = document.getElementById("summary");
       const thanksSubEl = document.getElementById("thanks-sub");
       const adminView = document.getElementById("admin-view");
+      const adminLink = document.getElementById("admin-link");
       const errorEl = document.getElementById("error");
       const engineNote = document.getElementById("engine-note");
       const avatarWrap = document.getElementById("avatar-wrap");
@@ -801,7 +802,7 @@
       function showEngine(name) {
         engine = name;
         captureRate = name === "openai" ? 24000 : 16000;
-        engineNote.textContent = engineLabel(name);
+        engineNote.textContent = "";
       }
 
       function pad(n) {
@@ -1157,6 +1158,8 @@
         if (cfg.username) callerName = cfg.username;
         const isAdmin = userRole === "admin";
         hudToggle.hidden = !isAdmin;
+        adminLink.hidden = !isAdmin;
+        adminView.hidden = !isAdmin;
         if (isAdmin) hudEl.hidden = false;
         renderHud();
       }
@@ -1519,7 +1522,7 @@
         stageEl.hidden = true;
         summaryEl.textContent = msg.summary_mother || "";
         const bits = [];
-        if (callId != null) bits.push("Call #" + callId);
+        if (callId != null && userRole === "admin") bits.push("Call #" + callId);
         bits.push(frozenDuration);
         thanksSubEl.textContent = bits.join(" · ");
         adminView.href = callId != null ? ("/admin?call=" + encodeURIComponent(callId)) : "/admin";
