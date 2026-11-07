@@ -112,8 +112,8 @@
 
     .avatar-wrap {
       position: relative;
-      width: 168px;
-      height: 168px;
+      width: 141px;
+      height: 141px;
       display: grid;
       place-items: center;
       margin-bottom: 22px;
@@ -164,8 +164,8 @@
     }
 
     .avatar {
-      width: 112px;
-      height: 112px;
+      width: 94px;
+      height: 94px;
       border-radius: 50%;
       display: grid;
       place-items: center;
@@ -178,8 +178,8 @@
     }
 
     .avatar img {
-      width: 72px;
-      height: 72px;
+      width: 60px;
+      height: 60px;
       object-fit: contain;
     }
 
@@ -292,6 +292,27 @@
     .call-btn.end:hover { background: var(--red-dark); }
 
     .call-btn:disabled { opacity: 0.65; cursor: wait; }
+
+    .consent-row {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      margin: 4px 0 0;
+      font-size: 15px;
+    }
+
+    .consent-row label {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+    }
+
+    .consent-row a {
+      color: var(--navy, #1b2a4a);
+      font-weight: 700;
+    }
 
     .nudge-btn {
       margin-top: 14px;
@@ -626,7 +647,11 @@
       </div>
       <p id="caption"></p>
       <p id="wait" role="status" hidden>आपकी रिपोर्ट तैयार हो रही है।<br>कृपया इस पेज पर बने रहिए।<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span></p>
-      <button id="call-btn" class="call-btn" type="button">Start Call</button>
+      <p id="consent-row" class="consent-row">
+        <label><input id="consent-check" type="checkbox"> मैं सहमत हूँ</label>
+        <a href="https://github.com/artvandelay/shishu-healthathon/blob/main/review/SHISHU-consent.pdf" target="_blank" rel="noopener">सहमति पत्र</a>
+      </p>
+      <button id="call-btn" class="call-btn" type="button" disabled>Start Call</button>
       <button id="nudge-btn" class="nudge-btn" type="button" hidden>जवाब नहीं आया? यहाँ दबाएँ</button>
     </section>
     <section id="thanks" class="thanks" hidden>
@@ -698,6 +723,8 @@
       const captionEl = document.getElementById("caption");
       const waitEl = document.getElementById("wait");
       const callBtn = document.getElementById("call-btn");
+      const consentRow = document.getElementById("consent-row");
+      const consentCheck = document.getElementById("consent-check");
       const stageEl = document.getElementById("stage");
       const thanksEl = document.getElementById("thanks");
       const summaryEl = document.getElementById("summary");
@@ -908,7 +935,17 @@
         callBtn.textContent = "Start Call";
         callBtn.classList.remove("end");
         callBtn.setAttribute("aria-label", "Start Call");
-        callBtn.disabled = false;
+        callBtn.disabled = !consentCheck.checked;
+      }
+
+      function showConsentRow(clear) {
+        consentRow.hidden = false;
+        if (clear) consentCheck.checked = false;
+        if (phase === "idle" || phase === "error") armStartButton();
+      }
+
+      function hideConsentRow() {
+        consentRow.hidden = true;
       }
 
       function bytesToBase64(bytes) {
@@ -1353,7 +1390,7 @@
           avatarWrap.classList.remove("live", "speaking");
           phase = "error";
           setStatus("Tap Start Call to begin in Hindi");
-          armStartButton();
+          showConsentRow();
           showError("The call disconnected.");
         }
       }
@@ -1507,7 +1544,7 @@
           avatarWrap.classList.remove("live", "speaking");
           phase = "error";
           setStatus("Tap Start Call to begin in Hindi");
-          armStartButton();
+          showConsentRow();
           const denied = err && (err.name === "NotAllowedError" || err.name === "NotFoundError");
           showError(denied
             ? "Allow the microphone to start the Hindi call."
@@ -1552,7 +1589,7 @@
           stageEl.classList.remove("working");
           avatarWrap.classList.remove("working");
           waitEl.hidden = true;
-          armStartButton();
+          showConsentRow();
           return;
         }
         phase = "summarizing";
@@ -1695,7 +1732,7 @@
         avatarWrap.classList.remove("working", "live", "speaking");
         waitEl.hidden = true;
         setStatus("Tap Start Call to begin in Hindi");
-        armStartButton();
+        showConsentRow(true);
         renderHud();
         clearError();
       }
@@ -1795,8 +1832,14 @@
         }
       }
 
+      consentCheck.addEventListener("change", function () {
+        if (phase === "idle" || phase === "error") armStartButton();
+      });
+
       callBtn.addEventListener("click", function () {
         if (phase === "idle" || phase === "error") {
+          if (!consentCheck.checked) return;
+          hideConsentRow();
           phase = "connecting";
           armEndButton();
           if (audioCtx && audioCtx.state !== "closed") {
