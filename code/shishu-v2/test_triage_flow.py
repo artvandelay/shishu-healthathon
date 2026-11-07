@@ -22,7 +22,7 @@ class ChecklistTests(unittest.TestCase):
         self.assertEqual(len(ids), len(set(ids)))
         for t in checklist.TOPICS:
             self.assertIn(t["group"], checklist.GROUPS)
-        self.assertEqual(len(checklist.REQUIRED_IDS), 54)
+        self.assertEqual(len(checklist.REQUIRED_IDS), 53)
 
     def test_group_name_marks_whole_group(self):
         cov = []
@@ -42,7 +42,7 @@ class ChecklistTests(unittest.TestCase):
         cov = []
         checklist.mark(cov, ["intro"])
         self.assertIn("birth_mode", checklist.tool_note(cov))
-        self.assertEqual(checklist.progress_label(cov), "birth 4/54")
+        self.assertEqual(checklist.progress_label(cov), "birth 4/53")
 
 
 class PromptTests(unittest.TestCase):

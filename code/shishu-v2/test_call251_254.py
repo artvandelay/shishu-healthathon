@@ -69,7 +69,7 @@ def _finding(topic_id, domain, status, detail, n):
 
 class WideQuestionFirstTests(unittest.TestCase):
     def test_ids_unchanged_and_contract_keys_valid(self):
-        self.assertEqual(len(checklist.REQUIRED_IDS), 54)
+        self.assertEqual(len(checklist.REQUIRED_IDS), 53)
         for tid in list(question_flow.WIDE_WORDS) + list(question_flow.DRILLS):
             self.assertIn(tid, checklist._BY_ID)
 
