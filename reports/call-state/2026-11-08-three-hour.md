@@ -216,6 +216,8 @@ Trio: चारों बच्चे with ages 2, 4, 6 and 8 (no flags), दस
 
 भैया, दीदी, भाभी, पोता, and साला are relatives, the same as भाई or चाचा. दोस्त is not. पोते matches पोता. `196` unit tests. 69 scenarios, 0 failed.
 
+झटके in the same sentence is the family-fits condition, so that follow-up is not asked again. देर is delay. भूल or नहीं कर is a lost skill. `196` unit tests. 69 scenarios, 0 failed.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

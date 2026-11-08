@@ -1707,6 +1707,17 @@ class CallStateTests(unittest.TestCase):
         for relative in ("भैया को झटके हैं।", "दीदी को कैंसर है।", "भाभी को बीपी है।", "पोते को झटके हैं।", "साला है।"):
             self.assertTrue(call_state._has_kinship(relative), relative)
         self.assertFalse(call_state._has_kinship("दोस्त को झटके हैं।"))
+        fits = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "fam_fits_delay"),
+            [_update("topic.fam_fits_delay", True)],
+            1,
+            utterance="भैया को बचपन से झटके हैं।",
+        )
+        self.assertEqual(fits["topics"]["fam_fits_delay"]["details"].get("condition"), "fits")
+        self.assertNotIn(
+            "condition",
+            [item["id"] for item in call_state._pending_followups(fits, "fam_fits_delay")],
+        )
 
     def test_hindi_sex_words_count_as_female_or_male(self):
         for word in ("लड़की", "बेटी", "बच्ची"):

@@ -2377,6 +2377,18 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str, on_followup: bo
         for fid in ("onset_age", "age_at_death"):
             if fid in follow_ids and not details.get(fid) and phrase:
                 details[fid] = phrase
+    if name == "fam_fits_delay" and "condition" not in details:
+        named = [
+            label
+            for label, words in (
+                ("fits", ("झटके", "fits", "seizure", "दौरे")),
+                ("delay", ("देर", "delay")),
+                ("lost_skill", ("भूल", "नहीं कर")),
+            )
+            if _named_and_not_denied(val_blob, utt_blob, words)
+        ]
+        if named:
+            details["condition"] = named[0] if len(named) == 1 else named
     if "relationship" in follow_ids and "relationship" not in details and _has_kinship(utterance or ""):
         details["relationship"] = (utterance or "").strip()
     if "who" in follow_ids and "who" not in details and _has_kinship(utterance or ""):
