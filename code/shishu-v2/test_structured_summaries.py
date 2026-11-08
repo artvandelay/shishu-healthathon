@@ -198,7 +198,19 @@ class StructuredSummaryTests(unittest.TestCase):
         state = _state()
         state["topics"]["birth_mode"]["state"] = "answered"
         state["topics"]["birth_mode"]["value"] = "operation"
-        state["topics"]["birth_mode"]["details"] = {"delivery_type": "operation", "place": "hospital"}
+        state["topics"]["birth_mode"]["details"] = {
+            "delivery_type": "operation",
+            "place": "hospital",
+            "count": 3,
+            "last_date": "jan",
+        }
+        state["topics"]["birth_mode"]["instances"] = [
+            {
+                "person_id": "child_1",
+                "value": True,
+                "details": {"count": 3, "last_date": "jan", "delivery_type": "operation"},
+            }
+        ]
         quote = "डिलीवरी नॉर्मल हुई, अस्पताल में।"
         transcript = [{"role": "user", "text": quote}]
         kept = summarizer.reconcile_state_with_llm_payload(
@@ -208,6 +220,11 @@ class StructuredSummaryTests(unittest.TestCase):
                 "state": "answered",
                 "value": "operation",
                 "details": {"delivery_type": "c_section", "place": "hospital"},
+                "instances": [{
+                    "person_id": "child_1",
+                    "value": True,
+                    "details": {"delivery_type": "c_section", "place": "hospital"},
+                }],
                 "evidence": quote,
             }]},
             transcript,
@@ -215,6 +232,11 @@ class StructuredSummaryTests(unittest.TestCase):
         details = kept["topics"]["birth_mode"]["details"]
         self.assertNotIn("delivery_type", details)
         self.assertEqual(details.get("place"), "hospital")
+        inst = kept["topics"]["birth_mode"]["instances"][0]["details"]
+        self.assertEqual(
+            (details.get("count"), details.get("last_date"), inst.get("count"), inst.get("last_date")),
+            (3, "jan", 3, "jan"),
+        )
         unchanged = summarizer.reconcile_state_with_llm_payload(
             state,
             {"topic_corrections": [{

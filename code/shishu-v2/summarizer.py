@@ -849,6 +849,40 @@ def _clean_correction_details(details: dict) -> dict:
     return details
 
 
+def _merge_correction_details(prior: dict, incoming: dict) -> dict:
+    """Correction keys win. Keys it does not send stay. Invalid enums are still dropped."""
+    incoming = dict(incoming or {})
+    cleaned = _clean_correction_details(incoming)
+    merged = dict(prior or {})
+    for key in incoming:
+        if key in cleaned:
+            merged[key] = cleaned[key]
+        else:
+            merged.pop(key, None)
+    return merged
+
+
+def _merge_instance_details(prior_instances: list, new_instances: list) -> list:
+    prior_by_id = {
+        item.get("person_id"): item
+        for item in prior_instances
+        if isinstance(item, dict) and item.get("person_id")
+    }
+    merged = []
+    for item in new_instances:
+        if not isinstance(item, dict):
+            continue
+        inst = dict(item)
+        prior = prior_by_id.get(inst.get("person_id"))
+        prior_details = prior.get("details") if isinstance(prior, dict) else {}
+        if not isinstance(prior_details, dict):
+            prior_details = {}
+        raw_details = inst.get("details") if isinstance(inst.get("details"), dict) else {}
+        inst["details"] = _merge_correction_details(prior_details, raw_details)
+        merged.append(inst)
+    return merged
+
+
 def _apply_topic_correction(
     name: str,
     topic: dict,
@@ -859,17 +893,15 @@ def _apply_topic_correction(
     *,
     replace: bool,
 ) -> None:
-    """Write a model correction. `replace` drops draft details that would veto it."""
-    new_details = _clean_correction_details(new_details)
+    """Write a model correction. Details merge; a correction cannot erase saved keys."""
+    raw_details = dict(new_details or {})
+    new_details = _clean_correction_details(raw_details)
     if new_state == "answered":
         prior_details = dict(topic.get("details") or {})
         topic["state"] = "answered"
         topic["value"] = new_val if new_val is not None else (False if replace else True)
         if replace:
-            if new_details:
-                topic["details"] = dict(new_details)
-            else:
-                topic["details"] = {}
+            topic["details"] = _merge_correction_details(prior_details, raw_details)
         elif new_details:
             merged = dict(prior_details)
             merged.update(new_details)
@@ -877,13 +909,13 @@ def _apply_topic_correction(
         if name == "birth_mode":
             call_state._derive_birth_mode_value(topic)
         if new_instances:
-            topic["instances"] = [item for item in new_instances if isinstance(item, dict)]
+            topic["instances"] = _merge_instance_details(topic.get("instances") or [], new_instances)
         elif replace and not call_state._is_positive(topic):
             topic["instances"] = []
     elif new_state in {"unknown", "no_response", "not_asked"}:
         topic["state"] = new_state
         topic["value"] = None
-        topic["details"] = dict(new_details)
+        topic["details"] = _merge_correction_details(topic.get("details") or {}, raw_details)
         topic["instances"] = []
     topic["source"] = "summary_reconciliation"
     topic["reason"] = None
