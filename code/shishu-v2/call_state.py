@@ -1364,6 +1364,36 @@ def _children_payload(value: object) -> tuple[str, object]:
     return "ignore", []
 
 
+def _spoken_given_names(text: str) -> list[str]:
+    """Names she introduced with नाम. मेरा नाम is the caller, handled separately."""
+    found = []
+    for match in re.finditer(r"(?<!मेरा\s)नाम\s+([^\s,।]+)", text or ""):
+        name = spoken_person_name(match.group(1))
+        if name and name not in {"है", "का", "की", "के", "था", "थी"}:
+            found.append(name)
+    return found
+
+
+def _attach_spoken_names(children: list, utterance: str, prior: list[str] | None = None) -> list:
+    """Fill an empty child name when she said one नाम per child."""
+    source = utterance if _spoken_given_names(utterance) else ""
+    if not source:
+        for text in reversed(list(prior or [])):
+            if _spoken_given_names(text or ""):
+                source = text
+                break
+    names = _spoken_given_names(source)
+    if len(names) != len(children):
+        return children
+    out = []
+    for child, name in zip(children, names):
+        child = dict(child) if isinstance(child, dict) else {"id": None, "name": None, "age": None, "sex": None}
+        if not str(child.get("name") or "").strip():
+            child["name"] = name
+        out.append(child)
+    return out
+
+
 def spoken_person_name(value: object) -> str:
     """The name inside मेरा नाम मीरा है. A bare name stays as it is."""
     text = str(value or "").strip().strip("।.! ")
@@ -1683,10 +1713,12 @@ def apply_updates(
     existing_children = [
         child for child in (state["profile"].get("children") or []) if isinstance(child, dict)
     ]
+    named_children = False
     if has_topic and not has_children_update and not existing_children:
         spoken_children = _child_ages_already_said(prior_utterances)
         if spoken_children:
             state["profile"]["children"] = _children_from_ages(spoken_children)
+            named_children = True
             intro_c = state["topics"]["intro_children"]
             intro_c["state"] = "answered"
             intro_c["value"] = True
@@ -1736,6 +1768,7 @@ def apply_updates(
                     elif kind_c == "count" and not aged:
                         state["profile"]["children"] = _children_from_ages([None] * count_n)
                     wrote = True
+                    named_children = True
                     continue
                 if kind_c == "none":
                     state["profile"]["children"] = []
@@ -1755,6 +1788,7 @@ def apply_updates(
                     norm = _retag_month_only(norm, utterance, prior_utterances)
                     norm = _prefer_spoken_units(norm, utterance, prior_utterances)
                     state["profile"]["children"] = norm
+                    named_children = True
                     if norm and all(_child_age_years(c.get("age")) is not None for c in norm):
                         intro_c = state["topics"]["intro_children"]
                         intro_c["state"] = "answered"
@@ -1893,7 +1927,10 @@ def apply_updates(
             details.setdefault("bleeding_or_bruises", False)
         topic["details"] = details
         if name == "intro_name" and status == "answered":
-            state["profile"]["caller_name"] = update.get("value")
+            cleaned = spoken_person_name(update.get("value")) or spoken_person_name(utterance)
+            if cleaned:
+                state["profile"]["caller_name"] = cleaned
+                topic["value"] = cleaned
         elif name == "intro_married" and status == "answered":
             state["profile"]["marital_status"] = update.get("value")
         elif name == "intro_children" and status == "answered":
@@ -1907,6 +1944,12 @@ def apply_updates(
         _absorb_stated_value(name, topic, utterance)
         _remember_turn(topic, turn_id)
         _store_instances(topic, update)
+    if named_children:
+        state["profile"]["children"] = _attach_spoken_names(
+            state["profile"].get("children") or [],
+            utterance,
+            prior_utterances,
+        )
     if not wrote:
         raise ValueError(problems[0] if problems else "no applicable update")
     _apply_rules(state)

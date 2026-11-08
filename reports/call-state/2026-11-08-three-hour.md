@@ -114,7 +114,9 @@ shaadi nahi hui is unmarried, the same denial as शादी नहीं ह�
 
 A stored day count prints as 4 दिन and a stored time count as 3 बार.
 
-चौथे वाले is the fourth child by age, the same rule as दूसरा and तीसरा. `187` unit tests. 40 scenarios, 0 failed.
+चौथे वाले is the fourth child by age, the same rule as दूसरा and तीसरा.
+
+नाम आरव on the child sentence is stored as the child's name. मेरा नाम stays the caller's name and is not copied onto the child. `187` unit tests. 41 scenarios, 0 failed.
 
 ## Not hardcoded
 

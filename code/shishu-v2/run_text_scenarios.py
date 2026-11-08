@@ -360,10 +360,16 @@ def _issues(scenario, state, errors, report, fallback, said) -> list[str]:
             issues.append("stored ages do not match the ages she said")
         if len(sexes) == scenario.children_value and [c.get("sex") for c in children] != sexes:
             issues.append("stored sex does not match the sex words she said")
-        if len(children) == 1 and children[0].get("sex") in {"female", "male"}:
-            word = "बेटी" if children[0]["sex"] == "female" else "बेटा"
-            if word not in (report.get("who") or ""):
-                issues.append("who line dropped the child's sex")
+        if len(children) == 1:
+            only = children[0]
+            who_line = report.get("who") or ""
+            child_name = str(only.get("name") or "").strip()
+            if child_name and child_name not in who_line:
+                issues.append("who line dropped the child's name")
+            elif not child_name and only.get("sex") in {"female", "male"}:
+                word = "बेटी" if only["sex"] == "female" else "बेटा"
+                if word not in who_line:
+                    issues.append("who line dropped the child's sex")
         who = report.get("who") or ""
         for child in children:
             shown = mother_report.hindi_text(mother_report._format_age(child.get("age")))
@@ -499,6 +505,14 @@ def campaign() -> list[Scenario]:
             caller_name="माया",
             marital_text=married,
             children_text="एक बच्चा है, ग्यारह साल का लड़का।",
+            children_value=1,
+        ),
+        Scenario(
+            name="no_flags_named_boy",
+            group="no_flags",
+            caller_name="ललिता",
+            marital_text=married,
+            children_text="एक बेटा है, नाम आरव है, दो साल का।",
             children_value=1,
         ),
         Scenario(

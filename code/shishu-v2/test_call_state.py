@@ -854,6 +854,16 @@ class CallStateTests(unittest.TestCase):
 
     def test_marital_status_hindi_words(self):
         self.assertEqual(call_state.spoken_person_name("मेरा नाम मीरा है"), "मीरा")
+        named_child = _ask(call_state.new_call_state(), "intro_children")
+        named_child = call_state.apply_updates(
+            named_child,
+            [_update("profile.children", 1)],
+            1,
+            utterance="एक बेटा है, नाम आरव है, दो साल का।",
+        )
+        self.assertEqual(named_child["profile"]["children"][0]["name"], "आरव")
+        self.assertEqual(named_child["profile"]["children"][0]["sex"], "male")
+        self.assertEqual(call_state._spoken_given_names("मेरा नाम मीरा है।"), [])
         self.assertEqual(call_state.spoken_person_name("जिगर"), "जिगर")
         self.assertEqual(call_state.spoken_person_name("my name is Seema"), "Seema")
         named = _ask(call_state.new_call_state(), "intro_name")
