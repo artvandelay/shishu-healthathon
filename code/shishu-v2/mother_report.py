@@ -350,7 +350,7 @@ def _name(call: dict) -> str:
     state = call.get("state")
     if isinstance(state, dict):
         prof = state.get("profile") or {}
-        caller_name = str(prof.get("caller_name") or "").strip()
+        caller_name = call_state.spoken_person_name(prof.get("caller_name"))
         if caller_name and "not reported" not in caller_name.lower():
             return hindi_text(caller_name)
         intro_val = str(((state.get("topics") or {}).get("intro_name") or {}).get("value") or "").strip()

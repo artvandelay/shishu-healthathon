@@ -1322,6 +1322,15 @@ def _children_payload(value: object) -> tuple[str, object]:
     return "ignore", []
 
 
+def spoken_person_name(value: object) -> str:
+    """The name inside मेरा नाम मीरा है. A bare name stays as it is."""
+    text = str(value or "").strip().strip("।.! ")
+    text = re.sub(r"(?i)^(?:my name is|i am|i'm|this is)\s+", "", text).strip()
+    text = re.sub(r"^(?:मेरा\s+)?नाम\s+", "", text).strip()
+    text = re.sub(r"\s+(?:है|हूँ|हूं)$", "", text).strip("।.! ")
+    return text
+
+
 def _canonical_marital(value: object) -> str | None:
     raw = str(value or "").strip()
     text = raw.lower().replace("_", " ").replace("-", " ")
@@ -1714,6 +1723,8 @@ def apply_updates(
                     if val is None:
                         problems.append("marital status not recognized")
                         continue
+                elif name == "caller_name":
+                    val = spoken_person_name(update.get("value")) or spoken_person_name(utterance)
                 else:
                     val = update.get("value")
                 if name in {"ever_pregnant", "has_delivered"}:
