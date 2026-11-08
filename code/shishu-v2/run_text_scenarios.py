@@ -529,6 +529,45 @@ def campaign() -> list[Scenario]:
             children_value="आठ साल का एक बेटा है।",
         ),
         Scenario(
+            name="no_flags_home_normal",
+            group="no_flags",
+            caller_name="गीता",
+            marital_text=married,
+            children_text="एक बेटा है, दो साल का।",
+            children_value=1,
+            positives={
+                "birth_mode": {
+                    "value": "normal",
+                    "utterance": "घर पर नॉर्मल हुई।",
+                    "details": {"delivery_type": "normal", "place": "home"},
+                },
+            },
+        ),
+        Scenario(
+            name="flags_operation_not_a_household_word",
+            group="red_flags",
+            caller_name="पूनम",
+            marital_text=married,
+            children_text="एक बेटी है, तीन साल की।",
+            children_value=1,
+            positives={
+                "birth_mode": {
+                    "value": True,
+                    "utterance": "घरेलू नुस्खा नहीं, अस्पताल में ऑपरेशन हुआ, बच्चे की हालत की वजह से।",
+                    "details": {
+                        "delivery_type": "operation",
+                        "place": "hospital",
+                        "operation_reason": "बच्चे की हालत",
+                    },
+                    "followups": {
+                        "operation_reason": ("बच्चे की हालत की वजह से।", "बच्चे की हालत"),
+                        "place": ("अस्पताल में।", "hospital"),
+                    },
+                },
+            },
+            expect_yes=("birth_mode",),
+        ),
+        Scenario(
             name="no_flags_sex_then_age",
             group="no_flags",
             caller_name="ज्योति",

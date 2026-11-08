@@ -148,6 +148,8 @@ class StructuredMotherReportTests(unittest.TestCase):
         self.assertIn(question, _joined(report_normal["groups"]))
         self.assertIn(question + '</span><span class="ans">नहीं</span>', rendered)
         self.assertEqual(mother_report.hindi_text("heavy"), "ज़्यादा")
+        self.assertEqual(mother_report.hindi_text("Shilpa"), "शिल्पा")
+        self.assertEqual(mother_report.hindi_text("reason"), "reason")
         self.assertEqual(mother_report._shown_value(["bp", "sugar"]), "बीपी, शुगर")
         self.assertEqual(mother_report._detail_values({"days": 4, "reason": "jaundice"}), "4 दिन, पीलिया")
         self.assertEqual(mother_report._detail_values({"count": 3}), "3 बार")

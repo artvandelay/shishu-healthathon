@@ -74,7 +74,7 @@ def _fold_spoken_numbers(text: str) -> str:
 def _when_operation(state: dict, topic: dict) -> bool:
     details = topic.get("details") or {}
     blob = f"{topic.get('value') or ''} {details.get('delivery_type') or ''}".lower()
-    return any(word in blob for word in ("operation", "caesarean", "cesarean", "c-section", "c section"))
+    return any(_contains_word(blob, word) for word in ("operation", "caesarean", "cesarean", "c-section", "c section"))
 
 
 def _when_abnormal(state: dict, topic: dict) -> bool:
@@ -720,7 +720,7 @@ def _followup_resolved(state: dict, topic: dict, followup_id: str) -> bool:
 
     if followup_id == "delivery_type":
         blob = f"{topic.get('value') or ''} {details.get('delivery_type') or ''}".lower()
-        if any(word in blob for word in ("operation", "caesarean", "cesarean", "normal", "home", "hospital")):
+        if any(_contains_word(blob, word) for word in ("operation", "caesarean", "cesarean", "normal", "home", "hospital")):
             return True
 
     if followup_id == "affected_child":
@@ -1624,9 +1624,18 @@ def is_clarification(text: str) -> bool:
 _is_clarification = is_clarification
 
 
+def _contains_word(text: str, word: str) -> bool:
+    """A whole word. abnormal is not normal, and घरेलू is not घर."""
+    if not text or not word:
+        return False
+    if re.search(r"[A-Za-z]", word):
+        return re.search(rf"(?i)(?<![A-Za-z]){re.escape(word)}(?![A-Za-z])", text) is not None
+    return re.search(rf"(?<![\u0900-\u097F]){re.escape(word)}(?![\u0900-\u097F])", text) is not None
+
+
 def _word_denied(text: str, word: str) -> bool:
-    """नॉर्मल नहीं and नहीं, ऑपरेशन deny that word. A later नहीं in the sentence does not."""
-    denial = r"(?:नहीं|नही|\bno\b|\bnahi\b|\bnahin\b)"
+    """नॉर्मल नहीं and not normal deny that word. A later नहीं in the sentence does not."""
+    denial = r"(?:नहीं|नही|\bno\b|\bnahi\b|\bnahin\b|\bnot\b)"
     bridge = r"\s+"
     token = re.escape(word)
     return (
@@ -1677,10 +1686,14 @@ def _term_label(text: str) -> str | None:
 
 def _named_and_not_denied(value_text: str, utterance: str, words: tuple[str, ...]) -> bool:
     """The new answer names this kind, and the utterance does not take it back."""
-    named = any(word in value_text or word in utterance for word in words)
+    named = any(_contains_word(value_text, word) or _contains_word(utterance, word) for word in words)
     if not named:
         return False
-    return not any(_word_denied(utterance, word) for word in words if word in utterance or word in value_text)
+    return not any(
+        _word_denied(utterance, word)
+        for word in words
+        if _contains_word(utterance, word) or _contains_word(value_text, word)
+    )
 
 
 def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:

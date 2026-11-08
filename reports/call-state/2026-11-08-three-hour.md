@@ -130,7 +130,9 @@ A call with no children does not ask about मेरे बच्चे की �
 
 An age of 6.0 months prints as 6 महीने, and 10.0 years prints as 10 years.
 
-लड़का छह महीने is one six-month-old boy, not six children. एक लड़का और दो लड़कियाँ is three children, and the number on each sex word is that sex. एक भी बच्चा नहीं and एक बच्चा भी नहीं are no children. मेरा बच्चा नहीं रोता is not a count of zero. A count that still has no ages leaves the children question open. `190` unit tests. 46 scenarios, 0 failed.
+लड़का छह महीने is one six-month-old boy, not six children. एक लड़का और दो लड़कियाँ is three children, and the number on each sex word is that sex. एक भी बच्चा नहीं and एक बच्चा भी नहीं are no children. मेरा बच्चा नहीं रोता is not a count of zero. A count that still has no ages leaves the children question open.
+
+abnormal is not a normal delivery, and घरेलू is not a home birth. not normal does not store a normal delivery. An unknown lowercase English word stays in Latin. A capitalized name such as Shilpa is still written in Hindi. `191` unit tests. 48 scenarios, 0 failed.
 
 ## Not hardcoded
 

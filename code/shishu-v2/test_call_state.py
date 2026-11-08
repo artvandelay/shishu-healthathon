@@ -1079,6 +1079,32 @@ class CallStateTests(unittest.TestCase):
         self.assertEqual(call_state._children_payload("मेरा बच्चा नहीं रोता।"), ("ignore", []))
         self.assertEqual(call_state._children_payload("आठ साल का एक बच्चा है।"), ("count", 1))
 
+    def test_a_word_inside_another_word_is_not_that_word(self):
+        def birth(text, value=True):
+            state = call_state.apply_updates(
+                _ask(call_state.new_call_state(), "birth_mode"),
+                [_update("topic.birth_mode", value)],
+                1,
+                utterance=text,
+            )
+            return state["topics"]["birth_mode"]
+
+        abnormal = birth("abnormal", "abnormal")
+        self.assertNotEqual(abnormal["details"].get("delivery_type"), "normal")
+        self.assertEqual(call_state.topic_answer_kind(abnormal, "birth_mode"), "yes")
+
+        household = birth("घरेलू नुस्खा दिया था।")
+        self.assertNotIn("place", household["details"])
+
+        home = birth("घर पर नॉर्मल हुई।", "normal")
+        self.assertEqual(home["details"].get("place"), "home")
+        self.assertEqual(home["details"].get("delivery_type"), "normal")
+        self.assertEqual(call_state.topic_answer_kind(home, "birth_mode"), "no")
+
+        denied = birth("not normal, operation hua", True)
+        self.assertEqual(denied["details"].get("delivery_type"), "operation")
+        self.assertEqual(call_state.topic_answer_kind(denied, "birth_mode"), "yes")
+
     def test_a_full_term_answer_is_not_a_finding(self):
         full = _ask(call_state.new_call_state(), "birth_term")
         full = call_state.apply_updates(

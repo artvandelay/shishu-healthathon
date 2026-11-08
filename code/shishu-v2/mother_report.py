@@ -342,7 +342,11 @@ def hindi_text(text: str) -> str:
             return _TOKEN_HI[lower]
         if lower in _KEEP_LATIN:
             return word
-        return transliterate(word)
+        # A capitalized name can be written in Hindi. An unknown lowercase
+        # clinical word stays as it is, instead of becoming fake Devanagari.
+        if word[:1].isupper() and (len(word) == 1 or word[1:].islower()):
+            return transliterate(word)
+        return word
 
     return re.sub(r"[A-Za-z]+", one, raw)
 
