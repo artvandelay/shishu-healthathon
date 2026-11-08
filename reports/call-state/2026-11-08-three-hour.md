@@ -404,6 +404,12 @@ Trio: arms not short (no flags, no हाँ lines), short arms (still a yes, th
 
 Trio: pain sometimes and no hospital (no flags, no हाँ lines), pain again and again that needed hospital (still a yes, the line names बार-बार and पैर), and that same sentence sent as false (still a yes). Pass.
 
+## 16:50 IST
+
+सुनाई नहीं देता stores सुनना, and दिखाई नहीं देता stores देखना, on the hearing follow-up that was still open. दो दिन में ठीक हो जाती है is how long the swelling lasted, and the swelling stays a yes because the question itself says ठीक हो जाती है. सूजन नहीं होती stays a no. `197` unit tests. 162 scenarios, 0 failed.
+
+Trio: no swelling (no flags, no हाँ lines), swelling for two days (still a yes, the line says 2 दिन and घुटने), and that sentence sent as false (still a yes). The hearing scenarios already in the run now name सुनना and देखना. Pass.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

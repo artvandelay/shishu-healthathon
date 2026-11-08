@@ -637,6 +637,53 @@ def campaign() -> list[Scenario]:
             children_value=3,
         ),
         Scenario(
+            name="no_flags_no_swelling",
+            group="no_flags",
+            caller_name="रमा",
+            marital_text=married,
+            children_text="एक बेटा है, तीन साल का।",
+            children_value=1,
+            positives={
+                "body_joint_swelling": {
+                    "value": True,
+                    "utterance": "सूजन नहीं होती।",
+                    "details": {},
+                },
+            },
+        ),
+        Scenario(
+            name="flags_swelling_two_days",
+            group="red_flags",
+            caller_name="शकुन्तला",
+            marital_text=married,
+            children_text="एक बेटी है, पाँच साल की।",
+            children_value=1,
+            positives={
+                "body_joint_swelling": {
+                    "value": True,
+                    "utterance": "गिरने पर घुटने में सूजन आती है, दो दिन में ठीक हो जाती है।",
+                    "details": {},
+                },
+            },
+            expect_yes=("body_joint_swelling",),
+        ),
+        Scenario(
+            name="degenerate_swelling_sent_as_no",
+            group="degenerate",
+            caller_name="उर्मिला",
+            marital_text=married,
+            children_text="एक बेटा है, चार साल का।",
+            children_value=1,
+            positives={
+                "body_joint_swelling": {
+                    "value": False,
+                    "utterance": "गिरने पर घुटने में सूजन आती है, दो दिन में ठीक हो जाती है।",
+                    "details": {},
+                },
+            },
+            expect_yes=("body_joint_swelling",),
+        ),
+        Scenario(
             name="no_flags_pain_sometimes",
             group="no_flags",
             caller_name="आभा",

@@ -2605,10 +2605,19 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str, on_followup: bo
                 details.setdefault("test_done", True)
         if "test_done" not in details and isinstance(value, bool):
             details["test_done"] = value
-        if re.search(r"(?:सुनाई|दिखाई)\s*नहीं|नहीं\s*(?:सुन|दिख)", utterance or ""):
+        hear = re.search(r"सुनाई\s*नहीं|नहीं\s*सुन", utterance or "")
+        see = re.search(r"दिखाई\s*नहीं|नहीं\s*दिख", utterance or "")
+        if hear or see:
             details["result"] = "abnormal"
             details["test_done"] = True
             topic["value"] = True
+            if "hearing_or_vision" not in details:
+                if hear and see:
+                    details["hearing_or_vision"] = "दोनों"
+                elif hear:
+                    details["hearing_or_vision"] = "सुनना"
+                else:
+                    details["hearing_or_vision"] = "देखना"
     if name == "preg_scan":
         named = _lab_result(utterance or "")
         if named:
@@ -2691,6 +2700,10 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str, on_followup: bo
         _store_spoken_number(details, "count", _spoken_times, utterance)
     if "days" in follow_ids:
         _store_spoken_number(details, "days", _spoken_day_count, utterance)
+    if "duration" in follow_ids and "duration" not in details:
+        lasted = _spoken_day_count(utterance or "")
+        if lasted is not None:
+            details["duration"] = _day_phrase(lasted)
     if "month" in follow_ids:
         _store_spoken_number(details, "month", _spoken_month_count, utterance)
     if "amount" in follow_ids and not details.get("amount"):

@@ -477,6 +477,11 @@ class CallStateTests(unittest.TestCase):
             utterance="सुनाई नहीं देता।",
         )
         self.assertEqual(deaf["topics"]["birth_hearing_vision"]["details"].get("result"), "abnormal")
+        self.assertEqual(deaf["topics"]["birth_hearing_vision"]["details"].get("hearing_or_vision"), "सुनना")
+        self.assertNotIn(
+            "hearing_or_vision",
+            [item["id"] for item in call_state._pending_followups(deaf, "birth_hearing_vision")],
+        )
         self.assertEqual(
             call_state.topic_answer_kind(deaf["topics"]["birth_hearing_vision"], "birth_hearing_vision"),
             "yes",
@@ -2447,6 +2452,17 @@ class CallStateTests(unittest.TestCase):
             utterance="घुटने में सूजन आती है।",
         )
         self.assertEqual(knee["topics"]["body_joint_swelling"]["details"].get("joint"), "घुटने")
+        brief = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "body_joint_swelling"),
+            [_update("topic.body_joint_swelling", True)],
+            1,
+            utterance="गिरने पर घुटने में सूजन आती है, दो दिन में ठीक हो जाती है।",
+        )
+        self.assertEqual(brief["topics"]["body_joint_swelling"]["details"].get("duration"), "2 दिन")
+        self.assertEqual(
+            call_state.topic_answer_kind(brief["topics"]["body_joint_swelling"], "body_joint_swelling"),
+            "yes",
+        )
         thumb = call_state.apply_updates(
             _ask(call_state.new_call_state(), "body_thumb"),
             [_update("topic.body_thumb", "अंगूठा नहीं है।")],
