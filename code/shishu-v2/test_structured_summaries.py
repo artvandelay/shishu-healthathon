@@ -78,6 +78,17 @@ class StructuredSummaryTests(unittest.TestCase):
         self.assertIn("1. ", out["summary_mother"])
         self.assertNotIn("not_applicable", out["summary_doctor"])
 
+    def test_positive_operation_recorded_as_yes_in_answers_and_flags(self):
+        state = _state()
+        state["topics"]["birth_mode"]["state"] = "answered"
+        state["topics"]["birth_mode"]["value"] = "operation"
+        answers = answer_extractor.structured_answers({"state": state})["answers"]
+        self.assertEqual(answers["birth_mode"]["answer"], "yes")
+
+        fallback = summarizer.build_state_fallback(state)
+        self.assertIn("birth_mode: yes", fallback["summary_doctor"])
+        self.assertTrue(any(f.startswith("birth_mode:") for f in fallback["red_flags"]))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,6 +8,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 import checklist
+import call_state
 from prompts import DOCTOR_MOTHER_SUMMARY_PROMPT
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
@@ -598,10 +599,15 @@ Do not turn unknown, no_response, not_asked, or not_applicable into no.
 
 def _answer_label(topic: dict) -> str:
     status = str(topic.get("state") or "not_asked")
-    value = topic.get("value")
-    if status == "answered" and value is True:
+    if call_state._is_positive(topic):
         return "yes"
-    if status == "answered" and value is False:
+    value = topic.get("value")
+    details = topic.get("details") or {}
+    if status == "answered" and (
+        value is False
+        or str(details.get("result") or "").strip().lower() in {"normal", "negative"}
+        or str(value or "").strip().lower() in {"no", "nahi", "normal", "negative"}
+    ):
         return "no"
     if status == "answered":
         return "answered"
@@ -634,14 +640,18 @@ def build_state_fallback(state: dict) -> dict:
     profile = state.get("profile") or {}
     lines.append("Profile: " + json.dumps(profile, ensure_ascii=False))
     topics = state.get("topics") or {}
+    red_flags = []
     for topic in checklist.TOPICS:
         saved = topics.get(topic["id"]) if isinstance(topics.get(topic["id"]), dict) else {"state": "not_asked"}
-        lines.append(f"- {topic['id']}: {_answer_label(saved)}")
+        label = _answer_label(saved)
+        lines.append(f"- {topic['id']}: {label}")
+        if label == "yes":
+            red_flags.append(f"{topic['id']}: positive finding reported in structured call state")
     return {
         "summary_doctor": "\n".join(lines),
-        "summary_mother": default_mother_questions({}, []),
+        "summary_mother": default_mother_questions({}, red_flags),
         "findings": {},
-        "red_flags": [],
+        "red_flags": red_flags,
     }
 
 

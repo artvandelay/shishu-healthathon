@@ -123,6 +123,25 @@ class StructuredMotherReportTests(unittest.TestCase):
         report = mother_report.build(_call(state))
         self.assertFalse(any("थैलेसीमिया" in question for question in report["questions"]))
 
+    def test_operation_is_printed_as_yes_and_normal_as_no(self):
+        state = self._state()
+        state["topics"]["birth_mode"]["state"] = "answered"
+        state["topics"]["birth_mode"]["value"] = "operation"
+        state["topics"]["birth_mode"]["details"] = {"delivery_type": "operation"}
+        report = mother_report.build(_call(state))
+        self.assertTrue(len(report["yes"]) >= 1)
+        self.assertTrue(any("ऑपरेशन" in y or "जन्म" in y for y in report["yes"]))
+
+        state_normal = self._state()
+        state_normal["topics"]["birth_mode"]["state"] = "answered"
+        state_normal["topics"]["birth_mode"]["value"] = "normal"
+        state_normal["topics"]["birth_mode"]["details"] = {"delivery_type": "normal"}
+        report_normal = mother_report.build(_call(state_normal))
+        question = checklist.question_hi("birth_mode")
+        rendered = mother_report.render_html(report_normal)
+        self.assertIn(question, _joined(report_normal["groups"]))
+        self.assertIn(question + '</span><span class="ans">नहीं</span>', rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

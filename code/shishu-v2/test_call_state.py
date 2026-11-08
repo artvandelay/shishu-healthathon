@@ -555,6 +555,111 @@ class CallStateTests(unittest.TestCase):
         ids = [item.get("person_id") for item in state["topics"]["body_fits_milestones"]["instances"]]
         self.assertIn("child_2", ids)
 
+    def test_child_disambiguation_by_months_and_hindi_words(self):
+        state = call_state.new_call_state()
+        children = [
+            {"id": "child_1", "name": None, "age": {"value": 3, "unit": "years"}},
+            {"id": "child_2", "name": None, "age": {"value": 6, "unit": "months"}},
+        ]
+        state = call_state.apply_updates(state, [_update("profile.children", children)], 1)
+        self.assertEqual(call_state._find_child_id(state, "6 mahine"), "child_2")
+        self.assertEqual(call_state._find_child_id(state, "6 महीने"), "child_2")
+        self.assertEqual(call_state._find_child_id(state, "छह महीने वाला"), "child_2")
+        self.assertEqual(call_state._find_child_id(state, "3 saal"), "child_1")
+        self.assertEqual(call_state._find_child_id(state, "3 साल"), "child_1")
+        self.assertEqual(call_state._find_child_id(state, "तीन साल वाला"), "child_1")
+
+    def test_child_disambiguation_ordinal_and_sex(self):
+        state = call_state.new_call_state()
+        children = [
+            {"id": "child_1", "name": None, "age": {"value": 4, "unit": "years"}, "sex": "female"},
+            {"id": "child_2", "name": None, "age": {"value": 2, "unit": "years"}, "sex": "male"},
+        ]
+        state = call_state.apply_updates(state, [_update("profile.children", children)], 1)
+        self.assertEqual(call_state._find_child_id(state, "pehle wala"), "child_1")
+        self.assertEqual(call_state._find_child_id(state, "पहले वाला"), "child_1")
+        self.assertEqual(call_state._find_child_id(state, "dusre wala"), "child_2")
+        self.assertEqual(call_state._find_child_id(state, "दूसरा बच्चा"), "child_2")
+        self.assertEqual(call_state._find_child_id(state, "beti ko"), "child_1")
+        self.assertEqual(call_state._find_child_id(state, "बेटी को"), "child_1")
+        self.assertEqual(call_state._find_child_id(state, "beta"), "child_2")
+        self.assertEqual(call_state._find_child_id(state, "बेटे को"), "child_2")
+
+    def test_child_name_with_case_markers(self):
+        state = call_state.new_call_state()
+        children = [
+            {"id": "child_1", "name": "Ram", "age": {"value": 3, "unit": "years"}},
+            {"id": "child_2", "name": "Aarav", "age": {"value": 1, "unit": "years"}},
+        ]
+        state = call_state.apply_updates(state, [_update("profile.children", children)], 1)
+        self.assertEqual(call_state._find_child_id(state, "Ram ko"), "child_1")
+        self.assertEqual(call_state._find_child_id(state, "Aarav ko hua tha"), "child_2")
+
+    def test_affected_child_all_resolves_and_populates_instances(self):
+        state = call_state.new_call_state()
+        children = [
+            {"id": "child_1", "name": "A", "age": {"value": 3, "unit": "years"}},
+            {"id": "child_2", "name": "B", "age": {"value": 1, "unit": "years"}},
+        ]
+        state = call_state.apply_updates(state, [_update("profile.children", children)], 1)
+        state = _ask(state, "birth_nicu")
+        state = call_state.apply_updates(
+            state,
+            [_update("topic.birth_nicu", True, details={"reason": "jaundice", "days": 3, "affected_child": "दोनों बच्चों को"})],
+            2,
+        )
+        nxt = call_state.next_question(state)
+        self.assertFalse(nxt and nxt.get("topic_id") == "birth_nicu" and nxt.get("followup_id") == "affected_child")
+        instances = state["topics"]["birth_nicu"]["instances"]
+        self.assertEqual({inst["person_id"] for inst in instances}, {"child_1", "child_2"})
+
+    def test_field_and_syntax_tolerance(self):
+        state = call_state.new_call_state()
+        state = call_state.apply_updates(
+            state,
+            [
+                {"field": "profiles.children", "state": "ANSWERED", "value": [{"age": "2 saal"}], "scope": "none", "child_ids": [], "details": "{}"},
+                {"field": "topics.birth_mode", "state": "answered", "value": "true", "scope": "ALL", "child_ids": "child_1", "details": '{"delivery_type": "operation"}'},
+            ],
+            1,
+        )
+        self.assertEqual(len(state["profile"]["children"]), 1)
+        self.assertEqual(call_state._child_age_years(state["profile"]["children"][0]["age"]), 2)
+        self.assertIs(state["topics"]["birth_mode"]["value"], True)
+        self.assertEqual(state["topics"]["birth_mode"]["details"]["delivery_type"], "operation")
+
+    def test_children_payload_string_counts_and_none(self):
+        self.assertEqual(call_state._children_payload("दो बच्चे"), ("count", 2))
+        self.assertEqual(call_state._children_payload("2 kids"), ("count", 2))
+        self.assertEqual(call_state._children_payload("कोई नहीं"), ("none", []))
+        self.assertEqual(call_state._children_payload("none"), ("none", []))
+
+    def test_marital_status_hindi_words(self):
+        self.assertEqual(call_state._canonical_marital("विवाहित"), "married")
+        self.assertEqual(call_state._canonical_marital("शादीशुदा"), "married")
+        self.assertEqual(call_state._canonical_marital("shadishuda"), "married")
+
+    def test_followup_absorption_birth_term_and_kinship(self):
+        state = call_state.new_call_state()
+        state = call_state.apply_updates(state, [_update("profile.children", [{"age": 2}])], 1)
+        state = _ask(state, "birth_term")
+        state = call_state.apply_updates(
+            state,
+            [_update("topic.birth_term", True)],
+            2,
+            utterance="बच्चा समय से पहले हुआ था।",
+        )
+        self.assertEqual(state["topics"]["birth_term"]["details"].get("early_or_late"), "early")
+
+        state = _ask(state, "fam_related")
+        state = call_state.apply_updates(
+            state,
+            [_update("topic.fam_related", True)],
+            3,
+            utterance="हाँ, हम कज़िन थे।",
+        )
+        self.assertEqual(state["topics"]["fam_related"]["details"].get("relationship"), "कज़िन")
+
 
 if __name__ == "__main__":
     unittest.main()

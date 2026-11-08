@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import checklist
+import call_state
 
 _STATIC = Path(__file__).resolve().parent / "static"
 _FONT = _STATIC / "fonts" / "NotoSansDevanagari.ttf"
@@ -325,10 +326,15 @@ def _saved_state(call: dict) -> dict | None:
 def _structured_kind(state: dict, topic_id: str) -> str:
     topic = (state.get("topics") or {}).get(topic_id) or {}
     status = topic.get("state")
-    value = topic.get("value")
-    if status == "answered" and value is True:
+    if call_state._is_positive(topic):
         return "yes"
-    if status == "answered" and value is False:
+    value = topic.get("value")
+    details = topic.get("details") or {}
+    if status == "answered" and (
+        value is False
+        or str(details.get("result") or "").strip().lower() in {"normal", "negative"}
+        or str(value or "").strip().lower() in {"no", "nahi", "normal", "negative"}
+    ):
         return "no"
     if status in {"unknown", "no_response", "not_asked", "not_applicable"}:
         return status
