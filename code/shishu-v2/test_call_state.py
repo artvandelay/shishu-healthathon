@@ -1359,6 +1359,49 @@ class CallStateTests(unittest.TestCase):
         )
         self.assertEqual(early["topics"]["birth_term"]["details"].get("amount"), "7 महीने")
 
+    def test_the_number_next_to_the_event_is_the_one_stored(self):
+        nicu = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "birth_nicu"),
+            [_update("topic.birth_nicu", True)],
+            1,
+            utterance="दो दिन का बुखार था, NICU में चार दिन रखा, पीलिया की वजह से।",
+        )
+        self.assertEqual(nicu["topics"]["birth_nicu"]["details"].get("days"), 4)
+        self.assertEqual(nicu["topics"]["birth_nicu"]["details"].get("reason"), "jaundice")
+
+        lost = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "fam_miscarriage"),
+            [_update("topic.fam_miscarriage", True)],
+            1,
+            utterance="बच्चा छह महीने का है और गर्भ तीन महीने में गिरा।",
+        )
+        self.assertEqual(lost["topics"]["fam_miscarriage"]["details"].get("month"), 3)
+
+        early = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "birth_term"),
+            [_update("topic.birth_term", False)],
+            1,
+            utterance="बच्चा अभी छह महीने का है, सात महीने में पैदा हुआ।",
+        )
+        self.assertEqual(early["topics"]["birth_term"]["details"].get("term"), "early")
+        self.assertEqual(early["topics"]["birth_term"]["details"].get("amount"), "7 महीने")
+        self.assertEqual(call_state.topic_answer_kind(early["topics"]["birth_term"], "birth_term"), "yes")
+
+        growth = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "body_growth"),
+            [_update("topic.body_growth", False)],
+            1,
+            utterance="नहीं, बाकी बच्चों जैसा नहीं बढ़ रहा।",
+        )
+        self.assertEqual(call_state.topic_answer_kind(growth["topics"]["body_growth"], "body_growth"), "yes")
+        plain_no = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "body_growth"),
+            [_update("topic.body_growth", False)],
+            1,
+            utterance="नहीं।",
+        )
+        self.assertEqual(call_state.topic_answer_kind(plain_no["topics"]["body_growth"], "body_growth"), "no")
+
     def test_a_day_phrase_copied_into_the_field_is_stored_as_the_count(self):
         state = _ask(call_state.new_call_state(), "birth_nicu")
         state = call_state.apply_updates(

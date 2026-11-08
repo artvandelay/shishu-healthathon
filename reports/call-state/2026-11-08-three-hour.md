@@ -146,7 +146,9 @@ The only child is stored on a finding that asks which child, so the report says 
 
 लगभग चार साल, करीब छह महीने, 4.5 साल, and दो महीने are one child of that age. A bare number is a count only when she did not also say an age. बड़ा वाला आठ साल और छोटा वाला तीन साल is two children.
 
-A later sentence that states its own ages replaces the child list. The same ages said again keep the sex and name. A bare count still does not replace children who already have ages. `194` unit tests. 51 scenarios, 0 failed.
+A later sentence that states its own ages replaces the child list. The same ages said again keep the sex and name. A bare count still does not replace children who already have ages.
+
+The number next to the event is the one stored. NICU days skip N दिन का बुखार and keep the stay. A pregnancy month skips N महीने का and keeps N महीने में. जैसा नहीं बढ़ रहा is a growth finding even when the tool sent false. A plain नहीं stays a no. `195` unit tests. 51 scenarios, 0 failed.
 
 ## Not hardcoded
 

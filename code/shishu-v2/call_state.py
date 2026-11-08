@@ -1013,23 +1013,47 @@ def _age_phrase(record: dict) -> str:
     return f"{value} {unit}"
 
 
-def _spoken_month_count(text: str) -> int | None:
-    """A pregnancy month, as in तीन महीने. A year is not a month."""
-    folded = _fold_spoken_numbers(text or "")
-    match = re.search(rf"(\d+(?:\.\d+)?)\s*{_MONTH_UNIT}", folded, re.I)
-    if not match:
-        return None
-    number = float(match.group(1))
+def _whole_number(raw: str) -> int:
+    number = float(raw)
     return int(number) if number.is_integer() else int(round(number))
 
 
-def _spoken_day_count(text: str) -> int | None:
-    """A stay of N days. A month count is not a day count."""
+def _spoken_month_count(text: str) -> int | None:
+    """A pregnancy month. N महीने का is the child's age, not that month."""
     folded = _fold_spoken_numbers(text or "")
-    match = re.search(r"(\d+)\s*(?:दिन|days|day)", folded, re.I)
-    if not match:
-        return None
-    return int(match.group(1))
+    born = re.search(
+        rf"(\d+(?:\.\d+)?)\s*{_MONTH_UNIT}\S*(?:\s+में|\s+का\s+पैदा)",
+        folded,
+        re.I,
+    )
+    if born:
+        return _whole_number(born.group(1))
+    for match in re.finditer(rf"(\d+(?:\.\d+)?)\s*{_MONTH_UNIT}", folded, re.I):
+        rest = re.sub(r"^\S*", "", folded[match.end():])
+        if re.match(r"\s*का\b", rest):
+            continue
+        if _is_duration_after(folded, match.end()):
+            continue
+        return _whole_number(match.group(1))
+    return None
+
+
+def _spoken_day_count(text: str) -> int | None:
+    """A stay of N days. N दिन का बुखार is the fever, not the stay."""
+    folded = _fold_spoken_numbers(text or "")
+    stay = re.search(
+        r"(\d+)\s*(?:दिन|days|day)\S*\s+(?:रखा|रखी|रहे|रहा|तक)",
+        folded,
+        re.I,
+    )
+    if stay:
+        return int(stay.group(1))
+    for match in re.finditer(r"(\d+)\s*(?:दिन|days|day)", folded, re.I):
+        rest = re.sub(r"^\S*", "", folded[match.end():])
+        if re.match(r"\s*का\s+बुखार", rest, re.I):
+            continue
+        return int(match.group(1))
+    return None
 
 
 def _spoken_number(raw: str) -> int | float:
@@ -1754,9 +1778,11 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
         if named == "early":
             details["term"] = "early"
             details.pop("result", None)
+            topic["value"] = True
         elif named == "late":
             details["term"] = "late"
             details.pop("result", None)
+            topic["value"] = True
         elif named == "full":
             details["term"] = "full"
             details["result"] = "normal"
@@ -1797,9 +1823,13 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
                 details.setdefault("caller_test", True)
     if name == "body_growth":
         text = utterance or ""
+        not_growing = re.search(r"नहीं\s+बढ़|जैसा\s+नहीं|ठीक\s+से\s+नहीं|not growing", text, re.I)
         denied = re.search(r"नहीं|नही|nahi|nahin|not growing", text, re.I)
         fine = re.search(r"जैसा|ठीक|नॉर्मल|normal", text, re.I)
-        if denied:
+        if not_growing:
+            details.pop("result", None)
+            topic["value"] = True
+        elif denied:
             details.pop("result", None)
         elif fine and _affirmative_value(value):
             details["result"] = "normal"
@@ -1838,10 +1868,14 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
         _store_spoken_number(details, "days", _spoken_day_count, utterance)
     if "month" in follow_ids:
         _store_spoken_number(details, "month", _spoken_month_count, utterance)
+    if "amount" in follow_ids and not details.get("amount"):
+        month = _spoken_month_count(utterance or "")
+        if month is not None:
+            details["amount"] = f"{month} महीने"
     ages = _spoken_age_records(utterance or "")
     if len(ages) == 1:
         phrase = _age_phrase(ages[0])
-        for fid in ("amount", "onset_age", "age_at_death"):
+        for fid in ("onset_age", "age_at_death"):
             if fid in follow_ids and not details.get(fid) and phrase:
                 details[fid] = phrase
     if "relationship" in follow_ids and "relationship" not in details and _has_kinship(utterance or ""):
