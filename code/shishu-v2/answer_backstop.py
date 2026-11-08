@@ -13,7 +13,7 @@ from google.genai import types
 
 import checklist
 
-MODEL = os.environ.get("SHISHU_BACKSTOP_MODEL", "gemini-3.5-flash-lite")
+MODEL = os.environ.get("SHISHU_BACKSTOP_MODEL", "gemini-3.8-flash")
 TIMEOUT_SEC = 6.0
 
 _KINDS = ["answer", "unknown", "clarification", "not_an_answer"]
@@ -114,7 +114,7 @@ async def extract(question: dict, state: dict, bot_text: str, user_text: str) ->
                 response_mime_type="application/json",
                 response_schema=response_schema(question, state),
                 temperature=0.0,
-                thinking_config=types.ThinkingConfig(thinking_level="MINIMAL"),
+                thinking_config=types.ThinkingConfig(thinking_level="LOW"),
             ),
         )
         result = json.loads(response.text or "{}")
