@@ -104,8 +104,17 @@ def _child_age_years(age: object) -> float | None:
     return None
 
 
+def _canonical_sex(value: object) -> str | None:
+    text = str(value or "").strip().lower()
+    if text in {"female", "girl", "f", "beti", "daughter", "बेटी", "लड़की", "बच्ची"}:
+        return "female"
+    if text in {"male", "boy", "m", "beta", "bete", "son", "बेटा", "बेटे", "लड़का", "लड़के"}:
+        return "male"
+    return None
+
+
 def _is_female(child: dict) -> bool:
-    return str(child.get("sex") or "").strip().lower() in {"female", "girl", "f", "beti", "daughter"}
+    return _canonical_sex(child.get("sex")) == "female"
 
 
 def _any_child_at_least(state: dict, years: float, female_only: bool = False) -> bool:
@@ -903,11 +912,12 @@ def _normalize_children(value: object) -> list[dict]:
                     age = {"value": m_val, "unit": "months"}
                 else:
                     age = {"value": int(age_years) if age_years.is_integer() else age_years, "unit": "years"}
+        sex = _canonical_sex(raw.get("sex")) or raw.get("sex")
         children.append({
             "id": child_id,
             "name": raw.get("name"),
             "age": age,
-            "sex": raw.get("sex"),
+            "sex": sex,
         })
     return children
 

@@ -815,6 +815,39 @@ class CallStateTests(unittest.TestCase):
         )
         self.assertEqual([c["sex"] for c in one_named["profile"]["children"]], [None, None, None])
 
+    def test_hindi_sex_words_count_as_female_or_male(self):
+        for word in ("लड़की", "बेटी", "बच्ची"):
+            state = call_state.apply_updates(
+                call_state.new_call_state(),
+                [_update("profile.children", [{"age": {"value": 11, "unit": "years"}, "sex": word}])],
+                1,
+            )
+            self.assertEqual(state["profile"]["children"][0]["sex"], "female", word)
+            state = _ask(state, "body_bleeding_bruise")
+            state = call_state.apply_updates(
+                state,
+                [_update("topic.body_bleeding_bruise", False)],
+                2,
+                utterance="नहीं।",
+            )
+            pending = [item["id"] for item in call_state._pending_followups(state, "body_bleeding_bruise")]
+            self.assertIn("periods", pending, word)
+        state = call_state.apply_updates(
+            call_state.new_call_state(),
+            [_update("profile.children", [{"age": {"value": 11, "unit": "years"}, "sex": "लड़का"}])],
+            1,
+        )
+        self.assertEqual(state["profile"]["children"][0]["sex"], "male")
+        state = _ask(state, "body_bleeding_bruise")
+        state = call_state.apply_updates(
+            state,
+            [_update("topic.body_bleeding_bruise", False)],
+            2,
+            utterance="नहीं।",
+        )
+        pending = [item["id"] for item in call_state._pending_followups(state, "body_bleeding_bruise")]
+        self.assertNotIn("periods", pending)
+
     def test_yes_and_no_phrases_keep_their_polarity(self):
         for value in ("जी हाँ", "हाँ जी", "haan ji", "yes"):
             topic = {"state": "answered", "value": value, "details": {}}
