@@ -274,6 +274,12 @@ Trio: नहीं होता, सब ठीक है sent as true (no flags,
 
 Trio: the daughter and not the nephew (no flags), fits for that daughter (still a yes), and her age 4 sent as the count (one girl of four, no हाँ lines). Pass.
 
+## 16:22 IST
+
+तीन साल का बेटा और बेटी हैं is two children of three. One sex word is still one child. शादी टूट गई, तलाक, and विधवा are not stored as married. `196` unit tests. 99 scenarios, 0 failed.
+
+Trio: son and daughter of one age (no flags), odor for that family (still a yes), and the age 3 sent as the count (two children of three, no हाँ lines). Pass.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

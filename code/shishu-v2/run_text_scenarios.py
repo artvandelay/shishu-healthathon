@@ -605,6 +605,38 @@ def campaign() -> list[Scenario]:
             no_value=True,
         ),
         Scenario(
+            name="no_flags_son_and_daughter_one_age",
+            group="no_flags",
+            caller_name="मीना",
+            marital_text=married,
+            children_text="तीन साल का बेटा और बेटी हैं।",
+            children_value=2,
+        ),
+        Scenario(
+            name="flags_son_and_daughter_one_age",
+            group="red_flags",
+            caller_name="गीता",
+            marital_text=married,
+            children_text="तीन साल का बेटा और बेटी हैं।",
+            children_value=2,
+            positives={
+                "ill_odor": {
+                    "value": True,
+                    "utterance": "पेशाब में बदबू है।",
+                    "details": {},
+                },
+            },
+            expect_yes=("ill_odor",),
+        ),
+        Scenario(
+            name="degenerate_shared_age_sent_as_count",
+            group="degenerate",
+            caller_name="रीना",
+            marital_text=married,
+            children_text="तीन साल का बेटा और बेटी हैं।",
+            children_value=3,
+        ),
+        Scenario(
             name="no_flags_daughter_not_the_nephew",
             group="no_flags",
             caller_name="ललिता",

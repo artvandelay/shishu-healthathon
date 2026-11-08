@@ -948,6 +948,9 @@ class CallStateTests(unittest.TestCase):
         self.assertEqual(call_state._canonical_marital("shaadi hui hai"), "married")
         self.assertEqual(call_state._canonical_marital("शादी है"), "married")
         self.assertEqual(call_state._canonical_marital("मेरी शादी है"), "married")
+        self.assertIsNone(call_state._canonical_marital("शादी टूट गई"))
+        self.assertIsNone(call_state._canonical_marital("तलाक हो गया"))
+        self.assertIsNone(call_state._canonical_marital("विधवा हूँ"))
         self.assertIsNone(call_state._canonical_marital("जाँच हुई"))
         self.assertIsNone(call_state._canonical_marital("बात हुई"))
         self.assertIsNone(call_state._canonical_marital("हो गई"))
@@ -1235,6 +1238,14 @@ class CallStateTests(unittest.TestCase):
         self.assertEqual(
             [(c["sex"], c["age"]) for c in sons["profile"]["children"]],
             [("male", {"value": 4, "unit": "years"}), ("male", {"value": 4, "unit": "years"})],
+        )
+        pair = stored("तीन साल का बेटा और बेटी हैं।", 2)
+        self.assertEqual(
+            [(c["sex"], c["age"]) for c in pair["profile"]["children"]],
+            [
+                ("male", {"value": 3, "unit": "years"}),
+                ("female", {"value": 3, "unit": "years"}),
+            ],
         )
         pair = stored("बेटा और बेटी दोनों चार साल के।", 2)
         self.assertEqual(

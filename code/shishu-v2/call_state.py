@@ -2174,11 +2174,15 @@ def _canonical_marital(value: object) -> str | None:
         or any(_contains_word(text, word) for word in ("shadishuda", "shaadi shuda"))
     )
     married = status_word or marriage_noun
+    # शादी टूट गई is not a marriage. Widow and divorce stay unmapped.
+    broken = any(word in raw for word in ("तलाक", "विधवा", "टूट"))
     # A denial beats a marriage word: शादी नहीं हुई, शादीशुदा नहीं.
     if about and not denial:
         return "about_to_marry"
-    if married and not denial:
+    if married and not denial and not broken:
         return "married"
+    if broken:
+        return None
     if denial:
         return "unmarried"
     return None
@@ -2667,6 +2671,16 @@ def apply_updates(
                         # बेटा और बेटी दोनों चार साल arrives as a count and becomes
                         # this case once the sentence shows no numbered count.
                         spoken_now = [spoken_now[0], spoken_now[0]]
+                    if (
+                        kind_c == "ignore"
+                        and len(spoken_now) == 1
+                        and _count_from_child_words(_fold_spoken_numbers(utterance or "")) is None
+                    ):
+                        # तीन साल का बेटा और बेटी हैं is two children of that age.
+                        # One sex word stays one child.
+                        sexes_said = _spoken_sexes(utterance or "")
+                        if len(sexes_said) >= 2:
+                            spoken_now = [spoken_now[0]] * len(sexes_said)
                     count_n = int(norm) if kind_c == "count" else 0
                     shared = _shared_age_for_group(utterance, count_n)
                     if shared:
