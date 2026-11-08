@@ -108,12 +108,14 @@ class PromptAndCopyTests(unittest.TestCase):
         html = (_HERE / "static" / "login.html").read_text(encoding="utf-8")
         self.assertNotIn("shishu2026", html)
         self.assertNotIn("screening", html.lower())
-        self.assertIn("pre-consultation", html)
+        self.assertIn("आपका नाम", html)
+        self.assertIn("Your name", html)
 
     def test_call_status_matches_the_start_button(self):
         html = (_HERE / "static" / "call.html").read_text(encoding="utf-8")
         self.assertNotIn("Tap Mic", html)
-        self.assertIn("Tap Start Call to begin in Hindi", html)
+        self.assertIn("कॉल शुरू करने के लिए नीचे दबाएँ", html)
+        self.assertIn(">शुरू<", html)
 
     def test_intro_and_cord_questions_are_split(self):
         text = prompts.CLINICAL_CLUSTERS_REFERENCE
