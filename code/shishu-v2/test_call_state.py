@@ -1887,6 +1887,10 @@ class CallStateTests(unittest.TestCase):
                 kind,
                 text,
             )
+        for ack in ("जी।", "जी", "hmm"):
+            nodded = {"state": "answered", "value": ack, "details": {}}
+            self.assertNotEqual(call_state.topic_answer_kind(nodded, "body_fits_milestones"), "yes", ack)
+            self.assertFalse(call_state._followup_is_finding(ack), ack)
         for closer in ("बस।", "नहीं, बस इतना ही।", "और कुछ नहीं।"):
             closed = call_state.apply_updates(
                 _ask(call_state.new_call_state(), "close_anything_else"),

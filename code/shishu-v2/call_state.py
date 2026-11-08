@@ -547,11 +547,19 @@ def _affirmative_value(value: object) -> bool:
     return _stated_polarity(value) == "yes"
 
 
+_BARE_ACK_RE = re.compile(r"^(?:जी|ji|हम्म|hmm)[।.!\s]*$", re.I)
+
+
+def _is_bare_ack(value: object) -> bool:
+    """जी। by itself is an acknowledgement, not a symptom and not a no."""
+    return isinstance(value, str) and _BARE_ACK_RE.match(value.strip()) is not None
+
+
 def _followup_is_finding(value: object) -> bool:
     """A follow-up that describes a problem, not a no, an unknown, or a normal result."""
     if value is True:
         return True
-    if value is False or value is None or isinstance(value, dict):
+    if value is False or value is None or isinstance(value, dict) or _is_bare_ack(value):
         return False
     if _stated_polarity(value) == "no" or _is_unknown_utterance(str(value)):
         return False
@@ -669,6 +677,8 @@ def _described_problem(topic_id: str | None, value: object, details: dict) -> bo
     if _is_reassuring_result(details):
         return False
     if isinstance(value, str) and _AFFIRM_RE.search(value) and _DENY_RE.search(value):
+        return False
+    if _is_bare_ack(value):
         return False
     if str(details.get("result") or "").strip().lower() in {"abnormal", "असामान्य", "positive", "carrier"}:
         return True
