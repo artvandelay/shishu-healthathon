@@ -1264,6 +1264,21 @@ def _month_phrase(month: object) -> str:
     return f"{shown} महीने"
 
 
+def _day_phrase(day: object) -> str:
+    """डेढ़ दिन stays a day and a half. A whole number stays N दिन."""
+    if isinstance(day, bool) or not isinstance(day, (int, float)):
+        return str(day or "")
+    number = float(day)
+    if abs(number - 1.5) < 1e-6:
+        return "डेढ़ दिन"
+    if abs(number - 2.5) < 1e-6:
+        return "ढाई दिन"
+    if number > 2 and abs(number - int(number) - 0.5) < 1e-6:
+        return f"साढ़े {int(number)} दिन"
+    shown = int(number) if number.is_integer() else number
+    return f"{shown} दिन"
+
+
 def _spoken_month_count(text: str) -> int | float | None:
     """A pregnancy month. N महीने का is the child's age. N महीने पहले is how long ago."""
     folded = _fold_spoken_numbers(text or "")
@@ -1298,15 +1313,15 @@ def _spoken_day_count(text: str) -> int | None:
 
     def region_after(end: int) -> str:
         window = folded[end:end + 80]
-        nxt = re.search(r"\d+\s*(?:दिन|days|day|हफ़्त|हफ्त|hafte|weeks|week)", window, re.I)
+        nxt = re.search(r"\d+(?:\.\d+)?\s*(?:दिन|days|day|हफ़्त|हफ्त|hafte|weeks|week)", window, re.I)
         return window[: nxt.start()] if nxt else window
 
     day_hits = []
-    for match in re.finditer(r"(\d+)\s*(?:दिन|days|day)", folded, re.I):
+    for match in re.finditer(r"(\d+(?:\.\d+)?)\s*(?:दिन|days|day)", folded, re.I):
         region = region_after(match.end())
         is_stay = re.search(stay_word, region) is not None
         is_symptom = re.match(rf"\S*\s*(?:का\s+|से\s+){symptom}", region, re.I) is not None
-        day_hits.append((int(match.group(1)), is_stay, is_symptom))
+        day_hits.append((_month_number(match.group(1)), is_stay, is_symptom))
     for count, is_stay, _symptom in day_hits:
         if is_stay:
             return count
@@ -1314,14 +1329,15 @@ def _spoken_day_count(text: str) -> int | None:
         if not is_symptom:
             return count
 
-    for match in re.finditer(rf"(\d+)\s*{_WEEK_UNIT}", folded, re.I):
+    for match in re.finditer(rf"(\d+(?:\.\d+)?)\s*{_WEEK_UNIT}", folded, re.I):
         if _followed_by_age_copula(folded, match.end()):
             continue
         region = region_after(match.end())
         if re.search(stay_word, region) or not re.search(r"(?:का|की|के)\s*(?:है|हैं|था|थी|थे)", region):
             # A bare week count with a stay, or a week count that is not an age.
             if re.search(stay_word, region) or region.strip() in {"", "।", "."}:
-                return int(match.group(1)) * 7
+                days = float(match.group(1)) * 7
+                return int(days) if days.is_integer() else days
     return None
 
 

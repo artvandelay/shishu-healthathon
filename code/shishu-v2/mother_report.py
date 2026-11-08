@@ -575,7 +575,7 @@ def _detail_values(details: dict, skip_label: str = "") -> str:
             continue
         shown = _shown_value(value)
         if key == "days" and re.fullmatch(r"\d+(?:\.\d+)?", shown):
-            shown = f"{shown} दिन"
+            shown = call_state._day_phrase(float(shown))
         elif key == "count" and re.fullmatch(r"\d+(?:\.\d+)?", shown):
             shown = f"{shown} बार"
         elif key == "month" and re.fullmatch(r"\d+(?:\.\d+)?", shown):

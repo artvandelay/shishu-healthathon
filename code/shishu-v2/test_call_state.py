@@ -1528,6 +1528,16 @@ class CallStateTests(unittest.TestCase):
             utterance="चार दिन।",
         )
         self.assertEqual(bare["topics"]["birth_nicu"]["details"].get("days"), 4)
+        half_day = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "birth_nicu"),
+            [_update("topic.birth_nicu", True)],
+            1,
+            utterance="डेढ़ दिन रखा।",
+        )
+        self.assertEqual(half_day["topics"]["birth_nicu"]["details"].get("days"), 1.5)
+        self.assertEqual(call_state._day_phrase(1.5), "डेढ़ दिन")
+        self.assertEqual(call_state._day_phrase(7.5), "साढ़े 7 दिन")
+        self.assertEqual(call_state._spoken_day_count("साढ़े सात दिन रखा।"), 7.5)
 
         lost = call_state.apply_updates(
             _ask(call_state.new_call_state(), "fam_miscarriage"),
