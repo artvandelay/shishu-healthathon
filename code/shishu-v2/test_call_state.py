@@ -1830,6 +1830,31 @@ class CallStateTests(unittest.TestCase):
             call_state.topic_answer_kind(joint["topics"]["body_joint_swelling"], "body_joint_swelling"),
             "yes",
         )
+        pain = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "close_anything_else"),
+            [_update("topic.close_anything_else", "पेट में दर्द रहता है।")],
+            1,
+            utterance="पेट में दर्द रहता है।",
+        )
+        self.assertEqual(
+            call_state.topic_answer_kind(pain["topics"]["close_anything_else"], "close_anything_else"),
+            "yes",
+        )
+        pain["close_reason"] = "complete"
+        pain_yes = " ".join(mother_report.build({"state": pain, "started_at": "2026-11-08 14:10:00"})["yes"])
+        self.assertIn("दर्द", pain_yes)
+        for closer in ("बस।", "नहीं, बस इतना ही।", "और कुछ नहीं।"):
+            closed = call_state.apply_updates(
+                _ask(call_state.new_call_state(), "close_anything_else"),
+                [_update("topic.close_anything_else", closer)],
+                1,
+                utterance=closer,
+            )
+            self.assertNotEqual(
+                call_state.topic_answer_kind(closed["topics"]["close_anything_else"], "close_anything_else"),
+                "yes",
+                closer,
+            )
 
         # The question's own yes contains नहीं. Repeating it is a finding. A bare नहीं is not.
         for topic_id, text in (

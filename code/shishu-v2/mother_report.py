@@ -742,6 +742,11 @@ def build(call: dict, extracted: dict | None = None) -> dict:
             note = _instance_note(state, topic["id"])
             if note:
                 line = f"{line} ({note})"
+            said = (state.get("topics") or {}).get(topic["id"], {}).get("value")
+            if isinstance(said, str) and said.strip():
+                spoken = hindi_text(said.strip().strip("।.! "))
+                if spoken and not (call_state._content_stems(spoken) & call_state._content_stems(line)):
+                    line = f"{line} ({spoken})"
             if line:
                 yes.append(hindi_text(line))
     else:

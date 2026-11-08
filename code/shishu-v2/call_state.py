@@ -642,8 +642,16 @@ def _described_problem(topic_id: str | None, value: object, details: dict) -> bo
     growth or puberty stay out of the हाँ list. A problem the details already
     recorded (a condition, a NICU reason, an early or late timing) counts.
     """
-    if not topic_id or topic_id.startswith("intro_") or topic_id == "close_anything_else":
+    if not topic_id or topic_id.startswith("intro_"):
         return False
+    if topic_id == "close_anything_else":
+        # बस। and नहीं, बस इतना ही close the call. A complaint does not.
+        if re.fullmatch(
+            r"\s*(?:जी\s+)?(?:बस|इतना\s*ही|और\s*कुछ\s*नहीं)[।.!\s]*",
+            str(value or ""),
+            re.I,
+        ):
+            return False
     if _is_reassuring_result(details):
         return False
     if isinstance(value, str) and _AFFIRM_RE.search(value) and _DENY_RE.search(value):

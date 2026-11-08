@@ -54,6 +54,7 @@ class Scenario:
     expect_yes: tuple[str, ...] = ()
     no_utterance: str = "नहीं।"
     no_value: object = False
+    close_text: str | None = None
 
 
 def _update(field_name: str, value, state: str = "answered", details: dict | None = None, child_ids=None):
@@ -107,6 +108,8 @@ def _reply(scenario: Scenario, question: dict, memory: dict) -> tuple[str, list[
             return "हाँ, पहले गर्भ रहा था।", [_update("profile.ever_pregnant", True)], None
         return "नहीं, कभी प्रेग्नेंट नहीं हुई।", [_update("profile.ever_pregnant", False)], None
     if tid == "close_anything_else":
+        if scenario.close_text:
+            return scenario.close_text, [_update("topic.close_anything_else", scenario.close_text)], None
         return "नहीं, बस इतना ही।", [_update("topic.close_anything_else", False)], None
 
     positive = scenario.positives.get(tid) or {}
@@ -1179,6 +1182,16 @@ def campaign() -> list[Scenario]:
             children_value=[],
             stop_at="during_intro",
             expect_close="caller_stop",
+        ),
+        Scenario(
+            name="flags_closing_complaint",
+            group="red_flags",
+            caller_name="उषा",
+            marital_text=married,
+            children_text="एक बेटा है, पाँच साल का।",
+            children_value=[_child({"value": 5, "unit": "years"}, "male")],
+            close_text="पेट में दर्द रहता है।",
+            expect_yes=("close_anything_else",),
         ),
         Scenario(
             name="flags_lost_skill",
