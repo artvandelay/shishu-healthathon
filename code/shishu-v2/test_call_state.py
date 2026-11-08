@@ -1368,6 +1368,34 @@ class CallStateTests(unittest.TestCase):
         )
         self.assertEqual(nicu["topics"]["birth_nicu"]["details"].get("days"), 4)
         self.assertEqual(nicu["topics"]["birth_nicu"]["details"].get("reason"), "jaundice")
+        fever = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "birth_nicu"),
+            [_update("topic.birth_nicu", True)],
+            1,
+            utterance="दो दिन से बुखार था।",
+        )
+        self.assertNotIn("days", fever["topics"]["birth_nicu"]["details"])
+        weeks = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "birth_nicu"),
+            [_update("topic.birth_nicu", True)],
+            1,
+            utterance="दो हफ्ते रखा।",
+        )
+        self.assertEqual(weeks["topics"]["birth_nicu"]["details"].get("days"), 14)
+        age = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "birth_nicu"),
+            [_update("topic.birth_nicu", True)],
+            1,
+            utterance="बच्चा दो हफ्ते का है।",
+        )
+        self.assertNotIn("days", age["topics"]["birth_nicu"]["details"])
+        bare = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "birth_nicu"),
+            [_update("topic.birth_nicu", True)],
+            1,
+            utterance="चार दिन।",
+        )
+        self.assertEqual(bare["topics"]["birth_nicu"]["details"].get("days"), 4)
 
         lost = call_state.apply_updates(
             _ask(call_state.new_call_state(), "fam_miscarriage"),

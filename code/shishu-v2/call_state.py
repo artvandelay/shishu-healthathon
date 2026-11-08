@@ -1151,20 +1151,41 @@ def _spoken_month_count(text: str) -> int | None:
 
 
 def _spoken_day_count(text: str) -> int | None:
-    """A stay of N days. N दिन का बुखार is the fever, not the stay."""
+    """A stay of N days. A symptom's own duration is not the stay.
+
+    N दिन का बुखार and N दिन से बुखार are the fever. N हफ़्ते रखा is that many
+    weeks. N हफ़्ते का है is the child's age.
+    """
     folded = _fold_spoken_numbers(text or "")
-    stay = re.search(
-        r"(\d+)\s*(?:दिन|days|day)\S*\s+(?:रखा|रखी|रहे|रहा|तक)",
-        folded,
-        re.I,
-    )
-    if stay:
-        return int(stay.group(1))
+    stay_word = r"(?:रखा|रखी|रहे|रहा|रही|तक)"
+    symptom = r"(?:बुखार|झटके|fits|seizure|दौरे|पीलिया|jaundice|संक्रमण|infection|इंफेक्शन|साँस)"
+
+    def region_after(end: int) -> str:
+        window = folded[end:end + 80]
+        nxt = re.search(r"\d+\s*(?:दिन|days|day|हफ़्त|हफ्त|hafte|weeks|week)", window, re.I)
+        return window[: nxt.start()] if nxt else window
+
+    day_hits = []
     for match in re.finditer(r"(\d+)\s*(?:दिन|days|day)", folded, re.I):
-        rest = re.sub(r"^\S*", "", folded[match.end():])
-        if re.match(r"\s*का\s+बुखार", rest, re.I):
+        region = region_after(match.end())
+        is_stay = re.search(stay_word, region) is not None
+        is_symptom = re.match(rf"\S*\s*(?:का\s+|से\s+){symptom}", region, re.I) is not None
+        day_hits.append((int(match.group(1)), is_stay, is_symptom))
+    for count, is_stay, _symptom in day_hits:
+        if is_stay:
+            return count
+    for count, _stay, is_symptom in day_hits:
+        if not is_symptom:
+            return count
+
+    for match in re.finditer(rf"(\d+)\s*{_WEEK_UNIT}", folded, re.I):
+        if _followed_by_age_copula(folded, match.end()):
             continue
-        return int(match.group(1))
+        region = region_after(match.end())
+        if re.search(stay_word, region) or not re.search(r"(?:का|की|के)\s*(?:है|हैं|था|थी|थे)", region):
+            # A bare week count with a stay, or a week count that is not an age.
+            if re.search(stay_word, region) or region.strip() in {"", "।", "."}:
+                return int(match.group(1)) * 7
     return None
 
 
