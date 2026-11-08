@@ -348,6 +348,11 @@ def _build_topic_rules() -> dict:
 
 TOPIC_RULES = _build_topic_rules()
 
+# Replies recorded while a follow-up is pending that do not answer it.
+# One miss is asked again. The next such reply marks that follow-up unknown
+# so routing can leave it. The count is on the pending follow-up, not a topic.
+_FOLLOWUP_REPLY_BOUND = 2
+
 
 def new_call_state() -> dict:
     state = contract.new_call_state()
@@ -1068,7 +1073,38 @@ def apply_updates(
     if not wrote:
         raise ValueError(problems[0] if problems else "no applicable update")
     _apply_rules(state)
+    _note_unanswered_followup(state)
     return state
+
+
+def _note_unanswered_followup(state: dict) -> None:
+    """A recorded reply that leaves the pending follow-up open spends one attempt.
+
+    The reply may have been saved on another topic, or on this topic without the
+    follow-up's typed detail. Raw text is still not copied into the detail.
+    unknown and no_response already resolve the follow-up and do not count.
+    """
+    current = state.get("current_question")
+    if not isinstance(current, dict):
+        return
+    topic_id = current.get("topic_id")
+    followup_id = current.get("followup_id")
+    if not isinstance(followup_id, str) or not followup_id or topic_id not in state["topics"]:
+        return
+    pending_ids = [spec["id"] for spec in _pending_followups(state, topic_id)]
+    if followup_id not in pending_ids:
+        current.pop("attempts", None)
+        return
+    attempts = current.get("attempts")
+    count = attempts + 1 if isinstance(attempts, int) and not isinstance(attempts, bool) and attempts > 0 else 1
+    if count >= _FOLLOWUP_REPLY_BOUND:
+        topic = state["topics"][topic_id]
+        details = dict(topic.get("details") or {})
+        details[followup_id] = {"state": "unknown"}
+        topic["details"] = details
+        current.pop("attempts", None)
+        return
+    current["attempts"] = count
 
 
 def next_question(state: dict) -> dict | None:
@@ -1100,10 +1136,19 @@ def next_question(state: dict) -> dict | None:
 def begin_question(state: dict, question: dict) -> dict:
     state = copy.deepcopy(state)
     question = question or {}
+    previous = state.get("current_question") if isinstance(state.get("current_question"), dict) else {}
     state["current_question"] = {
         "topic_id": question.get("topic_id"),
         "followup_id": question.get("followup_id"),
     }
+    same_followup = (
+        previous.get("topic_id") == question.get("topic_id")
+        and previous.get("followup_id") == question.get("followup_id")
+        and question.get("followup_id")
+    )
+    attempts = previous.get("attempts")
+    if same_followup and isinstance(attempts, int) and not isinstance(attempts, bool) and attempts > 0:
+        state["current_question"]["attempts"] = attempts
     if state.get("phase") not in ("closing", "ended"):
         state["phase"] = "asking"
     return state
@@ -1113,6 +1158,13 @@ def request_close(state: dict, reason: str) -> dict:
     if reason not in INTERNAL_CLOSE_REASONS:
         raise ValueError(f"invalid close reason: {reason}")
     state = copy.deepcopy(state)
+    # Closing already chose why the call is ending. A later end_call(caller_stop)
+    # is the model finishing a goodbye, not a new request to stop. caller_stop
+    # still starts a close when the call is in progress.
+    if state.get("phase") in ("closing", "ended") and reason == "caller_stop":
+        if not state.get("close_reason"):
+            state["close_reason"] = "complete"
+        return state
     state["close_reason"] = reason
     state["phase"] = "closing"
     return state

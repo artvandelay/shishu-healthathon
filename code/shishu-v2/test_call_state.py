@@ -217,6 +217,16 @@ class CallStateTests(unittest.TestCase):
         self.assertIs(topic["value"], True)
         self.assertEqual(call_state.next_question(state)["followup_id"], "count")
 
+        # One miss stays open. The next recorded reply that is not this follow-up
+        # (another topic) marks it unknown, and routing leaves it. The attempt
+        # survives begin_question re-asking the same follow-up.
+        state = call_state.begin_question(state, call_state.next_question(state))
+        self.assertEqual(state["current_question"].get("attempts"), 1)
+        state = call_state.apply_updates(state, [_update("topic.intro_name", "रेखा")], 3)
+        self.assertEqual(state["topics"]["intro_name"]["value"], "रेखा")
+        self.assertEqual(state["topics"]["ill_admissions"]["details"].get("count"), {"state": "unknown"})
+        self.assertNotEqual((call_state.next_question(state) or {}).get("followup_id"), "count")
+
     def test_yes_no_questions_keep_haan_as_the_concern_direction(self):
         for topic in checklist.TOPICS:
             if not checklist.is_yes_no(topic["id"]):

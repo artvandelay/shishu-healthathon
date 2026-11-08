@@ -218,6 +218,24 @@ async def ask_mother(spec: dict, bot_line: str, step: int) -> str:
     return str((json.loads(response.text or "{}")).get("reply") or "").strip() or "नहीं।"
 
 
+def status_after_disconnect(exc: BaseException, close_reason: object) -> str:
+    """A clean disconnect after the server already closed is a completed call.
+
+    Some socket closes and the recv timeout stringify to an empty message, so the
+    run is logged as ``error: ``. Once close_reason is set, that is completion.
+    An exception that carries a message is still an error.
+    """
+    if str(close_reason or "").strip() and _benign_disconnect(exc):
+        return "completed"
+    return f"error: {exc}"
+
+
+def _benign_disconnect(exc: BaseException) -> bool:
+    if type(exc).__name__.startswith("ConnectionClosed"):
+        return True
+    return str(exc).strip() == ""
+
+
 def _state_snapshot(state: dict) -> tuple:
     topics = {
         key: (row.get("state"), row.get("value"), row.get("details"))
@@ -306,7 +324,16 @@ async def one_call(name: str, url: str, headers: dict) -> dict:
                 elif kind == "call_completed":
                     return {"persona": name, "call_id": call_id, "steps": step, "memory": memory, "status": "completed"}
     except Exception as exc:
-        return {"persona": name, "call_id": call_id, "steps": step, "memory": memory, "status": f"error: {exc}"}
+        reason = None
+        if call_id:
+            reason = ((db.get_call(call_id) or {}).get("state") or {}).get("close_reason")
+        return {
+            "persona": name,
+            "call_id": call_id,
+            "steps": step,
+            "memory": memory,
+            "status": status_after_disconnect(exc, reason),
+        }
     return {"persona": name, "call_id": call_id, "steps": step, "memory": memory, "status": "step_cap"}
 
 

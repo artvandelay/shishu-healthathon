@@ -9,10 +9,12 @@ import unittest
 _TMP = tempfile.mkdtemp(prefix="shishu-triage-")
 os.environ.setdefault("DATA_DIR", _TMP)
 
+import call_state  # noqa: E402
 import checklist  # noqa: E402
 import db  # noqa: E402
 import gemini_live  # noqa: E402
 import prompts  # noqa: E402
+import run_eight_personas  # noqa: E402
 from answer_tool import INTERNAL_NOTE_TAG, build_spoken_cue, build_turn_context  # noqa: E402
 
 
@@ -167,6 +169,53 @@ class EndCallReasonTests(unittest.TestCase):
         self.assertEqual(telemetry["close_reason"], "caller_stop")
         self.assertFalse(telemetry.get("end_requested"))
         self.assertFalse(any(message.get("type") == "ending" for message in ws.sent))
+
+        # A goodbye end_call after closing has started keeps the reason already chosen.
+        call_id = db.create_call("gemini")
+        live = call_state.request_close(db.initialize_call_state(call_id), "complete")
+        db.save_call_state(call_id, live)
+        telemetry2 = gemini_live._new_telemetry("gemini-3.1-flash-live-preview", "Kore", 750, 300, 0)
+
+        class _FcStop:
+            id = "fc_stop_late"
+            name = "end_call"
+            args = {"reason": "caller_stop"}
+            will_continue = False
+
+        class _Sess:
+            async def send_tool_response(self, function_responses=None):
+                self.responses = function_responses
+
+        async def run():
+            sess2 = _Sess()
+            turn = gemini_live._TurnState()
+            turn.call_state = live
+            await gemini_live._answer_function_calls(
+                sess2, asyncio.Lock(), _FakeWs(), asyncio.Lock(), call_id, telemetry2,
+                [_FcStop()], set(), set(), turn_state=turn,
+            )
+            return turn
+
+        turn = asyncio.run(run())
+        self.assertEqual(turn.call_state["phase"], "closing")
+        self.assertEqual(turn.call_state["close_reason"], "complete")
+        self.assertEqual(telemetry2["close_reason"], "complete")
+        kept = call_state.request_close(turn.call_state, "emergency")
+        self.assertEqual(kept["close_reason"], "emergency")
+        kept = call_state.request_close(kept, "caller_stop")
+        self.assertEqual(kept["close_reason"], "emergency")
+
+        class ConnectionClosedOK(Exception):
+            pass
+
+        self.assertEqual(run_eight_personas.status_after_disconnect(TimeoutError(), "emergency"), "completed")
+        self.assertEqual(run_eight_personas.status_after_disconnect(TimeoutError(), "complete"), "completed")
+        self.assertEqual(run_eight_personas.status_after_disconnect(ConnectionClosedOK("received 1000"), "silence"), "completed")
+        self.assertEqual(run_eight_personas.status_after_disconnect(TimeoutError(), None), "error: ")
+        self.assertEqual(
+            run_eight_personas.status_after_disconnect(RuntimeError("Gemini Live session ended"), "emergency"),
+            "error: Gemini Live session ended",
+        )
 
     def test_complete_end_call_is_rejected(self):
         (sess, ws), telemetry = self._run_end_call("complete")

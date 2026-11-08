@@ -106,10 +106,15 @@ def normalize_state(raw: object) -> dict:
                 state["topics"][topic_id] = _copy_topic(saved)
     current = raw.get("current_question")
     if isinstance(current, dict):
-        state["current_question"] = {
+        question = {
             "topic_id": current.get("topic_id"),
             "followup_id": current.get("followup_id"),
         }
+        # Replies that did not answer the pending follow-up. Routing owns the bound.
+        attempts = current.get("attempts")
+        if isinstance(attempts, int) and not isinstance(attempts, bool) and attempts > 0:
+            question["attempts"] = attempts
+        state["current_question"] = question
     close_reason = raw.get("close_reason")
     if close_reason in INTERNAL_CLOSE_REASONS or close_reason is None:
         state["close_reason"] = close_reason

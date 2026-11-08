@@ -27,12 +27,14 @@ class CallStateDbTests(unittest.TestCase):
         ]
         state["topics"]["birth_nicu"]["state"] = "answered"
         state["topics"]["birth_nicu"]["value"] = True
+        state["current_question"] = {"topic_id": "birth_nicu", "followup_id": "reason", "attempts": 1}
         db.save_call_state(call_id, state)
         loaded = db.get_call_state(call_id)
         self.assertEqual(loaded["profile"]["children"][0]["id"], "child_1")
         self.assertEqual(loaded["profile"]["children"][0]["age"]["value"], 3)
         self.assertEqual(loaded["topics"]["birth_nicu"]["state"], "answered")
         self.assertIs(loaded["topics"]["birth_nicu"]["value"], True)
+        self.assertEqual(loaded["current_question"]["attempts"], 1)
 
 
 if __name__ == "__main__":

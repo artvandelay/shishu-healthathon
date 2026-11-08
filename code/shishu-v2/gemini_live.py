@@ -606,7 +606,7 @@ async def _answer_function_calls(
             else:
                 live_state = call_state.request_close(live_state, end_reason)
                 _store_live_state(call_id, turn_state, live_state)
-                telemetry["close_reason"] = end_reason
+                telemetry["close_reason"] = live_state.get("close_reason") or end_reason
                 if end_reason == "emergency" and not telemetry.get("emergency_detail"):
                     telemetry["emergency_detail"] = (last_user_text or "")[:300]
                 question = call_state.next_question(live_state)
