@@ -601,13 +601,13 @@ def _quarter_age(value: object, unit_word: str) -> str:
     if unit_word == "साल" and abs(number - 0.25) < 1e-6:
         return "3 महीने"
     if abs(number - 0.5) < 1e-6:
-        return "आधा साल" if unit_word == "साल" else "आधा महीना"
+        return {"साल": "आधा साल", "हफ़्ते": "आधा हफ़्ता"}.get(unit_word, "आधा महीना")
     if abs(number - 1.25) < 1e-6:
-        return "सवा साल" if unit_word == "साल" else "सवा महीना"
+        return {"साल": "सवा साल", "हफ़्ते": "सवा हफ़्ता"}.get(unit_word, "सवा महीना")
     if abs(number - 1.5) < 1e-6:
-        return "डेढ़ साल" if unit_word == "साल" else "डेढ़ महीने"
+        return {"साल": "डेढ़ साल", "हफ़्ते": "डेढ़ हफ़्ते"}.get(unit_word, "डेढ़ महीने")
     if abs(number - 2.5) < 1e-6:
-        return "ढाई साल" if unit_word == "साल" else "ढाई महीने"
+        return {"साल": "ढाई साल", "हफ़्ते": "ढाई हफ़्ते"}.get(unit_word, "ढाई महीने")
     if number > 2 and abs(number * 2 - round(number * 2)) < 1e-6 and abs(number - round(number)) == 0.5:
         return f"साढ़े {int(number)} {unit_word}"
     if (
@@ -635,6 +635,9 @@ def _format_age(age: object) -> str:
             return "1 महीना"
         return f"{_number_text(value)} महीने"
     if unit in {"week", "weeks", "hafte", "hafta"} and isinstance(value, (int, float)) and not isinstance(value, bool):
+        spoken = _quarter_age(value, "हफ़्ते")
+        if spoken:
+            return spoken
         shown = _number_text(value)
         return f"{shown} {'हफ़्ता' if float(value) == 1 else 'हफ़्ते'}"
     if unit in {"day", "days", "din"} and isinstance(value, (int, float)) and not isinstance(value, bool):

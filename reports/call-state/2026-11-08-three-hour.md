@@ -194,6 +194,8 @@ A nukta does not make a different word. सीज़ेरियन is an operat
 
 A sentence that says no overrides a tool yes. कोई रिश्ता नहीं is not a finding, and the relationship follow-up does not stay open. ठीक है। still does not erase a finding logged on that turn. पता नहीं on a follow-up still does not clear the topic. A sentence that names the problem (झटके थे, शुगर था) stays a yes. चाचे and चाचाजी are the same relative as चाचा. मामला is not मामा, and रिश्तेदारी is not a named relative. `196` unit tests. 59 scenarios, 0 failed.
 
+A fraction of a week is said the same way as a fraction of a year. सवा हफ़्ता, डेढ़ हफ़्ते, ढाई हफ़्ते, आधा हफ़्ता. Two whole weeks stay 2 हफ़्ते. `196` unit tests. 59 scenarios, 0 failed.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

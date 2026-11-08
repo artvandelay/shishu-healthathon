@@ -170,6 +170,10 @@ class StructuredMotherReportTests(unittest.TestCase):
         self.assertEqual(mother_report._format_age({"value": 1.5, "unit": "months"}), "डेढ़ महीने")
         self.assertEqual(mother_report._format_age({"value": 1.25, "unit": "months"}), "सवा महीना")
         self.assertEqual(mother_report._format_age({"value": 2, "unit": "weeks"}), "2 हफ़्ते")
+        self.assertEqual(mother_report._format_age({"value": 1.25, "unit": "weeks"}), "सवा हफ़्ता")
+        self.assertEqual(mother_report._format_age({"value": 1.5, "unit": "weeks"}), "डेढ़ हफ़्ते")
+        self.assertEqual(mother_report._format_age({"value": 2.5, "unit": "weeks"}), "ढाई हफ़्ते")
+        self.assertEqual(mother_report._format_age({"value": 0.5, "unit": "weeks"}), "आधा हफ़्ता")
         self.assertEqual(mother_report._format_age({"value": 15, "unit": "days"}), "15 दिन")
         self.assertNotIn("हेअव्य", mother_report.hindi_text("heavy"))
 
