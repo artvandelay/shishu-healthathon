@@ -451,11 +451,16 @@ _KINSHIP_WORDS = {
     "mausi", "mausa", "sasur", "saas", "devar", "jeth", "nanad", "cousin",
     "door", "khandaan", "khandan", "saga", "sagga", "immediate", "distant",
     "paternal", "maternal", "relative", "rishtedaar", "rishtedar",
+    "माता", "पिता", "मम्मी", "पापा", "भाई", "बहन", "बेटा", "बेटी", "पति", "पत्नी",
+    "दादा", "दादी", "चाचा", "चाची", "ताऊ", "ताई", "बुआ", "फूफा", "नाना", "नानी",
+    "मामा", "मामी", "मौसी", "मासी", "मौसा", "ससुर", "सास", "देवर", "जेठ", "ननद",
+    "कज़िन", "कजिन", "दूर", "खानदान", "सगा", "सगे", "सगी", "रिश्तेदार",
 }
 
 
 def _has_kinship(text: str) -> bool:
-    blob = re.sub(r"[^\w\s]", " ", (text or "").lower())
+    raw = (text or "").lower()
+    blob = re.sub(r"[^\w\s\u0900-\u097F]", " ", raw)
     words = set(blob.split())
     return bool(words & _KINSHIP_WORDS)
 
@@ -474,8 +479,25 @@ def _find_child_id(state: dict, raw: object) -> str | None:
         age = _child_age_years(c.get("age"))
         if age is not None:
             age_int = int(age) if age.is_integer() else age
-            if f"{age_int} saal" in cleaned or f"{age_int} year" in cleaned or f"{age_int} mahine" in cleaned:
+            if (
+                f"{age_int} saal" in cleaned
+                or f"{age_int} year" in cleaned
+                or f"{age_int} mahine" in cleaned
+                or f"{age_int} साल" in cleaned
+            ):
                 return c.get("id")
+    aged = [
+        (c.get("id"), _child_age_years(c.get("age")))
+        for c in children
+        if isinstance(c, dict) and _child_age_years(c.get("age")) is not None
+    ]
+    if len(aged) >= 2:
+        aged.sort(key=lambda item: item[1], reverse=True)
+        if aged[0][1] != aged[-1][1]:
+            if any(w in cleaned for w in ("bada", "bade", "badi", "older", "elder", "बड़ा", "बड़े", "बड़ी")):
+                return aged[0][0]
+            if any(w in cleaned for w in ("chhota", "chhote", "chhoti", "chota", "chote", "younger", "छोटा", "छोटे", "छोटी")):
+                return aged[-1][0]
     return None
 
 
@@ -991,16 +1013,42 @@ def _store_instances(topic: dict, update: dict) -> None:
 def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
     details = dict(topic.get("details") or {})
     value = topic.get("value")
-    if name == "birth_mode" and isinstance(value, str):
-        blob = value.lower()
-        if any(word in blob for word in ("operation", "caesarean", "cesarean")):
+    val_blob = str(value or "").lower()
+    utt_blob = (utterance or "").lower()
+    combined = f"{val_blob} {utt_blob}"
+    if name == "birth_mode":
+        if any(word in val_blob for word in ("operation", "caesarean", "cesarean", "c-section", "ऑपरेशन", "सीजेरियन")):
             details["delivery_type"] = "operation"
-        elif "normal" in blob:
+        elif any(word in val_blob for word in ("normal", "नॉर्मल")):
             details["delivery_type"] = "normal"
-    if name == "birth_hearing_vision" and "result" not in details:
+        elif "delivery_type" not in details:
+            if any(word in utt_blob for word in ("operation", "caesarean", "cesarean", "c-section", "ऑपरेशन", "सीजेरियन")):
+                details["delivery_type"] = "operation"
+            elif any(word in utt_blob for word in ("normal", "नॉर्मल")):
+                details["delivery_type"] = "normal"
+        if any(word in val_blob for word in ("hospital", "clinic", "अस्पताल", "हॉस्पिटल", "नर्सिंग")):
+            details["place"] = "hospital"
+        elif any(word in val_blob for word in ("home", "ghar", "घर")):
+            details["place"] = "home"
+        elif "place" not in details:
+            if any(word in utt_blob for word in ("hospital", "clinic", "अस्पताल", "हॉस्पिटल", "नर्सिंग")):
+                details["place"] = "hospital"
+            elif any(word in utt_blob for word in ("home", "ghar", "घर")):
+                details["place"] = "home"
+    if name == "birth_hearing_vision":
         text = utterance or ""
-        if re.search(r"नॉर्मल|normal", text, re.I) and not re.search(r"अबनॉर्मल|abnormal|दिक्कत", text, re.I):
+        if "result" not in details and re.search(r"नॉर्मल|normal", text, re.I) and not re.search(r"अबनॉर्मल|abnormal|दिक्कत", text, re.I):
             details["result"] = "normal"
+            details.setdefault("test_done", True)
+        if "test_done" not in details and isinstance(value, bool):
+            details["test_done"] = value
+    if name == "preg_scan":
+        text = utterance or ""
+        if "result" not in details and re.search(r"नॉर्मल|normal", text, re.I) and not re.search(r"अबनॉर्मल|abnormal|दिक्कत", text, re.I):
+            details["result"] = "normal"
+            details.setdefault("scan_done", True)
+        if "scan_done" not in details and isinstance(value, bool):
+            details["scan_done"] = value
     topic["details"] = details
 
 
@@ -1153,8 +1201,16 @@ def apply_updates(
                 details[followup_id] = {"state": "unknown"}
             else:
                 details.update(incoming)
-                if followup_id not in details and update.get("value") is not None and not isinstance(update.get("value"), bool):
-                    details[followup_id] = update.get("value")
+                if followup_id not in details:
+                    raw_val = update.get("value")
+                    if raw_val is not None and not isinstance(raw_val, bool):
+                        details[followup_id] = raw_val
+                    elif (utterance or "").strip():
+                        clean_utt = (utterance or "").strip()
+                        if re.match(r"^(?:पता\s+नहीं|याद\s+नहीं|नहीं\s+पता|pata\s+nahi|don'?t\s+know)[।.!?]*$", clean_utt, re.I):
+                            details[followup_id] = {"state": "unknown"}
+                        else:
+                            details[followup_id] = clean_utt
             topic["details"] = details
             if topic.get("state") != "answered":
                 topic["state"] = "answered" if previous_state == "answered" else status

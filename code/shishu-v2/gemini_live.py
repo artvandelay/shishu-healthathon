@@ -98,6 +98,8 @@ class _TurnState:
         self.playback_ends_at = 0.0
         self.call_state = None
         self.call_id = None
+        self.tool_called_since_user = True
+        self.missing_tool_cues = 0
 
 
 class _SessionProxy:
@@ -375,6 +377,8 @@ def _arm_user_turn(state: _TurnState, telemetry: dict) -> None:
     _arm_waiting_reply(state, speech_end_waiting=False)
     _caller_heard(state, telemetry)
     state.checked_in = False
+    state.tool_called_since_user = False
+    state.missing_tool_cues = 0
 
 
 async def _send_realtime_safe(
@@ -962,6 +966,8 @@ async def _handle_server_message(
     if tool_call is not None and tool_call.function_calls:
         calls.extend(tool_call.function_calls)
     if calls:
+        if turn_state := state:
+            turn_state.tool_called_since_user = True
         await _answer_function_calls(
             session,
             send_lock,
@@ -982,9 +988,33 @@ async def _handle_server_message(
 
     if server_content is not None and server_content.turn_complete:
         state.bot_speaking = False
+        live_state = state.call_state if isinstance(state.call_state, dict) else None
+        if (
+            live_state
+            and live_state.get("phase") == "asking"
+            and not state.tool_called_since_user
+            and state.last_user_text
+            and state.missing_tool_cues < 1
+            and not telemetry.get("end_requested")
+        ):
+            state.missing_tool_cues += 1
+            question = call_state.next_question(live_state)
+            ctx_note = answer_tool.build_turn_context(live_state, question)
+            cue = (
+                f"SYSTEM CUE (from the app, not the mother): The caller just answered: '{state.last_user_text}'. "
+                f"You did not call record_answers. Call record_answers NOW to record what she stated, "
+                f"then ask only the next question from the tool response. {ctx_note}"
+            )
+            try:
+                async with send_lock:
+                    await session.send_realtime_input(text=cue)
+                _arm_waiting_reply(state, speech_end_waiting=False)
+                state.quiet_from = 0.0
+                return True
+            except Exception:
+                pass
         if not state.awaiting_bot_reply:
             state.quiet_from = max(time.time(), state.playback_ends_at)
-        live_state = state.call_state if isinstance(state.call_state, dict) else None
         if live_state and live_state.get("phase") == "closing" and not telemetry.get("ending_sent"):
             telemetry["ending_sent"] = True
             telemetry["end_requested"] = True

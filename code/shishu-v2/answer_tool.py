@@ -9,10 +9,10 @@ _PROFILE_LIST = ", ".join(f"profile.{field}" for field in contract.PROFILE_FIELD
 RECORD_ANSWERS_DECL = {
     "name": "record_answers",
     "description": (
-        "Record facts the caller stated in this turn. "
+        "MANDATORY ON EVERY CALLER TURN: Record all facts the caller stated in this turn. "
+        "Include the current question PLUS any other topic.<topic_id> or profile.<field> facts she volunteered. "
+        "Log initial yes/no answers immediately BEFORE or WHILE asking a follow-up. "
         "States are answered, unknown, or no_response. "
-        "field is profile.<field> or topic.<topic_id>. "
-        "Use only the current topic plus profile facts stated in the same turn. "
         "Use all for every child, specific for named child IDs, and none when no child applies. "
         "Never submit not_applicable. "
         "Do not copy transcript text. "
@@ -136,12 +136,12 @@ def build_turn_context(state: dict, question: dict | None) -> str:
     topic_id = current.get("topic_id")
     followup_id = current.get("followup_id")
     lines = [
-        "The server selects routing. Ask only the current question.",
+        "The server selects routing. Ask ONLY the current question below. Do not jump ahead.",
         f"Current question: topic={topic_id}; follow-up={followup_id}; kind={current.get('question_kind')}.",
         current.get("prompt_note") or "",
         "Children: " + _format_children_context(children),
         f"Permitted profile fields: {_PROFILE_LIST}.",
-        "Next tool: call record_answers for the current topic and any profile facts stated in this same turn.",
+        "Next tool: you MUST call record_answers on the caller's next reply for the current question AND any other topic.<topic_id> or profile.<field> facts she states.",
         "Call end_call only for emergency or caller_stop. The server accepts either reason.",
     ]
     return "\n".join(line for line in lines if line)

@@ -760,41 +760,53 @@ class AdversarialFlowTests(unittest.TestCase):
         self.assertTrue(report["who"].startswith("अंजली"))
 
 
+_FULL_CALL_REPLIES = {
+    ("intro_name", None): "मेरा नाम कविता है।",
+    ("intro_married", None): "शादी हो गई है।",
+    ("intro_children", None): "एक बच्चा है, तीन साल का।",
+    ("intro_bridge", None): "ठीक है।",
+    ("birth_mode", None): "अस्पताल में ऑपरेशन से हुआ था।",
+    ("birth_mode", "delivery_type"): "ऑपरेशन से हुआ था।",
+    ("birth_mode", "place"): "अस्पताल में।",
+    ("birth_mode", "operation_reason"): "डॉक्टर ने पानी कम बताया था।",
+    ("birth_nicu", None): "हाँ, पीलिया की वजह से 4 दिन काँच के बॉक्स में रखा था।",
+    ("birth_nicu", "reason"): "पीलिया की वजह से।",
+    ("birth_nicu", "days"): "चार दिन।",
+    ("body_fits_milestones", None): "हाँ, एक साल पहले बुखार में झटके आए थे।",
+    ("body_fits_milestones", "type"): "झटके आए थे।",
+    ("body_fits_milestones", "onset"): "एक साल पहले।",
+    ("fam_bp_stroke", None): "हाँ, मेरे सगे मामा को 35 साल की उम्र में बीपी हुआ था।",
+    ("fam_bp_stroke", "condition"): "बीपी हुआ था।",
+    ("fam_bp_stroke", "who"): "मेरे सगे मामा को।",
+    ("fam_bp_stroke", "relationship"): "मेरे सगे मामा हैं।",
+    ("fam_bp_stroke", "onset_age"): "35 साल की उम्र में।",
+    ("profile.ever_pregnant", None): "हाँ, एक बार प्रेग्नेंट हुई थी।",
+    ("profile.has_delivered", None): "हाँ, डिलीवरी हुई थी।",
+    ("close_anything_else", None): "नहीं, बस इतना ही।",
+}
+
+
+def _reply_for_state(state: dict) -> str | None:
+    if not state or state.get("phase") in ("closing", "ended"):
+        return None
+    cur = state.get("current_question") or {}
+    tid = cur.get("topic_id")
+    fid = cur.get("followup_id")
+    if (tid, fid) in _FULL_CALL_REPLIES:
+        return _FULL_CALL_REPLIES[(tid, fid)]
+    if fid is not None:
+        return "पता नहीं।"
+    return "नहीं।"
+
+
 async def run_live_text_call(base_url: str = "ws://127.0.0.1:8023/ws/gemini") -> dict:
-    """Connect to a live SHISHU WebSocket and conduct a screening via text injection."""
+    """Connect to a live SHISHU WebSocket and conduct a full state-driven screening to completion."""
     import websockets
     import app
 
-    # Scripted answers for Call #13 persona
-    scripted_flow = [
-        "मेरा नाम जिगर है।",
-        "शादी हो गई है।",
-        "दो बच्चे हैं, एक 2 साल का है और एक 1 साल का है।",
-        "ठीक है।",
-        "एक नॉर्मल एक ऑपरेशन",
-        "सीजेरियन डॉक्टर ने बोला था। 2 साल वाले बड़े बच्चे को।",
-        "एक बच्चा 3 हफ्ते पहले हुआ था।",
-        "नहीं, कोई आईसीयू नहीं।",
-        "नहीं।",
-        "पता नहीं।",
-        "पता नहीं।",
-        "जांच हुई थी, सब नॉर्मल था।",
-        "नहीं।",
-        "हां, बड़े वाले को झटका आया था 6 महीने पहले।",
-        "नहीं।",
-        "नहीं।",
-        "हां, छोटे वाले का पेट बढ़ा था डॉक्टर ने बताया था।",
-        "नहीं।",
-        "नहीं।",
-        "हां, राम को घुटने में दर्द था।",
-        "राम 2 साल वाला बड़ा बच्चा है।",
-        "नहीं।",
-        "नहीं।",
-        "नहीं, कॉल एंड करिए प्लीज।",
-    ]
-
     events = []
     current_step = 0
+    call_id = None
     token = app._session_token("user", "jigar")
     from inspect import signature
     sig = signature(websockets.connect)
@@ -803,74 +815,58 @@ async def run_live_text_call(base_url: str = "ws://127.0.0.1:8023/ws/gemini") ->
     else:
         kwargs = {"extra_headers": {"Cookie": f"{app.COOKIE_NAME}={token}"}}
 
-    last_assistant_activity = 0.0
-    assistant_has_spoken = False
-    turn_in_flight = False
-
     try:
         async with websockets.connect(base_url, **kwargs) as ws:
             print("[live_test] Connected to SHISHU WebSocket", flush=True)
+            assistant_spoke_since_turn = False
 
-            async def responder_loop():
-                nonlocal current_step, last_assistant_activity, assistant_has_spoken, turn_in_flight
-                while True:
-                    await asyncio.sleep(0.3)
-                    now = asyncio.get_event_loop().time()
-                    if (
-                        assistant_has_spoken
-                        and not turn_in_flight
-                        and (now - last_assistant_activity) >= 1.2
-                        and current_step < len(scripted_flow)
-                    ):
-                        turn_in_flight = True
-                        reply = scripted_flow[current_step]
-                        current_step += 1
-                        print(f"[live_test] User text inject ({current_step}/{len(scripted_flow)}): {reply}", flush=True)
-                        await ws.send(json.dumps({"type": "text", "text": reply}))
-                        await ws.send(json.dumps({"type": "speech_end"}))
-                        assistant_has_spoken = False
-                        turn_in_flight = False
+            while True:
+                msg = await asyncio.wait_for(ws.recv(), timeout=90.0)
+                payload = json.loads(msg)
+                mtype = payload.get("type")
+                events.append(payload)
 
-            responder_task = asyncio.create_task(responder_loop())
+                if mtype == "session_started":
+                    call_id = payload.get("call_id")
+                    print(f"[live_test] Session started, call_id: {call_id}", flush=True)
 
-            try:
-                while True:
-                    msg = await ws.recv()
-                    payload = json.loads(msg)
-                    mtype = payload.get("type")
-                    events.append(payload)
+                elif mtype == "audio":
+                    assistant_spoke_since_turn = True
 
-                    if mtype == "session_started":
-                        print(f"[live_test] Session started, call_id: {payload.get('call_id')}", flush=True)
-                        last_assistant_activity = asyncio.get_event_loop().time()
-                        assistant_has_spoken = True
+                elif mtype == "transcript" and payload.get("role") == "assistant":
+                    bot_text = payload.get("text", "")
+                    print(f"[live_test] Assistant: {bot_text}", flush=True)
+                    assistant_spoke_since_turn = True
 
-                    elif mtype == "audio":
-                        last_assistant_activity = asyncio.get_event_loop().time()
-                        assistant_has_spoken = True
+                elif mtype == "telemetry":
+                    last_evt = (payload.get("last_event") or {}).get("type")
+                    if last_evt == "turn_complete" and assistant_spoke_since_turn and call_id:
+                        assistant_spoke_since_turn = False
+                        saved = db.get_call(call_id) or {}
+                        state = saved.get("state") or {}
+                        reply = _reply_for_state(state)
+                        if reply and current_step < 85:
+                            current_step += 1
+                            cur = state.get("current_question") or {}
+                            print(
+                                f"[live_test] Turn {current_step} ({cur.get('topic_id')}/{cur.get('followup_id')}): {reply}",
+                                flush=True,
+                            )
+                            await ws.send(json.dumps({"type": "text", "text": reply}))
 
-                    elif mtype == "transcript" and payload.get("role") == "assistant":
-                        bot_text = payload.get("text", "")
-                        print(f"[live_test] Assistant: {bot_text}", flush=True)
-                        last_assistant_activity = asyncio.get_event_loop().time()
-                        assistant_has_spoken = True
+                elif mtype == "ending":
+                    print("[live_test] Ending signal received", flush=True)
 
-                    elif mtype == "ending":
-                        print("[live_test] Ending signal received", flush=True)
-
-                    elif mtype == "call_completed":
-                        print(f"[live_test] Call completed! ID: {payload.get('call_id')}", flush=True)
-                        responder_task.cancel()
-                        return {
-                            "call_id": payload.get("call_id"),
-                            "events": events,
-                            "success": True,
-                        }
-            finally:
-                responder_task.cancel()
+                elif mtype == "call_completed":
+                    print(f"[live_test] Call completed! ID: {payload.get('call_id')}", flush=True)
+                    return {
+                        "call_id": payload.get("call_id"),
+                        "events": events,
+                        "success": True,
+                    }
     except Exception as exc:
         print(f"[live_test] Connection ended: {exc}")
-        return {"success": False, "error": str(exc), "events": events}
+        return {"success": False, "call_id": call_id, "error": str(exc), "events": events}
 
 
 if __name__ == "__main__":
