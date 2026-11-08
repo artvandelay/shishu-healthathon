@@ -950,6 +950,31 @@ class CallStateTests(unittest.TestCase):
             utterance="बच्चा अभी छह महीने का है, जन्म पूरे नौ महीने में हुआ।",
         )
         self.assertEqual(call_state.topic_answer_kind(aged["topics"]["birth_term"], "birth_term"), "no")
+        corrected_term = call_state.apply_updates(
+            early,
+            [_update("topic.birth_term", True)],
+            2,
+            utterance="गलत कहा, पूरे नौ महीने में हुआ, समय पर।",
+        )
+        self.assertEqual(
+            call_state.topic_answer_kind(corrected_term["topics"]["birth_term"], "birth_term"),
+            "no",
+        )
+        nicu = _ask(call_state.new_call_state(), "birth_nicu")
+        nicu = call_state.apply_updates(
+            nicu,
+            [_update("topic.birth_nicu", True, details={"reason": "jaundice", "days": 2})],
+            1,
+            utterance="पीलिया था, दो दिन।",
+        )
+        nicu = call_state.apply_updates(
+            nicu,
+            [_update("topic.birth_nicu", True)],
+            2,
+            utterance="पीलिया नहीं, झटके थे, पंद्रह दिन रहा।",
+        )
+        self.assertEqual(nicu["topics"]["birth_nicu"]["details"].get("reason"), "fits")
+        self.assertEqual(nicu["topics"]["birth_nicu"]["details"].get("days"), 15)
 
     def test_a_day_phrase_copied_into_the_field_is_stored_as_the_count(self):
         state = _ask(call_state.new_call_state(), "birth_nicu")

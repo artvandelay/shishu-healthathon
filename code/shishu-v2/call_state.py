@@ -989,13 +989,15 @@ def _spoken_times(text: str) -> int | None:
 
 
 def _store_spoken_number(details: dict, key: str, parser, utterance: str) -> None:
-    """Keep an integer the tool already stored. A copied sentence becomes that count."""
+    """The count she just said replaces a stored count. An integer stays when she did not say one."""
+    parsed = parser(utterance or "")
+    if parsed is not None:
+        details[key] = parsed
+        return
     current = details.get(key)
     if type(current) is int:
         return
-    parsed = parser(utterance or "")
-    if parsed is None:
-        parsed = parser("" if current is None else str(current))
+    parsed = parser("" if current is None else str(current))
     if parsed is not None:
         details[key] = parsed
 
@@ -1450,6 +1452,25 @@ def _word_denied(text: str, word: str) -> bool:
     )
 
 
+def _term_label(text: str) -> str | None:
+    """early, late, or full. A child's present age (छह महीने का है) is not a term."""
+    if not text:
+        return None
+    early = re.search(
+        r"समय से पहले|जल्दी|preterm|early|(?:छह|सात|आठ|six|seven|eight)\s+महीन\S*(?:\s+में|\s+का\s+पैदा)",
+        text,
+    )
+    late = re.search(r"समय के बाद|देर से|postterm|late|दस महीने|ग्यारह महीने|ten month|eleven month", text)
+    full = re.search(r"पूरे नौ|नौ महीने|nine month|full term|समय पर", text)
+    if early and not late:
+        return "early"
+    if late and not early:
+        return "late"
+    if full and not early and not late:
+        return "full"
+    return None
+
+
 def _named_and_not_denied(value_text: str, utterance: str, words: tuple[str, ...]) -> bool:
     """The new answer names this kind, and the utterance does not take it back."""
     named = any(word in value_text or word in utterance for word in words)
@@ -1473,53 +1494,41 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
             details["delivery_type"] = "operation"
         elif said_norm and not said_op:
             details["delivery_type"] = "normal"
-        if any(word in val_blob for word in ("hospital", "clinic", "अस्पताल", "हॉस्पिटल", "नर्सिंग")):
+        hosp_words = ("hospital", "clinic", "अस्पताल", "हॉस्पिटल", "नर्सिंग")
+        home_words = ("home", "ghar", "घर")
+        said_hosp = _named_and_not_denied(val_blob, utt_blob, hosp_words)
+        said_home = _named_and_not_denied(val_blob, utt_blob, home_words)
+        if said_hosp and not said_home:
             details["place"] = "hospital"
-        elif any(word in val_blob for word in ("home", "ghar", "घर")):
+        elif said_home and not said_hosp:
             details["place"] = "home"
-        elif "place" not in details:
-            if any(word in utt_blob for word in ("hospital", "clinic", "अस्पताल", "हॉस्पिटल", "नर्सिंग")):
-                details["place"] = "hospital"
-            elif any(word in utt_blob for word in ("home", "ghar", "घर")):
-                details["place"] = "home"
         if details.get("delivery_type") == "operation" and "operation_reason" not in details:
             if re.search(r"वजह|because|reason", utt_blob):
                 details["operation_reason"] = (utterance or "").strip()
     if name == "birth_term":
-        blob = f"{val_blob} {utt_blob}"
-        # "छह महीने का है" is the child's age now. "छह महीने में" or "का पैदा" is the pregnancy.
-        early = re.search(
-            r"समय से पहले|जल्दी|preterm|early|(?:छह|सात|आठ|six|seven|eight)\s+महीन\S*(?:\s+में|\s+का\s+पैदा)",
-            blob,
-        )
-        late = re.search(r"समय के बाद|देर से|postterm|late|दस महीने|ग्यारह महीने|ten month|eleven month", blob)
-        full = re.search(r"पूरे नौ|नौ महीने|nine month|full term|समय पर", blob)
-        if "term" not in details and "result" not in details:
-            if early and not late:
-                details["term"] = "early"
-            elif late and not early:
-                details["term"] = "late"
-            elif full and not early and not late:
-                details["term"] = "full"
-                details["result"] = "normal"
+        named = _term_label(utt_blob) or _term_label("" if isinstance(value, bool) else val_blob)
+        if named == "early":
+            details["term"] = "early"
+            details.pop("result", None)
+        elif named == "late":
+            details["term"] = "late"
+            details.pop("result", None)
+        elif named == "full":
+            details["term"] = "full"
+            details["result"] = "normal"
     if name == "birth_nicu":
-        if "days" not in details:
-            days = _spoken_day_count(utterance or "")
-            if days is not None:
-                details["days"] = days
-        if "reason" not in details:
-            reasons = [
-                label
-                for label, words in (
-                    ("jaundice", ("पीलिया", "jaundice", "नीली रोशनी")),
-                    ("fits", ("झटके", "fits", "seizure", "दौरे")),
-                    ("infection", ("infection", "संक्रमण", "इंफेक्शन")),
-                    ("breathing", ("साँस", "breathing")),
-                )
-                if any(word in utt_blob for word in words)
-            ]
-            if len(reasons) == 1:
-                details["reason"] = reasons[0]
+        reasons = [
+            label
+            for label, words in (
+                ("jaundice", ("पीलिया", "jaundice", "नीली रोशनी")),
+                ("fits", ("झटके", "fits", "seizure", "दौरे")),
+                ("infection", ("infection", "संक्रमण", "इंफेक्शन")),
+                ("breathing", ("साँस", "breathing")),
+            )
+            if _named_and_not_denied(val_blob, utt_blob, words)
+        ]
+        if len(reasons) == 1:
+            details["reason"] = reasons[0]
     if name == "birth_hearing_vision":
         text = utterance or ""
         if "result" not in details and re.search(r"नॉर्मल|normal", text, re.I) and not re.search(r"अबनॉर्मल|abnormal|दिक्कत", text, re.I):
