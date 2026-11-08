@@ -635,6 +635,20 @@ def _restates_negative_question(topic_id: str | None, value: object) -> bool:
     return word[:3] in _content_stems(question)
 
 
+def _cord_within_three_weeks(text: str) -> bool:
+    """One or two weeks is not 'more than three weeks'. ज़्यादा keeps the finding."""
+    folded = _fold_spoken_numbers(text or "")
+    if re.search(r"ज़्यादा|ज्यादा|more", folded, re.I):
+        return False
+    weeks = re.search(rf"(\d+)\s*{_WEEK_UNIT}", folded, re.I)
+    if weeks and int(weeks.group(1)) <= 3:
+        return True
+    days = re.search(r"(\d+)\s*(?:दिन|days|day)", folded, re.I)
+    if days and int(days.group(1)) <= 21:
+        return True
+    return bool(re.search(r"जल्दी|जल्द", folded))
+
+
 def _described_problem(topic_id: str | None, value: object, details: dict) -> bool:
     """A stored sentence that names the problem, with no हाँ and no नहीं.
 
@@ -670,6 +684,8 @@ def _described_problem(topic_id: str | None, value: object, details: dict) -> bo
     if _lab_result(str(value or "")) == "abnormal":
         return True
     if _names_reassuring_normal(value):
+        return False
+    if topic_id == "birth_cord_3weeks" and _cord_within_three_weeks(str(value or "")):
         return False
     if topic_id in _DESCRIBED_SKIP:
         return False
@@ -2089,6 +2105,8 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
         and not ("ठीक" in question and "ठीक" in (utterance or ""))
     )
     if reassured:
+        topic["value"] = False
+    if name == "birth_cord_3weeks" and _cord_within_three_weeks(utterance or ""):
         topic["value"] = False
     topic["details"] = details
 

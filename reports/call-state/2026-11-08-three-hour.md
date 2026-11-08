@@ -166,6 +166,10 @@ A bare integer is the age when the sentence states ages and does not state that 
 
 A complaint at the close is a finding. पेट में दर्द रहता है is a हाँ line and the words are on that line. बस।, नहीं बस इतना ही, and और कुछ नहीं are not. `196` unit tests. 56 scenarios, 0 failed.
 
+A cord that fell in one or two weeks is not "more than three weeks." तीन हफ्ते से ज़्यादा and चार हफ्ते stay findings. एक हफ्ते में गिर गई is a no even when the tool sent true. `196` unit tests. 56 scenarios, 0 failed.
+
+Product note, not a synonym list: भाई को बचपन से नहीं दिखता is stored as a no on the blindness question, because नहीं denies the question and the question's word is अंधापन. कम सुनाई देता है is a finding. A new blindness lexicon was not added.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

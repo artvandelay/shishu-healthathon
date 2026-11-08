@@ -1843,6 +1843,23 @@ class CallStateTests(unittest.TestCase):
         pain["close_reason"] = "complete"
         pain_yes = " ".join(mother_report.build({"state": pain, "started_at": "2026-11-08 14:10:00"})["yes"])
         self.assertIn("दर्द", pain_yes)
+        for text, kind in (
+            ("तीन हफ्ते से ज़्यादा लगा।", "yes"),
+            ("चार हफ्ते लगे।", "yes"),
+            ("एक हफ्ते में गिर गई।", "no"),
+            ("दो हफ्ते में गिर गई।", "no"),
+        ):
+            cord = call_state.apply_updates(
+                _ask(call_state.new_call_state(), "birth_cord_3weeks"),
+                [_update("topic.birth_cord_3weeks", True)],
+                1,
+                utterance=text,
+            )
+            self.assertEqual(
+                call_state.topic_answer_kind(cord["topics"]["birth_cord_3weeks"], "birth_cord_3weeks"),
+                kind,
+                text,
+            )
         for closer in ("बस।", "नहीं, बस इतना ही।", "और कुछ नहीं।"):
             closed = call_state.apply_updates(
                 _ask(call_state.new_call_state(), "close_anything_else"),
