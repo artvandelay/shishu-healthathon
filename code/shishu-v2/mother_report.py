@@ -571,19 +571,37 @@ def _detail_values(details: dict, skip_label: str = "") -> str:
     return ", ".join(out)
 
 
+def _format_age(age: object) -> str:
+    """Hindi for a stored age. 0.5 years is आधा साल, not the same text as 6 months."""
+    if not isinstance(age, dict) or age.get("value") is None:
+        return "" if age in (None, "") else str(age)
+    value = age.get("value")
+    unit = str(age.get("unit") or "years").lower()
+    if unit in {"month", "months", "mahine"}:
+        return f"{value} महीने"
+    if unit in {"year", "years", "saal"} and isinstance(value, (int, float)) and not isinstance(value, bool):
+        if value == 0.5:
+            return "आधा साल"
+        if value == 1.5:
+            return "डेढ़ साल"
+        if value == 2.5:
+            return "ढाई साल"
+        if value > 2 and abs(value * 2 - round(value * 2)) < 1e-6 and abs(value - round(value)) == 0.5:
+            return f"साढ़े {int(value)} साल"
+        if abs(value * 4 - round(value * 4)) < 1e-6 and abs(value - int(value) - 0.25) < 1e-6:
+            return f"सवा {int(value)} साल"
+        if abs(value * 4 - round(value * 4)) < 1e-6 and abs(value - int(value) - 0.75) < 1e-6:
+            return f"पौने {int(value) + 1} साल"
+    return f"{value} {age.get('unit') or ''}".strip()
+
+
 def _children_label(state: dict) -> str:
     parts = []
     for child in (state.get("profile") or {}).get("children") or []:
         if not isinstance(child, dict):
             continue
         label = _child_label(state, child.get("id"))
-        age = child.get("age")
-        if isinstance(age, dict) and age.get("value") is not None:
-            age_text = f"{age.get('value')} {age.get('unit') or ''}".strip()
-        elif age not in (None, ""):
-            age_text = str(age)
-        else:
-            age_text = ""
+        age_text = _format_age(child.get("age"))
         bit = " ".join(part for part in (label, age_text) if part)
         if bit:
             parts.append(hindi_text(bit))

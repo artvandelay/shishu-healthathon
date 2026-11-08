@@ -148,6 +148,12 @@ class StructuredMotherReportTests(unittest.TestCase):
         self.assertIn(question, _joined(report_normal["groups"]))
         self.assertIn(question + '</span><span class="ans">नहीं</span>', rendered)
         self.assertEqual(mother_report.hindi_text("heavy"), "ज़्यादा")
+        self.assertEqual(mother_report._format_age({"value": 6, "unit": "months"}), "6 महीने")
+        self.assertEqual(mother_report._format_age({"value": 0.5, "unit": "years"}), "आधा साल")
+        self.assertEqual(mother_report._format_age({"value": 1.5, "unit": "years"}), "डेढ़ साल")
+        self.assertEqual(mother_report._format_age({"value": 3.5, "unit": "years"}), "साढ़े 3 साल")
+        self.assertEqual(mother_report._format_age({"value": 2.25, "unit": "years"}), "सवा 2 साल")
+        self.assertEqual(mother_report._format_age({"value": 1.75, "unit": "years"}), "पौने 2 साल")
         self.assertNotIn("हेअव्य", mother_report.hindi_text("heavy"))
 
     def test_unknown_is_printed_under_unknown_not_unasked(self):

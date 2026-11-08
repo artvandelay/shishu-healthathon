@@ -82,7 +82,7 @@ When a child's sex is known, the report says बड़ी बेटी, बड�
 
 A family answer whose value is the relationship (कज़िन, मामा) is a yes. “नहीं, मामा को नहीं” stays a no.
 
-Heavy periods said after a no on the general bleeding question are still a हाँ. A periods answer of नहीं leaves the topic a no. The English word heavy is printed as ज़्यादा, not a phonetic spelling. A count she already said (दो बार) closes the times follow-up. ठीक है, theek hai, and कोई दिक्कत नहीं are nos, so a daughter of 11 is still asked about periods. `185` unit tests. 26 scenarios, 0 failed.
+Heavy periods said after a no on the general bleeding question are still a हाँ. A periods answer of नहीं leaves the topic a no. The English word heavy is printed as ज़्यादा, not a phonetic spelling. A count she already said (दो बार) closes the times follow-up. ठीक है, theek hai, and कोई दिक्कत नहीं are nos, so a daughter of 11 is still asked about periods. Ages in the mother report use the words she used: 6 महीने stays 6 महीने, 0.5 years is आधा साल, 1.5 is डेढ़ साल, 3.5 is साढ़े 3 साल. `185` unit tests. 26 scenarios, 0 failed.
 
 ## Not hardcoded
 
