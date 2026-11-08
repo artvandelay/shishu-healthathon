@@ -128,7 +128,9 @@ A stored day count prints as 4 दिन and a stored time count as 3 बार.
 
 A call with no children does not ask about मेरे बच्चे की उम्र, टीके, or the child's daily food. Those fillers are for a child she has.
 
-An age of 6.0 months prints as 6 महीने, and 10.0 years prints as 10 years. `189` unit tests. 43 scenarios, 0 failed.
+An age of 6.0 months prints as 6 महीने, and 10.0 years prints as 10 years.
+
+लड़का छह महीने is one six-month-old boy, not six children. एक लड़का और दो लड़कियाँ is three children, and the number on each sex word is that sex. एक भी बच्चा नहीं and एक बच्चा भी नहीं are no children. मेरा बच्चा नहीं रोता is not a count of zero. A count that still has no ages leaves the children question open. `190` unit tests. 46 scenarios, 0 failed.
 
 ## Not hardcoded
 

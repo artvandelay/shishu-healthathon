@@ -1371,20 +1371,77 @@ def _check_update(update: dict, current_topic: str | None) -> tuple[str, str]:
 
 
 # A vowel sign is not a word character, so Hindi must not use \w after बच्च.
+# नहीं denies the child only when the sentence stops or continues with a copula.
+# "मेरा बच्चा नहीं रोता" is about the child, not a count of zero.
 _NO_CHILD_RE = re.compile(
-    r"(?:कोई\s+)?बच्च\S*\s+नहीं|bachch\w*\s+नहीं|no\s+child(?:ren)?|not\s+any\s+child(?:ren)?",
+    r"(?:कोई\s+)?बच्च\S*(?:\s+भी)?\s+(?:नहीं|नही)(?=\s*(?:है|हैं|था|थे|थी|हूँ|हूं)?\s*(?:[।.,]|$))"
+    r"|bachch\w*\s+(?:नहीं|नही|nahi|nahin)"
+    r"|no\s+child(?:ren)?|not\s+any\s+child(?:ren)?",
     re.I,
 )
+_CHILD_COUNT_WORD = r"(?:बच्च\S*|बेटे|बेटि\S*|बेटा|बेटी|लड़क\S*)"
+_AGE_UNIT_AFTER = rf"(?:{_YEAR_UNIT}|{_MONTH_UNIT}|{_WEEK_UNIT}|{_DAY_UNIT})"
 
 
 def _is_no_children_phrase(text: str) -> bool:
-    """A denial of children, not a sentence that also states an age or a count."""
+    """A denial of children. An age in the same sentence is about a child she has."""
     raw = (text or "").strip()
     if not raw or _spoken_age_records(raw):
         return False
-    if re.search(r"\d", _fold_spoken_numbers(raw.lower())):
-        return False
     return _NO_CHILD_RE.search(raw) is not None
+
+
+def _numbers_before_child_words(folded: str) -> list[tuple[int, str]]:
+    """Each number that sits against a child word, with that word.
+
+    एक लड़का और दो लड़कियाँ is (1, लड़का) and (2, लड़कियाँ).
+    आठ साल का एक बच्चा is only (1, बच्चा): आठ sits against साल.
+    """
+    found = []
+    for match in re.finditer(rf"(\d+)\s*({_CHILD_COUNT_WORD})", folded or "", re.I):
+        found.append((int(match.group(1)), match.group(2)))
+    return found
+
+
+def _count_from_child_words(folded: str) -> int | None:
+    """The count is every number beside a child word, added together.
+
+    A number after the word is a count only when an age unit does not follow.
+    लड़का छह महीने is an age, not six children.
+    """
+    groups = _numbers_before_child_words(folded)
+    if groups:
+        return sum(number for number, _word in groups)
+    after = re.search(
+        rf"{_CHILD_COUNT_WORD}\s+(\d+)(?!\s*{_AGE_UNIT_AFTER})",
+        folded or "",
+        re.I,
+    )
+    if after:
+        return int(after.group(1))
+    if not re.search(_CHILD_COUNT_WORD, folded or "", re.I):
+        bare = re.search(r"(\d+)", folded or "")
+        if bare:
+            return int(bare.group(1))
+    return None
+
+
+def _sexes_from_counted_words(text: str, count: int) -> list[str] | None:
+    """दो बेटे is two boys. एक लड़का और दो लड़कियाँ is one boy and two girls."""
+    folded = _fold_spoken_numbers((text or "").lower())
+    slots: list[str] = []
+    for number, word in _numbers_before_child_words(folded):
+        sexes = _spoken_sexes(word)
+        if len(sexes) != 1:
+            continue
+        slots.extend(sexes * number)
+    if len(slots) == count:
+        return slots
+    return None
+
+
+def _sexes_for_children(text: str, count: int) -> list[str] | None:
+    return _sexes_from_counted_words(text, count) or _sexes_for_count(text, count)
 
 
 def _children_payload(value: object) -> tuple[str, object]:
@@ -1398,15 +1455,10 @@ def _children_payload(value: object) -> tuple[str, object]:
         if val_clean in {"none", "no", "nahi", "nahin", "zero", "0", "false", "कोई नहीं", "एक भी नहीं"} or _is_no_children_phrase(value):
             return "none", []
         val_folded = _fold_spoken_numbers(val_clean)
-        # The number beside बच्चा is the count. आठ साल का एक बच्चा is one child, not eight.
-        child_word = r"(?:बच्च\S*|बेटे|बेटि\S*|बेटा|बेटी|लड़क\S*)"
-        beside = re.search(rf"(\d+)\s*{child_word}", val_folded)
-        if not beside:
-            beside = re.search(rf"{child_word}\s+(\d+)", val_folded)
-        if not beside and not re.search(child_word, val_folded):
-            beside = re.search(r"\b(\d+)\b", val_folded)
-        if beside:
-            number = int(beside.group(1))
+        # The numbers beside child words are the count. आठ साल का एक बच्चा is one.
+        # एक लड़का और दो लड़कियाँ is three. लड़का छह महीने is not six.
+        number = _count_from_child_words(val_folded)
+        if number is not None:
             return ("none", []) if number <= 0 else ("count", number)
     if isinstance(value, (list, dict)):
         return "list", _normalize_children(value)
@@ -1821,7 +1873,7 @@ def apply_updates(
                                 if len(_spoken_age_records(earlier or "")) == len(use):
                                     source_text = earlier
                                     break
-                        sexes = _sexes_for_count(source_text, len(use))
+                        sexes = _sexes_for_children(source_text, len(use))
                         state["profile"]["children"] = _children_from_ages(use, sexes)
                         intro_c = state["topics"]["intro_children"]
                         intro_c["state"] = "answered"
@@ -1829,7 +1881,9 @@ def apply_updates(
                         intro_c["source"] = "model"
                         _remember_turn(intro_c, turn_id)
                     elif kind_c == "count" and not aged:
-                        state["profile"]["children"] = _children_from_ages([None] * count_n)
+                        # Ages are still missing, so the children question stays open.
+                        sexes = _sexes_for_children(utterance, count_n)
+                        state["profile"]["children"] = _children_from_ages([None] * count_n, sexes)
                     wrote = True
                     named_children = True
                     continue

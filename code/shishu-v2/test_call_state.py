@@ -1044,6 +1044,41 @@ class CallStateTests(unittest.TestCase):
         )
         self.assertEqual([c["sex"] for c in one_named["profile"]["children"]], [None, None, None])
 
+    def test_a_number_against_a_child_word_is_the_count(self):
+        def stored(text, value=None):
+            state = call_state.apply_updates(
+                _ask(call_state.new_call_state(), "intro_children"),
+                [_update("profile.children", text if value is None else value)],
+                1,
+                utterance=text,
+            )
+            return state
+
+        sex_then_age = stored("लड़का छह महीने का और लड़की दो साल की।")
+        self.assertEqual(
+            [(c["sex"], c["age"]) for c in sex_then_age["profile"]["children"]],
+            [
+                ("male", {"value": 6, "unit": "months"}),
+                ("female", {"value": 2, "unit": "years"}),
+            ],
+        )
+        self.assertEqual(sex_then_age["topics"]["intro_children"]["state"], "answered")
+
+        groups = stored("एक लड़का और दो लड़कियाँ, उम्र पाँच, तीन और एक साल।")
+        self.assertEqual(
+            [(c["sex"], c["age"]["value"]) for c in groups["profile"]["children"]],
+            [("male", 5), ("female", 3), ("female", 1)],
+        )
+
+        sons = stored("दो बेटे हैं।", 2)
+        self.assertEqual([c["sex"] for c in sons["profile"]["children"]], ["male", "male"])
+        self.assertNotEqual(sons["topics"]["intro_children"]["state"], "answered")
+
+        self.assertEqual(call_state._children_payload("एक भी बच्चा नहीं है।"), ("none", []))
+        self.assertEqual(call_state._children_payload("एक बच्चा भी नहीं है।"), ("none", []))
+        self.assertEqual(call_state._children_payload("मेरा बच्चा नहीं रोता।"), ("ignore", []))
+        self.assertEqual(call_state._children_payload("आठ साल का एक बच्चा है।"), ("count", 1))
+
     def test_a_full_term_answer_is_not_a_finding(self):
         full = _ask(call_state.new_call_state(), "birth_term")
         full = call_state.apply_updates(
