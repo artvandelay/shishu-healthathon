@@ -155,6 +155,16 @@ def _format_children_context(children: list) -> str:
     return desc
 
 
+def build_spoken_cue(saved: str) -> str:
+    """Text-turn cues carry only speakable content. The model reads text turns
+    aloud, so internal state and tool protocol travel in tool responses only."""
+    return (
+        "SYSTEM CUE (from the app, not the mother): "
+        + saved
+        + " Ask her the current question now, in Hindi, in your own words."
+    )
+
+
 def build_turn_context(state: dict, question: dict | None) -> str:
     profile = (state or {}).get("profile") or {}
     children = profile.get("children") or []

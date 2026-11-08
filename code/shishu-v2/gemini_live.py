@@ -727,8 +727,7 @@ async def _run_answer_backstop(
         state.backstop_resync = False
         return await _send_backstop_cue(
             session, send_lock, state,
-            "SYSTEM CUE (from the app, not the mother): the app already saved her earlier answer. "
-            + answer_tool.build_turn_context(live_state, asked),
+            answer_tool.build_spoken_cue("the app already saved her earlier answer."),
         )
     live_state, question = _advance(live_state)
     _store_live_state(call_id, state, live_state)
@@ -744,8 +743,7 @@ async def _run_answer_backstop(
         return False
     return await _send_backstop_cue(
         session, send_lock, state,
-        "SYSTEM CUE (from the app, not the mother): the app saved her last answer. "
-        + answer_tool.build_turn_context(live_state, question),
+        answer_tool.build_spoken_cue("the app saved her last answer."),
     )
 
 
@@ -1640,12 +1638,8 @@ async def handle_gemini_ws(
             )
         )
         try:
-            greeting_prompt = _GREETING
-            if opening:
-                opening_context = answer_tool.build_turn_context(state.call_state, opening)
-                greeting_prompt = f"{_GREETING}\n\nSYSTEM INSTRUCTION:\n{opening_context}"
             async with send_lock:
-                await session.send_realtime_input(text=greeting_prompt)
+                await session.send_realtime_input(text=_GREETING)
         except Exception:
             stop.set()
             await _report_error(

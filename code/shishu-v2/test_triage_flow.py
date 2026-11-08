@@ -13,7 +13,7 @@ import checklist  # noqa: E402
 import db  # noqa: E402
 import gemini_live  # noqa: E402
 import prompts  # noqa: E402
-from answer_tool import INTERNAL_NOTE_TAG, build_turn_context  # noqa: E402
+from answer_tool import INTERNAL_NOTE_TAG, build_spoken_cue, build_turn_context  # noqa: E402
 
 
 class PromptTests(unittest.TestCase):
@@ -43,8 +43,9 @@ class PromptTests(unittest.TestCase):
         prompt = prompts.GEMINI_LIVE_SYSTEM_PROMPT
         self.assertIn(INTERNAL_NOTE_TAG, prompt)
         self.assertIn("NEVER speak it", prompt)
-        self.assertIn("rejected", prompt)
-        self.assertIn("silently call", prompt)
+        cue = build_spoken_cue("the app saved her last answer.")
+        for marker in ("record_answers", "Next tool", "topic.<", INTERNAL_NOTE_TAG):
+            self.assertNotIn(marker, cue)
 
 
 class _FakeWs:
