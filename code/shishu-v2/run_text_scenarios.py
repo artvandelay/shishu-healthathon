@@ -263,6 +263,17 @@ def _issues(scenario, state, errors, report, fallback, said) -> list[str]:
             pending = call_state._pending_followups(state, tid) if tid in topics else []
             if pending and kind == "no":
                 issues.append(f"followup open on no {tid}:{pending[0]['id']}")
+            if tid == "body_bleeding_bruise" and scenario.expect_close == "complete":
+                ages = [
+                    (call_state._child_age_years(child.get("age")), call_state._is_female(child))
+                    for child in ((state.get("profile") or {}).get("children") or [])
+                    if isinstance(child, dict)
+                ]
+                asked = set((saved.get("details") or {}))
+                if "periods" in asked and not any(age is not None and age >= 11 and female for age, female in ages):
+                    issues.append("periods asked without a daughter of 11 or older")
+                if "teeth" in asked and not any(age is not None and age >= 5 for age, _female in ages):
+                    issues.append("tooth-fall bleeding asked without a child of 5 or older")
             if kind == "no" and tid not in scenario.unknown_followups:
                 details = saved.get("details") or {}
                 unknown_fields = [
@@ -283,6 +294,19 @@ def _issues(scenario, state, errors, report, fallback, said) -> list[str]:
     extra = sorted(yes_topics - set(scenario.expect_yes))
     if extra and scenario.expect_close == "complete":
         issues.append("extra yes " + ",".join(extra))
+    for tid, spec in (scenario.positives or {}).items():
+        said_child = (spec.get("details") or {}).get("affected_child")
+        if not said_child:
+            continue
+        expected = call_state._find_child_id(state, said_child)
+        bound = [
+            item.get("person_id")
+            for item in ((topics.get(tid) or {}).get("instances") or [])
+            if isinstance(item, dict)
+        ]
+        children = (state.get("profile") or {}).get("children") or []
+        if expected and len(children) > 1 and expected not in bound:
+            issues.append(f"{tid} did not bind {said_child} to {expected}")
     for tid in scenario.unknown_followups:
         details = (topics.get(tid) or {}).get("details") or {}
         unknown_fields = [
@@ -432,6 +456,55 @@ def campaign() -> list[Scenario]:
             marital_text=married,
             children_text="दो बच्चे हैं। एक चार साल का लड़का है और एक आठ साल का लड़का है।",
             children_value=2,
+        ),
+        Scenario(
+            name="no_flags_unmarried_past_pregnancy",
+            group="no_flags",
+            caller_name="रानी",
+            marital_text="शादी नहीं हुई।",
+            children_text=no_child,
+            children_value=[],
+            ever_pregnant=True,
+            positives={
+                "fam_miscarriage": {
+                    "value": True,
+                    "utterance": "एक बार गर्भ तीन महीने में गिरा था।",
+                    "details": {"count": 1, "month": 3},
+                },
+            },
+            expect_yes=("fam_miscarriage",),
+        ),
+        Scenario(
+            name="no_flags_boy_11",
+            group="no_flags",
+            caller_name="माया",
+            marital_text=married,
+            children_text="एक बच्चा है, ग्यारह साल का लड़का।",
+            children_value=1,
+        ),
+        Scenario(
+            name="flags_middle_child",
+            group="red_flags",
+            caller_name="शीला",
+            marital_text=married,
+            children_text="तीन बच्चे हैं। बड़ा छह साल का लड़का है, बीच वाली चार साल की बेटी है, और छोटा एक साल का लड़का है।",
+            children_value=[
+                _child({"value": 6, "unit": "years"}, "male"),
+                _child({"value": 4, "unit": "years"}, "female"),
+                _child({"value": 1, "unit": "years"}, "male"),
+            ],
+            positives={
+                "body_fits_milestones": {
+                    "value": True,
+                    "utterance": "दूसरे वाले को झटके आते हैं, एक साल की उम्र से।",
+                    "details": {"type": "fits", "onset": "एक साल", "affected_child": "दूसरे वाले"},
+                    "followups": {
+                        "onset": ("एक साल की उम्र से।", "एक साल"),
+                        "affected_child": ("दूसरे वाले को।", "दूसरे वाले"),
+                    },
+                },
+            },
+            expect_yes=("body_fits_milestones",),
         ),
         Scenario(
             name="flags_cord_blue_thalassemia",

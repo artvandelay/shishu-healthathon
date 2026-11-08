@@ -630,10 +630,18 @@ def _find_child_id(state: dict, raw: object) -> str | None:
     if len(aged) >= 2:
         aged.sort(key=lambda item: item[1], reverse=True)
         if aged[0][1] != aged[-1][1]:
+            ranked = [child_id for child_id, _age in aged]
             if any(w in cleaned for w in ("bada", "bade", "badi", "older", "elder", "बड़ा", "बड़े", "बड़ी", "pehle", "pehla", "pehli", "पहले", "पहला", "पहली", "first")):
-                return aged[0][0]
-            if any(w in cleaned for w in ("chhota", "chhote", "chhoti", "chota", "chote", "younger", "छोटा", "छोटे", "छोटी", "dusra", "dusre", "dusri", "दूसरा", "दूसरे", "दूसरी", "second")):
-                return aged[-1][0]
+                return ranked[0]
+            if any(w in cleaned for w in ("chhota", "chhote", "chhoti", "chota", "chote", "younger", "छोटा", "छोटे", "छोटी")):
+                return ranked[-1]
+            # दूसरा is the second child by age, which is the younger of two and the middle of three.
+            if any(w in cleaned for w in ("dusra", "dusre", "dusri", "दूसरा", "दूसरे", "दूसरी", "second")):
+                return ranked[1]
+            if len(ranked) >= 3 and any(w in cleaned for w in ("tisra", "tesra", "तीसरा", "तीसरे", "तीसरी", "third")):
+                return ranked[2]
+            if len(ranked) >= 3 and any(w in cleaned for w in ("beech", "बीच", "middle")):
+                return ranked[len(ranked) // 2]
     females = [c["id"] for c in children if isinstance(c, dict) and _is_female(c) and c.get("id")]
     males = [
         c["id"] for c in children

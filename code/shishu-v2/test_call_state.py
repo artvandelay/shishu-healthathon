@@ -674,6 +674,21 @@ class CallStateTests(unittest.TestCase):
         self.assertIsNone(call_state._find_child_id(state, "बच्चा"))
         self.assertIsNone(call_state._find_child_id(state, "बच्चा को"))
 
+        three = call_state.apply_updates(
+            call_state.new_call_state(),
+            [_update("profile.children", [
+                {"age": {"value": 6, "unit": "years"}, "sex": "male"},
+                {"age": {"value": 4, "unit": "years"}, "sex": "female"},
+                {"age": {"value": 1, "unit": "years"}, "sex": "male"},
+            ])],
+            1,
+        )
+        self.assertEqual(call_state._find_child_id(three, "दूसरे वाले"), "child_2")
+        self.assertEqual(call_state._find_child_id(three, "बीच वाला"), "child_2")
+        self.assertEqual(call_state._find_child_id(three, "तीसरे वाले"), "child_3")
+        self.assertEqual(call_state._find_child_id(three, "बड़े वाले"), "child_1")
+        self.assertEqual(call_state._find_child_id(three, "छोटे वाले"), "child_3")
+
     def test_child_name_with_case_markers(self):
         state = call_state.new_call_state()
         children = [
