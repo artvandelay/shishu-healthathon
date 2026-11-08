@@ -1023,6 +1023,42 @@ def _followed_by_age_copula(text: str, end: int) -> bool:
     ) is not None
 
 
+def _ages_with_unit(folded: str, unit_pattern: str, unit_name: str, require_copula: bool = False) -> list[tuple]:
+    """Numbers that share one unit, plus a number written next to the unit.
+
+    आठ, छह और चार साल is three ages. एक आधा साल is one age: the एक is not
+    separated by a comma or और, so it stays out of the list.
+    """
+    found = []
+    covered: list[tuple[int, int]] = []
+    listed = re.compile(
+        rf"(\d+(?:\.\d+)?(?:\s*(?:,|और|and)\s*\d+(?:\.\d+)?)+)\s*{unit_pattern}",
+        re.I,
+    )
+    for match in listed.finditer(folded):
+        if _is_duration_after(folded, match.end()):
+            continue
+        if require_copula and not _followed_by_age_copula(folded, match.end()):
+            continue
+        covered.append((match.start(), match.end()))
+        blob_at = match.start(1)
+        for num in re.finditer(r"\d+(?:\.\d+)?", match.group(1)):
+            found.append((
+                blob_at + num.start(),
+                {"value": _spoken_number(num.group(0)), "unit": unit_name},
+            ))
+    single = re.compile(rf"(\d+(?:\.\d+)?)\s*{unit_pattern}", re.I)
+    for match in single.finditer(folded):
+        if any(start <= match.start() < end for start, end in covered):
+            continue
+        if _is_duration_after(folded, match.end()):
+            continue
+        if require_copula and not _followed_by_age_copula(folded, match.end()):
+            continue
+        found.append((match.start(), {"value": _spoken_number(match.group(1)), "unit": unit_name}))
+    return found
+
+
 def _spoken_age_records(utterance: str) -> list[dict]:
     """Ages she actually said, keeping months and years apart.
 
@@ -1031,21 +1067,10 @@ def _spoken_age_records(utterance: str) -> list[dict]:
     """
     folded = _fold_spoken_numbers(utterance or "")
     found = []
-    for match in re.finditer(rf"(\d+(?:\.\d+)?)\s*{_MONTH_UNIT}", folded, re.I):
-        if _is_duration_after(folded, match.end()):
-            continue
-        found.append((match.start(), {"value": _spoken_number(match.group(1)), "unit": "months"}))
-    for match in re.finditer(rf"(\d+(?:\.\d+)?)\s*{_YEAR_UNIT}", folded, re.I):
-        if _is_duration_after(folded, match.end()):
-            continue
-        found.append((match.start(), {"value": _spoken_number(match.group(1)), "unit": "years"}))
-    for pattern, unit in ((_WEEK_UNIT, "weeks"), (_DAY_UNIT, "days")):
-        for match in re.finditer(rf"(\d+(?:\.\d+)?)\s*{pattern}", folded, re.I):
-            if _is_duration_after(folded, match.end()):
-                continue
-            if not _followed_by_age_copula(folded, match.end()):
-                continue
-            found.append((match.start(), {"value": _spoken_number(match.group(1)), "unit": unit}))
+    found.extend(_ages_with_unit(folded, _MONTH_UNIT, "months"))
+    found.extend(_ages_with_unit(folded, _YEAR_UNIT, "years"))
+    found.extend(_ages_with_unit(folded, _WEEK_UNIT, "weeks", require_copula=True))
+    found.extend(_ages_with_unit(folded, _DAY_UNIT, "days", require_copula=True))
     found.sort()
     return [item for _, item in found]
 

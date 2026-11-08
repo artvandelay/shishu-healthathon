@@ -822,6 +822,21 @@ class CallStateTests(unittest.TestCase):
             self.assertEqual(records[0]["unit"], "years", utterance)
             self.assertAlmostEqual(records[0]["value"], years, msg=utterance)
         self.assertEqual(
+            call_state._spoken_age_records("तीन बच्चे हैं, आठ, छह और चार साल के।"),
+            [
+                {"value": 8, "unit": "years"},
+                {"value": 6, "unit": "years"},
+                {"value": 4, "unit": "years"},
+            ],
+        )
+        self.assertEqual(
+            call_state._spoken_age_records("दो बच्चे हैं, छह महीने और दो साल।"),
+            [
+                {"value": 6, "unit": "months"},
+                {"value": 2, "unit": "years"},
+            ],
+        )
+        self.assertEqual(
             call_state._spoken_age_records("एक बेटा है, दो हफ़्ते का है।"),
             [{"value": 2, "unit": "weeks"}],
         )
