@@ -273,6 +273,16 @@ class StructuredSummaryTests(unittest.TestCase):
         self.assertNotIn("भर्ती होना पड़ा", questions)
         self.assertNotIn("पीलिया", questions)
 
+    def test_no_child_questions_do_not_invent_a_child(self):
+        state = call_state.new_call_state()
+        state["profile"]["children"] = []
+        state["profile"]["caller_name"] = "लता"
+        text = summarizer.default_mother_questions({}, [], has_children=False)
+        self.assertNotIn("मेरे बच्चे", text)
+        self.assertIn("अगली प्रेग्नेंसी", text)
+        fallback = summarizer.build_state_fallback(state)
+        self.assertNotIn("मेरे बच्चे", fallback["summary_mother"])
+
     def test_a_lone_finding_does_not_claim_a_sibling_event(self):
         samples = {
             "birth_cord_bleed": ("नाल गिरने पर", "पीलिया"),

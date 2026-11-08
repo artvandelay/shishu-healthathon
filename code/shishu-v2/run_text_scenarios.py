@@ -386,6 +386,11 @@ def _issues(scenario, state, errors, report, fallback, said) -> list[str]:
         if any(age is not None and age >= 10 for age in ages) and puberty == "not_applicable":
             issues.append("puberty skipped though a child is 10 or older")
     questions = " ".join(report.get("questions") or [])
+    if scenario.expect_close == "complete" and not any(
+        isinstance(child, dict) for child in ((state.get("profile") or {}).get("children") or [])
+    ):
+        if any(phrase in questions for phrase in ("मेरे बच्चे", "बच्चे के सभी", "बच्चे के रोज़")):
+            issues.append("asked about a child she does not have")
     named = {
         "ऑपरेशन": "birth_mode",
         "समय से पहले": "birth_term",

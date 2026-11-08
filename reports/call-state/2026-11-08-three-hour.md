@@ -124,7 +124,9 @@ A stored day count prints as 4 दिन and a stored time count as 3 बार.
 
 दो बार गर्भ गिरा, तीन महीने में stores the count and the month, and does not ask them again. An age said with blindness or a preterm birth fills that age follow-up (30 साल, 7 महीने).
 
-7, 8, or 9 महीने use the same early, late, and full-term rule as the Hindi words. 9 महीने में is full term. 6 महीने का है is still the child's age now. `188` unit tests. 43 scenarios, 0 failed.
+7, 8, or 9 महीने use the same early, late, and full-term rule as the Hindi words. 9 महीने में is full term. 6 महीने का है is still the child's age now.
+
+A call with no children does not ask about मेरे बच्चे की उम्र, टीके, or the child's daily food. Those fillers are for a child she has. `189` unit tests. 43 scenarios, 0 failed.
 
 ## Not hardcoded
 

@@ -362,6 +362,11 @@ MOTHER_FLAG_FOOTER = (
 )
 MOTHER_ROUTINE_FOOTER = MOTHER_FLAG_FOOTER
 
+_NO_CHILD_MOTHER_QUESTIONS: tuple[str, ...] = (
+    "अगली प्रेग्नेंसी से पहले मुझे कौन सी जाँच करवा लेनी चाहिए?",
+    "परिवार में कोई बीमारी रही हो, तो डॉक्टर को कौन सी बात ज़रूर बतानी चाहिए?",
+    "किन लक्षणों पर मुझे तुरंत डॉक्टर या स्वास्थ्य कार्यकर्ता को दिखाना चाहिए?",
+)
 _DEFAULT_MOTHER_QUESTIONS: tuple[str, ...] = (
     "मेरे बच्चे की उम्र के हिसाब से उसका वज़न, लंबाई और सीखना-बढ़ना (बैठना, चलना, बोलना) ठीक चल रहा है या नहीं?",
     "बच्चे के सभी ज़रूरी टीके (टीकाकरण कार्ड के अनुसार, जैसे BCG) और सुनने-देखने की सामान्य जाँच पूरी है या कोई अगला टीका बाकी है?",
@@ -706,6 +711,7 @@ def _ensure_mother_covers_flags(
     mother: str,
     findings: dict,
     red_flags: list[str] | None = None,
+    fillers: tuple[str, ...] | None = None,
 ) -> str:
     text = _scrub_diagnostic_terms((mother or "").strip())
     questions = _extract_question_lines(text)
@@ -748,7 +754,7 @@ def _ensure_mother_covers_flags(
         questions.append(question)
         combined_q = "\n".join(questions)
 
-    for default_q in _DEFAULT_MOTHER_QUESTIONS:
+    for default_q in (fillers or _DEFAULT_MOTHER_QUESTIONS):
         if len(questions) >= 3:
             break
         if default_q not in questions:
@@ -766,9 +772,11 @@ def _ensure_mother_covers_flags(
 def default_mother_questions(
     findings: dict | None = None,
     red_flags: list[str] | None = None,
+    has_children: bool = True,
 ) -> str:
     """Build actionable Hindi questions for the mother even when no LLM summary ran."""
-    return _ensure_mother_covers_flags("", findings or {}, red_flags or [])
+    fillers = _DEFAULT_MOTHER_QUESTIONS if has_children else _NO_CHILD_MOTHER_QUESTIONS
+    return _ensure_mother_covers_flags("", findings or {}, red_flags or [], fillers)
 
 
 def build_fallback_summaries(
@@ -1199,7 +1207,11 @@ def build_state_fallback(
 
     return {
         "summary_doctor": "\n".join(lines),
-        "summary_mother": default_mother_questions(findings, red_flags),
+        "summary_mother": default_mother_questions(
+            findings,
+            red_flags,
+            has_children=any(isinstance(child, dict) for child in (profile.get("children") or [])),
+        ),
         "findings": findings,
         "red_flags": red_flags,
         "state": state,

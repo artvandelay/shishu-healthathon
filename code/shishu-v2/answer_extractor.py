@@ -282,7 +282,12 @@ def structured_answers(call: dict) -> dict:
         if line:
             yes_hindi.append(mother_report.hindi_text(line))
     st_findings, st_flags = summarizer.state_to_findings_and_flags(state)
-    mother_text = summarizer.default_mother_questions(st_findings, st_flags)
+    has_children = any(
+        isinstance(child, dict) for child in ((state.get("profile") or {}).get("children") or [])
+    )
+    mother_text = summarizer.default_mother_questions(
+        st_findings, st_flags, has_children=has_children
+    )
     questions_hindi = summarizer._extract_question_lines(mother_text)
     return {
         "version": 5,

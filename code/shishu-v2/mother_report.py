@@ -699,7 +699,12 @@ def build(call: dict, extracted: dict | None = None) -> dict:
         if st_flags or any(
             isinstance(v, dict) and v.get("is_red_flag") for v in st_findings.values()
         ):
-            raw_summary_mother = summarizer.default_mother_questions(st_findings, st_flags)
+            has_children = any(
+                isinstance(child, dict) for child in ((state.get("profile") or {}).get("children") or [])
+            )
+            raw_summary_mother = summarizer.default_mother_questions(
+                st_findings, st_flags, has_children=has_children
+            )
     questions = [hindi_text(q) for q in _questions(raw_summary_mother)]
     show_thalassemia = (
         _thalassemia_from_state(state)
