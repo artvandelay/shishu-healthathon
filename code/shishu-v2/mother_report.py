@@ -520,18 +520,26 @@ def _child_label(state: dict, child_id: object) -> str:
     index = next((i for i, item in enumerate(ranked) if item.get("id") == child_id), None)
     if index is None:
         return ""
-    if (
+    ages_differ = (
         len(ranked) >= 2
         and call_state._child_age_years(ranked[0].get("age"))
         != call_state._child_age_years(ranked[-1].get("age"))
-    ):
-        if index == 0:
-            return "बड़ा बच्चा"
-        if index == len(ranked) - 1:
-            return "छोटा बच्चा"
-    ordinals = ("पहला", "दूसरा", "तीसरा", "चौथा", "पाँचवाँ")
+    )
+    if ages_differ and index == 0:
+        return {"बेटी": "बड़ी बेटी", "बेटा": "बड़ा बेटा"}.get(sex_word, "बड़ा बच्चा")
+    if ages_differ and index == len(ranked) - 1:
+        return {"बेटी": "छोटी बेटी", "बेटा": "छोटा बेटा"}.get(sex_word, "छोटा बच्चा")
+    if sex_word == "बेटी":
+        ordinals = ("पहली", "दूसरी", "तीसरी", "चौथी", "पाँचवीं")
+        noun = "बेटी"
+    elif sex_word == "बेटा":
+        ordinals = ("पहला", "दूसरा", "तीसरा", "चौथा", "पाँचवाँ")
+        noun = "बेटा"
+    else:
+        ordinals = ("पहला", "दूसरा", "तीसरा", "चौथा", "पाँचवाँ")
+        noun = "बच्चा"
     word = ordinals[index] if index < len(ordinals) else f"{index + 1}"
-    return f"{word} बच्चा"
+    return f"{word} {noun}"
 
 
 def _shown_value(value: object) -> str:

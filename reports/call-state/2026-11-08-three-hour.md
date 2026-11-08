@@ -76,7 +76,9 @@ A fact said in the same sentence is stored. “ऑपरेशन हुआ, प
 
 लड़की, बेटी, and बच्ची are female. लड़का and बेटा are male. A daughter stored with the Hindi word is asked about periods at 11. A son stored as लड़का is not.
 
-Pregnancy BP and sugar, and whether they continued after delivery, are stored when she says them with the answer. A kinship word in the same sentence (मामा) closes the relationship follow-up. `182` unit tests. 24 scenarios, 0 failed.
+Pregnancy BP and sugar, and whether they continued after delivery, are stored when she says them with the answer. A kinship word in the same sentence (मामा) closes the relationship follow-up.
+
+When a child's sex is known, the report says बड़ी बेटी, बड़ा बेटा, छोटी बेटी, or दूसरी बेटी. Without a sex it still says बड़ा बच्चा or छोटा बच्चा. One PDF of a per-child NICU finding rendered (about 40 KB). `182` unit tests. 24 scenarios, 0 failed.
 
 ## Not hardcoded
 

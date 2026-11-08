@@ -112,6 +112,12 @@ class StructuredMotherReportTests(unittest.TestCase):
         text = " ".join(mother_report.build(_call(state))["yes"])
         self.assertIn("राम", text)
         self.assertIn("छोटा बच्चा", text)
+        state["profile"]["children"][1]["sex"] = "female"
+        state["profile"]["children"][0]["sex"] = "male"
+        text = " ".join(mother_report.build(_call(state))["yes"])
+        self.assertIn("राम", text)
+        self.assertIn("छोटी बेटी", text)
+        self.assertNotIn("child_", text)
         self.assertIn("बीपी", text)
         self.assertNotIn("child_", text)
         self.assertNotIn("condition", text)
