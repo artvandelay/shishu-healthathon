@@ -578,6 +578,8 @@ def _detail_values(details: dict, skip_label: str = "") -> str:
             shown = f"{shown} दिन"
         elif key == "count" and re.fullmatch(r"\d+(?:\.\d+)?", shown):
             shown = f"{shown} बार"
+        elif key == "month" and re.fullmatch(r"\d+(?:\.\d+)?", shown):
+            shown = f"{shown} महीने"
         if not shown or shown == skip_norm:
             continue
         if shown not in out:
