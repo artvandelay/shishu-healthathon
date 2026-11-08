@@ -9,7 +9,9 @@ _TMP = tempfile.mkdtemp(prefix="shishu-structured-summary-")
 os.environ.setdefault("DATA_DIR", _TMP)
 
 import answer_extractor  # noqa: E402
+import call_state  # noqa: E402
 import call_state_contract as contract  # noqa: E402
+import db  # noqa: E402
 import summarizer  # noqa: E402
 
 
@@ -206,6 +208,112 @@ class StructuredSummaryTests(unittest.TestCase):
         self.assertIn("गुजर", res["summary_mother"])
         self.assertIn("family_infant_death", res["findings"])
         self.assertTrue(any(f.startswith("fam_infant_death:") for f in res["red_flags"]))
+
+    def test_summary_model_chain_starts_at_the_newest_preview(self):
+        self.assertEqual(os.environ.get("GEMINI_SUMMARY_MODEL"), "gemini-3.1-pro-preview")
+        self.assertEqual(db.DEFAULT_SETTINGS["summary_model"], "gemini-3.1-pro-preview")
+        self.assertEqual(
+            summarizer.summary_model_chain(),
+            ["gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-2.5-pro"],
+        )
+        self.assertNotIn("gemini-2.5-flash", summarizer.summary_model_chain())
+        self.assertNotIn("gemini-3.8-flash", summarizer.summary_model_chain())
+        self.assertEqual(
+            summarizer.summary_model_chain("gemini-3-pro-preview"),
+            ["gemini-3-pro-preview", "gemini-2.5-pro"],
+        )
+        unknown = summarizer.summary_model_chain("gemini-3.8-flash")
+        self.assertEqual(unknown[0], "gemini-3.8-flash")
+        self.assertEqual(unknown[1:], list(summarizer.SUMMARY_MODEL_CHAIN))
+
+    def test_summary_call_uses_the_first_model_the_api_accepts(self):
+        seen: list[str] = []
+
+        class _Models:
+            async def generate_content(self, model, contents, config):
+                seen.append(model)
+                if model != "gemini-2.5-pro":
+                    raise RuntimeError(f"404 model {model} not found")
+                return type("Resp", (), {"text": '{"doctor_markdown":"ok","mother_hindi":"ठीक?"}'})()
+
+        class _Client:
+            aio = type("Aio", (), {"models": _Models()})()
+
+        payload = asyncio.run(
+            summarizer._generate_accepted_model(
+                _Client(),
+                list(summarizer.SUMMARY_MODEL_CHAIN),
+                "state",
+                summarizer.STRUCTURED_STATE_SUMMARY_PROMPT,
+            )
+        )
+        self.assertEqual(seen, list(summarizer.SUMMARY_MODEL_CHAIN))
+        self.assertEqual(payload["doctor_markdown"], "ok")
+
+    def test_frontier_model_can_override_a_false_positive(self):
+        state = _state()
+        state["profile"]["children"] = [
+            {"id": "child_1", "age": {"value": 2, "unit": "years"}, "sex": "male"}
+        ]
+        state["topics"]["birth_mode"]["state"] = "answered"
+        state["topics"]["birth_mode"]["value"] = True
+        state["topics"]["birth_mode"]["details"] = {"delivery_type": "operation"}
+        state["topics"]["birth_mode"]["instances"] = [
+            {"person_id": "child_1", "value": True, "details": {"delivery_type": "operation"}}
+        ]
+        transcript = [
+            {"role": "user", "text": "डिलीवरी नॉर्मल हुई, अस्पताल में। ऑपरेशन नहीं हुआ।"},
+        ]
+        shell = "\n".join(f"{h}\nNot reported." for h in summarizer._REQUIRED_HEADINGS)
+        doctor = shell.replace(
+            "### Birth & Neonatal History\nNot reported.",
+            "### Birth & Neonatal History\n- Normal hospital delivery.",
+        ).replace(
+            "### Positive Red Flags & NRROID Gate Alerts\nNot reported.",
+            "### Positive Red Flags & NRROID Gate Alerts\nNone.",
+        )
+
+        async def fake_gemini(_user_content, system_prompt=""):
+            return {
+                "doctor_markdown": doctor,
+                "mother_hindi": "1. बच्चे का वज़न और टीकाकरण डॉक्टर से पूछें?",
+                "extracted_findings": {},
+                "red_flags": [],
+                "topic_corrections": {
+                    "birth_mode": {
+                        "state": "answered",
+                        "value": False,
+                        "details": {"delivery_type": "normal", "place": "hospital"},
+                    }
+                },
+            }
+
+        orig = summarizer._from_gemini
+        summarizer._from_gemini = fake_gemini
+        try:
+            res = asyncio.run(
+                summarizer.generate_call_summaries(
+                    transcript,
+                    {"birth_nicu": {"status": "positive", "detail": "operation", "is_red_flag": True}},
+                    ["birth_mode: operation"],
+                    state=state,
+                )
+            )
+        finally:
+            summarizer._from_gemini = orig
+
+        topic = res["state"]["topics"]["birth_mode"]
+        self.assertEqual(topic["value"], False)
+        self.assertEqual(topic["details"].get("delivery_type"), "normal")
+        self.assertFalse(call_state._is_positive(topic))
+        self.assertEqual(call_state.topic_answer_kind(topic), "no")
+        self.assertFalse(any(str(flag).startswith("birth_mode:") for flag in res["red_flags"]))
+        self.assertNotIn("birth_nicu", res["findings"])
+        self.assertNotIn("operation", res["summary_doctor"].lower())
+        import mother_report
+
+        report = mother_report.build({"state": res["state"], "summary_mother": res["summary_mother"]})
+        self.assertFalse(report["yes"])
 
 
 if __name__ == "__main__":

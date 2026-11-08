@@ -15,6 +15,15 @@ from prompts import DOCTOR_MOTHER_SUMMARY_PROMPT
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 load_dotenv()
 
+# Newest public Gemini the summary key should call, then the next preview, then 2.5 pro.
+# There is no gemini-4 slug. Flash is not the post-call judge.
+SUMMARY_MODEL_CHAIN: tuple[str, ...] = (
+    "gemini-3.1-pro-preview",
+    "gemini-3-pro-preview",
+    "gemini-2.5-pro",
+)
+os.environ.setdefault("GEMINI_SUMMARY_MODEL", SUMMARY_MODEL_CHAIN[0])
+
 _REQUIRED_HEADINGS = (
     "### Patient Profile & Chief Complaint",
     "### Positive Red Flags & NRROID Gate Alerts",
@@ -659,6 +668,7 @@ You are given:
 Your role is to act as a sanity-check and double-checker:
 - Compare the deterministic structured state against the call transcript.
 - If the mother clearly stated a fact in the transcript (e.g., her name, child age/name, or a positive symptom/history/detail) that was missed or mis-parsed in the structured state, include it in `profile_corrections` or `topic_corrections`, and reflect it in `doctor_markdown`, `mother_hindi`, `extracted_findings`, and `red_flags`.
+- You are the judge of the transcript. When the deterministic draft was too rigid, misheard, or misclassified, override it: set `topic_corrections` to the corrected state and omit that false positive from `extracted_findings` and `red_flags`. A deterministic yes is a draft, not a fact you must repeat.
 - If a topic state is `no_response`, `not_asked`, or `not_applicable`, and the mother did NOT answer it in the transcript, keep that exact label (`no_response`, `not_asked`, or `not_applicable`). NEVER turn `unknown`, `no_response`, `not_asked`, or `not_applicable` into `no`.
 - Do not invent any fact, child identity, answer, or diagnosis. Never name specific rare diseases in `mother_hindi`.
 - `mother_hindi` must contain 3 to 6 clear, natural Devanagari Hindi questions (each ending with `?`) for the mother to ask her doctor or ASHA/ANM दीदी at the next visit, directly covering every positive finding from the call.
@@ -792,12 +802,70 @@ def state_to_findings_and_flags(
     return findings, red_flags
 
 
+_CORRECTION_STATES = {"answered", "unknown", "no_response", "not_asked"}
+
+
+def summary_model_chain(explicit: str | None = None) -> list[str]:
+    """Models to try, newest first, then down the list.
+
+    An explicit `GEMINI_SUMMARY_MODEL` starts at that slug and continues with
+    the later entries. An unknown slug is tried once, then the real chain, so
+    a retired name is never the only option.
+    """
+    preferred = (explicit if explicit is not None else os.environ.get("GEMINI_SUMMARY_MODEL") or "").strip()
+    if not preferred:
+        preferred = SUMMARY_MODEL_CHAIN[0]
+    if preferred in SUMMARY_MODEL_CHAIN:
+        start = SUMMARY_MODEL_CHAIN.index(preferred)
+        return list(SUMMARY_MODEL_CHAIN[start:])
+    return [preferred, *SUMMARY_MODEL_CHAIN]
+
+
+def _mentioned(text: str, transcript_blob: str) -> bool:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return False
+    return cleaned.lower() in transcript_blob or cleaned in transcript_blob
+
+
+def _apply_topic_correction(
+    topic: dict,
+    new_state: str,
+    new_val: object,
+    new_details: dict,
+    new_instances: list,
+    *,
+    replace: bool,
+) -> None:
+    """Write a model correction. `replace` drops draft details that would veto it."""
+    if new_state == "answered":
+        topic["state"] = "answered"
+        topic["value"] = new_val if new_val is not None else (False if replace else True)
+        if replace:
+            topic["details"] = dict(new_details)
+        elif new_details:
+            merged = dict(topic.get("details") or {})
+            merged.update(new_details)
+            topic["details"] = merged
+        if new_instances:
+            topic["instances"] = [item for item in new_instances if isinstance(item, dict)]
+        elif replace and not call_state._is_positive(topic):
+            topic["instances"] = []
+    elif new_state in {"unknown", "no_response", "not_asked"}:
+        topic["state"] = new_state
+        topic["value"] = None
+        topic["details"] = dict(new_details)
+        topic["instances"] = []
+    topic["source"] = "summary_reconciliation"
+    topic["reason"] = None
+
+
 def reconcile_state_with_llm_payload(
     state: dict,
     payload: dict | None,
     transcript: list[dict] | None = None,
 ) -> dict:
-    """Apply grounded reconciliation patches from the frontier Gemini check to a copy of state."""
+    """Apply the frontier model's corrections. An answered draft can be overridden."""
     reconciled = copy.deepcopy(state)
     if not isinstance(payload, dict):
         return reconciled
@@ -806,16 +874,16 @@ def reconcile_state_with_llm_payload(
     if isinstance(prof_corr, dict) and user_blob:
         prof = reconciled.setdefault("profile", {})
         cname = str(prof_corr.get("caller_name") or "").strip()
-        if cname and not prof.get("caller_name") and cname.lower() not in {"not reported", "unknown", "shilpa"}:
+        if cname and cname.lower() not in {"not reported", "unknown"} and _mentioned(cname, user_blob):
             prof["caller_name"] = cname
             reconciled["topics"]["intro_name"]["state"] = "answered"
             reconciled["topics"]["intro_name"]["value"] = cname
         mstat = call_state._canonical_marital(prof_corr.get("marital_status"))
-        if mstat and not prof.get("marital_status"):
+        if mstat:
             prof["marital_status"] = mstat
             reconciled["topics"]["intro_married"]["state"] = "answered"
             reconciled["topics"]["intro_married"]["value"] = mstat
-        if isinstance(prof_corr.get("children"), list) and prof_corr["children"] and not prof.get("children"):
+        if isinstance(prof_corr.get("children"), list) and prof_corr["children"]:
             norm_kids = call_state._normalize_children(prof_corr["children"])
             if norm_kids:
                 prof["children"] = norm_kids
@@ -829,39 +897,46 @@ def reconcile_state_with_llm_payload(
             if tid not in checklist._BY_ID or not isinstance(patch, dict):
                 continue
             cur = topics.get(tid)
-            if not isinstance(cur, dict) or cur.get("state") == "not_applicable":
+            if not isinstance(cur, dict):
                 continue
             new_state = str(patch.get("state") or "").strip()
             new_val = patch.get("value")
             new_details = patch.get("details") if isinstance(patch.get("details"), dict) else {}
             new_instances = patch.get("instances") if isinstance(patch.get("instances"), list) else []
-            if cur.get("state") == "answered":
-                if new_details:
-                    merged_det = dict(cur.get("details") or {})
-                    merged_det.update(new_details)
-                    cur["details"] = merged_det
-                if new_instances and not cur.get("instances"):
-                    cur["instances"] = new_instances
+            prior = cur.get("state")
+            if prior == "answered":
+                if user_blob and new_state in _CORRECTION_STATES:
+                    _apply_topic_correction(
+                        cur, new_state, new_val, new_details, new_instances, replace=True
+                    )
+                elif new_details or (new_instances and not cur.get("instances")):
+                    _apply_topic_correction(
+                        cur, "answered", cur.get("value"), new_details, new_instances, replace=False
+                    )
                 continue
-            if not user_blob:
+            if prior == "not_applicable":
+                if user_blob and new_state in {"answered", "unknown"}:
+                    _apply_topic_correction(
+                        cur, new_state, new_val, new_details, new_instances, replace=True
+                    )
+                continue
+            if not user_blob or new_state not in _CORRECTION_STATES:
                 continue
             candidate = {"state": new_state, "value": new_val, "details": new_details}
             if new_state == "answered" and call_state._is_positive(candidate):
-                cur["state"] = "answered"
-                cur["value"] = new_val if new_val is not None else True
-                if new_details:
-                    merged_det = dict(cur.get("details") or {})
-                    merged_det.update(new_details)
-                    cur["details"] = merged_det
-                if new_instances:
-                    cur["instances"] = new_instances
-            elif new_state == "unknown" and cur.get("state") in {"not_asked", "no_response"}:
-                cur["state"] = "unknown"
-            elif new_state == "answered" and new_val is False and cur.get("state") in {"not_asked", "no_response"}:
+                _apply_topic_correction(
+                    cur, new_state, new_val, new_details, new_instances, replace=False
+                )
+            elif new_state == "unknown" and prior in {"not_asked", "no_response"}:
+                _apply_topic_correction(
+                    cur, new_state, None, new_details, new_instances, replace=True
+                )
+            elif new_state == "answered" and new_val is False and prior in {"not_asked", "no_response"}:
                 evidence = str(patch.get("evidence") or "").strip().lower()
                 if len(evidence) >= 6 and evidence in user_blob:
-                    cur["state"] = "answered"
-                    cur["value"] = False
+                    _apply_topic_correction(
+                        cur, new_state, False, new_details, new_instances, replace=True
+                    )
     call_state._apply_rules(reconciled)
     return reconciled
 
@@ -951,6 +1026,27 @@ def build_state_fallback(
     }
 
 
+async def _generate_accepted_model(client, models: list[str], user_content: str, system_prompt: str) -> dict:
+    """Call models in order. The first response the API accepts and that parses wins."""
+    last_error: Exception | None = None
+    for chosen in models:
+        try:
+            response = await client.aio.models.generate_content(
+                model=chosen,
+                contents=user_content,
+                config={
+                    "system_instruction": system_prompt,
+                    "response_mime_type": "application/json",
+                    "temperature": 0.2,
+                    "max_output_tokens": 8192,
+                },
+            )
+            return _parse_json(response.text or "")
+        except Exception as exc:
+            last_error = exc
+    raise last_error or RuntimeError("no summary model accepted")
+
+
 async def _from_gemini(
     user_content: str,
     system_prompt: str = DOCTOR_MOTHER_SUMMARY_PROMPT,
@@ -958,39 +1054,13 @@ async def _from_gemini(
 ) -> dict:
     from google import genai
 
-    chosen_model = (
-        model
-        or os.environ.get("GEMINI_SUMMARY_MODEL")
-        or ("gemini-2.5-pro" if system_prompt == STRUCTURED_STATE_SUMMARY_PROMPT else "gemini-2.5-flash")
-    )
+    if not os.environ.get("GEMINI_API_KEY"):
+        raise RuntimeError("GEMINI_API_KEY is unset")
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
     try:
-        try:
-            response = await client.aio.models.generate_content(
-                model=chosen_model,
-                contents=user_content,
-                config={
-                    "system_instruction": system_prompt,
-                    "response_mime_type": "application/json",
-                    "temperature": 0.2,
-                    "max_output_tokens": 8192,
-                },
-            )
-            return _parse_json(response.text or "")
-        except Exception:
-            if chosen_model == "gemini-2.5-flash":
-                raise
-            response = await client.aio.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=user_content,
-                config={
-                    "system_instruction": system_prompt,
-                    "response_mime_type": "application/json",
-                    "temperature": 0.2,
-                    "max_output_tokens": 8192,
-                },
-            )
-            return _parse_json(response.text or "")
+        return await _generate_accepted_model(
+            client, summary_model_chain(model), user_content, system_prompt
+        )
     finally:
         await client.aio.aclose()
         client.close()
@@ -1016,6 +1086,31 @@ async def _from_openai(user_content: str, system_prompt: str = DOCTOR_MOTHER_SUM
         await client.close()
 
 
+def _model_findings(payload: dict, reconciled_state: dict) -> dict:
+    extracted = payload.get("extracted_findings")
+    if isinstance(extracted, dict):
+        return {
+            key: value
+            for key, value in extracted.items()
+            if not _not_reported(value)
+        }
+    findings, _flags = state_to_findings_and_flags(reconciled_state)
+    return findings
+
+
+def _model_flags(payload: dict, reconciled_state: dict) -> list[str]:
+    incoming = payload.get("red_flags")
+    if isinstance(incoming, list):
+        flags: list[str] = []
+        for item in incoming:
+            text = _flag_text(item)
+            if text and text not in flags and not _unknown_detail(text):
+                flags.append(text)
+        return flags
+    _findings, flags = state_to_findings_and_flags(reconciled_state)
+    return flags
+
+
 def _finalize_structured_summary(
     payload: dict | None,
     state: dict,
@@ -1023,37 +1118,30 @@ def _finalize_structured_summary(
     findings: dict,
     red_flags: list[str],
 ) -> dict:
-    reconciled_state = reconcile_state_with_llm_payload(state, payload, transcript)
-    det_findings, det_flags = state_to_findings_and_flags(reconciled_state, findings, red_flags)
+    """Use the model JSON as the record. The deterministic draft is only the fallback."""
     if not isinstance(payload, dict):
-        return build_state_fallback(reconciled_state, det_findings, det_flags)
+        return build_state_fallback(state, findings, red_flags)
     doctor = str(payload.get("doctor_markdown") or payload.get("summary_doctor") or "").strip()
     if not doctor:
-        return build_state_fallback(reconciled_state, det_findings, det_flags)
-
-    extracted = payload.get("extracted_findings")
-    if isinstance(extracted, dict):
-        for k, v in extracted.items():
-            if k not in det_findings and not _not_reported(v):
-                det_findings[k] = v
-    incoming_flags = payload.get("red_flags")
-    if isinstance(incoming_flags, list):
-        for item in incoming_flags:
-            text = _flag_text(item)
-            if text and text not in det_flags and not _unknown_detail(text):
-                det_flags.append(text)
-
-    doctor = _fill_red_flag_section(doctor, det_flags)
-    doctor = _fill_empty_sections(doctor, det_findings)
-    raw_mother = str(payload.get("mother_hindi") or payload.get("summary_mother") or "").strip()
+        return build_state_fallback(state, findings, red_flags)
+    reconciled_state = reconcile_state_with_llm_payload(state, payload, transcript)
+    judged_findings = _model_findings(payload, reconciled_state)
+    judged_flags = _model_flags(payload, reconciled_state)
+    doctor = _fill_red_flag_section(doctor, judged_flags)
+    doctor = _fill_empty_sections(doctor, judged_findings)
+    raw_mother = str(
+        payload.get("mother_hindi") or payload.get("questions_hindi") or payload.get("summary_mother") or ""
+    ).strip()
+    if isinstance(payload.get("questions_hindi"), list) and not payload.get("mother_hindi"):
+        raw_mother = "\n".join(str(line) for line in payload["questions_hindi"] if str(line).strip())
     if transcript:
-        raw_mother, doctor = _strip_unspoken_mother_name(raw_mother, doctor, det_findings, transcript)
-    mother = _ensure_mother_covers_flags(raw_mother, det_findings, det_flags)
+        raw_mother, doctor = _strip_unspoken_mother_name(raw_mother, doctor, judged_findings, transcript)
+    mother = _ensure_mother_covers_flags(raw_mother, judged_findings, judged_flags)
     return {
         "summary_doctor": doctor,
         "summary_mother": mother,
-        "findings": det_findings,
-        "red_flags": det_flags,
+        "findings": judged_findings,
+        "red_flags": judged_flags,
         "state": reconciled_state,
     }
 
@@ -1064,18 +1152,18 @@ async def generate_call_summaries(
     red_flags: list[str],
     state: dict | None = None,
 ) -> dict:
-    """Return doctor and mother summaries, with findings and red flags merged."""
+    """Return doctor and mother summaries.
+
+    With call state, the frontier Gemini pass is the judge. If the key is unset,
+    every model fails, or the JSON is invalid, the deterministic draft is used.
+    """
     if state:
         user_content = state_to_summary_context(state, transcript=transcript)
         try:
             payload = await _from_gemini(user_content, STRUCTURED_STATE_SUMMARY_PROMPT)
             return _finalize_structured_summary(payload, state, transcript, findings, red_flags)
         except Exception:
-            try:
-                payload = await _from_openai(user_content, STRUCTURED_STATE_SUMMARY_PROMPT)
-                return _finalize_structured_summary(payload, state, transcript, findings, red_flags)
-            except Exception:
-                return build_state_fallback(state, findings, red_flags)
+            return build_state_fallback(state, findings, red_flags)
     user_content = _user_content(transcript, findings, red_flags)
     try:
         payload = await _from_gemini(user_content)

@@ -25,7 +25,7 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "vad_start_sensitivity": "HIGH",
     "vad_end_sensitivity": "HIGH",
     "watchdog_timeout_sec": "8.0",
-    "summary_model": "gemini-3.8-flash",
+    "summary_model": "gemini-3.1-pro-preview",
 }
 
 _CALL_EXTRA_COLUMNS = (
@@ -87,7 +87,8 @@ def _init_db() -> None:
             "UPDATE settings SET value = '8.0' WHERE key = 'watchdog_timeout_sec' AND value = '4.0'",
         )
         cur.execute(
-            "UPDATE settings SET value = 'gemini-3.8-flash' WHERE key = 'summary_model' AND value = 'gemini-2.5-flash'",
+            "UPDATE settings SET value = ? WHERE key = 'summary_model' AND value IN ('gemini-2.5-flash', 'gemini-3.8-flash')",
+            (DEFAULT_SETTINGS["summary_model"],),
         )
         cur.execute(
             """

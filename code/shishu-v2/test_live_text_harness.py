@@ -233,7 +233,8 @@ class Call13DeterministicReplayTests(unittest.TestCase):
         # 3. "इस कॉल में जो हाँ था" contains positive findings with transliterated details
         self.assertEqual(len(report["yes"]), 3, f"Expected 3 yes items, got: {report['yes']}")
         yes_text = " ".join(report["yes"])
-        self.assertTrue("रम" in yes_text or "राम" in yes_text or "ओपेरतिओन" in yes_text or "ऑपरेशन" in yes_text)
+        self.assertIn("ऑपरेशन", yes_text)
+        self.assertNotIn("ओपेरतिओन", yes_text)
 
 
 class AdversarialFlowTests(unittest.TestCase):
