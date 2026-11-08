@@ -14,6 +14,7 @@ from google import genai
 from google.genai import types
 from starlette.websockets import WebSocketState
 
+import answer_backstop
 import answer_extractor
 import audio_recorder
 import call_state
@@ -73,6 +74,7 @@ _TELEMETRY_EVENTS = {
     "reconnected",
     "silence_check_in",
     "auto_close",
+    "answer_backstop",
     "error",
 }
 
@@ -99,7 +101,7 @@ class _TurnState:
         self.call_state = None
         self.call_id = None
         self.tool_called_since_user = True
-        self.missing_tool_cues = 0
+        self.backstop_checked = False
 
 
 class _SessionProxy:
@@ -378,7 +380,10 @@ def _arm_user_turn(state: _TurnState, telemetry: dict) -> None:
     _caller_heard(state, telemetry)
     state.checked_in = False
     state.tool_called_since_user = False
-    state.missing_tool_cues = 0
+    state.backstop_checked = False
+    if state.bot_text_since_user:
+        state.last_bot_text = state.bot_text_since_user
+        state.bot_text_since_user = ""
 
 
 async def _send_realtime_safe(
@@ -684,6 +689,17 @@ def _progress_label(live_state: dict) -> str:
     return f"{done}/{len(checklist.REQUIRED_IDS)}"
 
 
+def _advance(live_state: dict) -> tuple[dict, dict | None]:
+    """Move to the next question after a save. Returns the new state and that question."""
+    question = call_state.next_question(live_state)
+    if question is None and call_state.is_complete(live_state):
+        live_state = call_state.request_close(live_state, "complete")
+        question = call_state.next_question(live_state)
+    elif question and question.get("question_kind") != "closing":
+        live_state = call_state.begin_question(live_state, question)
+    return live_state, question
+
+
 def _apply_client_telemetry(call_id: int, telemetry: dict, payload: dict) -> None:
     client = payload.get("client") if isinstance(payload.get("client"), dict) else {}
     telemetry["client"] = client
@@ -782,12 +798,7 @@ async def _answer_function_calls(
                     "args": args,
                 })
             else:
-                question = call_state.next_question(live_state)
-                if question is None and call_state.is_complete(live_state):
-                    live_state = call_state.request_close(live_state, "complete")
-                    question = call_state.next_question(live_state)
-                elif question and question.get("question_kind") != "closing":
-                    live_state = call_state.begin_question(live_state, question)
+                live_state, question = _advance(live_state)
                 _store_live_state(call_id, turn_state, live_state)
                 body = {"result": "ok", "note": answer_tool.build_turn_context(live_state, question)}
                 label = _progress_label(live_state)
@@ -828,6 +839,65 @@ async def _answer_function_calls(
             telemetry,
             "Could not send the tool response to Gemini",
         )
+
+
+async def _run_answer_backstop(
+    session,
+    send_lock: asyncio.Lock,
+    ws: WebSocket,
+    ws_lock: asyncio.Lock,
+    call_id: int,
+    telemetry: dict,
+    state: _TurnState,
+) -> bool:
+    """Save her answer when the model ended its turn without record_answers. True if a cue was sent."""
+    live_state = _load_live_state(call_id, state)
+    asked = call_state.next_question(live_state)
+    if not asked or asked.get("question_kind") not in ("topic", "followup"):
+        return False
+    label = f"{asked['topic_id']}/{asked.get('followup_id') or '-'}"
+    try:
+        result = await asyncio.wait_for(
+            answer_backstop.extract(asked, live_state, state.last_bot_text, state.last_user_text),
+            answer_backstop.TIMEOUT_SEC,
+        )
+        updates = answer_backstop.to_updates(asked, live_state, result)
+        if updates:
+            live_state = call_state.apply_updates(
+                live_state,
+                updates,
+                _transcript_turn_id(call_id),
+                utterance=state.last_user_text,
+                prior_utterances=_prior_user_lines(state, state.last_user_text),
+            )
+    except Exception as exc:
+        await _emit(ws, ws_lock, call_id, telemetry, "answer_backstop", f"{label} error: {exc}"[:240])
+        return False
+    if not updates:
+        await _emit(ws, ws_lock, call_id, telemetry, "answer_backstop", f"{label} {result.get('kind')}")
+        return False
+    live_state, question = _advance(live_state)
+    _store_live_state(call_id, state, live_state)
+    telemetry["backstop_saves"] = telemetry.get("backstop_saves", 0) + 1
+    progress = _progress_label(live_state)
+    telemetry["progress_group"] = progress
+    await _send_json(ws, ws_lock, {"type": "progress", "group": progress})
+    await _emit(ws, ws_lock, call_id, telemetry, "answer_backstop", f"{label} saved", {"updates": updates})
+    # A model that already spoke its next line is resynced by its next record_answers response.
+    if state.bot_text_since_user and (question or {}).get("question_kind") != "closing":
+        return False
+    cue = (
+        "SYSTEM CUE (from the app, not the mother): the app saved her last answer. "
+        + answer_tool.build_turn_context(live_state, question)
+    )
+    try:
+        async with send_lock:
+            await session.send_realtime_input(text=cue)
+    except Exception:
+        return False
+    _arm_waiting_reply(state, speech_end_waiting=False)
+    state.quiet_from = 0.0
+    return True
 
 
 async def _on_bot_audio(
@@ -911,9 +981,6 @@ async def _handle_server_message(
             server_content.input_transcription,
         )
         if user_text:
-            if state.bot_text_since_user:
-                state.last_bot_text = state.bot_text_since_user
-                state.bot_text_since_user = ""
             _remember_user_line(state, user_text)
             if question_flow.is_emergency_text(user_text):
                 telemetry["emergency_seen"] = True
@@ -994,26 +1061,13 @@ async def _handle_server_message(
             and live_state.get("phase") == "asking"
             and not state.tool_called_since_user
             and state.last_user_text
-            and not call_state.is_clarification(state.last_user_text)
-            and state.missing_tool_cues < 1
+            and not state.backstop_checked
             and not telemetry.get("end_requested")
         ):
-            state.missing_tool_cues += 1
-            question = call_state.next_question(live_state)
-            ctx_note = answer_tool.build_turn_context(live_state, question)
-            cue = (
-                f"SYSTEM CUE (from the app, not the mother): The caller just answered: '{state.last_user_text}'. "
-                f"You did not call record_answers. Call record_answers NOW to record what she stated, "
-                f"then ask only the next question from the tool response. {ctx_note}"
-            )
-            try:
-                async with send_lock:
-                    await session.send_realtime_input(text=cue)
-                _arm_waiting_reply(state, speech_end_waiting=False)
-                state.quiet_from = 0.0
+            state.backstop_checked = True
+            if await _run_answer_backstop(session, send_lock, ws, ws_lock, call_id, telemetry, state):
                 return True
-            except Exception:
-                pass
+            live_state = state.call_state
         if (
             live_state
             and live_state.get("phase") == "asking"
