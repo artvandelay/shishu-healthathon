@@ -57,7 +57,8 @@ def _fold_spoken_numbers(text: str) -> str:
     folded = folded.replace("डेढ़", "1.5").replace("ढाई", "2.5")
     for word, number in _NUM_WORDS:
         # तीस must not eat तीसरे, and दो must not eat दोनों.
-        folded = re.sub(rf"{re.escape(word)}(?![\u0900-\u097F])", number, folded)
+        # A danda is the end of the sentence, not another letter of the word.
+        folded = re.sub(rf"{re.escape(word)}(?![\u0900-\u0963\u0966-\u097F])", number, folded)
 
     def _shift(match: re.Match[str], delta: float) -> str:
         value = float(match.group(1)) + delta
@@ -557,7 +558,7 @@ def _clause_is_reassurance(clause: str) -> bool:
 
 
 _BARE_CLOSER_RE = re.compile(
-    r"(?:(?:जी\s+)?(?:और\s*कुछ\s*नहीं|इतना\s*ही|नहीं|नही|बस)[।,!\s]*)+",
+    r"(?:(?:जी\s+)?(?:और\s*कुछ\s*नहीं|कुछ\s*नहीं|इतना\s*ही|नहीं|नही|बस)[।,!\s]*)+",
     re.I,
 )
 
@@ -577,7 +578,8 @@ def _only_denial(text: str) -> bool:
     fact = False
     for bit in bits:
         if _DENY_RE.search(bit) and not _AFFIRM_RE.search(bit):
-            if _BARE_CLOSER_RE.fullmatch(bit):
+            # याद नहीं is not knowing the number. It does not deny the other clause.
+            if _BARE_CLOSER_RE.fullmatch(bit) or _is_unknown_utterance(bit):
                 bare_denial = True
             else:
                 content_denial = True
@@ -1497,6 +1499,24 @@ def _ages_with_unit(
         if skip_event_month and _is_event_month_after(folded, match.end()):
             continue
         found.append((match.start(), {"value": _spoken_number(match.group(1)), "unit": unit_name}))
+    # दो साल, चार और छह shares the unit on the first number.
+    # दो साल का और छह महीने keeps both units, so a unit after the tail does not join.
+    lead = re.compile(
+        rf"(\d+(?:\.\d+)?)\s*{unit_pattern}\s*(?:,|और|and)\s*"
+        rf"((?:[^\d,]{{0,24}}?\d+(?:\.\d+)?\s*(?:,|और|and)\s*)*[^\d,]{{0,24}}?\d+(?:\.\d+)?)"
+        rf"(?!\s*(?:{_AGE_UNIT_AFTER}|{_CHILD_COUNT_WORD}))",
+        re.I,
+    )
+    for match in lead.finditer(folded):
+        if require_copula and not _followed_by_age_copula(folded, match.end()):
+            continue
+        if skip_event_month and _is_event_month_after(folded, match.end()):
+            continue
+        for num in re.finditer(r"\d+(?:\.\d+)?", match.group(2)):
+            at = match.start(2) + num.start()
+            if any(start <= at < end for start, end in covered):
+                continue
+            found.append((at, {"value": _spoken_number(num.group(0)), "unit": unit_name}))
     return found
 
 

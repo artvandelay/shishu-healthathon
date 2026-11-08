@@ -1013,6 +1013,21 @@ class CallStateTests(unittest.TestCase):
             self.assertEqual(records[0]["unit"], "years", utterance)
             self.assertAlmostEqual(records[0]["value"], years, msg=utterance)
         self.assertEqual(
+            call_state._spoken_age_records("तीन बच्चे हैं, दो साल, चार और छह।"),
+            [
+                {"value": 2, "unit": "years"},
+                {"value": 4, "unit": "years"},
+                {"value": 6, "unit": "years"},
+            ],
+        )
+        self.assertEqual(
+            call_state._spoken_age_records("दो साल का और छह महीने का।"),
+            [
+                {"value": 2, "unit": "years"},
+                {"value": 6, "unit": "months"},
+            ],
+        )
+        self.assertEqual(
             call_state._spoken_age_records("तीन बच्चे हैं दो चार और छह साल के।"),
             [
                 {"value": 2, "unit": "years"},
@@ -2102,6 +2117,23 @@ class CallStateTests(unittest.TestCase):
             call_state.topic_answer_kind(separate["topics"]["close_anything_else"], "close_anything_else"),
             "yes",
         )
+        cough = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "close_anything_else"),
+            [_update("topic.close_anything_else", True)],
+            1,
+            utterance="कुछ नहीं। खाँसी है।",
+        )
+        self.assertEqual(
+            call_state.topic_answer_kind(cough["topics"]["close_anything_else"], "close_anything_else"),
+            "yes",
+        )
+        stayed = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "birth_nicu"),
+            [_update("topic.birth_nicu", True)],
+            1,
+            utterance="NICU में रहा, कितने दिन याद नहीं।",
+        )
+        self.assertEqual(call_state.topic_answer_kind(stayed["topics"]["birth_nicu"], "birth_nicu"), "yes")
         nothing_else = call_state.apply_updates(
             _ask(call_state.new_call_state(), "close_anything_else"),
             [_update("topic.close_anything_else", "नहीं, बस इतना ही।")],

@@ -256,6 +256,12 @@ Trio: both daughters four (no flags), was five and now seven with fits (one chil
 
 Trio: one boy of eight months (no flags), maybe-fits that names झटके (still a yes), and हो सकता है sent as true on every clinical answer (no हाँ lines). Pass.
 
+## 16:20 IST
+
+दो साल, चार और छह shares the साल on the first number. दो साल का और छह महीने का stays two ages, because the second number has its own unit. A number word before a danda is still that number. याद नहीं in a later clause does not deny the stay: NICU में रहा, कितने दिन याद नहीं stays a yes. कुछ नहीं। खाँसी है। stays a complaint. `196` unit tests. 90 scenarios, 0 failed.
+
+Trio: three children at two, four, and six with the unit only on the first (no flags), NICU with the days unknown (still a yes), and cough after कुछ नहीं (still a yes). Pass.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.
