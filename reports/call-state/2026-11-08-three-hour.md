@@ -368,6 +368,12 @@ Trio: no itch (no flags, no हाँ lines), maternal skin patches (still a yes
 
 Trio: no vomiting (no flags, no हाँ lines), fits when a meal is missed (still a yes), and late sitting sent as false (still a yes, the line names बैठना). Pass.
 
+## 16:43 IST
+
+पहले बोलता था, अब नहीं बोलता names the lost skill. अब नहीं चलता only denies it, so it stays a no. The report says बोलना and चलना. `197` unit tests. 144 scenarios, 0 failed.
+
+Trio: he does not walk, with no earlier skill (no flags, no हाँ lines), stopped talking (still a yes), and stopped walking sent as false (still a yes). Pass.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

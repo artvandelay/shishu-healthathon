@@ -1730,6 +1730,27 @@ class CallStateTests(unittest.TestCase):
             utterance="आसानी से नील पड़ जाते हैं।",
         )
         self.assertEqual(bruise["topics"]["body_bleeding_bruise"]["details"].get("bleeding_or_bruises"), "bruises")
+        forgot = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "body_regression"),
+            [_update("topic.body_regression", True)],
+            1,
+            utterance="पहले बोलता था, अब नहीं बोलता।",
+        )
+        self.assertEqual(forgot["topics"]["body_regression"]["details"].get("lost_skill"), "speech")
+        self.assertEqual(
+            call_state.topic_answer_kind(forgot["topics"]["body_regression"], "body_regression"),
+            "yes",
+        )
+        still_walks = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "body_regression"),
+            [_update("topic.body_regression", "अब नहीं चलता।")],
+            1,
+            utterance="अब नहीं चलता।",
+        )
+        self.assertEqual(
+            call_state.topic_answer_kind(still_walks["topics"]["body_regression"], "body_regression"),
+            "no",
+        )
         self.assertNotIn(
             "condition",
             [item["id"] for item in call_state._pending_followups(skin, "fam_maternal_side")],

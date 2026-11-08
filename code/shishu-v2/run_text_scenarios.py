@@ -637,6 +637,53 @@ def campaign() -> list[Scenario]:
             children_value=3,
         ),
         Scenario(
+            name="no_flags_still_walks",
+            group="no_flags",
+            caller_name="निर्मला",
+            marital_text=married,
+            children_text="एक बेटा है, तीन साल का।",
+            children_value=1,
+            positives={
+                "body_regression": {
+                    "value": True,
+                    "utterance": "अब नहीं चलता।",
+                    "details": {},
+                },
+            },
+        ),
+        Scenario(
+            name="flags_stopped_talking",
+            group="red_flags",
+            caller_name="सारिका",
+            marital_text=married,
+            children_text="एक बेटी है, चार साल की।",
+            children_value=1,
+            positives={
+                "body_regression": {
+                    "value": True,
+                    "utterance": "पहले बोलता था, अब नहीं बोलता।",
+                    "details": {},
+                },
+            },
+            expect_yes=("body_regression",),
+        ),
+        Scenario(
+            name="degenerate_stopped_walking_sent_as_no",
+            group="degenerate",
+            caller_name="आशा",
+            marital_text=married,
+            children_text="एक बेटा है, दो साल का।",
+            children_value=1,
+            positives={
+                "body_regression": {
+                    "value": False,
+                    "utterance": "पहले चलता था, अब नहीं चलता।",
+                    "details": {},
+                },
+            },
+            expect_yes=("body_regression",),
+        ),
+        Scenario(
             name="no_flags_no_vomiting",
             group="no_flags",
             caller_name="शशि",

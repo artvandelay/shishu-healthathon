@@ -2714,14 +2714,34 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str, on_followup: bo
             label
             for label, words in (
                 ("fits", ("झटके", "दौरे")),
-                ("sitting", ("बैठना", "बैठ")),
-                ("walking", ("चलना", "चलत")),
-                ("speech", ("बोलना", "बोलत")),
+                ("sitting", ("बैठना", "बैठता", "बैठती")),
+                ("walking", ("चलना", "चलता", "चलती")),
+                ("speech", ("बोलना", "बोलता", "बोलती")),
             )
             if _named_and_not_denied(val_blob, utt_blob, words)
         ]
         if named:
             details["type"] = named[0] if len(named) == 1 else named
+    if name == "body_regression" and "lost_skill" not in details:
+        # पहले बोलता था, अब नहीं बोलता names the skill in the first clause.
+        # अब नहीं चलता only denies it, so it is not a lost skill.
+        def _claimed(words: tuple[str, ...]) -> bool:
+            return any(
+                not _DENY_RE.search(bit)
+                and any(_contains_word(bit, word) for word in words)
+                for bit in _clauses(utterance or "")
+            )
+        named = [
+            label
+            for label, words in (
+                ("sitting", ("बैठना", "बैठता", "बैठती")),
+                ("walking", ("चलना", "चलता", "चलती")),
+                ("speech", ("बोलना", "बोलता", "बोलती")),
+            )
+            if _claimed(words)
+        ]
+        if named:
+            details["lost_skill"] = named[0] if len(named) == 1 else named
     if name == "body_bleeding_bruise" and "bleeding_or_bruises" not in details:
         named = [
             label
