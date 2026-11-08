@@ -915,6 +915,15 @@ def _is_duration_after(text: str, end: int) -> bool:
     return re.match(r"\s*(?:से|se)(?=\s|$|[।,.])", rest, re.I) is not None
 
 
+def _spoken_day_count(text: str) -> int | None:
+    """A stay of N days. A month count is not a day count."""
+    folded = _fold_spoken_numbers(text or "")
+    match = re.search(r"(\d+)\s*(?:दिन|days|day)", folded, re.I)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
 def _spoken_number(raw: str) -> int | float:
     number = float(raw)
     return int(number) if number.is_integer() else number
@@ -1309,6 +1318,27 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
                 details["place"] = "hospital"
             elif any(word in utt_blob for word in ("home", "ghar", "घर")):
                 details["place"] = "home"
+        if details.get("delivery_type") == "operation" and "operation_reason" not in details:
+            if re.search(r"वजह|because|reason", utt_blob):
+                details["operation_reason"] = (utterance or "").strip()
+    if name == "birth_nicu":
+        if "days" not in details:
+            days = _spoken_day_count(utterance or "")
+            if days is not None:
+                details["days"] = days
+        if "reason" not in details:
+            reasons = [
+                label
+                for label, words in (
+                    ("jaundice", ("पीलिया", "jaundice", "नीली रोशनी")),
+                    ("fits", ("झटके", "fits", "seizure", "दौरे")),
+                    ("infection", ("infection", "संक्रमण", "इंफेक्शन")),
+                    ("breathing", ("साँस", "breathing")),
+                )
+                if any(word in utt_blob for word in words)
+            ]
+            if len(reasons) == 1:
+                details["reason"] = reasons[0]
     if name == "birth_hearing_vision":
         text = utterance or ""
         if "result" not in details and re.search(r"नॉर्मल|normal", text, re.I) and not re.search(r"अबनॉर्मल|abnormal|दिक्कत", text, re.I):

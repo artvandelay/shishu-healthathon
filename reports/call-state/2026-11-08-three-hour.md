@@ -68,6 +68,8 @@ Degenerate: emergency after the name; emergency on the first clinical turn; call
 
 A no phrase is a no: “नहीं जी” on ever-pregnant stores false and skips miscarriage. “जी हाँ” on a family topic counts as a family yes, so the same-problem question is not hidden. “वजह पता नहीं”, “मुझे पता नहीं है”, and “याद नहीं है” close a follow-up as unknown. “दो दिन पता नहीं” keeps the number, so it is not wiped to unknown.
 
+A fact said in the same sentence is stored. “ऑपरेशन हुआ, पानी कम होने की वजह से, अस्पताल में” fills delivery, place, and the reason, and does not ask those again. “पीलिया की वजह से चार दिन” fills jaundice and 4 days. Two reasons in one sentence (“पीलिया और झटके”) do not pick one. `180` unit tests.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

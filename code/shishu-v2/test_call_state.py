@@ -497,6 +497,50 @@ class CallStateTests(unittest.TestCase):
             "डॉक्टर ने पानी कम बताया था।",
         )
 
+    def test_a_reason_and_a_stay_stated_with_the_answer_are_not_asked_again(self):
+        state = call_state.apply_updates(
+            call_state.new_call_state(),
+            [_update("profile.children", [{"age": {"value": 2, "unit": "years"}, "sex": "male"}])],
+            1,
+        )
+        state = _ask(state, "birth_mode")
+        state = call_state.apply_updates(
+            state,
+            [_update("topic.birth_mode", "जी हाँ")],
+            2,
+            utterance="जी हाँ, ऑपरेशन हुआ, पानी कम होने की वजह से, अस्पताल में।",
+        )
+        details = state["topics"]["birth_mode"]["details"]
+        self.assertEqual(details.get("delivery_type"), "operation")
+        self.assertEqual(details.get("place"), "hospital")
+        self.assertIn("पानी कम", details.get("operation_reason") or "")
+        pending = [item["id"] for item in call_state._pending_followups(state, "birth_mode")]
+        self.assertNotIn("operation_reason", pending)
+        self.assertNotIn("place", pending)
+
+        state = _ask(state, "birth_nicu")
+        state = call_state.apply_updates(
+            state,
+            [_update("topic.birth_nicu", True)],
+            3,
+            utterance="पीलिया की वजह से चार दिन काँच के बक्से में रखा।",
+        )
+        nicu = state["topics"]["birth_nicu"]["details"]
+        self.assertEqual(nicu.get("reason"), "jaundice")
+        self.assertEqual(nicu.get("days"), 4)
+        pending = [item["id"] for item in call_state._pending_followups(state, "birth_nicu")]
+        self.assertNotIn("reason", pending)
+        self.assertNotIn("days", pending)
+
+        mixed = _ask(call_state.new_call_state(), "birth_nicu")
+        mixed = call_state.apply_updates(
+            mixed,
+            [_update("topic.birth_nicu", True)],
+            1,
+            utterance="पीलिया और झटके दोनों की वजह से रखा।",
+        )
+        self.assertNotIn("reason", mixed["topics"]["birth_nicu"]["details"])
+
     def test_clarification_does_not_close_the_followup(self):
         state = _ask(call_state.new_call_state(), "birth_nicu")
         state = call_state.apply_updates(state, [_update("topic.birth_nicu", True)], 1)
