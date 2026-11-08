@@ -2390,6 +2390,9 @@ def _lab_result(text: str) -> str | None:
         return "abnormal"
     if re.search(r"(?<!ab)(?:नॉर्मल|normal)", text, re.I):
         return "normal"
+    # कुछ नहीं निकला / दिखा / मिला is a normal result. The scan having happened is not.
+    if re.search(r"कुछ\s*नहीं\s*(?:निकला|निकली|दिखा|दिखी|दिखे|मिला|मिली)", text):
+        return "normal"
     return None
 
 

@@ -2259,6 +2259,20 @@ class CallStateTests(unittest.TestCase):
             "yes",
         )
         self.assertEqual(once["topics"]["body_transfusion"]["details"].get("count"), 1)
+        clear = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "preg_scan"),
+            [_update("topic.preg_scan", True)],
+            1,
+            utterance="स्कैन हुआ था, कुछ नहीं निकला।",
+        )
+        self.assertEqual(call_state.topic_answer_kind(clear["topics"]["preg_scan"], "preg_scan"), "no")
+        hole = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "preg_scan"),
+            [_update("topic.preg_scan", True)],
+            1,
+            utterance="स्कैन में दिल में छेद बताया।",
+        )
+        self.assertEqual(call_state.topic_answer_kind(hole["topics"]["preg_scan"], "preg_scan"), "yes")
         fine = call_state.apply_updates(
             _ask(call_state.new_call_state(), "ill_odor"),
             [_update("topic.ill_odor", True)],

@@ -308,6 +308,12 @@ Trio: twins, boy and girl, both one (no flags), fits for her son and not the mot
 
 Trio: नाम बता रही हूँ (no flags, no child named बता), राम named with नाम and fits (the yes line names राम), and सीता's 4 sent as the count (still two children, unnamed, no हाँ lines). Pass.
 
+## 16:27 IST
+
+स्कैन हुआ था, कुछ नहीं निकला is a normal scan, not a finding. कुछ नहीं दिखा was already a no. स्कैन में दिल में छेद बताया stays a yes. `197` unit tests. 114 scenarios, 0 failed.
+
+Trio: scan found nothing (no flags, no हाँ lines), a hole on the scan (still a yes), and कुछ नहीं दिखा sent as true (no हाँ lines). Pass.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

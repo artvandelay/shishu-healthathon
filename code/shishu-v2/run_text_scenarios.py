@@ -605,6 +605,52 @@ def campaign() -> list[Scenario]:
             no_value=True,
         ),
         Scenario(
+            name="no_flags_scan_found_nothing",
+            group="no_flags",
+            caller_name="अंजना",
+            marital_text=married,
+            children_text="एक बेटी है, दो साल की।",
+            children_value=1,
+            positives={
+                "preg_scan": {
+                    "value": True,
+                    "utterance": "स्कैन हुआ था, कुछ नहीं निकला।",
+                    "details": {},
+                },
+            },
+        ),
+        Scenario(
+            name="flags_scan_hole",
+            group="red_flags",
+            caller_name="भारती",
+            marital_text=married,
+            children_text="एक बेटा है, तीन साल का।",
+            children_value=1,
+            positives={
+                "preg_scan": {
+                    "value": True,
+                    "utterance": "स्कैन में दिल में छेद बताया।",
+                    "details": {},
+                },
+            },
+            expect_yes=("preg_scan",),
+        ),
+        Scenario(
+            name="degenerate_scan_sent_as_yes",
+            group="degenerate",
+            caller_name="चंदा",
+            marital_text=married,
+            children_text="एक बेटी है, एक साल की।",
+            children_value=1,
+            positives={
+                "preg_scan": {
+                    "value": True,
+                    "utterance": "स्कैन में कुछ नहीं दिखा।",
+                    "details": {},
+                },
+            },
+        ),
+        Scenario(
             name="no_flags_telling_the_names",
             group="no_flags",
             caller_name="स्वाति",
