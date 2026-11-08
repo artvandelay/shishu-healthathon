@@ -350,6 +350,12 @@ Trio: a normal blood count (no flags, no हाँ lines), low count plus normal
 
 Trio: a son of nineteen (no flags), father's sugar at forty (still a yes, the line keeps 40 साल), and 40 sent as the child count (one boy of nineteen, no हाँ lines). Pass.
 
+## 16:40 IST
+
+बीपी, शुगर, and लकवा on the family question are the condition, the same way शुगर already was in pregnancy. शुगर नहीं है stays a no. Both बीपी and शुगर stay one yes. `197` unit tests. 135 scenarios, 0 failed.
+
+Trio: no sugar (no flags, no हाँ lines), father's stroke (still a yes), and BP plus sugar (still a yes, the line names both). Pass.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

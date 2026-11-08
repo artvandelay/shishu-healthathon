@@ -1690,6 +1690,18 @@ class CallStateTests(unittest.TestCase):
             utterance="पापा को शुगर है, उम्र चालीस साल।",
         )
         self.assertEqual(forty["topics"]["fam_bp_stroke"]["details"].get("onset_age"), "40 साल")
+        self.assertEqual(forty["topics"]["fam_bp_stroke"]["details"].get("condition"), "sugar")
+        self.assertNotIn(
+            "condition",
+            [item["id"] for item in call_state._pending_followups(forty, "fam_bp_stroke")],
+        )
+        stroke = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "fam_bp_stroke"),
+            [_update("topic.fam_bp_stroke", True)],
+            1,
+            utterance="पापा को लकवा है।",
+        )
+        self.assertEqual(stroke["topics"]["fam_bp_stroke"]["details"].get("condition"), "stroke")
         self.assertEqual(
             call_state._spoken_age_records("उन्नीस साल का बेटा है।"),
             [{"value": 19, "unit": "years"}],

@@ -637,6 +637,53 @@ def campaign() -> list[Scenario]:
             children_value=3,
         ),
         Scenario(
+            name="no_flags_no_sugar",
+            group="no_flags",
+            caller_name="अर्चना",
+            marital_text=married,
+            children_text="एक बेटी है, तीन साल की।",
+            children_value=1,
+            positives={
+                "fam_bp_stroke": {
+                    "value": True,
+                    "utterance": "शुगर नहीं है।",
+                    "details": {},
+                },
+            },
+        ),
+        Scenario(
+            name="flags_stroke",
+            group="red_flags",
+            caller_name="ललिता",
+            marital_text=married,
+            children_text="एक बेटा है, चार साल का।",
+            children_value=1,
+            positives={
+                "fam_bp_stroke": {
+                    "value": True,
+                    "utterance": "पापा को लकवा है।",
+                    "details": {},
+                },
+            },
+            expect_yes=("fam_bp_stroke",),
+        ),
+        Scenario(
+            name="degenerate_bp_and_sugar",
+            group="degenerate",
+            caller_name="सुनीता",
+            marital_text=married,
+            children_text="एक बेटी है, दो साल की।",
+            children_value=1,
+            positives={
+                "fam_bp_stroke": {
+                    "value": True,
+                    "utterance": "बीपी और शुगर दोनों हैं।",
+                    "details": {},
+                },
+            },
+            expect_yes=("fam_bp_stroke",),
+        ),
+        Scenario(
             name="no_flags_nineteen",
             group="no_flags",
             caller_name="वंदना",
