@@ -219,13 +219,10 @@ async def ask_mother(spec: dict, bot_line: str, step: int) -> str:
 
 
 def _state_snapshot(state: dict) -> tuple:
-    topics = {}
-    for key, row in (state.get("topics") or {}).items():
-        details = dict(row.get("details") or {})
-        for detail_key, detail_val in list(details.items()):
-            if str(detail_val).strip() in {"क्या मतलब?", "क्या मतलब"}:
-                details.pop(detail_key)
-        topics[key] = (row.get("state"), row.get("value"), details)
+    topics = {
+        key: (row.get("state"), row.get("value"), row.get("details"))
+        for key, row in (state.get("topics") or {}).items()
+    }
     return (topics, dict(state.get("profile") or {}))
 
 
@@ -279,12 +276,13 @@ async def one_call(name: str, url: str, headers: dict) -> dict:
                             f"asked nothing",
                             flush=True,
                         )
+                    clarifying = (step + 1) in PERSONAS[name].get("clarify_steps", ())
                     text = await ask_mother(PERSONAS[name], heard, step + 1)
                     last_bot = ""
                     if not text:
                         continue
                     step += 1
-                    if text.strip() in {"क्या मतलब?", "क्या मतलब"}:
+                    if clarifying:
                         clarify_snapshot = _state_snapshot(state)
                     asked = checklist.question_hi(str(cur.get("topic_id") or ""))
                     print(
