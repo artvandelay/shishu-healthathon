@@ -427,6 +427,29 @@ class CallStateTests(unittest.TestCase):
         state = call_state.apply_updates(state, [_update("topic.birth_mode", "operation")], 2)
         self.assertEqual(state["topics"]["birth_mode"]["value"], "operation")
         self.assertEqual(state["topics"]["birth_mode"]["details"].get("delivery_type"), "operation")
+        corrected = _ask(call_state.new_call_state(), "birth_mode")
+        corrected = call_state.apply_updates(
+            corrected,
+            [_update("topic.birth_mode", "normal")],
+            1,
+            utterance="नॉर्मल हुआ।",
+        )
+        corrected = call_state.apply_updates(
+            corrected,
+            [_update("topic.birth_mode", True)],
+            2,
+            utterance="गलत कहा, ऑपरेशन हुआ, पानी कम होने की वजह से।",
+        )
+        self.assertEqual(corrected["topics"]["birth_mode"]["details"].get("delivery_type"), "operation")
+        self.assertEqual(call_state.topic_answer_kind(corrected["topics"]["birth_mode"], "birth_mode"), "yes")
+        denied = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "birth_mode"),
+            [_update("topic.birth_mode", True)],
+            1,
+            utterance="ऑपरेशन नहीं, नॉर्मल हुआ।",
+        )
+        self.assertEqual(denied["topics"]["birth_mode"]["details"].get("delivery_type"), "normal")
+        self.assertEqual(call_state.topic_answer_kind(denied["topics"]["birth_mode"], "birth_mode"), "no")
 
     def test_normal_hearing_is_not_a_positive_finding(self):
         state = _ask(call_state.new_call_state(), "birth_hearing_vision")
@@ -839,6 +862,10 @@ class CallStateTests(unittest.TestCase):
                 {"value": 6, "unit": "months"},
                 {"value": 2, "unit": "years"},
             ],
+        )
+        self.assertEqual(
+            call_state._spoken_age_records("दो हफ़्ते और एक हफ़्ता का है।"),
+            [{"value": 2, "unit": "weeks"}, {"value": 1, "unit": "weeks"}],
         )
         self.assertEqual(
             call_state._spoken_age_records("एक बेटा है, दो हफ़्ते का है।"),

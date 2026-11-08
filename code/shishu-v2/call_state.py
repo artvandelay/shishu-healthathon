@@ -1023,6 +1023,29 @@ def _followed_by_age_copula(text: str, end: int) -> bool:
     ) is not None
 
 
+def _is_stay_after(text: str, end: int) -> bool:
+    rest = re.sub(r"^\S*", "", text[end:])
+    return re.match(r"\s*(?:रहा|रही|रहे|तक|से|के\s+लिए)", rest) is not None
+
+
+def _span_is_age(text: str, end: int, require_copula: bool) -> bool:
+    """A week or day count is an age with का/की है, or in a list that ends that way.
+
+    दो हफ़्ते और एक हफ़्ता का है is two ages. दो दिन रहा is a stay.
+    """
+    if _is_duration_after(text, end) or (require_copula and _is_stay_after(text, end)):
+        return False
+    if not require_copula or _followed_by_age_copula(text, end):
+        return True
+    rest = re.sub(r"^\S*", "", text[end:])
+    if re.match(r"\s*(?:,|और|and)\b", rest, re.I) and re.search(
+        r"(?:का|की|के)\s*(?:है|हैं|था|थी|थे|बच्च|बेटा|बेटी|लड़क)",
+        text[end:],
+    ):
+        return True
+    return False
+
+
 def _ages_with_unit(folded: str, unit_pattern: str, unit_name: str, require_copula: bool = False) -> list[tuple]:
     """Numbers that share one unit, plus a number written next to the unit.
 
@@ -1036,9 +1059,7 @@ def _ages_with_unit(folded: str, unit_pattern: str, unit_name: str, require_copu
         re.I,
     )
     for match in listed.finditer(folded):
-        if _is_duration_after(folded, match.end()):
-            continue
-        if require_copula and not _followed_by_age_copula(folded, match.end()):
+        if not _span_is_age(folded, match.end(), require_copula):
             continue
         covered.append((match.start(), match.end()))
         blob_at = match.start(1)
@@ -1051,9 +1072,7 @@ def _ages_with_unit(folded: str, unit_pattern: str, unit_name: str, require_copu
     for match in single.finditer(folded):
         if any(start <= match.start() < end for start, end in covered):
             continue
-        if _is_duration_after(folded, match.end()):
-            continue
-        if require_copula and not _followed_by_age_copula(folded, match.end()):
+        if not _span_is_age(folded, match.end(), require_copula):
             continue
         found.append((match.start(), {"value": _spoken_number(match.group(1)), "unit": unit_name}))
     return found
@@ -1420,6 +1439,25 @@ def is_clarification(text: str) -> bool:
 _is_clarification = is_clarification
 
 
+def _word_denied(text: str, word: str) -> bool:
+    """नॉर्मल नहीं and नहीं ऑपरेशन both deny that word."""
+    denial = r"(?:नहीं|नही|\bno\b|\bnahi\b|\bnahin\b)"
+    gap = r"(?:\s+\S+){0,3}\s*"
+    token = re.escape(word)
+    return (
+        re.search(rf"{denial}{gap}{token}", text, re.I) is not None
+        or re.search(rf"{token}{gap}{denial}", text, re.I) is not None
+    )
+
+
+def _named_and_not_denied(value_text: str, utterance: str, words: tuple[str, ...]) -> bool:
+    """The new answer names this kind, and the utterance does not take it back."""
+    named = any(word in value_text or word in utterance for word in words)
+    if not named:
+        return False
+    return not any(_word_denied(utterance, word) for word in words if word in utterance or word in value_text)
+
+
 def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
     details = dict(topic.get("details") or {})
     value = topic.get("value")
@@ -1427,15 +1465,14 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
     utt_blob = (utterance or "").lower()
     combined = f"{val_blob} {utt_blob}"
     if name == "birth_mode":
-        if any(word in val_blob for word in ("operation", "caesarean", "cesarean", "c-section", "ऑपरेशन", "सीजेरियन")):
+        op_words = ("operation", "caesarean", "cesarean", "c-section", "ऑपरेशन", "सीजेरियन")
+        norm_words = ("normal", "नॉर्मल")
+        said_op = _named_and_not_denied(val_blob, utt_blob, op_words)
+        said_norm = _named_and_not_denied(val_blob, utt_blob, norm_words)
+        if said_op and not said_norm:
             details["delivery_type"] = "operation"
-        elif any(word in val_blob for word in ("normal", "नॉर्मल")):
+        elif said_norm and not said_op:
             details["delivery_type"] = "normal"
-        elif "delivery_type" not in details:
-            if any(word in utt_blob for word in ("operation", "caesarean", "cesarean", "c-section", "ऑपरेशन", "सीजेरियन")):
-                details["delivery_type"] = "operation"
-            elif any(word in utt_blob for word in ("normal", "नॉर्मल")):
-                details["delivery_type"] = "normal"
         if any(word in val_blob for word in ("hospital", "clinic", "अस्पताल", "हॉस्पिटल", "नर्सिंग")):
             details["place"] = "hospital"
         elif any(word in val_blob for word in ("home", "ghar", "घर")):

@@ -96,7 +96,9 @@ A day or time count copied into the follow-up as a sentence ("दो दिन �
 
 आठ, छह और चार साल is three ages that share one unit. एक आधा साल stays one age. छह महीने और दो साल stays one of each unit.
 
-शादी हुई है and शादी हो चुकी है are married. शादी नहीं हुई and शादीशुदा नहीं are unmarried. A denial beats the marriage word. `187` unit tests. 37 scenarios, 0 failed.
+शादी हुई है and शादी हो चुकी है are married. शादी नहीं हुई and शादीशुदा नहीं are unmarried. A denial beats the marriage word.
+
+A later utterance replaces the delivery type. ऑपरेशन after a stored normal delivery is an operation. ऑपरेशन नहीं, नॉर्मल हुआ stays normal. दो हफ़्ते और एक हफ़्ता का है is two ages. A stay (दो दिन रहा) is still not an age. `187` unit tests. 37 scenarios, 0 failed.
 
 ## Not hardcoded
 
