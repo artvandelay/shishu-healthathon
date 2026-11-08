@@ -794,14 +794,35 @@ _KINSHIP_WORDS = {
     "दादा", "दादी", "चाचा", "चाची", "ताऊ", "ताई", "बुआ", "फूफा", "नाना", "नानी",
     "मामा", "मामी", "मौसी", "मासी", "मौसा", "ससुर", "सास", "देवर", "जेठ", "ननद",
     "कज़िन", "कजिन", "दूर", "खानदान", "सगा", "सगे", "सगी", "रिश्तेदार",
+    "ससुराल",
 }
+
+
+def _token_is_kin(token: str) -> bool:
+    """चाचा, चाचे, and चाचाजी are the same relative. मामला is not मामा.
+
+    Only an ा-ending word inflects this way. रिश्तेदार must not swallow रिश्तेदारी,
+    which names the idea of a relation and not which relative.
+    """
+    token = re.sub(r"जी$", "", token or "")
+    if token in _KINSHIP_WORDS:
+        return True
+    for word in _KINSHIP_WORDS:
+        if len(word) < 4 or not word.endswith("ा"):
+            continue
+        stem = word[:-1]
+        if not token.startswith(stem):
+            continue
+        rest = token[len(stem):]
+        if re.fullmatch(r"[\u093e-\u094c]*", rest or ""):
+            return True
+    return False
 
 
 def _has_kinship(text: str) -> bool:
     raw = (text or "").lower()
     blob = re.sub(r"[^\w\s\u0900-\u097F]", " ", raw)
-    words = set(blob.split())
-    return bool(words & _KINSHIP_WORDS)
+    return any(_token_is_kin(word) for word in blob.split())
 
 
 def _find_child_id(state: dict, raw: object) -> str | None:
@@ -2099,7 +2120,7 @@ def _named_and_not_denied(value_text: str, utterance: str, words: tuple[str, ...
     )
 
 
-def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
+def _absorb_stated_value(name: str, topic: dict, utterance: str, on_followup: bool = False) -> None:
     details = dict(topic.get("details") or {})
     value = topic.get("value")
     val_blob = str(value or "").lower()
@@ -2173,6 +2194,7 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
             details["result"] = named
             if named == "normal":
                 details.setdefault("caller_test", True)
+    keep_positive = False
     if name == "body_growth":
         text = utterance or ""
         not_growing = re.search(r"नहीं\s+बढ़|जैसा\s+नहीं|ठीक\s+से\s+नहीं|not growing", text, re.I)
@@ -2181,6 +2203,7 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
         if not_growing:
             details.pop("result", None)
             topic["value"] = True
+            keep_positive = True
         elif denied:
             details.pop("result", None)
         elif fine and _affirmative_value(value):
@@ -2258,6 +2281,19 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
         and not ("ठीक" in question and "ठीक" in (utterance or ""))
     )
     if reassured:
+        topic["value"] = False
+    # A tool "yes" does not outvote a sentence that says no. ठीक है। by itself
+    # is only an acknowledgement. A follow-up denial is about that detail.
+    # A sentence that still names the problem (झटके थे, शुगर था) stays a yes.
+    if (
+        not on_followup
+        and not keep_positive
+        and not acknowledgement
+        and topic.get("value") is True
+        and _stated_polarity(utterance) == "no"
+        and not _restates_negative_question(name, utterance)
+        and not _described_problem(name, utterance, details)
+    ):
         topic["value"] = False
     if name == "birth_cord_3weeks" and _cord_within_three_weeks(utterance or ""):
         topic["value"] = False
@@ -2519,7 +2555,7 @@ def apply_updates(
             ):
                 topic["value"] = True
             topic["source"] = "model"
-            _absorb_stated_value(name, topic, utterance)
+            _absorb_stated_value(name, topic, utterance, on_followup=True)
             _remember_turn(topic, turn_id)
             _store_instances(topic, update)
             continue

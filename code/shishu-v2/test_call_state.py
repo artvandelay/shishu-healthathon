@@ -1643,6 +1643,24 @@ class CallStateTests(unittest.TestCase):
         self.assertEqual(call_state.topic_answer_kind(uncle, "fam_bp_stroke"), "yes")
         denied = {"state": "answered", "value": "नहीं, मामा को नहीं", "details": {}}
         self.assertEqual(call_state.topic_answer_kind(denied, "fam_bp_stroke"), "no")
+        said_no = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "fam_related"),
+            [_update("topic.fam_related", True)],
+            1,
+            utterance="कोई रिश्ता नहीं।",
+        )
+        self.assertEqual(call_state.topic_answer_kind(said_no["topics"]["fam_related"], "fam_related"), "no")
+        self.assertEqual(call_state._pending_followups(said_no, "fam_related"), [])
+        oblique = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "fam_related"),
+            [_update("topic.fam_related", True)],
+            1,
+            utterance="चाचे की लड़की से शादी है।",
+        )
+        self.assertEqual(oblique["topics"]["fam_related"]["details"].get("relationship"), "चाचे की लड़की से शादी है।")
+        self.assertEqual(call_state._pending_followups(oblique, "fam_related"), [])
+        self.assertTrue(call_state._has_kinship("ससुराल से है।"))
+        self.assertFalse(call_state._has_kinship("यह मामला नहीं है।"))
 
     def test_hindi_sex_words_count_as_female_or_male(self):
         for word in ("लड़की", "बेटी", "बच्ची"):
