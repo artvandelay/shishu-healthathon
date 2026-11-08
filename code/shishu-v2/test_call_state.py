@@ -2331,6 +2331,31 @@ class CallStateTests(unittest.TestCase):
             utterance="पेशाब और पाखाना दोनों में बदबू है।",
         )
         self.assertNotIn("source", both_smells["topics"]["ill_odor"]["details"])
+        low = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "body_blood_count"),
+            [_update("topic.body_blood_count", True)],
+            1,
+            utterance="डॉक्टर ने कहा खून कम है।",
+        )
+        self.assertEqual(low["topics"]["body_blood_count"]["details"].get("low_or_high"), "कम")
+        self.assertNotIn(
+            "low_or_high",
+            [item["id"] for item in call_state._pending_followups(low, "body_blood_count")],
+        )
+        knee = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "body_joint_swelling"),
+            [_update("topic.body_joint_swelling", True)],
+            1,
+            utterance="घुटने में सूजन आती है।",
+        )
+        self.assertEqual(knee["topics"]["body_joint_swelling"]["details"].get("joint"), "घुटने")
+        thumb = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "body_thumb"),
+            [_update("topic.body_thumb", "अंगूठा नहीं है।")],
+            1,
+            utterance="अंगूठा नहीं है।",
+        )
+        self.assertEqual(thumb["topics"]["body_thumb"]["details"].get("finger_or_thumb"), "अंगूठा")
         lump = call_state.apply_updates(
             _ask(call_state.new_call_state(), "body_lumps_birth"),
             [_update("topic.body_lumps_birth", True)],

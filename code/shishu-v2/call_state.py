@@ -2391,26 +2391,29 @@ def _word_denied(text: str, word: str) -> bool:
 
 
 def _store_question_choice(name: str, details: dict, follow_ids: set, utterance: str) -> None:
-    """पेशाब या पाखाना. If she named one, and not only to say it is fine, store it.
+    """पेशाब या पाखाना, खून कम या ज़्यादा. If she named one option, store it.
 
     The words come from the question. A location follow-up is a different question:
-    सूजन या गाँठ is the finding, not where it is.
+    सूजन या गाँठ is the finding, not where it is. A copula beside या is not an option.
     """
-    if "source" not in follow_ids or "source" in details or _only_reassurance(utterance):
+    choice_ids = ("source", "low_or_high", "joint", "finger_or_thumb")
+    choice_id = next((fid for fid in choice_ids if fid in follow_ids and fid not in details), None)
+    if not choice_id or _only_reassurance(utterance):
         return
     question = checklist.question_hi(name)
     said = []
     problem = " ".join(
         bit for bit in _clauses(utterance) if bit and not _clause_is_reassurance(bit)
     )
+    skip = {"नहीं", "नही", "क्या", "है", "हैं", "था", "थी", "थे", "हुआ", "हुई", "हुए"}
     for match in re.finditer(r"([\u0900-\u097F]{2,})\s+या\s+([\u0900-\u097F]{2,})", question):
         for word in (match.group(1), match.group(2)):
-            if word in {"नहीं", "नही", "क्या"}:
+            if word in skip:
                 continue
             if word in problem and word not in said:
                 said.append(word)
     if len(said) == 1:
-        details["source"] = said[0]
+        details[choice_id] = said[0]
 
 
 def _lab_result(text: str) -> str | None:

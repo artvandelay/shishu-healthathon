@@ -637,6 +637,53 @@ def campaign() -> list[Scenario]:
             children_value=3,
         ),
         Scenario(
+            name="no_flags_knee_denied",
+            group="no_flags",
+            caller_name="मीना",
+            marital_text=married,
+            children_text="एक बेटी है, चार साल की।",
+            children_value=1,
+            positives={
+                "body_joint_swelling": {
+                    "value": True,
+                    "utterance": "घुटने में सूजन नहीं है।",
+                    "details": {},
+                },
+            },
+        ),
+        Scenario(
+            name="flags_blood_low",
+            group="red_flags",
+            caller_name="लता",
+            marital_text=married,
+            children_text="एक बेटा है, पाँच साल का।",
+            children_value=1,
+            positives={
+                "body_blood_count": {
+                    "value": True,
+                    "utterance": "डॉक्टर ने कहा खून कम है।",
+                    "details": {},
+                },
+            },
+            expect_yes=("body_blood_count",),
+        ),
+        Scenario(
+            name="degenerate_missing_thumb_sent_as_no",
+            group="degenerate",
+            caller_name="शोभा",
+            marital_text=married,
+            children_text="एक बेटी है, दो साल की।",
+            children_value=1,
+            positives={
+                "body_thumb": {
+                    "value": False,
+                    "utterance": "अंगूठा नहीं है।",
+                    "details": {},
+                },
+            },
+            expect_yes=("body_thumb",),
+        ),
+        Scenario(
             name="no_flags_both_fine",
             group="no_flags",
             caller_name="पूजा",

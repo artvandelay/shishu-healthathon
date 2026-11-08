@@ -332,6 +332,12 @@ Trio: her daughter, not his earlier children (no flags), blue lips for that daug
 
 Trio: both are fine (no flags, no हाँ lines), urine smell with stool fine (still a yes, the line names the boy and पेशाब), and both smell (still a yes). Pass.
 
+## 16:36 IST
+
+The same choice is stored for the other questions that offer it. खून कम या ज़्यादा stores कम. घुटने या जोड़ stores घुटने. अंगूठा या उंगली stores अंगूठा. सूजन या गाँठ is still not the place. घुटने में सूजन नहीं है stays a no. `197` unit tests. 126 scenarios, 0 failed.
+
+Trio: the knee denied (no flags, no हाँ lines), blood count low (still a yes, the line names कम), and a missing thumb sent as false (still a yes, the line names अंगूठा). Pass.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.
