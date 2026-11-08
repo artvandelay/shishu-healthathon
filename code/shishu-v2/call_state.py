@@ -1377,6 +1377,19 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
         if details.get("delivery_type") == "operation" and "operation_reason" not in details:
             if re.search(r"वजह|because|reason", utt_blob):
                 details["operation_reason"] = (utterance or "").strip()
+    if name == "birth_term":
+        blob = f"{val_blob} {utt_blob}"
+        early = re.search(r"समय से पहले|जल्दी|preterm|early|सात महीने|आठ महीने|छह महीने|seven month|eight month|six month", blob)
+        late = re.search(r"समय के बाद|देर से|postterm|late|दस महीने|ग्यारह महीने|ten month|eleven month", blob)
+        full = re.search(r"पूरे नौ|नौ महीने|nine month|full term|समय पर", blob)
+        if "term" not in details and "result" not in details:
+            if early and not late:
+                details["term"] = "early"
+            elif late and not early:
+                details["term"] = "late"
+            elif full and not early and not late:
+                details["term"] = "full"
+                details["result"] = "normal"
     if name == "birth_nicu":
         if "days" not in details:
             days = _spoken_day_count(utterance or "")

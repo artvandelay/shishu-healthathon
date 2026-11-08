@@ -841,6 +841,32 @@ class CallStateTests(unittest.TestCase):
         )
         self.assertEqual([c["sex"] for c in one_named["profile"]["children"]], [None, None, None])
 
+    def test_a_full_term_answer_is_not_a_finding(self):
+        full = _ask(call_state.new_call_state(), "birth_term")
+        full = call_state.apply_updates(
+            full,
+            [_update("topic.birth_term", True)],
+            1,
+            utterance="पूरे नौ महीने में हुआ, समय पर।",
+        )
+        self.assertEqual(call_state.topic_answer_kind(full["topics"]["birth_term"], "birth_term"), "no")
+        early = _ask(call_state.new_call_state(), "birth_term")
+        early = call_state.apply_updates(
+            early,
+            [_update("topic.birth_term", True)],
+            1,
+            utterance="समय से पहले सात महीने में हुआ।",
+        )
+        self.assertEqual(call_state.topic_answer_kind(early["topics"]["birth_term"], "birth_term"), "yes")
+        late = _ask(call_state.new_call_state(), "birth_term")
+        late = call_state.apply_updates(
+            late,
+            [_update("topic.birth_term", True)],
+            1,
+            utterance="दस महीने में हुआ, देर से।",
+        )
+        self.assertEqual(call_state.topic_answer_kind(late["topics"]["birth_term"], "birth_term"), "yes")
+
     def test_a_count_of_times_stated_with_the_answer_is_not_asked_again(self):
         state = _ask(call_state.new_call_state(), "body_transfusion")
         state = call_state.apply_updates(

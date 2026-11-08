@@ -84,7 +84,9 @@ A family answer whose value is the relationship (कज़िन, मामा) 
 
 Heavy periods said after a no on the general bleeding question are still a हाँ. A periods answer of नहीं leaves the topic a no. The English word heavy is printed as ज़्यादा, not a phonetic spelling. A count she already said (दो बार) closes the times follow-up. ठीक है, theek hai, and कोई दिक्कत नहीं are nos, so a daughter of 11 is still asked about periods. Ages in the mother report use the words she used: 6 महीने stays 6 महीने, 0.5 years is आधा साल, 1.5 is डेढ़ साल, 3.5 is साढ़े 3 साल.
 
-A bleeding or bruise finding is not asked as a swollen knee. Lost skills, puberty, limb pain, lumps, proportion, thumb, and private parts each get their own question instead of the generic growth sentence. `185` unit tests. 26 scenarios, 0 failed.
+A bleeding or bruise finding is not asked as a swollen knee. Lost skills, puberty, limb pain, lumps, proportion, thumb, and private parts each get their own question instead of the generic growth sentence.
+
+पूरे नौ महीने / समय पर is not a red flag even when the stored value is yes. सात महीने or समय से पहले stays early. दस महीने or देर से stays late. `186` unit tests. 27 scenarios, 0 failed.
 
 ## Not hardcoded
 

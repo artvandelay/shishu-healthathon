@@ -487,6 +487,21 @@ def campaign() -> list[Scenario]:
             children_value=1,
         ),
         Scenario(
+            name="no_flags_full_term_said_as_yes",
+            group="no_flags",
+            caller_name="बबिता",
+            marital_text=married,
+            children_text="एक बच्चा है, एक साल की बेटी।",
+            children_value=1,
+            positives={
+                "birth_term": {
+                    "value": True,
+                    "utterance": "पूरे नौ महीने में हुआ, समय पर।",
+                },
+            },
+            expect_yes=(),
+        ),
+        Scenario(
             name="flags_periods_after_a_no",
             group="red_flags",
             caller_name="किरण",
