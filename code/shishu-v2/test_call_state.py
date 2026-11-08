@@ -1402,6 +1402,42 @@ class CallStateTests(unittest.TestCase):
         )
         self.assertEqual(call_state.topic_answer_kind(plain_no["topics"]["body_growth"], "body_growth"), "no")
 
+        unknown_preg = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "profile.ever_pregnant"),
+            [_update("profile.ever_pregnant", "पता नहीं")],
+            1,
+            utterance="पता नहीं।",
+        )
+        self.assertEqual(unknown_preg["profile"]["ever_pregnant"], "unknown")
+        self.assertIsNone(call_state._skip_reason(unknown_preg, "preg_conditions"))
+        self.assertNotEqual(
+            (call_state.next_question(unknown_preg) or {}).get("topic_id"),
+            "profile.ever_pregnant",
+        )
+        never = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "profile.ever_pregnant"),
+            [_update("profile.ever_pregnant", "नहीं")],
+            1,
+            utterance="नहीं, कभी प्रेग्नेंट नहीं हुई।",
+        )
+        self.assertIs(never["profile"]["ever_pregnant"], False)
+        self.assertEqual(call_state._skip_reason(never, "preg_conditions"), "ever_pregnant_no")
+
+        cleft = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "birth_cleft"),
+            [_update("topic.birth_cleft", "पता नहीं")],
+            1,
+            utterance="पता नहीं।",
+        )
+        self.assertEqual(call_state.topic_answer_kind(cleft["topics"]["birth_cleft"], "birth_cleft"), "unknown")
+        denied = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "birth_cleft"),
+            [_update("topic.birth_cleft", "नहीं")],
+            1,
+            utterance="नहीं।",
+        )
+        self.assertEqual(call_state.topic_answer_kind(denied["topics"]["birth_cleft"], "birth_cleft"), "no")
+
     def test_a_day_phrase_copied_into_the_field_is_stored_as_the_count(self):
         state = _ask(call_state.new_call_state(), "birth_nicu")
         state = call_state.apply_updates(

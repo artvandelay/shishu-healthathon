@@ -2010,11 +2010,14 @@ def apply_updates(
                 else:
                     val = update.get("value")
                 if name in {"ever_pregnant", "has_delivered"}:
-                    polarity = _stated_polarity(val)
-                    if polarity == "yes":
-                        val = True
-                    elif polarity == "no":
-                        val = False
+                    if _is_unknown_utterance(str(val or "")) or _is_unknown_utterance(utterance or ""):
+                        val = "unknown"
+                    else:
+                        polarity = _stated_polarity(val)
+                        if polarity == "yes":
+                            val = True
+                        elif polarity == "no":
+                            val = False
                 state["profile"][name] = val
                 if name == "caller_name" and val:
                     intro_n = state["topics"]["intro_name"]
@@ -2113,6 +2116,14 @@ def apply_updates(
             _remember_turn(topic, turn_id)
             _store_instances(topic, update)
             continue
+        if status == "answered" and (
+            _is_unknown_utterance(str(update.get("value") or ""))
+            or _is_unknown_utterance(utterance or "")
+        ):
+            status = "unknown"
+            update = dict(update)
+            update["state"] = "unknown"
+            update["value"] = None
         if previous_state in MODEL_TOPIC_STATES and (
             previous_value != update.get("value") or previous_state != status
         ):
