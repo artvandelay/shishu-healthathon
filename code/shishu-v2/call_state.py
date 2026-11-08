@@ -1819,7 +1819,7 @@ def _count_from_child_words(folded: str) -> int | None:
     if groups:
         return sum(number for number, _word in groups)
     after = re.search(
-        rf"{_CHILD_COUNT_WORD}\s+(\d+)(?!\s*{_AGE_UNIT_AFTER})",
+        rf"{_CHILD_COUNT_WORD}\s+(?<![\d.])(\d+)(?!\.\d)(?!\s*{_AGE_UNIT_AFTER})",
         folded or "",
         re.I,
     )
@@ -1827,10 +1827,10 @@ def _count_from_child_words(folded: str) -> int | None:
         return int(after.group(1))
     if not re.search(_CHILD_COUNT_WORD, folded or "", re.I):
         # चार साल का है is one age, not four children. A bare number is a count
-        # only when she did not also say an age.
+        # only when she did not also say an age. 1.5 is not one child.
         if _spoken_age_records(folded or ""):
             return None
-        bare = re.search(r"(\d+)", folded or "")
+        bare = re.search(r"(?<![\d.])(\d+)(?!\.\d)", folded or "")
         if bare:
             return int(bare.group(1))
     return None

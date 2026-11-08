@@ -1165,6 +1165,8 @@ class CallStateTests(unittest.TestCase):
             [{"value": 8, "unit": "years"}, {"value": 3, "unit": "years"}],
         )
         self.assertEqual(call_state._children_payload("दो"), ("count", 2))
+        self.assertEqual(call_state._children_payload("डेढ़"), ("ignore", []))
+        self.assertEqual(call_state._children_payload("1.5"), ("ignore", []))
         folded_half = call_state._fold_spoken_numbers("डेढ़ बच्चा है।")
         self.assertIsNone(call_state._count_from_child_words(folded_half))
         folded_quarter = call_state._fold_spoken_numbers("सवा दो बच्चे हैं।")
