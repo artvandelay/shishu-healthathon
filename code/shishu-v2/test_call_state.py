@@ -2051,6 +2051,41 @@ class CallStateTests(unittest.TestCase):
             call_state.topic_answer_kind(forced["topics"]["body_regression"], "body_regression"),
             "yes",
         )
+        bleed = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "preg_delivery"),
+            [_update("topic.preg_delivery", "प्रसव में बहुत खून बह गया।")],
+            1,
+            utterance="प्रसव में बहुत खून बह गया।",
+        )
+        self.assertEqual(
+            call_state.topic_answer_kind(bleed["topics"]["preg_delivery"], "preg_delivery"),
+            "yes",
+        )
+        self.assertIn("खून", bleed["topics"]["preg_delivery"]["details"].get("problem") or "")
+        self.assertNotIn(
+            "problem",
+            [item["id"] for item in call_state._pending_followups(bleed, "preg_delivery")],
+        )
+        happened = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "preg_delivery"),
+            [_update("topic.preg_delivery", "प्रसव हो गया।")],
+            1,
+            utterance="प्रसव हो गया।",
+        )
+        self.assertNotEqual(
+            call_state.topic_answer_kind(happened["topics"]["preg_delivery"], "preg_delivery"),
+            "yes",
+        )
+        fine = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "preg_delivery"),
+            [_update("topic.preg_delivery", True)],
+            1,
+            utterance="प्रसव ठीक रहा।",
+        )
+        self.assertEqual(
+            call_state.topic_answer_kind(fine["topics"]["preg_delivery"], "preg_delivery"),
+            "no",
+        )
 
 
 if __name__ == "__main__":

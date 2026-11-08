@@ -597,7 +597,6 @@ _DESCRIBED_SKIP = {
     "birth_hearing_vision",
     "preg_scan",
     "preg_thalassemia",
-    "preg_delivery",
 }
 
 
@@ -718,7 +717,16 @@ def _described_problem(topic_id: str | None, value: object, details: dict) -> bo
         return False
     if topic_id in _DESCRIBED_SKIP:
         return False
+    if topic_id == "preg_delivery" and _delivery_was_only_the_event(value):
+        return False
     return _followup_is_finding(value)
+
+
+def _delivery_was_only_the_event(value: object) -> bool:
+    """प्रसव हो गया names the delivery. प्रसव में खून बह गया names a problem."""
+    stems = _content_stems(str(value or ""))
+    event = _content_stems("प्रसव डिलीवरी delivery हुआ हुई हुए हो गया गई")
+    return bool(stems) and stems <= event
 
 
 def _is_positive(topic: dict, _topic_id: str | None = None) -> bool:
@@ -2194,6 +2202,15 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str, on_followup: bo
             details["result"] = named
             if named == "normal":
                 details.setdefault("caller_test", True)
+    if name == "preg_delivery" and "problem" not in details:
+        said = utterance or ""
+        if (
+            said.strip()
+            and _stated_polarity(said) != "no"
+            and not _delivery_was_only_the_event(said)
+            and not _names_reassuring_normal(said)
+        ):
+            details["problem"] = said.strip()
     keep_positive = False
     if name == "body_growth":
         text = utterance or ""

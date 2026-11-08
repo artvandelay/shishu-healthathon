@@ -196,6 +196,8 @@ A sentence that says no overrides a tool yes. कोई रिश्ता न�
 
 A fraction of a week is said the same way as a fraction of a year. सवा हफ़्ता, डेढ़ हफ़्ते, ढाई हफ़्ते, आधा हफ़्ता. Two whole weeks stay 2 हफ़्ते. `196` unit tests. 59 scenarios, 0 failed.
 
+प्रसव में खून बह गया is a delivery problem, and that sentence is the problem, so it is not asked again. प्रसव हो गया only says the delivery happened, so it is not a finding. प्रसव ठीक रहा stays a no. `196` unit tests. 59 scenarios, 0 failed.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.
