@@ -523,6 +523,14 @@ def campaign() -> list[Scenario]:
             children_value=1,
         ),
         Scenario(
+            name="no_flags_twins",
+            group="no_flags",
+            caller_name="शालिनी",
+            marital_text=married,
+            children_text="जुड़वाँ हैं, दोनों एक साल के।",
+            children_value="जुड़वाँ हैं, दोनों एक साल के।",
+        ),
+        Scenario(
             name="no_flags_one_month",
             group="no_flags",
             caller_name="पल्लवी",

@@ -2207,6 +2207,14 @@ def apply_updates(
                     # The tool's integer is an age when the sentence states ages
                     # and does not state that many children. आठ साल का एक बच्चा
                     # sent as 8 is one child. छह महीने sent as 6 is one child.
+                    if (
+                        kind_c == "ignore"
+                        and len(spoken_now) == 1
+                        and re.search(r"दोनों|जुड़वाँ|जुड़वां|जुड़वाँ|twins", utterance or "", re.I)
+                        and _count_from_child_words(_fold_spoken_numbers(utterance or "")) is None
+                    ):
+                        # दोनों एक साल के, or जुड़वाँ, is two children of that age.
+                        spoken_now = [spoken_now[0], spoken_now[0]]
                     if kind_c == "count" and spoken_now:
                         recounted = _count_from_child_words(_fold_spoken_numbers(utterance or ""))
                         age_values = {
