@@ -491,6 +491,10 @@ def _is_reassuring_result(details: dict) -> bool:
 
 _AFFIRM_RE = re.compile(r"हाँ|हां|\bhaan\b|\byes\b", re.I)
 _DENY_RE = re.compile(r"नहीं|नही|\bnahi\b|\bnahin\b|\bno\b", re.I)
+_REASSURE_RE = re.compile(
+    r"ठीक\s*है|theek\s*hai|thik\s*hai|कोई\s+(?:दिक्कत|परेशानी)\s+नहीं|no\s+problem|sab\s+theek|all\s+fine",
+    re.I,
+)
 
 
 def _stated_polarity(value: object) -> str | None:
@@ -513,6 +517,8 @@ def _stated_polarity(value: object) -> str | None:
     if affirmed and not denied:
         return "yes"
     if denied and not affirmed:
+        return "no"
+    if _REASSURE_RE.search(text):
         return "no"
     return None
 

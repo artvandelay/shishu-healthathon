@@ -956,6 +956,23 @@ class CallStateTests(unittest.TestCase):
             self.assertEqual(call_state.topic_answer_kind(topic, "birth_nicu"), "no", value)
         mixed = {"state": "answered", "value": "हाँ, नहीं पता", "details": {}}
         self.assertNotEqual(call_state.topic_answer_kind(mixed, "birth_nicu"), "yes")
+        for value in ("ठीक है", "theek hai", "कोई दिक्कत नहीं"):
+            topic = {"state": "answered", "value": value, "details": {}}
+            self.assertEqual(call_state.topic_answer_kind(topic, "birth_nicu"), "no", value)
+        girl = call_state.apply_updates(
+            call_state.new_call_state(),
+            [_update("profile.children", [{"age": {"value": 11, "unit": "years"}, "sex": "female"}])],
+            1,
+        )
+        girl = _ask(girl, "body_bleeding_bruise")
+        girl = call_state.apply_updates(
+            girl,
+            [_update("topic.body_bleeding_bruise", "ठीक है")],
+            2,
+            utterance="ठीक है।",
+        )
+        pending = [item["id"] for item in call_state._pending_followups(girl, "body_bleeding_bruise")]
+        self.assertIn("periods", pending)
 
         growth = _ask(call_state.new_call_state(), "body_growth")
         growth = call_state.apply_updates(
