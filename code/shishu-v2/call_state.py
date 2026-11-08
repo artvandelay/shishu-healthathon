@@ -1282,6 +1282,41 @@ def _spoken_ages(utterance: str) -> list[float]:
     ]
 
 
+def _shared_age_for_group(utterance: str, count_n: int) -> dict | None:
+    """तीन साल की दो बेटियाँ is two children of that age. मेरी उम्र तीस साल is not."""
+    records = _spoken_age_records(utterance)
+    if count_n < 2 or len(records) != 1:
+        return None
+    folded = _fold_spoken_numbers(utterance or "")
+    age = records[0]
+    unit = {
+        "years": _YEAR_UNIT,
+        "months": _MONTH_UNIT,
+        "weeks": _WEEK_UNIT,
+        "days": _DAY_UNIT,
+    }.get(age.get("unit") or "")
+    if not unit:
+        return None
+    value = age.get("value")
+    number = int(value) if isinstance(value, float) and value.is_integer() else value
+    num = re.escape(str(number))
+    before = re.search(
+        rf"{num}\s*{unit}\s+(?:का|की|के)\s+(?:\S+\s+){{0,2}}?{count_n}\s+{_CHILD_COUNT_WORD}",
+        folded,
+        re.I,
+    )
+    after = re.search(
+        rf"{count_n}\s+{_CHILD_COUNT_WORD}(.{{0,40}}?){num}\s*{unit}",
+        folded,
+        re.I,
+    )
+    if after and re.search(r"उम्र|मेरी|मैं", after.group(1)):
+        after = None
+    if not before and not after:
+        return None
+    return age
+
+
 def _age_records_from_prior(count_n: int, prior: list[str] | None) -> list[dict]:
     if count_n <= 0:
         return []
@@ -2075,8 +2110,11 @@ def apply_updates(
                     ]
                     aged = [child for child in existing if _child_age_years(child.get("age")) is not None]
                     spoken_now = _spoken_age_records(utterance)
-                    spoken = spoken_now
                     count_n = int(norm) if kind_c == "count" else 0
+                    shared = _shared_age_for_group(utterance, count_n)
+                    if shared:
+                        spoken_now = [shared] * count_n
+                    spoken = spoken_now
                     if kind_c == "count" and not spoken:
                         spoken = _age_records_from_prior(count_n, prior_utterances)
                     fresh = spoken_now if kind_c == "ignore" or len(spoken_now) == count_n else []

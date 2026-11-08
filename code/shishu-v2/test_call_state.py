@@ -1120,6 +1120,20 @@ class CallStateTests(unittest.TestCase):
             [{"value": 8, "unit": "years"}, {"value": 3, "unit": "years"}],
         )
         self.assertEqual(call_state._children_payload("दो"), ("count", 2))
+        shared = stored("तीन साल की दो बेटियाँ हैं।")
+        self.assertEqual(
+            [(c["sex"], c["age"]) for c in shared["profile"]["children"]],
+            [("female", {"value": 3, "unit": "years"}), ("female", {"value": 3, "unit": "years"})],
+        )
+        self.assertEqual(shared["topics"]["intro_children"]["state"], "answered")
+        sons = stored("दो बेटे हैं, दोनों चार साल के।")
+        self.assertEqual(
+            [(c["sex"], c["age"]) for c in sons["profile"]["children"]],
+            [("male", {"value": 4, "unit": "years"}), ("male", {"value": 4, "unit": "years"})],
+        )
+        mother = stored("मेरी उम्र तीस साल है और दो बच्चे हैं।")
+        self.assertTrue(all(c.get("age") is None for c in mother["profile"]["children"]))
+        self.assertNotEqual(mother["topics"]["intro_children"]["state"], "answered")
 
     def test_a_new_sentence_with_ages_replaces_the_child_list(self):
         state = call_state.apply_updates(

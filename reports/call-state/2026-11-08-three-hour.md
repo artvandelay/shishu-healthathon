@@ -158,6 +158,8 @@ Questions whose own yes contains नहीं were stored as a no when she repea
 
 A symptom's own duration is not the hospital stay. दो दिन से बुखार does not become NICU days. चार दिन रखा and a bare चार दिन still do. दो हफ्ते रखा is 14 days. दो हफ्ते का है stays the child's age. `196` unit tests. 53 scenarios, 0 failed.
 
+One age tied to a counted group is every child's age. तीन साल की दो बेटियाँ and दो बेटे हैं, दोनों चार साल के store that age on each child. मेरी उम्र तीस साल और दो बच्चे हैं does not. `196` unit tests. 54 scenarios, 0 failed.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.
