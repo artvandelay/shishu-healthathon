@@ -631,7 +631,10 @@ async def _answer_function_calls(
                 )
                 body = {
                     "result": "rejected",
-                    "note": f"Error: {exc}. Follow this active requirement: {recovery_context}",
+                    "note": (
+                        f"{answer_tool.INTERNAL_NOTE_TAG}\n"
+                        f"Error: {exc}. Follow this active requirement: {recovery_context}"
+                    ),
                 }
                 logged.append("record_answers_rejected")
                 telemetry.setdefault("tool_errors", []).append({

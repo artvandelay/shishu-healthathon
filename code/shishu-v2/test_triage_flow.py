@@ -43,6 +43,8 @@ class PromptTests(unittest.TestCase):
         prompt = prompts.GEMINI_LIVE_SYSTEM_PROMPT
         self.assertIn(INTERNAL_NOTE_TAG, prompt)
         self.assertIn("NEVER speak it", prompt)
+        self.assertIn("rejected", prompt)
+        self.assertIn("silently call", prompt)
 
 
 class _FakeWs:
