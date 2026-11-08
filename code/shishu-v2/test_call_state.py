@@ -247,9 +247,81 @@ class CallStateTests(unittest.TestCase):
     def test_child_count_without_ages_does_not_mean_no_children(self):
         state = _ask(call_state.new_call_state(), "intro_children")
         state = call_state.apply_updates(state, [_update("profile.children", 2)], 1)
-        self.assertEqual(state["profile"]["children"], [])
+        self.assertEqual(len(state["profile"]["children"]), 2)
+        self.assertTrue(all(child.get("age") is None for child in state["profile"]["children"]))
         self.assertNotEqual(state["topics"]["intro_children"]["state"], "answered")
         self.assertNotEqual(state["topics"]["birth_mode"]["state"], "not_applicable")
+        state = call_state.apply_updates(state, [_update("topic.birth_mode", "normal")], 2)
+        self.assertEqual(state["topics"]["birth_mode"]["value"], "normal")
+
+    def test_spoken_months_fill_a_bare_count(self):
+        state = _ask(call_state.new_call_state(), "intro_children")
+        state = call_state.apply_updates(
+            state,
+            [_update("profile.children", 1)],
+            1,
+            utterance="एक बच्चा है, छह महीने का।",
+        )
+        self.assertEqual(len(state["profile"]["children"]), 1)
+        self.assertAlmostEqual(call_state._child_age_years(state["profile"]["children"][0]["age"]), 0.5)
+        self.assertEqual(state["topics"]["intro_children"]["state"], "answered")
+
+    def test_month_only_list_is_not_stored_as_years(self):
+        state = _ask(call_state.new_call_state(), "intro_children")
+        state = call_state.apply_updates(
+            state,
+            [_update("profile.children", [{"age": 6}])],
+            1,
+            utterance="एक बच्चा है, छह महीने का।",
+        )
+        self.assertAlmostEqual(call_state._child_age_years(state["profile"]["children"][0]["age"]), 0.5)
+
+    def test_hindi_and_not_married_mean_unmarried(self):
+        for value in ("नहीं हुई", "not_married", "false"):
+            state = call_state.apply_updates(
+                call_state.new_call_state(),
+                [_update("profile.marital_status", value)],
+                1,
+            )
+            self.assertEqual(state["profile"]["marital_status"], "unmarried", value)
+            self.assertEqual(state["topics"]["fam_related"]["state"], "not_applicable", value)
+
+    def test_bare_topic_id_is_kept_beside_a_real_field(self):
+        state = _ask(call_state.new_call_state(), "intro_children")
+        state = call_state.apply_updates(
+            state,
+            [
+                _update("profile.children", [{"age": 2}]),
+                {"field": "fam_related", "state": "answered", "value": True, "scope": "none", "child_ids": [], "details": {}},
+                {"field": "not_a_real_field", "state": "answered", "value": True, "scope": "none", "child_ids": [], "details": {}},
+            ],
+            1,
+        )
+        self.assertEqual(len(state["profile"]["children"]), 1)
+        self.assertTrue(state["topics"]["fam_related"]["value"])
+
+    def test_correction_is_kept_after_the_question_moves_on(self):
+        state = _ask(call_state.new_call_state(), "birth_mode")
+        state = call_state.apply_updates(
+            state,
+            [_update("profile.children", [{"age": 3}]), _update("topic.birth_mode", "normal")],
+            1,
+        )
+        state = _ask(state, "intro_bridge")
+        state = call_state.apply_updates(state, [_update("topic.birth_mode", "operation")], 2)
+        self.assertEqual(state["topics"]["birth_mode"]["value"], "operation")
+        self.assertEqual(state["topics"]["birth_mode"]["details"].get("delivery_type"), "operation")
+
+    def test_normal_hearing_is_not_a_positive_finding(self):
+        state = _ask(call_state.new_call_state(), "birth_hearing_vision")
+        state = call_state.apply_updates(
+            state,
+            [_update("profile.children", [{"age": 3}]), _update("topic.birth_hearing_vision", True)],
+            1,
+            utterance="सुनने की जाँच हुई थी और नॉर्मल थी।",
+        )
+        self.assertEqual(state["topics"]["birth_hearing_vision"]["details"].get("result"), "normal")
+        self.assertFalse(call_state._is_positive(state["topics"]["birth_hearing_vision"]))
 
     def test_fact_from_the_next_question_is_kept(self):
         state = call_state.new_call_state()

@@ -430,6 +430,9 @@ def _apply_rules(state: dict) -> dict:
 def _is_positive(topic: dict) -> bool:
     if topic.get("state") != "answered":
         return False
+    details = topic.get("details") or {}
+    if str(details.get("result") or "").strip().lower() in {"normal", "negative"}:
+        return False
     value = topic.get("value")
     if value is True:
         return True
@@ -479,6 +482,11 @@ def _find_child_id(state: dict, raw: object) -> str | None:
 def _followup_resolved(state: dict, topic: dict, followup_id: str) -> bool:
     details = topic.get("details") or {}
     children = state.get("profile", {}).get("children") or []
+
+    if followup_id == "delivery_type":
+        blob = f"{topic.get('value') or ''} {details.get('delivery_type') or ''}".lower()
+        if any(word in blob for word in ("operation", "caesarean", "cesarean", "normal", "home", "hospital")):
+            return True
 
     if followup_id == "affected_child":
         if len(children) <= 1:
@@ -709,66 +717,143 @@ def _normalize_children(value: object) -> list[dict]:
     return children
 
 
+_NUM_WORDS = (
+    ("ग्यारह", "11"), ("बारह", "12"), ("आधा", "0.5"),
+    ("पाँच", "5"), ("पांच", "5"), ("छह", "6"), ("छः", "6"),
+    ("एक", "1"), ("दो", "2"), ("तीन", "3"), ("चार", "4"),
+    ("सात", "7"), ("आठ", "8"), ("नौ", "9"), ("दस", "10"),
+)
+_MONTH_UNIT = r"(?:महीन\w*|mahine|months|month)"
+_YEAR_UNIT = r"(?:साल|वर्ष|saal|years|year|varsh)"
+
+
+def _spoken_ages(utterance: str) -> list[float]:
+    folded = utterance or ""
+    for word, number in _NUM_WORDS:
+        folded = folded.replace(word, number)
+    found = []
+    for match in re.finditer(rf"(\d+(?:\.\d+)?)\s*{_MONTH_UNIT}", folded, re.I):
+        found.append((match.start(), float(match.group(1)) / 12.0))
+    for match in re.finditer(rf"(\d+(?:\.\d+)?)\s*{_YEAR_UNIT}", folded, re.I):
+        found.append((match.start(), float(match.group(1))))
+    found.sort()
+    return [age for _, age in found]
+
+
+def _retag_month_only(children: list[dict], utterance: str) -> list[dict]:
+    text = utterance or ""
+    if not re.search(_MONTH_UNIT, text, re.I) or re.search(_YEAR_UNIT, text, re.I):
+        return children
+    tagged = []
+    for child in children:
+        child = dict(child)
+        age = child.get("age")
+        if isinstance(age, (int, float)) and not isinstance(age, bool) and float(age) >= 1:
+            child["age"] = {"value": age, "unit": "months"}
+        elif isinstance(age, dict) and not age.get("unit") and isinstance(age.get("value"), (int, float)):
+            child["age"] = {**age, "unit": "months"}
+        tagged.append(child)
+    return tagged
+
+
+def _children_from_ages(ages: list[float]) -> list[dict]:
+    return [
+        {"id": f"child_{index}", "name": None, "age": age, "sex": None}
+        for index, age in enumerate(ages, start=1)
+    ]
+
+
 def _parse_field(field: object) -> tuple[str, str]:
     text = str(field or "")
     if text.startswith("profile."):
         name = text.split(".", 1)[1]
         if name not in PROFILE_FIELDS:
-            raise ValueError(f"unknown field: {text}")
+            return "error", f"unknown field: {text}"
         return "profile", name
     if text.startswith("topic."):
         topic_id = text.split(".", 1)[1]
         if topic_id not in contract.TOPIC_IDS:
-            raise ValueError(f"unknown field: {text}")
+            return "error", f"unknown field: {text}"
         return "topic", topic_id
-    raise ValueError(f"unknown field: {text}")
+    if text in PROFILE_FIELDS:
+        return "profile", text
+    if text in contract.TOPIC_IDS:
+        return "topic", text
+    return "error", f"unknown field: {text}"
 
 
 def _check_update(update: dict, current_topic: str | None) -> tuple[str, str]:
     if not isinstance(update, dict):
-        raise ValueError("update must be an object")
+        return "error", "update must be an object"
     kind, name = _parse_field(update.get("field"))
+    if kind == "error":
+        return kind, name
     status = update.get("state")
     if status not in MODEL_TOPIC_STATES:
-        raise ValueError(f"invalid state: {status}")
+        return "error", f"invalid state: {status}"
     scope = update.get("scope") or "none"
     if scope not in _SCOPES:
-        raise ValueError(f"invalid scope: {scope}")
+        return "error", f"invalid scope: {scope}"
     child_ids = update.get("child_ids") or []
     if not isinstance(child_ids, list):
-        raise ValueError("child_ids must be a list")
+        return "error", "child_ids must be a list"
     return kind, name
 
 
-def _children_payload(value: object) -> tuple[str, list]:
+def _children_payload(value: object) -> tuple[str, object]:
     """none: she said there are no children. count: a number without ages. list: child records."""
     if isinstance(value, bool) or value in (0, None, []) or value == "0":
         return "none", []
-    if isinstance(value, (int, float)) or (isinstance(value, str) and str(value).strip().isdigit()):
-        return "count", []
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return ("none", []) if int(value) <= 0 else ("count", int(value))
+    if isinstance(value, str) and str(value).strip().isdigit():
+        number = int(str(value).strip())
+        return ("none", []) if number <= 0 else ("count", number)
     if isinstance(value, (list, dict)):
         return "list", _normalize_children(value)
     return "ignore", []
 
 
-def _canonical_marital(value: object) -> object:
-    text = str(value or "").strip().lower()
-    if text in {"false", "no", "nahi", "nahin", "unmarried", "single"}:
-        return "unmarried"
-    if text in {"true", "yes", "haan", "married"}:
-        return "married"
-    if "about" in text or "hone wali" in text or "engaged" in text:
+def _canonical_marital(value: object) -> str | None:
+    raw = str(value or "").strip()
+    text = raw.lower().replace("_", " ").replace("-", " ")
+    denial = (
+        text in {"false", "no", "nahi", "nahin", "unmarried", "single", "not married"}
+        or "not married" in text
+        or any(word in raw for word in ("नहीं", "नही", "अविवाहित", "कुंवारी"))
+    )
+    about = (
+        "about" in text
+        or "hone wali" in text
+        or "engaged" in text
+        or "होने वाली" in raw
+    )
+    married = (
+        text in {"true", "yes", "haan", "married"}
+        or "हो गई" in raw
+        or "ho gayi" in text
+        or "shaadi ho" in text
+    )
+    if about:
         return "about_to_marry"
-    return value
+    if denial and not married:
+        return "unmarried"
+    if married:
+        return "married"
+    return None
+
+
+def _children_gate_open(state: dict) -> bool:
+    if state["topics"]["intro_children"]["state"] == "answered":
+        return True
+    return any(isinstance(child, dict) for child in (state["profile"].get("children") or []))
 
 
 def _topic_can_record(state: dict, topic_id: str, current: str | None) -> bool:
     topic = state["topics"].get(topic_id) or {}
-    if topic_id == current:
+    if topic_id == current or str(topic_id).startswith("intro_"):
         return True
-    if topic.get("state") != "not_asked":
-        return False
-    if state["topics"]["intro_children"]["state"] != "answered" and not str(topic_id).startswith("intro_"):
+    if not _children_gate_open(state):
         return False
     return True
 
@@ -805,21 +890,62 @@ def _store_instances(topic: dict, update: dict) -> None:
     topic["instances"] = list(existing.values())
 
 
-def apply_updates(state: dict, updates: list[dict], turn_id: int) -> dict:
+def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
+    details = dict(topic.get("details") or {})
+    value = topic.get("value")
+    if name == "birth_mode" and isinstance(value, str):
+        blob = value.lower()
+        if any(word in blob for word in ("operation", "caesarean", "cesarean")):
+            details["delivery_type"] = "operation"
+        elif "normal" in blob:
+            details["delivery_type"] = "normal"
+    if name == "birth_hearing_vision" and "result" not in details:
+        text = utterance or ""
+        if re.search(r"नॉर्मल|normal", text, re.I) and not re.search(r"अबनॉर्मल|abnormal|दिक्कत", text, re.I):
+            details["result"] = "normal"
+    topic["details"] = details
+
+
+def apply_updates(state: dict, updates: list[dict], turn_id: int, utterance: str = "") -> dict:
     state = copy.deepcopy(state)
     if not isinstance(updates, list):
         raise ValueError("updates must be a list")
     current = (state.get("current_question") or {}).get("topic_id")
     followup_id = (state.get("current_question") or {}).get("followup_id")
     parsed = [_check_update(update, current) for update in updates]
+    pairs = sorted(zip(updates, parsed), key=lambda pair: 0 if pair[1][0] == "profile" else 1)
     wrote = False
-    for update, (kind, name) in zip(updates, parsed):
+    problems: list[str] = []
+    for update, (kind, name) in pairs:
+        if kind == "error":
+            problems.append(name)
+            continue
         status = update.get("state")
         if kind == "profile":
             previous = state["profile"].get(name)
             if name == "children" and status == "answered":
                 kind_c, norm = _children_payload(update.get("value"))
                 if kind_c in ("count", "ignore"):
+                    existing = [
+                        child for child in (state["profile"].get("children") or [])
+                        if isinstance(child, dict)
+                    ]
+                    aged = [child for child in existing if _child_age_years(child.get("age")) is not None]
+                    spoken = _spoken_ages(utterance)
+                    count_n = int(norm) if kind_c == "count" else 0
+                    if kind_c == "count" and aged and len(existing) == len(aged) == count_n:
+                        wrote = True
+                        continue
+                    use = spoken if kind_c == "ignore" or len(spoken) == count_n else []
+                    if use and not aged:
+                        state["profile"]["children"] = _children_from_ages(use)
+                        intro_c = state["topics"]["intro_children"]
+                        intro_c["state"] = "answered"
+                        intro_c["value"] = True
+                        intro_c["source"] = "model"
+                        _remember_turn(intro_c, turn_id)
+                    elif kind_c == "count" and not aged:
+                        state["profile"]["children"] = _children_from_ages([None] * count_n)
                     wrote = True
                     continue
                 if kind_c == "none":
@@ -830,6 +956,7 @@ def apply_updates(state: dict, updates: list[dict], turn_id: int) -> dict:
                     intro_c["source"] = "model"
                     _remember_turn(intro_c, turn_id)
                 else:
+                    norm = _retag_month_only(norm, utterance)
                     state["profile"]["children"] = norm
                     if norm and all(_child_age_years(c.get("age")) is not None for c in norm):
                         intro_c = state["topics"]["intro_children"]
@@ -838,7 +965,13 @@ def apply_updates(state: dict, updates: list[dict], turn_id: int) -> dict:
                         intro_c["source"] = "model"
                         _remember_turn(intro_c, turn_id)
             elif status == "answered":
-                val = _canonical_marital(update.get("value")) if name == "marital_status" else update.get("value")
+                if name == "marital_status":
+                    val = _canonical_marital(update.get("value"))
+                    if val is None:
+                        problems.append("marital status not recognized")
+                        continue
+                else:
+                    val = update.get("value")
                 state["profile"][name] = val
                 if name == "caller_name" and val:
                     intro_n = state["topics"]["intro_name"]
@@ -863,13 +996,25 @@ def apply_updates(state: dict, updates: list[dict], turn_id: int) -> dict:
             })
             wrote = True
             continue
+        if name == "intro_married" and status == "answered":
+            canonical = _canonical_marital(update.get("value"))
+            if canonical is None:
+                problems.append("marital status not recognized")
+                continue
+            update = dict(update)
+            update["value"] = canonical
         current_topic = current if not str(current or "").startswith("profile.") else None
         if not _topic_can_record(state, name, current_topic):
             continue
         known_ids = _known_child_ids(state["profile"].get("children") or [])
+        bad_child = ""
         for child_id in update.get("child_ids") or []:
             if str(child_id) not in known_ids:
-                raise ValueError(f"unknown child id: {child_id}")
+                bad_child = f"unknown child id: {child_id}"
+                break
+        if bad_child:
+            problems.append(bad_child)
+            continue
         wrote = True
         topic = state["topics"][name]
         previous_state = topic.get("state")
@@ -898,6 +1043,7 @@ def apply_updates(state: dict, updates: list[dict], turn_id: int) -> dict:
             ):
                 topic["value"] = True
             topic["source"] = "model"
+            _absorb_stated_value(name, topic, utterance)
             _remember_turn(topic, turn_id)
             _store_instances(topic, update)
             continue
@@ -930,10 +1076,11 @@ def apply_updates(state: dict, updates: list[dict], turn_id: int) -> dict:
                 state["profile"]["children"] = _normalize_children(val)
         topic["source"] = "model"
         topic["reason"] = None
+        _absorb_stated_value(name, topic, utterance)
         _remember_turn(topic, turn_id)
         _store_instances(topic, update)
     if not wrote:
-        raise ValueError("no applicable update")
+        raise ValueError(problems[0] if problems else "no applicable update")
     _apply_rules(state)
     return state
 
