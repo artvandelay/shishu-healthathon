@@ -597,6 +597,8 @@ class CallStateTests(unittest.TestCase):
         self.assertEqual(call_state._find_child_id(state, "बेटी को"), "child_1")
         self.assertEqual(call_state._find_child_id(state, "beta"), "child_2")
         self.assertEqual(call_state._find_child_id(state, "बेटे को"), "child_2")
+        self.assertIsNone(call_state._find_child_id(state, "बच्चा"))
+        self.assertIsNone(call_state._find_child_id(state, "बच्चा को"))
 
     def test_child_name_with_case_markers(self):
         state = call_state.new_call_state()

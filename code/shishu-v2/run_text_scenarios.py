@@ -118,8 +118,9 @@ def _reply(scenario: Scenario, question: dict, memory: dict) -> tuple[str, list[
         utterance, detail = positive["followups"][fid]
         return utterance, [_update(f"topic.{tid}", positive.get("value", True), details={fid: detail})], None
     if fid:
-        parent = positive.get("value", False)
-        return "पता नहीं।", [_update(f"topic.{tid}", parent)], None
+        if positive:
+            return "पता नहीं।", [_update(f"topic.{tid}", positive.get("value", True))], None
+        return "नहीं।", [_update(f"topic.{tid}", False)], None
 
     if tid in scenario.unknown_topics:
         return "पता नहीं।", [_update(f"topic.{tid}", None, state="unknown")], None
@@ -260,6 +261,14 @@ def _issues(scenario, state, errors, report, fallback, said) -> list[str]:
             pending = call_state._pending_followups(state, tid) if tid in topics else []
             if pending and kind == "no":
                 issues.append(f"followup open on no {tid}:{pending[0]['id']}")
+            if kind == "no" and tid not in scenario.unknown_followups:
+                details = saved.get("details") or {}
+                unknown_fields = [
+                    key for key, val in details.items()
+                    if isinstance(val, dict) and val.get("state") == "unknown"
+                ]
+                if unknown_fields:
+                    issues.append(f"unknown on a no {tid}:{','.join(unknown_fields)}")
     yes_topics = {
         topic["id"]
         for topic in checklist.TOPICS
@@ -332,6 +341,9 @@ def _issues(scenario, state, errors, report, fallback, said) -> list[str]:
         "खून चढ़ाना": "body_transfusion",
         "गर्भ गिरा": "fam_miscarriage",
         "झटके": "body_fits_milestones",
+        "नाल गिरने पर": "birth_cord_bleed",
+        "होंठ या उँगलियाँ": "body_blue",
+        "थैलेसीमिया": "preg_thalassemia",
     }
     for phrase, tid in named.items():
         if tid in scenario.expect_yes and phrase not in questions:
@@ -418,6 +430,52 @@ def campaign() -> list[Scenario]:
             marital_text=married,
             children_text="दो बच्चे हैं। एक चार साल का लड़का है और एक आठ साल का लड़का है।",
             children_value=2,
+        ),
+        Scenario(
+            name="flags_cord_blue_thalassemia",
+            group="red_flags",
+            caller_name="अनिता",
+            marital_text=married,
+            children_text="एक बच्चा है, चार साल की बेटी।",
+            children_value=1,
+            positives={
+                "birth_cord_bleed": {
+                    "value": True,
+                    "utterance": "नाल गिरने पर खून ज़्यादा हुआ था।",
+                    "details": {"amount": "ज़्यादा"},
+                },
+                "body_blue": {
+                    "value": True,
+                    "utterance": "बेटी के होंठ और उँगलियाँ नीली हो जाती हैं।",
+                    "details": {"location": "होंठ"},
+                },
+                "preg_thalassemia": {
+                    "value": True,
+                    "utterance": "जाँच हुई और रिपोर्ट असामान्य थी।",
+                    "details": {"result": "abnormal", "caller_test": True},
+                },
+            },
+            expect_yes=("birth_cord_bleed", "body_blue", "preg_thalassemia"),
+        ),
+        Scenario(
+            name="flags_periods_girl_11",
+            group="red_flags",
+            caller_name="सरला",
+            marital_text=married,
+            children_text="एक बच्चा है, ग्यारह साल की बेटी।",
+            children_value=1,
+            positives={
+                "body_bleeding_bruise": {
+                    "value": True,
+                    "utterance": "हाँ, चोट पर खून देर तक बहता है।",
+                    "details": {"bleeding_or_bruises": "bleeding"},
+                    "followups": {
+                        "teeth": ("नहीं, दाँत गिरने पर नहीं।", False),
+                        "periods": ("हाँ, माहवारी में बहुत ज़्यादा खून आता है।", "heavy"),
+                    },
+                },
+            },
+            expect_yes=("body_bleeding_bruise",),
         ),
         Scenario(
             name="flags_operation_nicu",

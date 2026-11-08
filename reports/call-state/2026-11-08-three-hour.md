@@ -46,6 +46,22 @@ Degenerate: emergency after the name; emergency on the first clinical turn; call
 - The word पड़ोसी is not a special case. The stored value is the tool’s no.
 - Sex is taken from the children sentence only when the number of sex words equals the number of ages.
 
+## Third pass, 20 scenarios, 0 failed
+
+| Trio | Result | What it checked |
+| --- | --- | --- |
+| Half-step ages, married with no children, two boys under 10 | pass | 1.5 and 3.5 years, sexes, puberty not applicable under 10, the sentence “कोई बच्चा नहीं है” clears the child list |
+| Cord bleeding, blue lips, abnormal thalassemia | pass | Questions name नाल, नीले होंठ, and थैलेसीमिया. They do not claim jaundice, a hospital admission, or pregnancy BP |
+| Periods at 11, plus the earlier red-flag and degenerate trios | pass | A daughter of 11 is asked about periods. A clean no on an age-gated follow-up is नहीं, not पता नहीं. “क्या मतलब?” still leaves the follow-up open |
+
+`177` unit tests passed.
+
+## Class fixes in the second code commit
+
+- The generic word बच्चा does not select the only boy when a girl is also in the family. बेटा and लड़का still do. दूसरा बच्चा still selects the younger child.
+- Birth, body, pregnancy, and illness findings that are not the domain’s headline event get their own mother question. A cord bleed is not asked as jaundice. Blue lips are not asked as a hospital admission. An abnormal thalassemia report is not asked as pregnancy BP.
+- On a no, an age-gated follow-up (tooth-fall bleeding, periods) is answered नहीं when she says no. पता नहीं stays unknown, and only when that is what she said.
+
 ## Not hardcoded
 
-No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success.
+No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence.

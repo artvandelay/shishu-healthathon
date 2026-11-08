@@ -273,6 +273,26 @@ class StructuredSummaryTests(unittest.TestCase):
         self.assertNotIn("भर्ती होना पड़ा", questions)
         self.assertNotIn("पीलिया", questions)
 
+    def test_a_lone_finding_does_not_claim_a_sibling_event(self):
+        samples = {
+            "birth_cord_bleed": ("नाल गिरने पर", "पीलिया"),
+            "body_blue": ("होंठ या उँगलियाँ", "भर्ती होना पड़ा"),
+            "body_tummy": ("पेट धीरे", "भर्ती होना पड़ा"),
+            "preg_thalassemia": ("थैलेसीमिया", "बीपी"),
+            "preg_heart": ("दिल की", "बीपी"),
+            "ill_odor": ("गंध", "खाना देर से"),
+            "ill_sudden": ("अचानक बहुत", "खाना देर से"),
+            "birth_cleft": ("होंठ या तालु", "पीलिया"),
+        }
+        for topic_id, (needed, forbidden) in samples.items():
+            state = _state()
+            state["topics"][topic_id]["state"] = "answered"
+            state["topics"][topic_id]["value"] = True
+            findings, flags = summarizer.state_to_findings_and_flags(state)
+            questions = summarizer.default_mother_questions(findings, flags)
+            self.assertIn(needed, questions, topic_id)
+            self.assertNotIn(forbidden, questions, topic_id)
+
     def test_frontier_model_can_override_a_false_positive(self):
         state = _state()
         state["profile"]["children"] = [

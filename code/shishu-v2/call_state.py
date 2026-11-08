@@ -612,7 +612,8 @@ def _find_child_id(state: dict, raw: object) -> str | None:
     ]
     if len(females) == 1 and any(w in cleaned for w in ("beti", "ladki", "girl", "daughter", "बेटी", "लड़की", "बच्ची")):
         return females[0]
-    if len(males) == 1 and any(w in cleaned for w in ("beta", "bete", "ladka", "ladke", "boy", "son", "बेटा", "बेटे", "लड़का", "लड़के", "बच्चा")):
+    # बच्चा is the generic word for a child, so it does not select the only boy.
+    if len(males) == 1 and any(w in cleaned for w in ("beta", "bete", "ladka", "ladke", "boy", "son", "बेटा", "बेटे", "लड़का", "लड़के")):
         return males[0]
     return None
 
