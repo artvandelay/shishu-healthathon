@@ -1659,6 +1659,94 @@ class CallStateTests(unittest.TestCase):
         )
         self.assertEqual(call_state.topic_answer_kind(thal["topics"]["preg_thalassemia"], "preg_thalassemia"), "no")
 
+    def test_a_described_problem_is_a_finding_without_haan(self):
+        import mother_report
+
+        sentences = {
+            "body_fits_milestones": "झटके आते हैं।",
+            "body_blue": "होंठ नीले पड़ते हैं।",
+            "ill_admissions": "अस्पताल में भर्ती हुआ था।",
+            "fam_miscarriage": "गर्भ गिर गया।",
+            "body_transfusion": "खून चढ़ा था।",
+            "birth_cleft": "होंठ कटा है।",
+            "preg_conditions": "बीपी था।",
+            "birth_nicu": "पीलिया की वजह से चार दिन रखा।",
+        }
+        for topic_id, text in sentences.items():
+            state = call_state.apply_updates(
+                _ask(call_state.new_call_state(), topic_id),
+                [_update(f"topic.{topic_id}", text)],
+                1,
+                utterance=text,
+            )
+            kind = call_state.topic_answer_kind(state["topics"][topic_id], topic_id)
+            self.assertEqual(kind, "yes", text)
+            state["close_reason"] = "complete"
+            report = mother_report.build({"state": state, "started_at": "2026-11-08 14:10:00"})
+            question = checklist.question_hi(topic_id)
+            body = question.rstrip("?").strip()
+            if body.startswith("क्या "):
+                body = body[len("क्या "):]
+            self.assertTrue(any(body in line for line in report["yes"]), (text, report["yes"]))
+            self.assertNotIn(question, " ".join(
+                item for group in report["groups"] for item in group["items"]
+            ), text)
+
+        hidden = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "body_fits_milestones"),
+            [_update("topic.body_fits_milestones", False)],
+            1,
+            utterance="झटके आते हैं।",
+        )
+        self.assertTrue(call_state._is_positive(hidden["topics"]["body_fits_milestones"], "body_fits_milestones"))
+
+        for text in ("नहीं।", "नॉर्मल है।", "सामान्य है।"):
+            denied = call_state.apply_updates(
+                _ask(call_state.new_call_state(), "body_fits_milestones"),
+                [_update("topic.body_fits_milestones", text)],
+                1,
+                utterance=text,
+            )
+            self.assertEqual(
+                call_state.topic_answer_kind(denied["topics"]["body_fits_milestones"], "body_fits_milestones"),
+                "no",
+                text,
+            )
+
+        hospital = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "birth_mode"),
+            [_update("topic.birth_mode", "अस्पताल में हुई।")],
+            1,
+            utterance="अस्पताल में हुई।",
+        )
+        self.assertNotEqual(call_state.topic_answer_kind(hospital["topics"]["birth_mode"], "birth_mode"), "yes")
+        ordinary = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "birth_mode"),
+            [_update("topic.birth_mode", "सामान्य हुआ।")],
+            1,
+            utterance="सामान्य हुआ।",
+        )
+        self.assertEqual(ordinary["topics"]["birth_mode"]["details"].get("delivery_type"), "normal")
+        self.assertEqual(call_state.topic_answer_kind(ordinary["topics"]["birth_mode"], "birth_mode"), "no")
+
+        growing = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "body_growth"),
+            [_update("topic.body_growth", "बाकी बच्चों जैसा बढ़ रहा है।")],
+            1,
+            utterance="बाकी बच्चों जैसा बढ़ रहा है।",
+        )
+        self.assertNotEqual(call_state.topic_answer_kind(growing["topics"]["body_growth"], "body_growth"), "yes")
+        tested = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "preg_thalassemia"),
+            [_update("topic.preg_thalassemia", "जाँच हुई।")],
+            1,
+            utterance="जाँच हुई।",
+        )
+        self.assertNotEqual(
+            call_state.topic_answer_kind(tested["topics"]["preg_thalassemia"], "preg_thalassemia"),
+            "yes",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

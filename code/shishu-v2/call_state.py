@@ -558,6 +558,63 @@ def _followup_is_finding(value: object) -> bool:
     return text not in {"", "no", "nahi", "nahin", "normal", "negative", "नहीं", "नही", "नॉर्मल", "unknown"}
 
 
+# These answers are classified by their own words (normal, operation, a test
+# result, growth, puberty). A leftover sentence there is not automatically a
+# finding. Every other clinical topic asks whether a problem happened.
+_DESCRIBED_SKIP = {
+    "birth_mode",
+    "birth_term",
+    "body_growth",
+    "body_puberty",
+    "birth_hearing_vision",
+    "preg_scan",
+    "preg_thalassemia",
+    "preg_delivery",
+}
+
+
+def _names_reassuring_normal(value: object) -> bool:
+    """normal / नॉर्मल / सामान्य, unless that word itself is denied."""
+    text = str(value or "")
+    for word in ("normal", "नॉर्मल", "सामान्य"):
+        if _contains_word(text, word) and not _word_denied(text, word):
+            return True
+    return False
+
+
+def _described_problem(topic_id: str | None, value: object, details: dict) -> bool:
+    """A stored sentence that names the problem, with no हाँ and no नहीं.
+
+    A place, a normal result, a test that was merely done, and reassuring
+    growth or puberty stay out of the हाँ list. A problem the details already
+    recorded (a condition, a NICU reason, an early or late timing) counts.
+    """
+    if not topic_id or topic_id.startswith("intro_") or topic_id == "close_anything_else":
+        return False
+    if _is_reassuring_result(details):
+        return False
+    if isinstance(value, str) and _AFFIRM_RE.search(value) and _DENY_RE.search(value):
+        return False
+    if str(details.get("result") or "").strip().lower() in {"abnormal", "असामान्य", "positive", "carrier"}:
+        return True
+    if details.get("conditions"):
+        return True
+    reason = str(details.get("reason") or "").strip().lower()
+    if reason and reason not in {"normal", "नॉर्मल", "unknown", "none", "noted"}:
+        return True
+    if str(details.get("timing") or "") in {"early", "late"}:
+        return True
+    if str(details.get("term") or "") in {"early", "late"}:
+        return True
+    if _lab_result(str(value or "")) == "abnormal":
+        return True
+    if _names_reassuring_normal(value):
+        return False
+    if topic_id in _DESCRIBED_SKIP:
+        return False
+    return _followup_is_finding(value)
+
+
 def _is_positive(topic: dict, _topic_id: str | None = None) -> bool:
     if topic.get("state") != "answered":
         return False
@@ -590,7 +647,9 @@ def _is_positive(topic: dict, _topic_id: str | None = None) -> bool:
         "हाँ", "हां", "ऑपरेशन", "सीजेरियन", "असामान्य",
     }:
         return True
-    return False
+    if _names_reassuring_normal(value):
+        return False
+    return _described_problem(_topic_id, value, details)
 
 
 def topic_answer_kind(topic: dict, topic_id: str | None = None) -> str:
@@ -606,7 +665,8 @@ def topic_answer_kind(topic: dict, topic_id: str | None = None) -> str:
         or str(details.get("result") or "").strip().lower() in {"normal", "negative", "नॉर्मल"}
         or str(details.get("delivery_type") or "").strip().lower() in {"normal", "नॉर्मल"}
         or _stated_polarity(value) == "no"
-        or str(value or "").strip().lower() in {"no", "nahi", "nahin", "normal", "negative", "नहीं", "नही", "नॉर्मल"}
+        or _names_reassuring_normal(value)
+        or str(value or "").strip().lower() in {"no", "nahi", "nahin", "normal", "negative", "नहीं", "नही", "नॉर्मल", "सामान्य"}
     ):
         return "no"
     if status in {"unknown", "no_response", "not_asked", "not_applicable"}:
@@ -1757,7 +1817,7 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
     combined = f"{val_blob} {utt_blob}"
     if name == "birth_mode":
         op_words = ("operation", "caesarean", "cesarean", "c-section", "ऑपरेशन", "सीजेरियन")
-        norm_words = ("normal", "नॉर्मल")
+        norm_words = ("normal", "नॉर्मल", "सामान्य")
         said_op = _named_and_not_denied(val_blob, utt_blob, op_words)
         said_norm = _named_and_not_denied(val_blob, utt_blob, norm_words)
         if said_op and not said_norm:
@@ -1884,6 +1944,11 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
         details["relationship"] = (utterance or "").strip()
     if "who" in follow_ids and "who" not in details and _has_kinship(utterance or ""):
         details["who"] = (utterance or "").strip()
+    # The words describe the problem. A tool value of false does not hide them.
+    # A denial in the utterance still wins, above.
+    if topic.get("value") is False and _stated_polarity(utterance) != "no":
+        if _described_problem(name, utterance, details):
+            topic["value"] = True
     topic["details"] = details
 
 

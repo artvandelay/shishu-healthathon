@@ -1165,6 +1165,29 @@ def campaign() -> list[Scenario]:
             expect_close="caller_stop",
         ),
         Scenario(
+            name="flags_described_without_haan",
+            group="red_flags",
+            caller_name="लता",
+            marital_text=married,
+            children_text="एक बेटी है, चार साल की।",
+            children_value=[_child({"value": 4, "unit": "years"}, "female")],
+            positives={
+                "body_fits_milestones": {
+                    "value": "झटके आते हैं।",
+                    "utterance": "झटके आते हैं।",
+                },
+                "body_blue": {
+                    "value": "होंठ नीले पड़ते हैं।",
+                    "utterance": "होंठ नीले पड़ते हैं।",
+                },
+                "fam_miscarriage": {
+                    "value": "गर्भ गिर गया।",
+                    "utterance": "तीन महीने में गर्भ गिर गया।",
+                },
+            },
+            expect_yes=("body_fits_milestones", "body_blue", "fam_miscarriage"),
+        ),
+        Scenario(
             name="about_to_marry_past_pregnancy",
             group="no_flags",
             caller_name="नेहा",
