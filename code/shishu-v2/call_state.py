@@ -1010,6 +1010,34 @@ def _store_instances(topic: dict, update: dict) -> None:
     topic["instances"] = list(existing.values())
 
 
+_PARENT_ECHO = {
+    "operation", "normal", "caesarean", "cesarean", "c-section", "c section",
+    "true", "false", "yes", "no", "haan", "nahi", "nahin", "हाँ", "नहीं", "नही",
+}
+_CLARIFY_RE = re.compile(
+    r"^\s*(?:क्या(?:\s+मतलब)?|समझ\s+नहीं\s+आया|matlab|kya(?:\s+matlab)?|samajh\s+nahi(?:\s+aaya)?)[।.!?]*\s*$",
+    re.I,
+)
+_UNKNOWN_UTT_RE = re.compile(
+    r"^(?:पता\s+नहीं|याद\s+नहीं|नहीं\s+पता|pata\s+nahi|don'?t\s+know)[।.!?]*$",
+    re.I,
+)
+
+
+def _is_parent_echo(value: object, topic_value: object) -> bool:
+    """True when a string only repeats the parent answer. A boolean is a real yes or no."""
+    if isinstance(value, (bool, dict)) or value is None:
+        return False
+    text = str(value).strip().lower()
+    if text in _PARENT_ECHO:
+        return True
+    return topic_value is not None and text == str(topic_value).strip().lower()
+
+
+def _is_clarification(text: str) -> bool:
+    return _CLARIFY_RE.match((text or "").strip()) is not None
+
+
 def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
     details = dict(topic.get("details") or {})
     value = topic.get("value")
@@ -1201,16 +1229,22 @@ def apply_updates(
                 details[followup_id] = {"state": "unknown"}
             else:
                 details.update(incoming)
-                if followup_id not in details:
+                clean_utt = (utterance or "").strip()
+                explicit = followup_id in incoming and not _is_parent_echo(
+                    incoming.get(followup_id), previous_value
+                )
+                if not explicit:
                     raw_val = update.get("value")
-                    if raw_val is not None and not isinstance(raw_val, bool):
+                    if _is_clarification(clean_utt):
+                        details.pop(followup_id, None)
+                    elif _UNKNOWN_UTT_RE.match(clean_utt):
+                        details[followup_id] = {"state": "unknown"}
+                    elif raw_val is not None and not isinstance(raw_val, bool) and not _is_parent_echo(raw_val, previous_value):
                         details[followup_id] = raw_val
-                    elif (utterance or "").strip():
-                        clean_utt = (utterance or "").strip()
-                        if re.match(r"^(?:पता\s+नहीं|याद\s+नहीं|नहीं\s+पता|pata\s+nahi|don'?t\s+know)[।.!?]*$", clean_utt, re.I):
-                            details[followup_id] = {"state": "unknown"}
-                        else:
-                            details[followup_id] = clean_utt
+                    elif clean_utt:
+                        details[followup_id] = clean_utt
+                    elif _is_parent_echo(details.get(followup_id), previous_value):
+                        details.pop(followup_id, None)
             topic["details"] = details
             if topic.get("state") != "answered":
                 topic["state"] = "answered" if previous_state == "answered" else status

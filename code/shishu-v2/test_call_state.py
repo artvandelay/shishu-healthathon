@@ -474,6 +474,87 @@ class CallStateTests(unittest.TestCase):
                 1,
             )
 
+    def test_operation_reason_keeps_her_words_not_the_parent_token(self):
+        state = _ask(call_state.new_call_state(), "birth_mode")
+        state = call_state.apply_updates(
+            state,
+            [_update("profile.children", [{"age": 4}]), _update("topic.birth_mode", "operation")],
+            1,
+            utterance="अस्पताल में ऑपरेशन से हुआ था।",
+        )
+        self.assertEqual(state["topics"]["birth_mode"]["details"].get("place"), "hospital")
+        state = _ask(state, "birth_mode", "operation_reason")
+        state = call_state.apply_updates(
+            state,
+            [_update("topic.birth_mode", "operation")],
+            2,
+            utterance="डॉक्टर ने पानी कम बताया था।",
+        )
+        self.assertEqual(
+            state["topics"]["birth_mode"]["details"].get("operation_reason"),
+            "डॉक्टर ने पानी कम बताया था।",
+        )
+
+    def test_clarification_does_not_close_the_followup(self):
+        state = _ask(call_state.new_call_state(), "birth_nicu")
+        state = call_state.apply_updates(state, [_update("topic.birth_nicu", True)], 1)
+        state = _ask(state, "birth_nicu", "reason")
+        state = call_state.apply_updates(
+            state,
+            [_update("topic.birth_nicu", True)],
+            2,
+            utterance="क्या मतलब?",
+        )
+        self.assertNotIn("reason", state["topics"]["birth_nicu"]["details"])
+        nxt = call_state.next_question(state)
+        self.assertEqual(nxt["topic_id"], "birth_nicu")
+        self.assertEqual(nxt["followup_id"], "reason")
+
+    def test_pata_nahi_resolves_the_followup_as_unknown(self):
+        state = _ask(call_state.new_call_state(), "birth_nicu")
+        state = call_state.apply_updates(state, [_update("topic.birth_nicu", True)], 1)
+        state = _ask(state, "birth_nicu", "reason")
+        state = call_state.apply_updates(
+            state,
+            [_update("topic.birth_nicu", True)],
+            2,
+            utterance="पता नहीं।",
+        )
+        self.assertEqual(state["topics"]["birth_nicu"]["details"].get("reason"), {"state": "unknown"})
+        nxt = call_state.next_question(state)
+        self.assertNotEqual((nxt or {}).get("followup_id"), "reason")
+
+    def test_devanagari_kinship_resolves_the_family_followup(self):
+        state = _ask(call_state.new_call_state(), "fam_bp_stroke")
+        state = call_state.apply_updates(
+            state,
+            [_update("topic.fam_bp_stroke", True, details={"relationship": "मामा"})],
+            1,
+        )
+        pending = [item["id"] for item in call_state._pending_followups(state, "fam_bp_stroke")]
+        self.assertNotIn("relationship", pending)
+
+    def test_bade_wale_binds_the_older_child(self):
+        state = call_state.new_call_state()
+        state = call_state.apply_updates(
+            state,
+            [_update("profile.children", [{"age": 2}, {"age": 6}])],
+            1,
+        )
+        state = _ask(state, "body_fits_milestones")
+        state = call_state.apply_updates(
+            state,
+            [_update(
+                "topic.body_fits_milestones",
+                True,
+                details={"type": "fits", "onset": "एक साल", "affected_child": "बड़े वाले"},
+            )],
+            2,
+        )
+        call_state.next_question(state)
+        ids = [item.get("person_id") for item in state["topics"]["body_fits_milestones"]["instances"]]
+        self.assertIn("child_2", ids)
+
 
 if __name__ == "__main__":
     unittest.main()

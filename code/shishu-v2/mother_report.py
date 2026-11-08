@@ -354,11 +354,79 @@ def _thalassemia_from_state(state: dict) -> bool:
     return status == "answered" and topic.get("value") is False
 
 
+_TOKEN_HI = {
+    "operation": "ऑपरेशन",
+    "caesarean": "ऑपरेशन",
+    "cesarean": "ऑपरेशन",
+    "normal": "नॉर्मल",
+    "hospital": "अस्पताल",
+    "home": "घर",
+}
+
+
+def _age_years(age: object) -> float | None:
+    if isinstance(age, bool) or age is None:
+        return None
+    if isinstance(age, (int, float)):
+        return float(age)
+    if isinstance(age, dict):
+        value = age.get("value")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        unit = str(age.get("unit") or "years").lower()
+        if "month" in unit:
+            return float(value) / 12.0
+        return float(value)
+    return None
+
+
+def _child_label(state: dict, child_id: object) -> str:
+    children = [
+        child
+        for child in (state.get("profile") or {}).get("children") or []
+        if isinstance(child, dict)
+    ]
+    child = next((item for item in children if item.get("id") == child_id), None)
+    if child and str(child.get("name") or "").strip():
+        return str(child["name"]).strip()
+    ranked = sorted(
+        children,
+        key=lambda item: _age_years(item.get("age")) if _age_years(item.get("age")) is not None else -1,
+        reverse=True,
+    )
+    index = next((i for i, item in enumerate(ranked) if item.get("id") == child_id), None)
+    if index is None:
+        return ""
+    if len(ranked) >= 2 and _age_years(ranked[0].get("age")) != _age_years(ranked[-1].get("age")):
+        if index == 0:
+            return "बड़ा बच्चा"
+        if index == len(ranked) - 1:
+            return "छोटा बच्चा"
+    ordinals = ("पहला", "दूसरा", "तीसरा", "चौथा", "पाँचवाँ")
+    word = ordinals[index] if index < len(ordinals) else f"{index + 1}"
+    return f"{word} बच्चा"
+
+
+def _shown_value(value: object) -> str:
+    if value is None or isinstance(value, (dict, bool)):
+        return ""
+    text = str(value).strip()
+    if not text or text.startswith("child_"):
+        return ""
+    return _TOKEN_HI.get(text.lower(), text)
+
+
+def _detail_values(details: dict) -> str:
+    shown = [_shown_value(value) for value in details.values()]
+    return ", ".join(part for part in shown if part)
+
+
 def _children_label(state: dict) -> str:
     parts = []
     for child in (state.get("profile") or {}).get("children") or []:
         if not isinstance(child, dict):
             continue
+        label = _child_label(state, child.get("id"))
         age = child.get("age")
         if isinstance(age, dict) and age.get("value") is not None:
             age_text = f"{age.get('value')} {age.get('unit') or ''}".strip()
@@ -366,11 +434,7 @@ def _children_label(state: dict) -> str:
             age_text = str(age)
         else:
             age_text = ""
-        bit = " ".join(
-            str(part)
-            for part in (child.get("name") or child.get("id") or "", age_text, child.get("sex") or "")
-            if part
-        )
+        bit = " ".join(part for part in (label, age_text) if part)
         if bit:
             parts.append(bit)
     return ", ".join(parts)
@@ -378,30 +442,18 @@ def _children_label(state: dict) -> str:
 
 def _instance_note(state: dict, topic_id: str) -> str:
     topic = (state.get("topics") or {}).get(topic_id) or {}
-    children = {
-        child.get("id"): child
-        for child in (state.get("profile") or {}).get("children") or []
-        if isinstance(child, dict) and child.get("id")
-    }
     bits = []
     for instance in topic.get("instances") or []:
         if not isinstance(instance, dict):
             continue
-        person_id = instance.get("person_id")
-        child = children.get(person_id) or {}
-        label = child.get("name") or person_id or ""
+        label = _child_label(state, instance.get("person_id"))
         details = instance.get("details") if isinstance(instance.get("details"), dict) else {}
-        extra = ", ".join(f"{key}: {value}" for key, value in details.items() if value is not None)
-        bit = " ".join(part for part in (str(label), extra) if part)
+        extra = _detail_values(details)
+        bit = " ".join(part for part in (label, extra) if part)
         if bit:
             bits.append(bit)
-    if not bits and topic.get("details"):
-        details = topic.get("details") or {}
-        extra = ", ".join(
-            f"{key}: {value}"
-            for key, value in details.items()
-            if value is not None and not isinstance(value, dict)
-        )
+    if not bits and isinstance(topic.get("details"), dict):
+        extra = _detail_values(topic["details"])
         if extra:
             bits.append(extra)
     return "; ".join(bits)

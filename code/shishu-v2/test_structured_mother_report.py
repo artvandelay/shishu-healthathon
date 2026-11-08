@@ -86,6 +86,37 @@ class StructuredMotherReportTests(unittest.TestCase):
         report = mother_report.build(_call(state))
         self.assertTrue(any("थैलेसीमिया" in question for question in report["questions"]))
 
+    def test_yes_line_uses_a_name_or_a_hindi_ordinal_not_a_field_key(self):
+        state = self._state()
+        state["profile"]["children"] = [
+            {"id": "child_1", "name": "राम", "age": {"value": 6, "unit": "years"}, "sex": None},
+            {"id": "child_2", "name": None, "age": {"value": 2, "unit": "years"}, "sex": None},
+        ]
+        state["topics"]["body_fits_milestones"]["state"] = "answered"
+        state["topics"]["body_fits_milestones"]["value"] = True
+        state["topics"]["body_fits_milestones"]["instances"] = [
+            {"person_id": "child_1", "value": True, "details": {}},
+        ]
+        state["topics"]["fam_bp_stroke"]["state"] = "answered"
+        state["topics"]["fam_bp_stroke"]["value"] = True
+        state["topics"]["fam_bp_stroke"]["details"] = {
+            "condition": "बीपी",
+            "who": "मामा",
+            "onset_age": "35",
+        }
+        state["topics"]["birth_nicu"]["state"] = "answered"
+        state["topics"]["birth_nicu"]["value"] = True
+        state["topics"]["birth_nicu"]["instances"] = [
+            {"person_id": "child_2", "value": True, "details": {}},
+        ]
+        text = " ".join(mother_report.build(_call(state))["yes"])
+        self.assertIn("राम", text)
+        self.assertIn("छोटा बच्चा", text)
+        self.assertIn("बीपी", text)
+        self.assertNotIn("child_", text)
+        self.assertNotIn("condition", text)
+        self.assertNotIn("चिल्द", text)
+
     def test_not_asked_thalassemia_does_not_add_the_screening_line(self):
         state = self._state()
         state["topics"]["preg_thalassemia"]["state"] = "not_asked"
