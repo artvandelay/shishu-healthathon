@@ -1704,6 +1704,9 @@ class CallStateTests(unittest.TestCase):
         self.assertEqual(call_state._pending_followups(oblique, "fam_related"), [])
         self.assertTrue(call_state._has_kinship("ससुराल से है।"))
         self.assertFalse(call_state._has_kinship("यह मामला नहीं है।"))
+        for relative in ("भैया को झटके हैं।", "दीदी को कैंसर है।", "भाभी को बीपी है।", "पोते को झटके हैं।", "साला है।"):
+            self.assertTrue(call_state._has_kinship(relative), relative)
+        self.assertFalse(call_state._has_kinship("दोस्त को झटके हैं।"))
 
     def test_hindi_sex_words_count_as_female_or_male(self):
         for word in ("लड़की", "बेटी", "बच्ची"):

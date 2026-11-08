@@ -643,6 +643,22 @@ def campaign() -> list[Scenario]:
             expect_yes=("body_fits_milestones",),
         ),
         Scenario(
+            name="flags_bhaiya_fits",
+            group="red_flags",
+            caller_name="मनीषा",
+            marital_text=married,
+            children_text="एक बेटा है, पाँच साल का।",
+            children_value=1,
+            positives={
+                "fam_fits_delay": {
+                    "value": True,
+                    "utterance": "भैया को बचपन से झटके हैं।",
+                    "details": {},
+                },
+            },
+            expect_yes=("fam_fits_delay",),
+        ),
+        Scenario(
             name="flags_second_pregnancy_bleed",
             group="red_flags",
             caller_name="अंजलि",
