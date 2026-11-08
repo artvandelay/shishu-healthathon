@@ -1453,6 +1453,16 @@ class CallStateTests(unittest.TestCase):
             utterance="बच्चा छह महीने का है और गर्भ तीन महीने में गिरा।",
         )
         self.assertEqual(lost["topics"]["fam_miscarriage"]["details"].get("month"), 3)
+        ages = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "intro_children"),
+            [_update("profile.children", "बच्चा छह महीने का है और गर्भ तीन महीने में गिरा।")],
+            1,
+            utterance="बच्चा छह महीने का है और गर्भ तीन महीने में गिरा।",
+        )
+        self.assertEqual(
+            [child["age"] for child in ages["profile"]["children"]],
+            [{"value": 6, "unit": "months"}],
+        )
 
         early = call_state.apply_updates(
             _ask(call_state.new_call_state(), "birth_term"),

@@ -172,6 +172,8 @@ Product note, not a synonym list: भाई को बचपन से नही
 
 A second child name does not need the word नाम again. बड़े वाले का नाम आरव है, छोटे वाली ईशा है stores both names. मेरा नाम stays the caller. Number words, sex words, and वाले are not names. `196` unit tests. 56 scenarios, 0 failed.
 
+तीन महीने में is a pregnancy month, not a second child. बच्चा छह महीने का है और गर्भ तीन महीने में गिरा stores one child of six months. छह महीने का stays an age. `196` unit tests. 56 scenarios, 0 failed.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

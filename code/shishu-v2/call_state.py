@@ -1251,7 +1251,18 @@ def _span_is_age(text: str, end: int, require_copula: bool) -> bool:
     return False
 
 
-def _ages_with_unit(folded: str, unit_pattern: str, unit_name: str, require_copula: bool = False) -> list[tuple]:
+def _is_event_month_after(text: str, end: int) -> bool:
+    """तीन महीने में is a pregnancy month. तीन महीने का is the child's age."""
+    return re.match(r"\S*(?:\s+में|\s+का\s+पैदा)", text[end:]) is not None
+
+
+def _ages_with_unit(
+    folded: str,
+    unit_pattern: str,
+    unit_name: str,
+    require_copula: bool = False,
+    skip_event_month: bool = False,
+) -> list[tuple]:
     """Numbers that share one unit, plus a number written next to the unit.
 
     आठ, छह और चार साल is three ages. एक आधा साल is one age: the एक is not
@@ -1266,6 +1277,8 @@ def _ages_with_unit(folded: str, unit_pattern: str, unit_name: str, require_copu
     for match in listed.finditer(folded):
         if not _span_is_age(folded, match.end(), require_copula):
             continue
+        if skip_event_month and _is_event_month_after(folded, match.end()):
+            continue
         covered.append((match.start(), match.end()))
         blob_at = match.start(1)
         for num in re.finditer(r"\d+(?:\.\d+)?", match.group(1)):
@@ -1279,6 +1292,8 @@ def _ages_with_unit(folded: str, unit_pattern: str, unit_name: str, require_copu
             continue
         if not _span_is_age(folded, match.end(), require_copula):
             continue
+        if skip_event_month and _is_event_month_after(folded, match.end()):
+            continue
         found.append((match.start(), {"value": _spoken_number(match.group(1)), "unit": unit_name}))
     return found
 
@@ -1291,7 +1306,7 @@ def _spoken_age_records(utterance: str) -> list[dict]:
     """
     folded = _fold_spoken_numbers(utterance or "")
     found = []
-    found.extend(_ages_with_unit(folded, _MONTH_UNIT, "months"))
+    found.extend(_ages_with_unit(folded, _MONTH_UNIT, "months", skip_event_month=True))
     found.extend(_ages_with_unit(folded, _YEAR_UNIT, "years"))
     found.extend(_ages_with_unit(folded, _WEEK_UNIT, "weeks", require_copula=True))
     found.extend(_ages_with_unit(folded, _DAY_UNIT, "days", require_copula=True))
