@@ -7,6 +7,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 import checklist
+import call_state
 import db
 import summarizer
 
@@ -256,9 +257,14 @@ def structured_answers(call: dict) -> dict:
         saved = topics.get(topic_id) if isinstance(topics.get(topic_id), dict) else {}
         status = str(saved.get("state") or "not_asked")
         value = saved.get("value")
-        if status == "answered" and value is True:
+        details = saved.get("details") or {}
+        if call_state._is_positive(saved):
             kind = "yes"
-        elif status == "answered" and value is False:
+        elif status == "answered" and (
+            value is False
+            or str(details.get("result") or "").strip().lower() in {"normal", "negative"}
+            or str(value or "").strip().lower() in {"no", "nahi", "normal", "negative"}
+        ):
             kind = "no"
         elif status == "answered":
             kind = "answered"
@@ -268,7 +274,7 @@ def structured_answers(call: dict) -> dict:
             kind = "not_asked"
         answers[topic_id] = {
             "answer": kind,
-            "details": saved.get("details") or {},
+            "details": details,
             "instances": saved.get("instances") or [],
             "source_turn_ids": saved.get("source_turn_ids") or [],
             "reason": saved.get("reason"),

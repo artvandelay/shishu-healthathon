@@ -1,6 +1,7 @@
 """Server-owned call state, applicability rules, and question selection."""
 
 import copy
+import json
 import re
 
 import checklist
@@ -31,6 +32,15 @@ _FAMILY_YES_IDS = tuple(
     if topic["group"] == "family" and topic["id"] != "fam_same_problem"
 )
 
+_NUM_WORDS = (
+    ("ग्यारह", "11"), ("बारह", "12"), ("आधा", "0.5"),
+    ("पाँच", "5"), ("पांच", "5"), ("छह", "6"), ("छः", "6"),
+    ("एक", "1"), ("दो", "2"), ("तीन", "3"), ("चार", "4"),
+    ("सात", "7"), ("आठ", "8"), ("नौ", "9"), ("दस", "10"),
+)
+_MONTH_UNIT = r"(?:महीन\w*|mahine|months|month)"
+_YEAR_UNIT = r"(?:साल|वर्ष|saal|years|year|varsh)"
+
 
 def _when_operation(state: dict, topic: dict) -> bool:
     details = topic.get("details") or {}
@@ -60,6 +70,19 @@ def _child_age_years(age: object) -> float | None:
         if unit in {"month", "months", "mahine"}:
             return float(value) / 12.0
         return float(value)
+    if isinstance(age, str):
+        cleaned = age.strip().lower()
+        for word, number in _NUM_WORDS:
+            cleaned = cleaned.replace(word, number)
+        m = re.search(rf"(\d+(?:\.\d+)?)\s*{_MONTH_UNIT}", cleaned, re.I)
+        if m:
+            return float(m.group(1)) / 12.0
+        m = re.search(rf"(\d+(?:\.\d+)?)\s*{_YEAR_UNIT}", cleaned, re.I)
+        if m:
+            return float(m.group(1))
+        m = re.search(r"^\s*(\d+(?:\.\d+)?)\s*$", cleaned)
+        if m:
+            return float(m.group(1))
     return None
 
 
@@ -468,24 +491,44 @@ def _has_kinship(text: str) -> bool:
 def _find_child_id(state: dict, raw: object) -> str | None:
     if not raw or not isinstance(raw, str):
         return None
-    cleaned = raw.strip().lower()
+    raw_cleaned = raw.strip().lower()
+    cleaned = raw_cleaned
+    for word, number in _NUM_WORDS:
+        cleaned = cleaned.replace(word, number)
     children = state.get("profile", {}).get("children") or []
     for c in children:
         cid = str(c.get("id") or "").lower()
         cname = str(c.get("name") or "").lower()
-        if cleaned in (cid, cname) and cleaned:
+        if raw_cleaned in (cid, cname) and raw_cleaned:
+            return c.get("id")
+        if cname and (cname == raw_cleaned or cname in raw_cleaned.split() or f"{cname} " in f"{raw_cleaned} "):
             return c.get("id")
     for c in children:
-        age = _child_age_years(c.get("age"))
+        age_dict = c.get("age")
+        age = _child_age_years(age_dict)
         if age is not None:
             age_int = int(age) if age.is_integer() else age
             if (
                 f"{age_int} saal" in cleaned
                 or f"{age_int} year" in cleaned
-                or f"{age_int} mahine" in cleaned
                 or f"{age_int} साल" in cleaned
+                or f"{age_int} वर्ष" in cleaned
             ):
                 return c.get("id")
+            months = None
+            if isinstance(age_dict, dict) and str(age_dict.get("unit") or "").lower() in {"month", "months", "mahine"}:
+                months = age_dict.get("value")
+            elif age < 1.0:
+                months = round(age * 12)
+            if months is not None:
+                m_int = int(months) if isinstance(months, (int, float)) and float(months).is_integer() else months
+                if (
+                    f"{m_int} mahine" in cleaned
+                    or f"{m_int} month" in cleaned
+                    or f"{m_int} महीने" in cleaned
+                    or f"{m_int} माह" in cleaned
+                ):
+                    return c.get("id")
     aged = [
         (c.get("id"), _child_age_years(c.get("age")))
         for c in children
@@ -494,10 +537,19 @@ def _find_child_id(state: dict, raw: object) -> str | None:
     if len(aged) >= 2:
         aged.sort(key=lambda item: item[1], reverse=True)
         if aged[0][1] != aged[-1][1]:
-            if any(w in cleaned for w in ("bada", "bade", "badi", "older", "elder", "बड़ा", "बड़े", "बड़ी")):
+            if any(w in cleaned for w in ("bada", "bade", "badi", "older", "elder", "बड़ा", "बड़े", "बड़ी", "pehle", "pehla", "pehli", "पहले", "पहला", "पहली", "first")):
                 return aged[0][0]
-            if any(w in cleaned for w in ("chhota", "chhote", "chhoti", "chota", "chote", "younger", "छोटा", "छोटे", "छोटी")):
+            if any(w in cleaned for w in ("chhota", "chhote", "chhoti", "chota", "chote", "younger", "छोटा", "छोटे", "छोटी", "dusra", "dusre", "dusri", "दूसरा", "दूसरे", "दूसरी", "second")):
                 return aged[-1][0]
+    females = [c["id"] for c in children if isinstance(c, dict) and _is_female(c) and c.get("id")]
+    males = [
+        c["id"] for c in children
+        if isinstance(c, dict) and str(c.get("sex") or "").strip().lower() in {"male", "boy", "m", "beta", "bete", "son", "बेटा", "बेटे", "लड़का", "लड़के"} and c.get("id")
+    ]
+    if len(females) == 1 and any(w in cleaned for w in ("beti", "ladki", "girl", "daughter", "बेटी", "लड़की", "बच्ची")):
+        return females[0]
+    if len(males) == 1 and any(w in cleaned for w in ("beta", "bete", "ladka", "ladke", "boy", "son", "बेटा", "बेटे", "लड़का", "लड़के", "बच्चा")):
+        return males[0]
     return None
 
 
@@ -530,7 +582,15 @@ def _followup_resolved(state: dict, topic: dict, followup_id: str) -> bool:
             if isinstance(val, dict) and val.get("state") in ("unknown", "no_response"):
                 return True
             sval = str(val).strip().lower()
-            if sval in {"all", "sabhi", "dono", "everyone", "sab"}:
+            if any(w in sval for w in ("all", "both", "dono", "sabhi", "sabko", "everyone", "sab", "दोनों", "सभी", "सबको", "सब", "हर एक")):
+                for c in children:
+                    cid = c.get("id")
+                    if cid and not any(inst.get("person_id") == cid for inst in topic.get("instances") or []):
+                        topic.setdefault("instances", []).append({
+                            "person_id": cid,
+                            "value": topic.get("value"),
+                            "details": dict(details),
+                        })
                 return True
             matched = _find_child_id(state, val)
             if matched:
@@ -730,23 +790,22 @@ def _normalize_children(value: object) -> list[dict]:
                 number += 1
             child_id = f"child_{number}"
         used.add(child_id)
+        age = raw.get("age")
+        if isinstance(age, str):
+            age_years = _child_age_years(age)
+            if age_years is not None:
+                if any(u in age.lower() for u in ("महीन", "mahine", "month")):
+                    m_val = round(age_years * 12)
+                    age = {"value": m_val, "unit": "months"}
+                else:
+                    age = {"value": int(age_years) if age_years.is_integer() else age_years, "unit": "years"}
         children.append({
             "id": child_id,
             "name": raw.get("name"),
-            "age": raw.get("age"),
+            "age": age,
             "sex": raw.get("sex"),
         })
     return children
-
-
-_NUM_WORDS = (
-    ("ग्यारह", "11"), ("बारह", "12"), ("आधा", "0.5"),
-    ("पाँच", "5"), ("पांच", "5"), ("छह", "6"), ("छः", "6"),
-    ("एक", "1"), ("दो", "2"), ("तीन", "3"), ("चार", "4"),
-    ("सात", "7"), ("आठ", "8"), ("नौ", "9"), ("दस", "10"),
-)
-_MONTH_UNIT = r"(?:महीन\w*|mahine|months|month)"
-_YEAR_UNIT = r"(?:साल|वर्ष|saal|years|year|varsh)"
 
 
 def _is_duration_after(text: str, end: int) -> bool:
@@ -879,14 +938,14 @@ def _children_from_ages(ages: list[float]) -> list[dict]:
 
 
 def _parse_field(field: object) -> tuple[str, str]:
-    text = str(field or "")
-    if text.startswith("profile."):
-        name = text.split(".", 1)[1]
+    text = str(field or "").strip()
+    if text.startswith("profile.") or text.startswith("profiles."):
+        name = text.split(".", 1)[1].strip().replace("-", "_")
         if name not in PROFILE_FIELDS:
             return "error", f"unknown field: {text}"
         return "profile", name
-    if text.startswith("topic."):
-        topic_id = text.split(".", 1)[1]
+    if text.startswith("topic.") or text.startswith("topics."):
+        topic_id = text.split(".", 1)[1].strip().replace("-", "_")
         if topic_id not in contract.TOPIC_IDS:
             topic_id = topic_id.replace(".", "_")
         if topic_id not in contract.TOPIC_IDS:
@@ -896,9 +955,11 @@ def _parse_field(field: object) -> tuple[str, str]:
         return "profile", text
     if text in contract.TOPIC_IDS:
         return "topic", text
-    collapsed = text.replace(".", "_")
+    collapsed = text.replace(".", "_").replace("-", "_")
     if collapsed in contract.TOPIC_IDS:
         return "topic", collapsed
+    if collapsed in PROFILE_FIELDS:
+        return "profile", collapsed
     return "error", f"unknown field: {text}"
 
 
@@ -908,15 +969,29 @@ def _check_update(update: dict, current_topic: str | None) -> tuple[str, str]:
     kind, name = _parse_field(update.get("field"))
     if kind == "error":
         return kind, name
-    status = update.get("state")
+    status = str(update.get("state") or "").strip().lower()
+    update["state"] = status
     if status not in MODEL_TOPIC_STATES:
         return "error", f"invalid state: {status}"
-    scope = update.get("scope") or "none"
+    scope = str(update.get("scope") or "none").strip().lower()
+    update["scope"] = scope
     if scope not in _SCOPES:
         return "error", f"invalid scope: {scope}"
-    child_ids = update.get("child_ids") or []
+    child_ids = update.get("child_ids")
+    if isinstance(child_ids, str):
+        child_ids = [cid.strip() for cid in child_ids.split(",") if cid.strip()]
+        update["child_ids"] = child_ids
+    elif child_ids is None:
+        child_ids = []
+        update["child_ids"] = child_ids
     if not isinstance(child_ids, list):
         return "error", "child_ids must be a list"
+    details = update.get("details")
+    if isinstance(details, str):
+        try:
+            update["details"] = json.loads(details)
+        except Exception:
+            pass
     return kind, name
 
 
@@ -926,9 +1001,17 @@ def _children_payload(value: object) -> tuple[str, object]:
         return "none", []
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return ("none", []) if int(value) <= 0 else ("count", int(value))
-    if isinstance(value, str) and str(value).strip().isdigit():
-        number = int(str(value).strip())
-        return ("none", []) if number <= 0 else ("count", number)
+    if isinstance(value, str):
+        val_clean = str(value).strip().lower()
+        if val_clean in {"none", "no", "nahi", "nahin", "zero", "0", "false", "कोई नहीं", "एक भी नहीं"}:
+            return "none", []
+        val_folded = val_clean
+        for word, number in _NUM_WORDS:
+            val_folded = val_folded.replace(word, number)
+        m = re.search(r"\b(\d+)\b", val_folded)
+        if m:
+            number = int(m.group(1))
+            return ("none", []) if number <= 0 else ("count", number)
     if isinstance(value, (list, dict)):
         return "list", _normalize_children(value)
     return "ignore", []
@@ -953,6 +1036,8 @@ def _canonical_marital(value: object) -> str | None:
         or "हो गई" in raw
         or "ho gayi" in text
         or "shaadi ho" in text
+        or any(word in raw for word in ("विवाहित", "शादीशुदा"))
+        or any(word in text for word in ("shadishuda", "shaadi shuda"))
     )
     if about:
         return "about_to_marry"
@@ -984,15 +1069,17 @@ def _remember_turn(topic: dict, turn_id: int) -> None:
         turns.append(turn_id)
 
 
-def _store_instances(topic: dict, update: dict) -> None:
-    scope = update.get("scope") or "none"
+def _store_instances(topic: dict, update: dict, children: list[dict] | None = None) -> None:
+    scope = str(update.get("scope") or "none").strip().lower()
     value = update.get("value")
     details = update.get("details") if isinstance(update.get("details"), dict) else {}
     child_ids = [str(child_id) for child_id in (update.get("child_ids") or [])]
     if scope == "all" and value is False:
         topic["instances"] = []
         return
-    if scope != "specific":
+    if scope == "all" and _is_positive(topic) and children:
+        child_ids = [c["id"] for c in children if isinstance(c, dict) and c.get("id")]
+    elif scope != "specific":
         return
     existing = {
         item.get("person_id"): item
@@ -1035,6 +1122,12 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
                 details["place"] = "hospital"
             elif any(word in utt_blob for word in ("home", "ghar", "घर")):
                 details["place"] = "home"
+    if name == "birth_term":
+        if "early_or_late" not in details:
+            if any(word in val_blob or word in utt_blob for word in ("early", "pehle", "preterm", "पहले", "प्रीटर्म")):
+                details["early_or_late"] = "early"
+            elif any(word in val_blob or word in utt_blob for word in ("late", "baad", "बाद")):
+                details["early_or_late"] = "late"
     if name == "birth_hearing_vision":
         text = utterance or ""
         if "result" not in details and re.search(r"नॉर्मल|normal", text, re.I) and not re.search(r"अबनॉर्मल|abnormal|दिक्कत", text, re.I):
@@ -1049,6 +1142,18 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
             details.setdefault("scan_done", True)
         if "scan_done" not in details and isinstance(value, bool):
             details["scan_done"] = value
+    if name == "fam_related" and "relationship" not in details:
+        if _has_kinship(utt_blob):
+            for word in _KINSHIP_WORDS:
+                if re.search(rf"(?:^|\s){re.escape(word)}(?:\s|$)", utt_blob):
+                    details["relationship"] = word
+                    break
+    if name.startswith("fam_") and ("relationship" not in details and "who" not in details):
+        if _has_kinship(utt_blob):
+            for word in _KINSHIP_WORDS:
+                if re.search(rf"(?:^|\s){re.escape(word)}(?:\s|$)", utt_blob):
+                    details["relationship"] = word
+                    break
     topic["details"] = details
 
 
@@ -1188,6 +1293,14 @@ def apply_updates(
         if bad_child:
             problems.append(bad_child)
             continue
+        raw_uval = update.get("value")
+        if isinstance(raw_uval, str):
+            if raw_uval.strip().lower() == "true":
+                update = dict(update)
+                update["value"] = True
+            elif raw_uval.strip().lower() == "false":
+                update = dict(update)
+                update["value"] = False
         wrote = True
         topic = state["topics"][name]
         previous_state = topic.get("state")
@@ -1226,7 +1339,7 @@ def apply_updates(
             topic["source"] = "model"
             _absorb_stated_value(name, topic, utterance)
             _remember_turn(topic, turn_id)
-            _store_instances(topic, update)
+            _store_instances(topic, update, state["profile"].get("children"))
             continue
         if previous_state in MODEL_TOPIC_STATES and (
             previous_value != update.get("value") or previous_state != status
@@ -1259,7 +1372,7 @@ def apply_updates(
         topic["reason"] = None
         _absorb_stated_value(name, topic, utterance)
         _remember_turn(topic, turn_id)
-        _store_instances(topic, update)
+        _store_instances(topic, update, state["profile"].get("children"))
     if not wrote:
         raise ValueError(problems[0] if problems else "no applicable update")
     _apply_rules(state)
