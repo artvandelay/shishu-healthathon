@@ -420,6 +420,16 @@ Trio: no swelling (no flags, no हाँ lines), swelling for two days (still a
 
 Trio: a brother who died at two (no flags, no हाँ lines), a brother who died at one month (still a yes, the line says 1 महीने), and that sentence sent as false (still a yes). Pass.
 
+## 16:52 IST
+
+A danda was being read as part of the last word, so डिलीवरी हो गई was not "the delivery happened." It is not a problem. प्रसव में खून बह गया still is. `197` unit tests. 168 scenarios, 0 failed.
+
+Trio: the delivery happened (no flags, no हाँ lines), bleeding at delivery (still a yes), and that bleeding sent as false (still a yes). Pass.
+
+## Left at 16:53 IST
+
+फोर्सेप लगा, नॉर्मल नहीं stays a yes with no delivery type. Forceps was not added to the operation words. भाई को बचपन से नहीं दिखता stays a no on the blindness question. तलाक, विधवा, and शादी टूट stay unmapped as a status, and शादी टूट is not stored as married. Cholesterol is in the English family note, not the Hindi question, so it is not stored. सूजन या गाँठ is still not a place. एक आधा साल stays half a year.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

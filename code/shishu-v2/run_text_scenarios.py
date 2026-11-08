@@ -637,6 +637,53 @@ def campaign() -> list[Scenario]:
             children_value=3,
         ),
         Scenario(
+            name="no_flags_delivery_happened",
+            group="no_flags",
+            caller_name="अनीता",
+            marital_text=married,
+            children_text="एक बेटी है, दो साल की।",
+            children_value=1,
+            positives={
+                "preg_delivery": {
+                    "value": True,
+                    "utterance": "डिलीवरी हो गई।",
+                    "details": {},
+                },
+            },
+        ),
+        Scenario(
+            name="flags_delivery_bleeding",
+            group="red_flags",
+            caller_name="सुषमा",
+            marital_text=married,
+            children_text="एक बेटा है, तीन साल का।",
+            children_value=1,
+            positives={
+                "preg_delivery": {
+                    "value": True,
+                    "utterance": "प्रसव में खून बह गया।",
+                    "details": {},
+                },
+            },
+            expect_yes=("preg_delivery",),
+        ),
+        Scenario(
+            name="degenerate_delivery_bleed_sent_as_no",
+            group="degenerate",
+            caller_name="माला",
+            marital_text=married,
+            children_text="एक बेटी है, एक साल की।",
+            children_value=1,
+            positives={
+                "preg_delivery": {
+                    "value": False,
+                    "utterance": "प्रसव में खून बह गया।",
+                    "details": {},
+                },
+            },
+            expect_yes=("preg_delivery",),
+        ),
+        Scenario(
             name="no_flags_died_at_two",
             group="no_flags",
             caller_name="मंजू",

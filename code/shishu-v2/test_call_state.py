@@ -2734,6 +2734,16 @@ class CallStateTests(unittest.TestCase):
             call_state.topic_answer_kind(happened["topics"]["preg_delivery"], "preg_delivery"),
             "yes",
         )
+        only_event = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "preg_delivery"),
+            [_update("topic.preg_delivery", True)],
+            1,
+            utterance="डिलीवरी हो गई।",
+        )
+        self.assertEqual(
+            call_state.topic_answer_kind(only_event["topics"]["preg_delivery"], "preg_delivery"),
+            "no",
+        )
         fine = call_state.apply_updates(
             _ask(call_state.new_call_state(), "preg_delivery"),
             [_update("topic.preg_delivery", True)],
