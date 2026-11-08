@@ -1581,7 +1581,15 @@ _PARENT_ECHO = {
     "true", "false", "yes", "no", "haan", "nahi", "nahin", "हाँ", "नहीं", "नही",
 }
 _CLARIFY_RE = re.compile(
-    r"^\s*(?:(?:ये|यह|इसका|yeh|ye|iska)\s+)?(?:क्या(?:\s+मतलब(?:\s+है)?|\s+होता\s+है)?|मतलब(?:\s+क्या\s+है)?|यानी|समझ(?:\s+में)?\s+नहीं\s+आया|matlab|yaani|yani|kya(?:\s+matlab(?:\s+hai)?|\s+hota\s+hai)?|samajh(?:\s+mein)?\s+nahi(?:\s+aaya)?)[।.!?]*\s*$",
+    r"^\s*(?:(?:\S+\s+){0,2})?(?:"
+    r"क्या(?:\s+मतलब(?:\s+है)?|\s+होता\s+है)?"
+    r"|मतलब(?:\s+क्या\s+है)?"
+    r"|यानी|matlab|yaani|yani"
+    r"|समझ(?:\s+में)?\s+नहीं\s+आया"
+    r"|samajh(?:\s+mein)?\s+nahi(?:\s+aaya)?"
+    r"|kya(?:\s+matlab(?:\s+hai)?|\s+hota\s+hai)?"
+    r"|(?:फिर\s+से|दोबारा|phir\s+se|dobara)\s+(?:बोलिए|बोलो|boliye|bolo)"
+    r")[।.!?]*\s*$",
     re.I,
 )
 _UNKNOWN_UTT_RE = re.compile(

@@ -138,7 +138,9 @@ A pregnancy month stored as 3 prints as 3 महीने, the same way a day co
 
 The only child is stored on a finding that asks which child, so the report says her name or बेटी/बेटा. A family finding such as a miscarriage is not pinned to that child. A no drops the binding.
 
-सबसे बड़े is the oldest child. सब is not found inside सबसे, so the younger child is not included. दोनों and सबको still mean every child. `193` unit tests. 49 scenarios, 0 failed.
+सबसे बड़े is the oldest child. सब is not found inside सबसे, so the younger child is not included. दोनों and सबको still mean every child.
+
+जी क्या मतलब, मुझे समझ नहीं आया, and फिर से बोलिए leave the follow-up open. चार दिन and नहीं are still answers. `193` unit tests. 49 scenarios, 0 failed.
 
 ## Not hardcoded
 

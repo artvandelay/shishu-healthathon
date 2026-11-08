@@ -614,6 +614,20 @@ class CallStateTests(unittest.TestCase):
         self.assertEqual(nxt["topic_id"], "birth_nicu")
         self.assertEqual(nxt["followup_id"], "reason")
 
+        for phrase in ("जी क्या मतलब?", "मुझे समझ नहीं आया।", "फिर से बोलिए।"):
+            self.assertTrue(call_state.is_clarification(phrase), phrase)
+            asked = call_state.apply_updates(
+                state,
+                [_update("topic.birth_nicu", True)],
+                4,
+                utterance=phrase,
+            )
+            self.assertNotIn("reason", asked["topics"]["birth_nicu"]["details"])
+            nxt = call_state.next_question(asked)
+            self.assertEqual(nxt["followup_id"], "reason", phrase)
+        self.assertFalse(call_state.is_clarification("चार दिन।"))
+        self.assertFalse(call_state.is_clarification("नहीं।"))
+
     def test_pata_nahi_resolves_the_followup_as_unknown(self):
         state = _ask(call_state.new_call_state(), "birth_nicu")
         state = call_state.apply_updates(state, [_update("topic.birth_nicu", True)], 1)
