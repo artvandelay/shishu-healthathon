@@ -1438,6 +1438,10 @@ class CallStateTests(unittest.TestCase):
         self.assertEqual(call_state.topic_answer_kind(half["topics"]["birth_term"], "birth_term"), "yes")
         self.assertIsNone(call_state._spoken_month_count("ढाई महीने पहले पैदा हुआ।"))
         self.assertEqual(call_state._month_phrase(7.5), "साढ़े 7 महीने")
+        self.assertEqual(call_state._spoken_times("दूसरी बार खून चढ़ा।"), 2)
+        self.assertEqual(call_state._spoken_times("पहली बार।"), 1)
+        self.assertEqual(call_state._spoken_times("दो बार।"), 2)
+        self.assertIsNone(call_state._spoken_times("दूसरा बच्चा।"))
 
     def test_the_number_next_to_the_event_is_the_one_stored(self):
         nicu = call_state.apply_updates(

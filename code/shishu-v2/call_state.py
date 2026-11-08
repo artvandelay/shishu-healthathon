@@ -1123,12 +1123,18 @@ def _is_duration_after(text: str, end: int) -> bool:
 
 
 def _spoken_times(text: str) -> int | None:
-    """How many times, as in दो बार. A day count is not a time count."""
+    """How many times, as in दो बार or दूसरी बार. A day count is not a time count."""
     folded = _fold_spoken_numbers(text or "")
     match = re.search(r"(\d+)\s*(?:बार|times|time)", folded, re.I)
-    if not match:
-        return None
-    return int(match.group(1))
+    if match:
+        return int(match.group(1))
+    for word, number in (
+        ("पहली", 1), ("पहला", 1), ("दूसरी", 2), ("दूसरा", 2),
+        ("तीसरी", 3), ("तीसरा", 3), ("चौथी", 4), ("चौथा", 4),
+    ):
+        if re.search(rf"{word}\s*(?:बार|time)", text or "", re.I):
+            return number
+    return None
 
 
 def _store_spoken_number(details: dict, key: str, parser, utterance: str) -> None:
