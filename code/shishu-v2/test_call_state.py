@@ -1060,6 +1060,25 @@ class CallStateTests(unittest.TestCase):
         months = call_state._spoken_age_records("सवा महीने का है।")
         self.assertEqual(months, [{"value": 1.25, "unit": "months"}])
         self.assertAlmostEqual(call_state._child_age_years(months[0]), 1.25 / 12)
+        self.assertEqual(
+            call_state._spoken_age_records("पौने साल का है।"),
+            [{"value": 0.75, "unit": "years"}],
+        )
+        self.assertEqual(
+            call_state._spoken_age_records("आधे साल का है।"),
+            [{"value": 0.5, "unit": "years"}],
+        )
+        self.assertEqual(
+            call_state._spoken_age_records("दो साल छह महीने का है।"),
+            [{"value": 2.5, "unit": "years"}],
+        )
+        self.assertEqual(
+            call_state._spoken_age_records("दो साल का और छह महीने का।"),
+            [
+                {"value": 2, "unit": "years"},
+                {"value": 6, "unit": "months"},
+            ],
+        )
 
     def test_sex_words_bind_only_when_each_child_is_named(self):
         both = _ask(call_state.new_call_state(), "intro_children")

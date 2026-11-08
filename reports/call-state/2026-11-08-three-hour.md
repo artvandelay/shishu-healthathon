@@ -186,6 +186,8 @@ A nukta does not make a different word. सीज़ेरियन is an operat
 
 दूसरी बार is two times. पहली बार is one. The ordinal is a count only next to बार, so दूसरा बच्चा is still not two children. `196` unit tests. 58 scenarios, 0 failed.
 
+दो साल छह महीने का is one child of ढाई साल. दो साल का और छह महीने का stays two children. पौने साल is three quarters of a year. आधे साल is half a year. `196` unit tests. 59 scenarios, 0 failed.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

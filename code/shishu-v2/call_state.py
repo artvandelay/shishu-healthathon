@@ -66,8 +66,10 @@ def _fold_spoken_numbers(text: str) -> str:
     folded = re.sub(r"साढ़े\s*(\d+(?:\.\d+)?)", lambda m: _shift(m, 0.5), folded)
     folded = re.sub(r"सवा\s*(\d+(?:\.\d+)?)", lambda m: _shift(m, 0.25), folded)
     folded = re.sub(r"पौने\s*(\d+(?:\.\d+)?)", lambda m: _shift(m, -0.25), folded)
-    # सवा साल / सवा महीना means one and a quarter when no number follows.
+    # सवा साल is one and a quarter. पौने साल is three quarters. आधे साल is half.
     folded = re.sub(r"सवा(?=\s*(?:साल|वर्ष|year|महीन))", "1.25", folded)
+    folded = re.sub(r"पौने(?=\s*(?:साल|वर्ष|year|महीन))", "0.75", folded)
+    folded = re.sub(r"आधे(?=\s*(?:साल|वर्ष|year|महीन))", "0.5", folded)
     return folded
 
 
@@ -1353,7 +1355,43 @@ def _spoken_age_records(utterance: str) -> list[dict]:
     found.extend(_ages_with_unit(folded, _WEEK_UNIT, "weeks", require_copula=True))
     found.extend(_ages_with_unit(folded, _DAY_UNIT, "days", require_copula=True))
     found.sort()
-    return [item for _, item in found]
+    return _merge_year_and_months(folded, found)
+
+
+def _merge_year_and_months(folded: str, found: list) -> list[dict]:
+    """दो साल छह महीने का is one age of ढाई साल.
+
+    दो साल का और छह महीने का stays two ages. The का after the years is the split.
+    """
+    merged = []
+    index = 0
+    while index < len(found):
+        start, record = found[index]
+        nxt = found[index + 1] if index + 1 < len(found) else None
+        if nxt and record.get("unit") == "years" and nxt[1].get("unit") == "months":
+            between = folded[start:nxt[0]]
+            after_year = re.sub(
+                rf"^\d+(?:\.\d+)?\s*{_YEAR_UNIT}",
+                "",
+                between,
+                count=1,
+                flags=re.I,
+            )
+            months = nxt[1].get("value")
+            if (
+                re.fullmatch(r"\s*", after_year or "")
+                and isinstance(months, (int, float))
+                and not isinstance(months, bool)
+                and 0 < float(months) < 12
+            ):
+                total = float(record["value"]) + float(months) / 12.0
+                shown = int(total) if total.is_integer() else total
+                merged.append({"value": shown, "unit": "years"})
+                index += 2
+                continue
+        merged.append(record)
+        index += 1
+    return merged
 
 
 def _spoken_ages(utterance: str) -> list[float]:
