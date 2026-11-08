@@ -565,6 +565,14 @@ def _topic_question(topic_id: str) -> dict:
             "Ask it as one yes/no question in this same direction. Do not add an 'ya ...' alternative "
             "or a second question. 'Haan' is value=true and 'nahi' is value=false."
         )
+        topic = checklist._BY_ID.get(topic_id) or {}
+        if topic.get("group") in checklist.CLINICAL_GROUPS:
+            how = (
+                "Ask it as one yes/no question in exactly the same direction as written: it is phrased "
+                "so 'हाँ' (haan) flags a concern and 'नहीं' (nahi) means no concern. Never flip the "
+                "question to its opposite. Do not add an 'ya ...' alternative or a second question. "
+                "'Haan' is value=true and 'nahi' is value=false."
+            )
     else:
         how = "Ask it as one short question."
     return {
@@ -578,11 +586,36 @@ def _topic_question(topic_id: str) -> dict:
     }
 
 
+# Follow-ups asked as a yes/no question. Like the clinical topic questions, they
+# are worded so हाँ flags a concern and नहीं means no concern, and the live model
+# must not invert them (it once flipped "does a tooth bleed a lot when it falls"
+# into "does the bleeding stop quickly").
+_YES_NO_FOLLOWUP_IDS = frozenset({
+    "bleeding_or_bruises",
+    "caller_test",
+    "clinician_comment",
+    "continued_after_delivery",
+    "hospital_visits",
+    "partner_test",
+    "periods",
+    "scan_done",
+    "teeth",
+    "test_done",
+})
+
+
 def _followup_question(topic_id: str, spec: dict, state: dict | None = None) -> dict:
     prompt_note = (
         f"Ask only this follow-up for {topic_id}. "
         f"Record the answer in details.{spec['id']}. {spec['note']} Then stop and wait."
     )
+    if spec["id"] in _YES_NO_FOLLOWUP_IDS:
+        prompt_note = (
+            f"Ask only this follow-up for {topic_id} as one yes/no question in exactly the same "
+            f"direction as written: 'हाँ' (haan) flags a concern and 'नहीं' (nahi) means no concern. "
+            f"Never flip it to its opposite. Record the answer in details.{spec['id']}. "
+            f"{spec['note']} Then stop and wait."
+        )
     if state and spec["id"] == "affected_child":
         children = state.get("profile", {}).get("children") or []
         kids_desc = []

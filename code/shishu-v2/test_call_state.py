@@ -423,6 +423,25 @@ class CallStateTests(unittest.TestCase):
         self.assertIs(topic["value"], True)
         self.assertEqual(call_state.next_question(state)["followup_id"], "count")
 
+    def test_yes_no_questions_keep_haan_as_the_concern_direction(self):
+        for topic in checklist.TOPICS:
+            if not checklist.is_yes_no(topic["id"]):
+                continue
+            self.assertIn("क्या", topic["question"], topic["id"])
+        for topic in checklist.TOPICS:
+            if not checklist.is_yes_no(topic["id"]):
+                continue
+            note = call_state._topic_question(topic["id"])["prompt_note"]
+            self.assertIn("same direction", note, topic["id"])
+            if topic["group"] in checklist.CLINICAL_GROUPS:
+                self.assertIn("हाँ", note, topic["id"])
+                self.assertIn("concern", note, topic["id"])
+        for spec in call_state.TOPIC_RULES["birth_hearing_vision"]["followups"]:
+            if spec["id"] == "test_done":
+                note = call_state._followup_question("birth_hearing_vision", spec)["prompt_note"]
+                self.assertIn("हाँ", note)
+                self.assertIn("concern", note)
+
     def test_pata_nahi_resolves_the_followup_as_unknown(self):
         state = _ask(call_state.new_call_state(), "birth_nicu")
         state = call_state.apply_updates(state, [_update("topic.birth_nicu", True)], 1)

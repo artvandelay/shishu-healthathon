@@ -1,12 +1,28 @@
 """Triage topics: one Hindi question per topic, and per-call coverage helpers.
 
 Every clinical yes/no `question` is worded so that हाँ means a concern and
-नहीं means no concern. `answer` marks the few topics that are not yes/no.
+नहीं means no concern (see QUESTION_DIRECTION). `answer` marks the few
+topics that are not yes/no.
 """
 
 import question_flow
 
+# Normative phrasing rule for every clinical screening question below: each one
+# is worded so that answering 'नहीं' (no) means NO red flag / no concern, and
+# 'हाँ' (yes) means a concern. The bot must ask the question in exactly this
+# direction and must not invert it (e.g. never turn "does a tooth bleed a lot
+# when it falls" into "does the bleeding stop quickly").
+QUESTION_DIRECTION = (
+    "Every screening question is phrased so that answering 'नहीं' (no) means "
+    "NO red flag / no concern, and 'हाँ' (yes) means a concern. The bot must "
+    "ask the question in exactly this direction and must not invert it."
+)
+
 GROUPS: tuple[str, ...] = ("intro", "birth", "body", "illness", "pregnancy", "family", "close")
+
+# Groups whose yes/no questions are clinical red-flag screens and so follow
+# QUESTION_DIRECTION. The intro and close groups are conversational, not screens.
+CLINICAL_GROUPS: tuple[str, ...] = ("birth", "body", "illness", "pregnancy", "family")
 
 TOPICS: tuple[dict, ...] = (
     {"id": "intro_name", "group": "intro", "answer": "name", "need": "mother's name",
@@ -204,7 +220,8 @@ def tool_note(coverage: list, bridged: list | None = None) -> str:
     return (
         f"Saved. {bridge}Next open topic: {nxt}. "
         "If her last answer was 'Haan' and you already asked a follow-up in this turn, stop and wait for her answer. "
-        "Otherwise ask ONLY this single open topic as ONE short Hindi question, in the same yes/no direction. "
+        "Otherwise ask ONLY this single open topic as ONE short Hindi question, in the same yes/no direction as written "
+        "('haan' flags a concern, 'nahi' means no concern — never invert the question). "
         "Keep your exact same warm female voice (Kore) and pitch — never shift to a male voice. "
         "If she has more than one child, say 'aapke kisi bhi bachche ko'; in family topics, explicitly say 'kisi bachche ya bade ko'. "
         "Do not read this note aloud."
@@ -292,4 +309,4 @@ GROUP_HI: dict[str, str] = {
     "close": "अंत",
 }
 
-DETAIL_GROUPS: tuple[str, ...] = ("birth", "body", "illness", "pregnancy", "family")
+DETAIL_GROUPS: tuple[str, ...] = CLINICAL_GROUPS
