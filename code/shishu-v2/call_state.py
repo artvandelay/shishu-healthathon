@@ -1006,6 +1006,21 @@ def _store_spoken_number(details: dict, key: str, parser, utterance: str) -> Non
         details[key] = parsed
 
 
+def _age_phrase(record: dict) -> str:
+    value = record.get("value")
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    unit = {
+        "months": "महीने",
+        "years": "साल",
+        "weeks": "हफ़्ते",
+        "days": "दिन",
+    }.get(record.get("unit") or "", "")
+    if value is None or not unit:
+        return ""
+    return f"{value} {unit}"
+
+
 def _spoken_month_count(text: str) -> int | None:
     """A pregnancy month, as in तीन महीने. A year is not a month."""
     folded = _fold_spoken_numbers(text or "")
@@ -1723,6 +1738,12 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
         _store_spoken_number(details, "days", _spoken_day_count, utterance)
     if "month" in follow_ids:
         _store_spoken_number(details, "month", _spoken_month_count, utterance)
+    ages = _spoken_age_records(utterance or "")
+    if len(ages) == 1:
+        phrase = _age_phrase(ages[0])
+        for fid in ("amount", "onset_age", "age_at_death"):
+            if fid in follow_ids and not details.get(fid) and phrase:
+                details[fid] = phrase
     if "relationship" in follow_ids and "relationship" not in details and _has_kinship(utterance or ""):
         details["relationship"] = (utterance or "").strip()
     if "who" in follow_ids and "who" not in details and _has_kinship(utterance or ""):

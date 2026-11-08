@@ -1116,6 +1116,26 @@ class CallStateTests(unittest.TestCase):
         pending = [item["id"] for item in call_state._pending_followups(state, "fam_miscarriage")]
         self.assertNotIn("count", pending)
         self.assertNotIn("month", pending)
+        blind = _ask(call_state.new_call_state(), "fam_blind")
+        blind = call_state.apply_updates(
+            blind,
+            [_update("topic.fam_blind", True)],
+            1,
+            utterance="मामा की आँख तीस साल की उम्र में गई।",
+        )
+        self.assertEqual(blind["topics"]["fam_blind"]["details"].get("onset_age"), "30 साल")
+        self.assertNotIn(
+            "onset_age",
+            [item["id"] for item in call_state._pending_followups(blind, "fam_blind")],
+        )
+        early = _ask(call_state.new_call_state(), "birth_term")
+        early = call_state.apply_updates(
+            early,
+            [_update("topic.birth_term", True)],
+            1,
+            utterance="सात महीने में पैदा हुई।",
+        )
+        self.assertEqual(early["topics"]["birth_term"]["details"].get("amount"), "7 महीने")
 
     def test_a_day_phrase_copied_into_the_field_is_stored_as_the_count(self):
         state = _ask(call_state.new_call_state(), "birth_nicu")
