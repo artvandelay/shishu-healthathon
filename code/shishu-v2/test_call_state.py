@@ -910,6 +910,23 @@ class CallStateTests(unittest.TestCase):
             ["female", "female"],
         )
         self.assertEqual(call_state._spoken_given_names("मेरा नाम मीरा है।"), [])
+        self.assertEqual(
+            call_state._spoken_given_names("बड़े वाले का नाम आरव है, छोटे वाली ईशा है।"),
+            ["आरव", "ईशा"],
+        )
+        named_pair = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "intro_children"),
+            [_update(
+                "profile.children",
+                "बड़े वाले का नाम आरव है, छोटे वाली ईशा है। दो साल का बेटा और छह महीने की बेटी।",
+            )],
+            1,
+            utterance="बड़े वाले का नाम आरव है, छोटे वाली ईशा है। दो साल का बेटा और छह महीने की बेटी।",
+        )
+        self.assertEqual(
+            [child["name"] for child in named_pair["profile"]["children"]],
+            ["आरव", "ईशा"],
+        )
         self.assertEqual(call_state.spoken_person_name("जिगर"), "जिगर")
         self.assertEqual(call_state.spoken_person_name("my name is Seema"), "Seema")
         named = _ask(call_state.new_call_state(), "intro_name")

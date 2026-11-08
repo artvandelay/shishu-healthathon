@@ -170,6 +170,8 @@ A cord that fell in one or two weeks is not "more than three weeks." तीन �
 
 Product note, not a synonym list: भाई को बचपन से नहीं दिखता is stored as a no on the blindness question, because नहीं denies the question and the question's word is अंधापन. कम सुनाई देता है is a finding. A new blindness lexicon was not added.
 
+A second child name does not need the word नाम again. बड़े वाले का नाम आरव है, छोटे वाली ईशा है stores both names. मेरा नाम stays the caller. Number words, sex words, and वाले are not names. `196` unit tests. 56 scenarios, 0 failed.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

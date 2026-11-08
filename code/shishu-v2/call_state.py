@@ -1693,12 +1693,32 @@ def _children_payload(value: object) -> tuple[str, object]:
 
 
 def _spoken_given_names(text: str) -> list[str]:
-    """Names she introduced with नाम. मेरा नाम is the caller, handled separately."""
+    """Names she introduced with नाम. मेरा नाम is the caller, handled separately.
+
+    नाम आरव है, छोटे वाली ईशा है is two names. The word नाम is not repeated.
+    """
+    raw = text or ""
+    if not re.search(r"(?<!मेरा\s)नाम", raw):
+        return []
+    blocked = set(_QUESTION_FUNCTION_WORDS)
+    blocked.update(word for word, _number in _NUM_WORDS)
+    blocked.update({
+        "साल", "वर्ष", "महीने", "महीना", "हफ्ते", "हफ़्ते", "दिन", "नाम",
+        "बच्चा", "बच्चे", "बच्चों", "बेटा", "बेटे", "बेटी", "बेटियाँ", "बेटियां",
+        "लड़का", "लड़के", "लड़की", "लड़कियाँ", "लड़कियां",
+        "वाले", "वाली", "वाला", "बड़े", "बड़ा", "बड़ी", "छोटे", "छोटा", "छोटी",
+    })
     found = []
-    for match in re.finditer(r"(?<!मेरा\s)नाम\s+([^\s,।]+)", text or ""):
-        name = spoken_person_name(match.group(1))
-        if name and name not in {"है", "का", "की", "के", "था", "थी"}:
+
+    def take(token: str) -> None:
+        name = spoken_person_name(token)
+        if name and name not in blocked and name not in found:
             found.append(name)
+
+    for match in re.finditer(r"(?<!मेरा\s)नाम\s+([^\s,।]+)", raw):
+        take(match.group(1))
+    for match in re.finditer(r"(?:वाले|वाली|वाला|और)\s+([^\s,।]+)", raw):
+        take(match.group(1))
     return found
 
 
