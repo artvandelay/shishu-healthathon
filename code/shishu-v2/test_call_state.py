@@ -1381,6 +1381,11 @@ class CallStateTests(unittest.TestCase):
             [("female", {"value": 4, "unit": "years"})],
         )
         husband = stored("मेरे पति की उम्र तीस साल है और बेटा एक साल का है।", 1)
+        father = stored("पापा की उम्र चालीस साल है, बेटा उन्नीस साल का है।", 40)
+        self.assertEqual(
+            [(c["sex"], c["age"]) for c in father["profile"]["children"]],
+            [("male", {"value": 19, "unit": "years"})],
+        )
         self.assertEqual(
             [(c["sex"], c["age"]) for c in husband["profile"]["children"]],
             [("male", {"value": 1, "unit": "years"})],
@@ -1678,6 +1683,17 @@ class CallStateTests(unittest.TestCase):
             utterance="मामा की आँख तीस साल की उम्र में गई।",
         )
         self.assertEqual(blind["topics"]["fam_blind"]["details"].get("onset_age"), "30 साल")
+        forty = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "fam_bp_stroke"),
+            [_update("topic.fam_bp_stroke", True)],
+            1,
+            utterance="पापा को शुगर है, उम्र चालीस साल।",
+        )
+        self.assertEqual(forty["topics"]["fam_bp_stroke"]["details"].get("onset_age"), "40 साल")
+        self.assertEqual(
+            call_state._spoken_age_records("उन्नीस साल का बेटा है।"),
+            [{"value": 19, "unit": "years"}],
+        )
         self.assertNotIn(
             "onset_age",
             [item["id"] for item in call_state._pending_followups(blind, "fam_blind")],

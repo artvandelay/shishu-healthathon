@@ -344,6 +344,12 @@ Trio: the knee denied (no flags, no हाँ lines), blood count low (still a y
 
 Trio: a normal blood count (no flags, no हाँ lines), low count plus normal otherwise (still a yes), and an early birth that she also called normal (still a yes, 7 महीने). Pass.
 
+## 16:39 IST
+
+उन्नीस, चालीस, पचास, साठ, सत्तर, अस्सी, and नब्बे are ages, the same way बीस and तीस already were. पापा की उम्र चालीस, sent as 40, is his age: the boy उन्नीस साल का is the one child. `197` unit tests. 132 scenarios, 0 failed.
+
+Trio: a son of nineteen (no flags), father's sugar at forty (still a yes, the line keeps 40 साल), and 40 sent as the child count (one boy of nineteen, no हाँ lines). Pass.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

@@ -637,6 +637,38 @@ def campaign() -> list[Scenario]:
             children_value=3,
         ),
         Scenario(
+            name="no_flags_nineteen",
+            group="no_flags",
+            caller_name="वंदना",
+            marital_text=married,
+            children_text="एक बेटा है, उन्नीस साल का।",
+            children_value=1,
+        ),
+        Scenario(
+            name="flags_father_sugar_at_forty",
+            group="red_flags",
+            caller_name="सरोज",
+            marital_text=married,
+            children_text="एक बेटी है, दो साल की।",
+            children_value=1,
+            positives={
+                "fam_bp_stroke": {
+                    "value": True,
+                    "utterance": "पापा को शुगर है, उम्र चालीस साल।",
+                    "details": {},
+                },
+            },
+            expect_yes=("fam_bp_stroke",),
+        ),
+        Scenario(
+            name="degenerate_fathers_age_sent_as_count",
+            group="degenerate",
+            caller_name="ममता",
+            marital_text=married,
+            children_text="पापा की उम्र चालीस साल है, बेटा उन्नीस साल का है।",
+            children_value=40,
+        ),
+        Scenario(
             name="no_flags_count_normal",
             group="no_flags",
             caller_name="गीता",

@@ -36,6 +36,9 @@ _NUM_WORDS = (
     ("पच्चीस", "25"), ("चौबीस", "24"), ("तेईस", "23"), ("बाईस", "22"), ("इक्कीस", "21"),
     ("अठारह", "18"), ("सत्रह", "17"), ("सोलह", "16"), ("पंद्रह", "15"), ("पन्द्रह", "15"),
     ("चौदह", "14"), ("तेरह", "13"), ("ग्यारह", "11"), ("बारह", "12"), ("आधा", "0.5"),
+    ("उन्नीस", "19"),
+    ("नब्बे", "90"), ("अस्सी", "80"), ("सत्तर", "70"), ("साठ", "60"),
+    ("पचास", "50"), ("चालीस", "40"),
     ("बीस", "20"), ("तीस", "30"),
     ("पाँच", "5"), ("पांच", "5"), ("छह", "6"), ("छः", "6"),
     ("एक", "1"), ("दो", "2"), ("तीन", "3"), ("चार", "4"),
@@ -2790,6 +2793,14 @@ def apply_updates(
                         if recounted is None:
                             kind_c = "ignore"
                         elif recounted != int(norm) and int(norm) in age_values:
+                            norm = recounted
+                        elif recounted != int(norm) and int(norm) in {
+                            int(record["value"])
+                            if isinstance(record.get("value"), float) and record["value"].is_integer()
+                            else record.get("value")
+                            for record in _spoken_age_records(utterance or "")
+                        } - age_values:
+                            # पापा की उम्र चालीस, sent as 40, is his age, not forty children.
                             norm = recounted
                         elif (
                             recounted is not None
