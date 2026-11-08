@@ -971,6 +971,18 @@ def _spoken_times(text: str) -> int | None:
     return int(match.group(1))
 
 
+def _store_spoken_number(details: dict, key: str, parser, utterance: str) -> None:
+    """Keep an integer the tool already stored. A copied sentence becomes that count."""
+    current = details.get(key)
+    if type(current) is int:
+        return
+    parsed = parser(utterance or "")
+    if parsed is None:
+        parsed = parser("" if current is None else str(current))
+    if parsed is not None:
+        details[key] = parsed
+
+
 def _spoken_day_count(text: str) -> int | None:
     """A stay of N days. A month count is not a day count."""
     folded = _fold_spoken_numbers(text or "")
@@ -1471,14 +1483,10 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
             elif re.search(r"बाद भी|अब भी|continued|still", utt_blob):
                 details["continued_after_delivery"] = True
     follow_ids = {spec["id"] for spec in TOPIC_RULES.get(name, {}).get("followups") or []}
-    if "count" in follow_ids and "count" not in details:
-        times = _spoken_times(utterance or "")
-        if times is not None:
-            details["count"] = times
-    if "days" in follow_ids and "days" not in details:
-        days = _spoken_day_count(utterance or "")
-        if days is not None:
-            details["days"] = days
+    if "count" in follow_ids:
+        _store_spoken_number(details, "count", _spoken_times, utterance)
+    if "days" in follow_ids:
+        _store_spoken_number(details, "days", _spoken_day_count, utterance)
     if "relationship" in follow_ids and "relationship" not in details and _has_kinship(utterance or ""):
         details["relationship"] = (utterance or "").strip()
     if "who" in follow_ids and "who" not in details and _has_kinship(utterance or ""):

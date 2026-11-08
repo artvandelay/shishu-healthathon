@@ -311,6 +311,14 @@ def _issues(scenario, state, errors, report, fallback, said) -> list[str]:
         children = (state.get("profile") or {}).get("children") or []
         if expected and len(children) > 1 and expected not in bound:
             issues.append(f"{tid} did not bind {said_child} to {expected}")
+        for fid, pair in (spec.get("followups") or {}).items():
+            utterance = pair[0] if isinstance(pair, (tuple, list)) and pair else ""
+            days = call_state._spoken_day_count(utterance)
+            if days is None:
+                continue
+            stored = ((topics.get(tid) or {}).get("details") or {}).get("days")
+            if stored != days:
+                issues.append(f"{tid} days {stored!r} != {days}")
     for tid in scenario.unknown_followups:
         details = (topics.get(tid) or {}).get("details") or {}
         unknown_fields = [
@@ -485,6 +493,56 @@ def campaign() -> list[Scenario]:
             marital_text=married,
             children_text="एक बच्चा है, ग्यारह साल का लड़का।",
             children_value=1,
+        ),
+        Scenario(
+            name="no_flags_theek_hai",
+            group="no_flags",
+            caller_name="सरोज",
+            marital_text=married,
+            children_text="एक बेटा है, तीन साल का।",
+            children_value=1,
+            no_utterance="ठीक है।",
+            no_value="ठीक है",
+        ),
+        Scenario(
+            name="flags_post_term",
+            group="red_flags",
+            caller_name="कमला",
+            marital_text=married,
+            children_text="एक बेटी है, दो साल की।",
+            children_value=1,
+            positives={
+                "birth_term": {
+                    "value": True,
+                    "utterance": "दस महीने में हुआ, देर से।",
+                    "details": {"affected_child": "बेटी"},
+                    "followups": {
+                        "amount": ("दस महीने।", "दस महीने"),
+                        "affected_child": ("बेटी का।", "बेटी"),
+                    },
+                },
+            },
+            expect_yes=("birth_term",),
+        ),
+        Scenario(
+            name="flags_nicu_days_in_an_unknown_phrase",
+            group="red_flags",
+            caller_name="विमला",
+            marital_text=married,
+            children_text="एक बेटा है, एक साल का।",
+            children_value=1,
+            positives={
+                "birth_nicu": {
+                    "value": True,
+                    "utterance": "पीलिया था।",
+                    "details": {"reason": "jaundice"},
+                    "followups": {
+                        "reason": ("पीलिया था।", "jaundice"),
+                        "days": ("दो दिन पता नहीं।", "दो दिन पता नहीं।"),
+                    },
+                },
+            },
+            expect_yes=("birth_nicu",),
         ),
         Scenario(
             name="no_flags_full_term_said_as_yes",

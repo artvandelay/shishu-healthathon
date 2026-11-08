@@ -86,7 +86,9 @@ Heavy periods said after a no on the general bleeding question are still a ह�
 
 A bleeding or bruise finding is not asked as a swollen knee. Lost skills, puberty, limb pain, lumps, proportion, thumb, and private parts each get their own question instead of the generic growth sentence.
 
-पूरे नौ महीने / समय पर is not a red flag even when the stored value is yes. सात महीने or समय से पहले stays early. दस महीने or देर से stays late. `186` unit tests. 27 scenarios, 0 failed.
+पूरे नौ महीने / समय पर is not a red flag even when the stored value is yes. सात महीने or समय से पहले stays early. दस महीने or देर से stays late. A child's present age (छह महीने का है) is not read as the pregnancy length.
+
+A day or time count copied into the follow-up as a sentence ("दो दिन पता नहीं") is stored as the number. The पता नहीं in that sentence does not wipe the count. A whole call answered with ठीक है stays a no. `187` unit tests. 30 scenarios, 0 failed.
 
 ## Not hardcoded
 

@@ -875,6 +875,18 @@ class CallStateTests(unittest.TestCase):
         )
         self.assertEqual(call_state.topic_answer_kind(aged["topics"]["birth_term"], "birth_term"), "no")
 
+    def test_a_day_phrase_copied_into_the_field_is_stored_as_the_count(self):
+        state = _ask(call_state.new_call_state(), "birth_nicu")
+        state = call_state.apply_updates(
+            state,
+            [_update("topic.birth_nicu", True, details={"days": "दो दिन पता नहीं।", "reason": "jaundice"})],
+            1,
+            utterance="दो दिन पता नहीं।",
+        )
+        self.assertEqual(state["topics"]["birth_nicu"]["details"]["days"], 2)
+        self.assertEqual(state["topics"]["birth_nicu"]["state"], "answered")
+        self.assertEqual(call_state._pending_followups(state, "birth_nicu"), [])
+
     def test_a_count_of_times_stated_with_the_answer_is_not_asked_again(self):
         state = _ask(call_state.new_call_state(), "body_transfusion")
         state = call_state.apply_updates(
