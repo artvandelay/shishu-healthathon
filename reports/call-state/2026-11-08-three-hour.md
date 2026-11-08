@@ -120,7 +120,9 @@ A stored day count prints as 4 दिन and a stored time count as 3 बार.
 
 आठ साल का एक बच्चा is one child aged eight, not eight children. The count is the number beside बच्चा, including बेटे and बेटियाँ.
 
-दो बेटे and दो बेटियाँ are both boys or both girls. One बेटी among several ages still does not label every child. `187` unit tests. 43 scenarios, 0 failed.
+दो बेटे and दो बेटियाँ are both boys or both girls. One बेटी among several ages still does not label every child.
+
+दो बार गर्भ गिरा, तीन महीने में stores the count and the month, and does not ask them again. `188` unit tests. 43 scenarios, 0 failed.
 
 ## Not hardcoded
 

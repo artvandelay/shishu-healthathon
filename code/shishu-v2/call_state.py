@@ -1006,6 +1006,16 @@ def _store_spoken_number(details: dict, key: str, parser, utterance: str) -> Non
         details[key] = parsed
 
 
+def _spoken_month_count(text: str) -> int | None:
+    """A pregnancy month, as in तीन महीने. A year is not a month."""
+    folded = _fold_spoken_numbers(text or "")
+    match = re.search(rf"(\d+(?:\.\d+)?)\s*{_MONTH_UNIT}", folded, re.I)
+    if not match:
+        return None
+    number = float(match.group(1))
+    return int(number) if number.is_integer() else int(round(number))
+
+
 def _spoken_day_count(text: str) -> int | None:
     """A stay of N days. A month count is not a day count."""
     folded = _fold_spoken_numbers(text or "")
@@ -1711,6 +1721,8 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
         _store_spoken_number(details, "count", _spoken_times, utterance)
     if "days" in follow_ids:
         _store_spoken_number(details, "days", _spoken_day_count, utterance)
+    if "month" in follow_ids:
+        _store_spoken_number(details, "month", _spoken_month_count, utterance)
     if "relationship" in follow_ids and "relationship" not in details and _has_kinship(utterance or ""):
         details["relationship"] = (utterance or "").strip()
     if "who" in follow_ids and "who" not in details and _has_kinship(utterance or ""):

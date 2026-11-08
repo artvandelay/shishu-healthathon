@@ -1103,6 +1103,20 @@ class CallStateTests(unittest.TestCase):
         self.assertEqual(nicu["topics"]["birth_nicu"]["details"].get("reason"), "fits")
         self.assertEqual(nicu["topics"]["birth_nicu"]["details"].get("days"), 15)
 
+    def test_a_miscarriage_count_and_month_said_together_are_not_asked_again(self):
+        state = _ask(call_state.new_call_state(), "fam_miscarriage")
+        state = call_state.apply_updates(
+            state,
+            [_update("topic.fam_miscarriage", True)],
+            1,
+            utterance="दो बार गर्भ गिरा, तीन महीने में।",
+        )
+        self.assertEqual(state["topics"]["fam_miscarriage"]["details"].get("count"), 2)
+        self.assertEqual(state["topics"]["fam_miscarriage"]["details"].get("month"), 3)
+        pending = [item["id"] for item in call_state._pending_followups(state, "fam_miscarriage")]
+        self.assertNotIn("count", pending)
+        self.assertNotIn("month", pending)
+
     def test_a_day_phrase_copied_into_the_field_is_stored_as_the_count(self):
         state = _ask(call_state.new_call_state(), "birth_nicu")
         state = call_state.apply_updates(
