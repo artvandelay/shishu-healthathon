@@ -605,6 +605,38 @@ def campaign() -> list[Scenario]:
             no_value=True,
         ),
         Scenario(
+            name="no_flags_her_daughter_not_his",
+            group="no_flags",
+            caller_name="मनीषा",
+            marital_text=married,
+            children_text="मेरे पति के पहले शादी से दो बच्चे हैं, मेरे एक बेटी है चार साल की।",
+            children_value=2,
+        ),
+        Scenario(
+            name="flags_her_daughter_not_his",
+            group="red_flags",
+            caller_name="सोनी",
+            marital_text=married,
+            children_text="मेरे पति के पहले शादी से दो बच्चे हैं, मेरे एक बेटी है चार साल की।",
+            children_value=2,
+            positives={
+                "body_blue": {
+                    "value": True,
+                    "utterance": "बेटी के होंठ नीले पड़ते हैं।",
+                    "details": {},
+                },
+            },
+            expect_yes=("body_blue",),
+        ),
+        Scenario(
+            name="degenerate_weight_sent_as_count",
+            group="degenerate",
+            caller_name="रीमा",
+            marital_text=married,
+            children_text="तीन किलो का पैदा हुआ, अब एक साल का बेटा है।",
+            children_value=3,
+        ),
+        Scenario(
             name="no_flags_hearing_normal",
             group="no_flags",
             caller_name="रश्मि",

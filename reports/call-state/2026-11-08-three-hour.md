@@ -320,6 +320,12 @@ Trio: scan found nothing (no flags, no हाँ lines), a hole on the scan (sti
 
 Trio: a normal hearing test (no flags), cannot hear (still a yes), and cannot see sent as false (still a yes). Pass.
 
+## 16:29 IST
+
+पति के पहले शादी से दो बच्चे are not hers. मेरे एक बेटी है चार साल की is one girl of four. तीन किलो का पैदा हुआ is not three children, and तीन किलो का पैदा हुआ, अब एक साल का बेटा है is one boy of one. `197` unit tests. 120 scenarios, 0 failed.
+
+Trio: her daughter, not his earlier children (no flags), blue lips for that daughter (still a yes), and the birth weight 3 sent as the count (one boy of one, no हाँ lines). Pass.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

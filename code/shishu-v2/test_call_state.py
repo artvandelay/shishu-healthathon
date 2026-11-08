@@ -1298,11 +1298,22 @@ class CallStateTests(unittest.TestCase):
         )
         self.assertEqual(call_state._children_payload("दो"), ("count", 2))
         hours = stored("दो घंटे का है।", 2)
+        self.assertEqual(stored("तीन किलो का पैदा हुआ।", 3)["profile"]["children"], [])
+        weighed = stored("तीन किलो का पैदा हुआ, अब एक साल का बेटा है।", 3)
+        self.assertEqual(
+            [(c["sex"], c["age"]) for c in weighed["profile"]["children"]],
+            [("male", {"value": 1, "unit": "years"})],
+        )
         self.assertEqual(hours["profile"]["children"], [])
         self.assertNotEqual(hours["topics"]["intro_children"]["state"], "answered")
         minutes = stored("बीस मिनट का है।", 20)
         self.assertEqual(minutes["profile"]["children"], [])
         inlaw = stored("मेरी सास के दो बच्चे हैं, मेरे एक बेटा है तीन साल का।", 2)
+        previous = stored("मेरे पति के पहले शादी से दो बच्चे हैं, मेरे एक बेटी है चार साल की।", 2)
+        self.assertEqual(
+            [(c["sex"], c["age"]) for c in previous["profile"]["children"]],
+            [("female", {"value": 4, "unit": "years"})],
+        )
         self.assertEqual(
             [(c["sex"], c["age"]) for c in inlaw["profile"]["children"]],
             [("male", {"value": 3, "unit": "years"})],

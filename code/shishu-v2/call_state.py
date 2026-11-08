@@ -2047,7 +2047,8 @@ def _numbers_before_child_words(folded: str) -> list[tuple[int, str]]:
     for match in re.finditer(rf"(?<![\d.])(\d+)\s*({_CHILD_COUNT_WORD})", folded or "", re.I):
         # सास के दो बच्चे are hers, not the caller's. मेरे एक बेटा stays.
         if re.search(
-            r"(?:सास|ससुर|पति|पत्नी|भांजा|भांजी|भानजा|भानजी|भतीजा|भतीजी|मामा|भाभी|नाना|नानी|दादा|दादी)\s+के\s*$",
+            r"(?:सास|ससुर|पति|पत्नी|भांजा|भांजी|भानजा|भानजी|भतीजा|भतीजी|मामा|भाभी|नाना|नानी|दादा|दादी)"
+            r"\s+के\s+(?:पहले\s+)?(?:शादी\s+से\s+)?$",
             folded[:match.start()],
         ):
             continue
@@ -2720,11 +2721,19 @@ def apply_updates(
                             recounted is not None
                             and recounted != int(norm)
                             and re.search(
-                                rf"(?:सास|ससुर|पति|पत्नी|भांजा|भांजी|भतीजा|भतीजी|मामा|नाना|दादा)\s+के\s+{int(norm)}\s+",
+                                rf"(?:सास|ससुर|पति|पत्नी|भांजा|भांजी|भतीजा|भतीजी|मामा|नाना|दादा)"
+                                rf"\s+के\s+(?:पहले\s+)?(?:शादी\s+से\s+)?{int(norm)}\s+",
                                 _fold_spoken_numbers(utterance or ""),
                             )
                         ):
                             # सास के दो बच्चे, sent as 2, is not her count.
+                            norm = recounted
+                        elif recounted is not None and recounted != int(norm) and re.search(
+                            rf"{int(norm)}\s*(?:किलो|kilo|घंट|मिनट)",
+                            _fold_spoken_numbers(utterance or ""),
+                            re.I,
+                        ):
+                            # तीन किलो sent as 3 is the birth weight, not three children.
                             norm = recounted
                     if (
                         kind_c == "count"
