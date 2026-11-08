@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 import checklist
 import call_state
 import db
+import models
 import summarizer
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
@@ -203,17 +204,12 @@ def _user_content(call: dict) -> str:
 async def _from_gemini(user_content: str) -> dict:
     from google import genai
 
-    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"], http_options={"api_version": "v1beta"})
     try:
         response = await client.aio.models.generate_content(
-            model="gemini-2.5-flash",
+            model=models.TEXT_MODEL,
             contents=user_content,
-            config={
-                "system_instruction": _PROMPT,
-                "response_mime_type": "application/json",
-                "temperature": 0.2,
-                "max_output_tokens": 8192,
-            },
+            config=models.text_config(system=_PROMPT, max_output_tokens=8192, temperature=0.2),
         )
         return parse_payload(response.text or "")
     finally:
@@ -221,31 +217,8 @@ async def _from_gemini(user_content: str) -> dict:
         client.close()
 
 
-async def _from_openai(user_content: str) -> dict:
-    from openai import AsyncOpenAI
-
-    client = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
-    try:
-        response = await client.chat.completions.create(
-            model="gpt-4o-mini",
-            temperature=0.2,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": _PROMPT},
-                {"role": "user", "content": user_content},
-            ],
-        )
-        return parse_payload(response.choices[0].message.content or "")
-    finally:
-        await client.close()
-
-
 async def _from_llm(call: dict) -> dict:
-    user_content = _user_content(call)
-    try:
-        return await _from_gemini(user_content)
-    except Exception:
-        return await _from_openai(user_content)
+    return await _from_gemini(_user_content(call))
 
 
 def structured_answers(call: dict) -> dict:

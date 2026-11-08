@@ -1,7 +1,6 @@
 """Server-owned call state, applicability rules, and question selection."""
 
 import copy
-import re
 
 import checklist
 import call_state_contract as contract
@@ -30,20 +29,9 @@ _FAMILY_YES_IDS = tuple(
     if topic["group"] == "family" and topic["id"] != "fam_same_problem"
 )
 
-_NUM_WORDS = (
-    ("ग्यारह", "11"), ("बारह", "12"), ("आधा", "0.5"),
-    ("पाँच", "5"), ("पांच", "5"), ("छह", "6"), ("छः", "6"),
-    ("एक", "1"), ("दो", "2"), ("तीन", "3"), ("चार", "4"),
-    ("सात", "7"), ("आठ", "8"), ("नौ", "9"), ("दस", "10"),
-)
-_MONTH_UNIT = r"(?:महीन\w*|mahine|months|month)"
-_YEAR_UNIT = r"(?:साल|वर्ष|saal|years|year|varsh)"
-
-
 def _when_operation(state: dict, topic: dict) -> bool:
     details = topic.get("details") or {}
-    blob = f"{topic.get('value') or ''} {details.get('delivery_type') or ''}".lower()
-    return any(word in blob for word in ("operation", "caesarean", "cesarean", "c-section", "c section"))
+    return str(details.get("delivery_type") or topic.get("value") or "").strip().lower() == "operation"
 
 
 def _when_partner(state: dict, topic: dict) -> bool:
@@ -71,24 +59,13 @@ def _child_age_years(age: object) -> float | None:
         if unit in {"month", "months", "mahine"}:
             return float(value) / 12.0
         return float(value)
-    if isinstance(age, str):
-        cleaned = age.strip().lower()
-        for word, number in _NUM_WORDS:
-            cleaned = cleaned.replace(word, number)
-        m = re.search(rf"(\d+(?:\.\d+)?)\s*{_MONTH_UNIT}", cleaned, re.I)
-        if m:
-            return float(m.group(1)) / 12.0
-        m = re.search(rf"(\d+(?:\.\d+)?)\s*{_YEAR_UNIT}", cleaned, re.I)
-        if m:
-            return float(m.group(1))
-        m = re.search(r"^\s*(\d+(?:\.\d+)?)\s*$", cleaned)
-        if m:
-            return float(m.group(1))
+    if isinstance(age, str) and age.strip().replace(".", "", 1).isdigit():
+        return float(age.strip())
     return None
 
 
 def _is_female(child: dict) -> bool:
-    return str(child.get("sex") or "").strip().lower() in {"female", "girl", "f", "beti", "daughter"}
+    return str(child.get("sex") or "").strip().lower() == "female"
 
 
 def _any_child_at_least(state: dict, years: float, female_only: bool = False) -> bool:
@@ -455,19 +432,14 @@ def _is_positive(topic: dict) -> bool:
         return False
     details = topic.get("details") or {}
     dtype = str(details.get("delivery_type") or "").strip().lower()
-    if dtype in {"normal", "नॉर्मल"}:
+    if dtype == "normal":
         return False
-    if any(w in dtype for w in ("operation", "caesarean", "cesarean", "c-section", "c section", "ऑपरेशन", "सीजेरियन")):
+    if dtype == "operation":
         return True
     value = topic.get("value")
     if value is True:
         return True
-    if isinstance(value, str) and value.strip().lower() in {
-        "yes", "haan", "positive", "early", "late", "operation", "caesarean", "cesarean", "c-section", "abnormal",
-        "हाँ", "हां", "ऑपरेशन", "सीजेरियन", "असामान्य",
-    }:
-        return True
-    return False
+    return isinstance(value, str) and value.strip().lower() == "operation"
 
 
 def topic_answer_kind(topic: dict) -> str:
@@ -480,8 +452,8 @@ def topic_answer_kind(topic: dict) -> str:
     details = topic.get("details") or {}
     if status == "answered" and (
         value is False
-        or str(details.get("delivery_type") or "").strip().lower() in {"normal", "नॉर्मल"}
-        or str(value or "").strip().lower() in {"no", "nahi", "nahin", "normal", "negative", "नहीं", "नही", "नॉर्मल"}
+        or str(details.get("delivery_type") or "").strip().lower() == "normal"
+        or str(value or "").strip().lower() == "normal"
     ):
         return "no"
     if status in {"unknown", "no_response", "not_asked", "not_applicable"}:
@@ -491,96 +463,20 @@ def topic_answer_kind(topic: dict) -> str:
     return "not_asked"
 
 
-_KINSHIP_WORDS = {
-    "maata", "mata", "pita", "mummy", "papa", "mother", "father", "dad", "mom",
-    "bhai", "behen", "sister", "brother", "beta", "beti", "son", "daughter",
-    "pati", "husband", "patni", "wife", "dada", "dadi", "chacha", "chachi",
-    "tau", "tai", "bua", "phupha", "nana", "nani", "mama", "mami", "masi",
-    "mausi", "mausa", "sasur", "saas", "devar", "jeth", "nanad", "cousin",
-    "door", "khandaan", "khandan", "saga", "sagga", "immediate", "distant",
-    "paternal", "maternal", "relative", "rishtedaar", "rishtedar",
-    "माता", "पिता", "मम्मी", "पापा", "भाई", "बहन", "बेटा", "बेटी", "पति", "पत्नी",
-    "दादा", "दादी", "चाचा", "चाची", "ताऊ", "ताई", "बुआ", "फूफा", "नाना", "नानी",
-    "मामा", "मामी", "मौसी", "मासी", "मौसा", "ससुर", "सास", "देवर", "जेठ", "ननद",
-    "कज़िन", "कजिन", "दूर", "खानदान", "सगा", "सगे", "सगी", "रिश्तेदार",
-}
-
-
-def _has_kinship(text: str) -> bool:
-    raw = (text or "").lower()
-    blob = re.sub(r"[^\w\s\u0900-\u097F]", " ", raw)
-    words = set(blob.split())
-    return bool(words & _KINSHIP_WORDS)
-
-
 def _find_child_id(state: dict, raw: object) -> str | None:
-    if not raw or not isinstance(raw, str):
+    """A child id, or a child's name exactly as stored. The model sends ids."""
+    text = str(raw or "").strip()
+    if not text:
         return None
-    raw_cleaned = raw.strip().lower()
-    cleaned = raw_cleaned
-    for word, number in _NUM_WORDS:
-        cleaned = cleaned.replace(word, number)
-    children = state.get("profile", {}).get("children") or []
-    for c in children:
-        cid = str(c.get("id") or "").lower()
-        cname = str(c.get("name") or "").lower()
-        if raw_cleaned in (cid, cname) and raw_cleaned:
-            return c.get("id")
-        if cname and (cname == raw_cleaned or cname in raw_cleaned.split() or f"{cname} " in f"{raw_cleaned} "):
-            return c.get("id")
-    for c in children:
-        age_dict = c.get("age")
-        age = _child_age_years(age_dict)
-        if age is not None:
-            age_int = int(age) if age.is_integer() else age
-            if (
-                f"{age_int} saal" in cleaned
-                or f"{age_int} year" in cleaned
-                or f"{age_int} साल" in cleaned
-                or f"{age_int} वर्ष" in cleaned
-            ):
-                return c.get("id")
-            months = None
-            if isinstance(age_dict, dict) and str(age_dict.get("unit") or "").lower() in {"month", "months", "mahine"}:
-                months = age_dict.get("value")
-            elif age < 1.0:
-                months = round(age * 12)
-            if months is not None:
-                m_int = int(months) if isinstance(months, (int, float)) and float(months).is_integer() else months
-                if (
-                    f"{m_int} mahine" in cleaned
-                    or f"{m_int} month" in cleaned
-                    or f"{m_int} महीने" in cleaned
-                    or f"{m_int} माह" in cleaned
-                ):
-                    return c.get("id")
-    aged = [
-        (c.get("id"), _child_age_years(c.get("age")))
-        for c in children
-        if isinstance(c, dict) and _child_age_years(c.get("age")) is not None
-    ]
-    if len(aged) >= 2:
-        aged.sort(key=lambda item: item[1], reverse=True)
-        if aged[0][1] != aged[-1][1]:
-            tokens = set(re.sub(r"[^\w\s\u0900-\u097F]", " ", cleaned).split())
-            if tokens & {"bada", "bade", "badi", "older", "elder", "बड़ा", "बड़े", "बड़ी", "pehle", "pehla", "pehli", "पहले", "पहला", "पहली", "first"}:
-                return aged[0][0]
-            if tokens & {"dusra", "dusre", "dusri", "दूसरा", "दूसरे", "दूसरी", "second"}:
-                return aged[1][0]
-            if len(aged) >= 3 and (tokens & {"teesra", "teesre", "teesri", "तीसरा", "तीसरे", "तीसरी", "third"}):
-                return aged[2][0]
-            if tokens & {"chhota", "chhote", "chhoti", "chota", "chote", "younger", "छोटा", "छोटे", "छोटी"}:
-                return aged[-1][0]
-    females = [c["id"] for c in children if isinstance(c, dict) and _is_female(c) and c.get("id")]
-    males = [
-        c["id"] for c in children
-        if isinstance(c, dict) and str(c.get("sex") or "").strip().lower() in {"male", "boy", "m", "beta", "bete", "son", "बेटा", "बेटे", "लड़का", "लड़के"} and c.get("id")
-    ]
-    tokens = set(re.sub(r"[^\w\s\u0900-\u097F]", " ", cleaned).split())
-    if len(females) == 1 and (tokens & {"beti", "ladki", "girl", "daughter", "बेटी", "लड़की", "बच्ची"}):
-        return females[0]
-    if len(males) == 1 and (tokens & {"beta", "bete", "ladka", "ladke", "boy", "son", "बेटा", "बेटे", "लड़का", "लड़के"}):
-        return males[0]
+    folded = text.lower()
+    for child in (state.get("profile") or {}).get("children") or []:
+        if not isinstance(child, dict):
+            continue
+        if folded == str(child.get("id") or "").lower():
+            return child.get("id")
+        name = str(child.get("name") or "").strip()
+        if name and folded == name.lower():
+            return child.get("id")
     return None
 
 
@@ -589,8 +485,8 @@ def _followup_resolved(state: dict, topic: dict, followup_id: str) -> bool:
     children = state.get("profile", {}).get("children") or []
 
     if followup_id == "delivery_type":
-        blob = f"{topic.get('value') or ''} {details.get('delivery_type') or ''}".lower()
-        if any(word in blob for word in ("operation", "caesarean", "cesarean", "normal", "home", "hospital")):
+        dtype = str(details.get("delivery_type") or topic.get("value") or "").strip().lower()
+        if dtype in {"normal", "operation"}:
             return True
 
     if followup_id == "affected_child":
@@ -612,19 +508,7 @@ def _followup_resolved(state: dict, topic: dict, followup_id: str) -> bool:
         if val is not None:
             if isinstance(val, dict) and val.get("state") in ("unknown", "no_response"):
                 return True
-            sval = str(val).strip().lower()
-            sval_words = set(re.sub(r"[^\w\s\u0900-\u097F]", " ", sval).split())
-            if sval_words & {"all", "both", "dono", "sabhi", "sabko", "everyone", "sab", "दोनों", "सभी", "सबको", "सब"}:
-                for c in children:
-                    cid = c.get("id")
-                    if cid and not any(inst.get("person_id") == cid for inst in topic.get("instances") or []):
-                        topic.setdefault("instances", []).append({
-                            "person_id": cid,
-                            "value": topic.get("value"),
-                            "details": dict(details),
-                        })
-                return True
-            matched = _find_child_id(state, val)
+            matched = _find_child_id(state, str(val))
             if matched:
                 if not any(inst.get("person_id") == matched for inst in topic.get("instances") or []):
                     topic.setdefault("instances", []).append({
@@ -638,25 +522,10 @@ def _followup_resolved(state: dict, topic: dict, followup_id: str) -> bool:
 
     if followup_id in ("relationship", "who"):
         val = details.get(followup_id)
-        other = details.get("who" if followup_id == "relationship" else "relationship")
-        topic_val = topic.get("value")
         if isinstance(val, dict) and val.get("state") in ("unknown", "no_response"):
             return True
-        if isinstance(other, dict) and other.get("state") in ("unknown", "no_response"):
-            return True
-        if str(val or "").strip().lower() in ("noted", "unknown", "no_response", "skip"):
-            return True
-        if (
-            _has_kinship(str(val or ""))
-            or _has_kinship(str(other or ""))
-            or (isinstance(topic_val, str) and _has_kinship(topic_val))
-        ):
-            return True
-        if followup_id in details and val is not None:
-            if len(str(val).split()) >= 2:
-                return True
-            return False
-        return False
+        text = str(val or "").strip()
+        return bool(text)
 
     if followup_id not in details:
         return False
@@ -833,143 +702,18 @@ def _normalize_children(value: object) -> list[dict]:
             child_id = f"child_{number}"
         used.add(child_id)
         age = raw.get("age")
-        if isinstance(age, str):
-            age_years = _child_age_years(age)
-            if age_years is not None:
-                if any(u in age.lower() for u in ("महीन", "mahine", "month")):
-                    m_val = round(age_years * 12)
-                    age = {"value": m_val, "unit": "months"}
-                else:
-                    age = {"value": int(age_years) if age_years.is_integer() else age_years, "unit": "years"}
+        if isinstance(age, str) and age.strip().replace(".", "", 1).isdigit():
+            age = float(age.strip())
+        sex = raw.get("sex")
+        if sex not in {"male", "female", "unknown"}:
+            sex = None
         children.append({
             "id": child_id,
             "name": raw.get("name"),
             "age": age,
-            "sex": raw.get("sex"),
+            "sex": sex,
         })
     return children
-
-
-def _is_duration_after(text: str, end: int) -> bool:
-    """'छह महीने से' is how long something has lasted, not an age.
-
-    The month regex can stop before a Hindi vowel sign, so skip the rest of
-    that word before looking for से.
-    """
-    rest = re.sub(r"^\S*", "", text[end:])
-    # A vowel sign is not a word character, so \b does not see the end of से.
-    return re.match(r"\s*(?:से|se)(?=\s|$|[।,.])", rest, re.I) is not None
-
-
-def _spoken_ages(utterance: str) -> list[float]:
-    folded = utterance or ""
-    for word, number in _NUM_WORDS:
-        folded = folded.replace(word, number)
-    found = []
-    for match in re.finditer(rf"(\d+(?:\.\d+)?)\s*{_MONTH_UNIT}", folded, re.I):
-        if _is_duration_after(folded, match.end()):
-            continue
-        found.append((match.start(), float(match.group(1)) / 12.0))
-    for match in re.finditer(rf"(\d+(?:\.\d+)?)\s*{_YEAR_UNIT}", folded, re.I):
-        if _is_duration_after(folded, match.end()):
-            continue
-        found.append((match.start(), float(match.group(1))))
-    found.sort()
-    return [age for _, age in found]
-
-
-def _month_age_numbers(utterance: str) -> set[float]:
-    """Bare numbers she used as a month age, not as a duration."""
-    folded = utterance or ""
-    for word, number in _NUM_WORDS:
-        folded = folded.replace(word, number)
-    if re.search(_YEAR_UNIT, folded, re.I):
-        return set()
-    found = set()
-    for match in re.finditer(rf"(\d+(?:\.\d+)?)\s*{_MONTH_UNIT}", folded, re.I):
-        if _is_duration_after(folded, match.end()):
-            continue
-        found.add(float(match.group(1)))
-    return found
-
-
-_CHILD_WORD = re.compile(r"बच्च|बेटा|बेटी|लड़क")
-
-
-def _child_ages_already_said(prior: list[str] | None) -> list[float]:
-    """Ages from the nearest earlier line that is about her child.
-
-    A fits answer logged on the next turn often omits the child list. The line
-    before it may already have said "एक बच्चा है, दो साल का". A nearer line that
-    states an age and is not about a child, such as a relative's age, stops the walk.
-    """
-    for text in reversed(list(prior or [])):
-        line = text or ""
-        ages = _spoken_ages(line)
-        if _CHILD_WORD.search(line) and ages:
-            return ages
-        if ages:
-            return []
-    return []
-
-
-def _ages_from_prior(count_n: int, prior: list[str] | None) -> list[float]:
-    """Ages from the nearest earlier line that states exactly count_n ages.
-
-    A later "ठीक है" has no ages. The line before it often does. A nearer line
-    that states a different number of ages is left alone.
-    """
-    if count_n <= 0:
-        return []
-    for text in reversed(list(prior or [])):
-        ages = _spoken_ages(text or "")
-        if not ages:
-            continue
-        return ages if len(ages) == count_n else []
-    return []
-
-
-def _has_year_phrase(text: str) -> bool:
-    folded = text or ""
-    for word, number in _NUM_WORDS:
-        folded = folded.replace(word, number)
-    return re.search(_YEAR_UNIT, folded, re.I) is not None
-
-
-def _retag_month_only(
-    children: list[dict],
-    utterance: str,
-    prior: list[str] | None = None,
-) -> list[dict]:
-    if _has_year_phrase(utterance):
-        return children
-    month_ages = _month_age_numbers(utterance)
-    if not month_ages:
-        for text in reversed(list(prior or [])):
-            if _has_year_phrase(text):
-                break
-            found = _month_age_numbers(text)
-            if found:
-                month_ages = found
-                break
-    if not month_ages:
-        return children
-    tagged = []
-    for child in children:
-        child = dict(child)
-        age = child.get("age")
-        number = None
-        if isinstance(age, (int, float)) and not isinstance(age, bool):
-            number = float(age)
-        elif isinstance(age, dict) and not age.get("unit") and isinstance(age.get("value"), (int, float)):
-            number = float(age["value"])
-        if number is not None and number >= 1 and number in month_ages:
-            if isinstance(age, dict):
-                child["age"] = {**age, "unit": "months"}
-            else:
-                child["age"] = {"value": age, "unit": "months"}
-        tagged.append(child)
-    return tagged
 
 
 def _children_from_ages(ages: list[float]) -> list[dict]:
@@ -1005,7 +749,7 @@ def _parse_field(field: object) -> tuple[str, str]:
     return "error", f"unknown field: {text}"
 
 
-def _check_update(update: dict, current_topic: str | None) -> tuple[str, str]:
+def _check_update(update: dict) -> tuple[str, str]:
     if not isinstance(update, dict):
         return "error", "update must be an object"
     kind, name = _parse_field(update.get("field"))
@@ -1024,55 +768,24 @@ def _check_update(update: dict, current_topic: str | None) -> tuple[str, str]:
 
 
 def _children_payload(value: object) -> tuple[str, object]:
-    """none: she said there are no children. count: a number without ages. list: child records."""
-    if isinstance(value, bool) or value in (0, None, []) or value == "0":
+    """none: no children. count: a number of children, ages not given. list: child records."""
+    if isinstance(value, bool) or value in (0, None, []) or value == 0:
         return "none", []
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return ("none", []) if int(value) <= 0 else ("count", int(value))
-    if isinstance(value, str):
-        val_clean = str(value).strip().lower()
-        if val_clean in {"none", "no", "nahi", "nahin", "zero", "0", "false", "कोई नहीं", "एक भी नहीं"}:
-            return "none", []
-        val_folded = val_clean
-        for word, number in _NUM_WORDS:
-            val_folded = val_folded.replace(word, number)
-        m = re.search(r"\b(\d+)\b", val_folded)
-        if m:
-            number = int(m.group(1))
-            return ("none", []) if number <= 0 else ("count", number)
     if isinstance(value, (list, dict)):
         return "list", _normalize_children(value)
     return "ignore", []
 
 
 def _canonical_marital(value: object) -> str | None:
-    raw = str(value or "").strip()
-    text = raw.lower().replace("_", " ").replace("-", " ")
-    denial = (
-        text in {"false", "no", "nahi", "nahin", "unmarried", "single", "not married"}
-        or "not married" in text
-        or any(word in raw for word in ("नहीं", "नही", "अविवाहित", "कुंवारी"))
-    )
-    about = (
-        "about" in text
-        or "hone wali" in text
-        or "engaged" in text
-        or "होने वाली" in raw
-    )
-    married = (
-        text in {"true", "yes", "haan", "married"}
-        or "हो गई" in raw
-        or "ho gayi" in text
-        or "shaadi ho" in text
-        or any(word in raw for word in ("विवाहित", "शादीशुदा"))
-        or any(word in text for word in ("shadishuda", "shaadi shuda"))
-    )
-    if about:
-        return "about_to_marry"
-    if denial and not married:
-        return "unmarried"
-    if married:
+    if value is True:
         return "married"
+    if value is False:
+        return "unmarried"
+    text = str(value or "").strip().lower().replace("-", "_")
+    if text in {"married", "about_to_marry", "unmarried"}:
+        return text
     return None
 
 
@@ -1123,65 +836,18 @@ def _store_instances(topic: dict, update: dict) -> None:
     topic["instances"] = list(existing.values())
 
 
-_PARENT_ECHO = {
-    "operation", "normal", "caesarean", "cesarean", "c-section", "c section",
-    "true", "false", "yes", "no", "haan", "nahi", "nahin", "हाँ", "नहीं", "नही",
-}
-_CLARIFY_RE = re.compile(
-    r"^\s*(?:(?:ये|यह|इसका|yeh|ye|iska)\s+)?(?:क्या(?:\s+मतलब(?:\s+है)?|\s+होता\s+है)?|मतलब(?:\s+क्या\s+है)?|यानी|समझ(?:\s+में)?\s+नहीं\s+आया|matlab|yaani|yani|kya(?:\s+matlab(?:\s+hai)?|\s+hota\s+hai)?|samajh(?:\s+mein)?\s+nahi(?:\s+aaya)?)[।.!?]*\s*$",
-    re.I,
-)
-_UNKNOWN_UTT_RE = re.compile(
-    r"^(?:पता\s+नहीं|याद\s+नहीं|नहीं\s+पता|pata\s+nahi|don'?t\s+know)[।.!?]*$",
-    re.I,
-)
-
-
-def _is_parent_echo(value: object, topic_value: object) -> bool:
-    """True when a string only repeats the parent answer. A boolean is a real yes or no."""
-    if isinstance(value, (bool, dict)) or value is None:
-        return False
-    text = str(value).strip().lower()
-    if text in _PARENT_ECHO:
-        return True
-    return topic_value is not None and text == str(topic_value).strip().lower()
-
-
-def is_clarification(text: str) -> bool:
-    return _CLARIFY_RE.match((text or "").strip()) is not None
-
-
-_is_clarification = is_clarification
-
-
-def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
+def _absorb_stated_value(name: str, topic: dict, utterance: str = "") -> None:
+    """Keep birth_mode's typed fields. Anything else is left as the tool sent it."""
+    if name != "birth_mode":
+        return
     details = dict(topic.get("details") or {})
-    value = topic.get("value")
-    val_words = set(re.sub(r"[^\w\s\u0900-\u097F-]", " ", str(value or "").lower()).split())
-    utt_words = set(re.sub(r"[^\w\s\u0900-\u097F-]", " ", (utterance or "").lower()).split())
-    if name == "birth_mode":
-        op_set = {"operation", "caesarean", "cesarean", "c-section", "ऑपरेशन", "सीजेरियन", "सिजेरियन"}
-        norm_set = {"normal", "नॉर्मल", "सामान्य"}
-        hosp_set = {"hospital", "clinic", "अस्पताल", "हॉस्पिटल", "नर्सिंग"}
-        home_set = {"home", "ghar", "घर"}
-        if val_words & op_set:
-            details["delivery_type"] = "operation"
-        elif val_words & norm_set:
-            details["delivery_type"] = "normal"
-        elif "delivery_type" not in details:
-            if utt_words & op_set:
-                details["delivery_type"] = "operation"
-            elif utt_words & norm_set:
-                details["delivery_type"] = "normal"
-        if val_words & hosp_set:
-            details["place"] = "hospital"
-        elif val_words & home_set:
-            details["place"] = "home"
-        elif "place" not in details:
-            if utt_words & hosp_set:
-                details["place"] = "hospital"
-            elif utt_words & home_set:
-                details["place"] = "home"
+    value = str(topic.get("value") or "").strip().lower()
+    if value in {"normal", "operation"}:
+        details["delivery_type"] = value
+    elif details.get("delivery_type") not in {"normal", "operation"}:
+        details.pop("delivery_type", None)
+    if details.get("place") not in {"home", "hospital"}:
+        details.pop("place", None)
     topic["details"] = details
 
 
@@ -1197,22 +863,8 @@ def apply_updates(
         raise ValueError("updates must be a list")
     current = (state.get("current_question") or {}).get("topic_id")
     followup_id = (state.get("current_question") or {}).get("followup_id")
-    parsed = [_check_update(update, current) for update in updates]
+    parsed = [_check_update(update) for update in updates]
     pairs = sorted(zip(updates, parsed), key=lambda pair: 0 if pair[1][0] == "profile" else 1)
-    has_topic = any(kind == "topic" for kind, _name in parsed)
-    has_children_update = any(kind == "profile" and name == "children" for kind, name in parsed)
-    existing_children = [
-        child for child in (state["profile"].get("children") or []) if isinstance(child, dict)
-    ]
-    if has_topic and not has_children_update and not existing_children:
-        spoken_children = _child_ages_already_said(prior_utterances)
-        if spoken_children:
-            state["profile"]["children"] = _children_from_ages(spoken_children)
-            intro_c = state["topics"]["intro_children"]
-            intro_c["state"] = "answered"
-            intro_c["value"] = True
-            intro_c["source"] = "model"
-            _remember_turn(intro_c, turn_id)
     wrote = False
     problems: list[str] = []
     for update, (kind, name) in pairs:
@@ -1224,30 +876,8 @@ def apply_updates(
             previous = state["profile"].get(name)
             if name == "children" and status == "answered":
                 kind_c, norm = _children_payload(update.get("value"))
-                if kind_c in ("count", "ignore"):
-                    existing = [
-                        child for child in (state["profile"].get("children") or [])
-                        if isinstance(child, dict)
-                    ]
-                    aged = [child for child in existing if _child_age_years(child.get("age")) is not None]
-                    spoken = _spoken_ages(utterance)
-                    count_n = int(norm) if kind_c == "count" else 0
-                    if kind_c == "count" and not spoken:
-                        spoken = _ages_from_prior(count_n, prior_utterances)
-                    if kind_c == "count" and aged and len(existing) == len(aged) == count_n:
-                        wrote = True
-                        continue
-                    use = spoken if kind_c == "ignore" or len(spoken) == count_n else []
-                    if use and not aged:
-                        state["profile"]["children"] = _children_from_ages(use)
-                        intro_c = state["topics"]["intro_children"]
-                        intro_c["state"] = "answered"
-                        intro_c["value"] = True
-                        intro_c["source"] = "model"
-                        _remember_turn(intro_c, turn_id)
-                    elif kind_c == "count" and not aged:
-                        state["profile"]["children"] = _children_from_ages([None] * count_n)
-                    wrote = True
+                if kind_c == "ignore":
+                    problems.append("children must be a count or a list")
                     continue
                 if kind_c == "none":
                     state["profile"]["children"] = []
@@ -1256,15 +886,11 @@ def apply_updates(
                     intro_c["value"] = False
                     intro_c["source"] = "model"
                     _remember_turn(intro_c, turn_id)
+                elif kind_c == "count":
+                    state["profile"]["children"] = _children_from_ages([None] * int(norm))
                 else:
-                    if norm and all(_child_age_years(child.get("age")) is None for child in norm):
-                        spoken_list = _spoken_ages(utterance) or _ages_from_prior(len(norm), prior_utterances)
-                        if len(spoken_list) == len(norm):
-                            for child, age in zip(norm, spoken_list):
-                                child["age"] = age
-                    norm = _retag_month_only(norm, utterance, prior_utterances)
                     state["profile"]["children"] = norm
-                    if norm and all(_child_age_years(c.get("age")) is not None for c in norm):
+                    if norm and all(_child_age_years(child.get("age")) is not None for child in norm):
                         intro_c = state["topics"]["intro_children"]
                         intro_c["state"] = "answered"
                         intro_c["value"] = True
@@ -1336,42 +962,29 @@ def apply_updates(
         details = dict(topic.get("details") or {})
         incoming = update.get("details") if isinstance(update.get("details"), dict) else {}
         if followup_id and name == current:
-            clean_utt = (utterance or "").strip()
-            if _is_clarification(clean_utt):
-                incoming = {k: v for k, v in incoming.items() if k != followup_id}
-                details.update(incoming)
-                details.pop(followup_id, None)
-            elif status == "no_response":
+            if status == "no_response":
                 details[followup_id] = {"state": "no_response"}
             elif status == "unknown":
                 details[followup_id] = {"state": "unknown"}
             else:
-                details.update(incoming)
-                explicit = followup_id in incoming and not _is_parent_echo(
-                    incoming.get(followup_id), previous_value
-                )
-                if not explicit:
+                for key, val in incoming.items():
+                    if val is None or (not isinstance(val, bool) and val == previous_value):
+                        continue
+                    details[key] = val
+                if followup_id not in incoming:
                     raw_val = update.get("value")
-                    if _UNKNOWN_UTT_RE.match(clean_utt):
-                        details[followup_id] = {"state": "unknown"}
-                    elif raw_val is not None and not isinstance(raw_val, bool) and not _is_parent_echo(raw_val, previous_value):
+                    if (
+                        isinstance(raw_val, str)
+                        and raw_val.strip()
+                        and raw_val != previous_value
+                        and raw_val.strip().lower() not in {"true", "false"}
+                    ):
                         details[followup_id] = raw_val
-                    elif clean_utt:
-                        details[followup_id] = clean_utt
-                    elif _is_parent_echo(details.get(followup_id), previous_value):
-                        details.pop(followup_id, None)
             topic["details"] = details
+            if isinstance(update.get("value"), bool):
+                topic["value"] = update.get("value")
             if topic.get("state") != "answered":
                 topic["state"] = "answered" if previous_state == "answered" else status
-            if (
-                name == "body_bleeding_bruise"
-                and followup_id in {"teeth", "periods"}
-                and _is_positive({
-                    "state": status,
-                    "value": incoming.get(followup_id, update.get("value")),
-                })
-            ):
-                topic["value"] = True
             topic["source"] = "model"
             _absorb_stated_value(name, topic, utterance)
             _remember_turn(topic, turn_id)

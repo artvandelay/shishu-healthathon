@@ -12,9 +12,9 @@ from google import genai
 from google.genai import types
 
 import checklist
+import models
 
-MODEL = os.environ.get("SHISHU_BACKSTOP_MODEL", "gemini-3.8-flash")
-TIMEOUT_SEC = 6.0
+TIMEOUT_SEC = 8.0
 
 _KINDS = ["answer", "unknown", "clarification", "not_an_answer"]
 
@@ -107,15 +107,9 @@ async def extract(question: dict, state: dict, bot_text: str, user_text: str) ->
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"], http_options={"api_version": "v1beta"})
     try:
         response = await client.aio.models.generate_content(
-            model=MODEL,
+            model=models.TEXT_MODEL,
             contents=user_content(question, bot_text, user_text),
-            config=types.GenerateContentConfig(
-                system_instruction=_PROMPT,
-                response_mime_type="application/json",
-                response_schema=response_schema(question, state),
-                temperature=0.0,
-                thinking_config=types.ThinkingConfig(thinking_level="LOW"),
-            ),
+            config=models.text_config(system=_PROMPT, schema=response_schema(question, state)),
         )
         result = json.loads(response.text or "{}")
         return result if isinstance(result, dict) else {}

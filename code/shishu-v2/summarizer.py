@@ -10,19 +10,11 @@ from dotenv import load_dotenv
 
 import checklist
 import call_state
+import models
 from prompts import DOCTOR_MOTHER_SUMMARY_PROMPT
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 load_dotenv()
-
-# Newest public Gemini the summary key should call, then the next preview, then 2.5 pro.
-# There is no gemini-4 slug. Flash is not the post-call judge.
-SUMMARY_MODEL_CHAIN: tuple[str, ...] = (
-    "gemini-3.1-pro-preview",
-    "gemini-3-pro-preview",
-    "gemini-2.5-pro",
-)
-os.environ.setdefault("GEMINI_SUMMARY_MODEL", SUMMARY_MODEL_CHAIN[0])
 
 _REQUIRED_HEADINGS = (
     "### Patient Profile & Chief Complaint",
@@ -123,9 +115,15 @@ def _user_text(transcript: list[dict]) -> str:
     return " ".join(parts)
 
 
-_UNKNOWN_RE = re.compile(
-    r"\b(unknown|does not know|does not recall|don't know|do not know|not sure|not reported|not discussed)\b",
-    re.I,
+_UNKNOWN_PHRASES = (
+    "unknown",
+    "does not know",
+    "does not recall",
+    "don't know",
+    "do not know",
+    "not sure",
+    "not reported",
+    "not discussed",
 )
 _SECTION_DOMAINS = (
     ("### Birth & Neonatal History", ("birth_nicu",)),
@@ -140,7 +138,8 @@ _SECTION_DOMAINS = (
 
 
 def _unknown_detail(detail: str) -> bool:
-    return bool(_UNKNOWN_RE.search(detail or ""))
+    text = (detail or "").lower()
+    return any(phrase in text for phrase in _UNKNOWN_PHRASES)
 
 
 def _not_reported(value: object) -> bool:
@@ -156,119 +155,30 @@ def _add_flag(flags: list[str], domain: str, detail: str) -> None:
         flags.append(text)
 
 
-def _supplement_from_transcript(
-    transcript: list[dict],
-    findings: dict,
-    red_flags: list[str],
-) -> None:
-    """Keep stated gates when the model drops them from red_flags."""
-    text = _user_text(transcript)
-    lowered = text.lower()
-
-    def put(domain: str, detail: str, status: str, is_red_flag: bool) -> None:
-        current = findings.get(domain)
-        if not isinstance(current, dict) or _not_reported(current):
-            findings[domain] = {
-                "status": status,
-                "detail": detail,
-                "is_red_flag": is_red_flag,
-            }
-        elif is_red_flag:
-            current["status"] = "positive"
-            current["is_red_flag"] = True
-            if not str(current.get("detail") or "").strip():
-                current["detail"] = detail
-        if is_red_flag:
-            detail_text = str(findings[domain].get("detail") or detail)
-            _add_flag(red_flags, domain, detail_text)
-
-    if re.search(r"\bbeta\b", lowered) or "बेटा" in text:
-        put("profile_child_gender", "Male. Mother said beta.", "info", False)
-    elif re.search(r"\bbeti\b", lowered) or "बेटी" in text:
-        put("profile_child_gender", "Female. Mother said beti.", "info", False)
-
-    knee = re.search(
-        r"(ghutn\w*|knee|joint).{0,48}(sujan|soojan|sujan|swelling)"
-        r"|(sujan|soojan|sujan|swelling).{0,48}(ghutn\w*|knee|joint)",
-        lowered,
-    )
-    if knee:
-        put(
-            "bleeding_joints",
-            "Knee or joint swelling after a fall, resolving over days.",
-            "positive",
-            True,
-        )
-
-    infant_death = re.search(
-        r"guzar gaya|guzar gaye|guzar gayi|mar gaya|mar gaye|mrityu|passed away",
-        lowered,
-    )
-    young = re.search(r"mahine|month|saal se kam|under 1|1 saal", lowered)
-    if infant_death and young:
-        put(
-            "family_infant_death",
-            "A previous child died in infancy. Fits were mentioned."
-            if re.search(r"fits|jhatke", lowered)
-            else "A previous child died in infancy.",
-            "positive",
-            True,
-        )
-
-    admissions = re.search(
-        r"(hospital|bharti|भर्ती).{0,48}(baar|बार|teen|three|six|chhe|mahine|month)"
-        r"|(baar baar|बार-बार|repeated).{0,40}(hospital|bharti|भर्ती|admission)",
-        lowered,
-    )
-    antibiotics = re.search(r"antibiotic|drip se|iv antibiotic", lowered)
-    infections = findings.get("infections")
-    infections_detail = str(infections.get("detail") or "") if isinstance(infections, dict) else ""
-    if (admissions or antibiotics) and (
-        not isinstance(infections, dict)
-        or _not_reported(infections)
-        or _unknown_detail(infections_detail)
-    ):
-        findings["infections"] = {
-            "status": "positive",
-            "detail": "Repeated hospital stays or IV antibiotics were mentioned.",
-            "is_red_flag": True,
-        }
-        _add_flag(
-            red_flags,
-            "infections",
-            "Repeated hospital stays or IV antibiotics were mentioned.",
-        )
+def _section_span(doctor: str, heading: str) -> tuple[int, int] | None:
+    marker = heading + "\n"
+    start = doctor.find(marker)
+    if start < 0:
+        return None
+    body = start + len(marker)
+    nxt = doctor.find("\n### ", body)
+    return body, (nxt if nxt >= 0 else len(doctor))
 
 
 def _fill_red_flag_section(doctor: str, red_flags: list[str]) -> str:
     if not red_flags:
         return doctor
-    pattern = (
-        r"(### Positive Red Flags & NRROID Gate Alerts\n)"
-        r"(.*?)(?=\n### )"
-    )
-    match = re.search(pattern, doctor, flags=re.S)
-    if not match:
-        return doctor
-    body = match.group(2)
-    if "not reported" not in body.lower():
+    span = _section_span(doctor, "### Positive Red Flags & NRROID Gate Alerts")
+    if span is None or "not reported" not in doctor[span[0]:span[1]].lower():
         return doctor
     lines = "\n".join(f"- {flag}" for flag in red_flags)
-    return doctor[: match.start(2)] + lines + "\n" + doctor[match.end(2) :]
+    return doctor[: span[0]] + lines + "\n" + doctor[span[1] :]
 
 
 def _similar_detail(left: str, right: str) -> bool:
     a = (left or "").strip().lower()
     b = (right or "").strip().lower()
-    if not a or not b:
-        return False
-    if a in b or b in a:
-        return True
-    ta = set(re.findall(r"[a-z0-9]{4,}", a))
-    tb = set(re.findall(r"[a-z0-9]{4,}", b))
-    if not ta or not tb:
-        return False
-    return len(ta & tb) / min(len(ta), len(tb)) >= 0.6
+    return bool(a and b and (a in b or b in a))
 
 
 def _dedupe_similar_flags(flags: list[str]) -> list[str]:
@@ -338,20 +248,15 @@ def _fill_empty_sections(doctor: str, findings: dict) -> str:
             bullets.append(f"- {domain}: {detail}")
         if not bullets:
             continue
-        pattern = rf"({re.escape(heading)}\n)(.*?)(?=\n### )"
-        match = re.search(pattern, doctor, flags=re.S)
-        if not match:
+        span = _section_span(doctor, heading)
+        if span is None:
             continue
-        body = re.sub(r"^[\-\*\s]+", "", match.group(2).strip()).lower().rstrip(".")
+        body = doctor[span[0]:span[1]].strip().lstrip("-* ").lower().rstrip(".")
         if body != "not reported":
             continue
-        doctor = doctor[: match.start(2)] + "\n".join(bullets) + "\n" + doctor[match.end(2) :]
+        doctor = doctor[: span[0]] + "\n".join(bullets) + "\n" + doctor[span[1] :]
     return doctor
 
-
-_MOTHER_NAME_SENTENCE_RE = re.compile(
-    r"^\s*मेरा\s+नाम\s+([^\s।,]+(?:\s+[^\s।,]+)?)\s+है\s*[।,.!?]*\s*"
-)
 
 MOTHER_QUESTIONS_HEADING = (
     "अगली बार जब आप डॉक्टर या स्वास्थ्य कार्यकर्ता (ASHA/ANM दीदी) से मिलें, तो ये सवाल ज़रूर पूछें:"
@@ -360,8 +265,6 @@ MOTHER_FLAG_FOOTER = (
     "नोट: ये सवाल आपकी अगली विज़िट में डॉक्टर या स्वास्थ्य कार्यकर्ता (ASHA/ANM दीदी) से चर्चा के लिए हैं। "
     "यह किसी बीमारी की पुष्टि (डायग्नोसिस) नहीं है — केवल डॉक्टर ही जाँच करके सही सलाह दे सकते हैं।"
 )
-MOTHER_ROUTINE_FOOTER = MOTHER_FLAG_FOOTER
-
 _NO_CHILD_MOTHER_QUESTIONS: tuple[str, ...] = (
     "अगली प्रेग्नेंसी से पहले मुझे कौन सी जाँच करवा लेनी चाहिए?",
     "परिवार में कोई बीमारी रही हो, तो डॉक्टर को कौन सी बात ज़रूर बतानी चाहिए?",
@@ -376,146 +279,118 @@ _DEFAULT_MOTHER_QUESTIONS: tuple[str, ...] = (
 
 # A domain sentence that names one event must not be reused for a sibling topic.
 # These topics get their own question; the shared domain sentence stays for the rest.
-_TOPIC_MOTHER_QUESTIONS: tuple[tuple[str, re.Pattern[str], str], ...] = (
+_TOPIC_MOTHER_QUESTIONS: tuple[tuple[str, str], ...] = (
     (
         "birth_mode",
-        re.compile(r"ऑपरेशन|प्रसव", re.I),
-        "प्रसव ऑपरेशन से हुआ था — क्या इस बारे में डॉक्टर से कोई जाँच या सलाह पूछनी चाहिए?",
+                "प्रसव ऑपरेशन से हुआ था — क्या इस बारे में डॉक्टर से कोई जाँच या सलाह पूछनी चाहिए?",
     ),
     (
         "birth_term",
-        re.compile(r"समय से पहले|समय के बाद", re.I),
-        "बच्चा समय से पहले या समय के बाद पैदा हुआ था — क्या इस कारण अभी कोई जाँच ज़रूरी है?",
+                "बच्चा समय से पहले या समय के बाद पैदा हुआ था — क्या इस कारण अभी कोई जाँच ज़रूरी है?",
     ),
     (
         "body_fits_milestones",
-        re.compile(r"झटके|दौरे", re.I),
-        "बच्चे को झटके आते हैं, या बैठना-चलना-बोलना देर से हुआ — क्या इसके लिए कोई जाँच करवानी चाहिए?",
+                "बच्चे को झटके आते हैं, या बैठना-चलना-बोलना देर से हुआ — क्या इसके लिए कोई जाँच करवानी चाहिए?",
     ),
     (
         "body_transfusion",
-        re.compile(r"खून चढ़", re.I),
-        "बच्चे को खून चढ़ाना पड़ा था — क्या आगे खून या जाँच के बारे में डॉक्टर से पूछना चाहिए?",
+                "बच्चे को खून चढ़ाना पड़ा था — क्या आगे खून या जाँच के बारे में डॉक्टर से पूछना चाहिए?",
     ),
     (
         "fam_miscarriage",
-        re.compile(r"गर्भ गिर", re.I),
-        "गर्भ गिरा था — क्या अगली गर्भावस्था के लिए कोई सामान्य जाँच या सलाह लेनी चाहिए?",
+                "गर्भ गिरा था — क्या अगली गर्भावस्था के लिए कोई सामान्य जाँच या सलाह लेनी चाहिए?",
     ),
     (
         "birth_cord_bleed",
-        re.compile(r"नाल गिरने पर", re.I),
-        "नाल गिरने पर खून ज़्यादा हुआ था — क्या इस बारे में डॉक्टर से पूछना चाहिए?",
+                "नाल गिरने पर खून ज़्यादा हुआ था — क्या इस बारे में डॉक्टर से पूछना चाहिए?",
     ),
     (
         "birth_cord_3weeks",
-        re.compile(r"तीन हफ़्ते|तीन हफ्ते", re.I),
-        "नाल गिरने में तीन हफ़्ते से ज़्यादा लगे — क्या इसकी जाँच ज़रूरी है?",
+                "नाल गिरने में तीन हफ़्ते से ज़्यादा लगे — क्या इसकी जाँच ज़रूरी है?",
     ),
     (
         "birth_bcg",
-        re.compile(r"BCG|टीके की जगह", re.I),
-        "BCG के टीके की जगह पर सूजन या निशान है — क्या इसे डॉक्टर को दिखाना चाहिए?",
+                "BCG के टीके की जगह पर सूजन या निशान है — क्या इसे डॉक्टर को दिखाना चाहिए?",
     ),
     (
         "birth_cleft",
-        re.compile(r"होंठ या तालु", re.I),
-        "होंठ या तालु कटने की बात है — क्या इसके लिए कोई जाँच या सलाह लेनी चाहिए?",
+                "होंठ या तालु कटने की बात है — क्या इसके लिए कोई जाँच या सलाह लेनी चाहिए?",
     ),
     (
         "birth_hearing_vision",
-        re.compile(r"सुनने या देखने", re.I),
-        "सुनने या देखने की जाँच में बात आई थी — क्या आगे कोई जाँच ज़रूरी है?",
+                "सुनने या देखने की जाँच में बात आई थी — क्या आगे कोई जाँच ज़रूरी है?",
     ),
     (
         "body_blue",
-        re.compile(r"होंठ या उँगल", re.I),
-        "होंठ या उँगलियाँ नीली होती हैं — क्या इस बारे में डॉक्टर से पूछना चाहिए?",
+                "होंठ या उँगलियाँ नीली होती हैं — क्या इस बारे में डॉक्टर से पूछना चाहिए?",
     ),
     (
         "body_tummy",
-        re.compile(r"पेट धीरे", re.I),
-        "पेट धीरे-धीरे बढ़ रहा है — क्या लिवर या तिल्ली की जाँच पूछनी चाहिए?",
+                "पेट धीरे-धीरे बढ़ रहा है — क्या लिवर या तिल्ली की जाँच पूछनी चाहिए?",
     ),
     (
         "body_blood_count",
-        re.compile(r"खून की गिनती", re.I),
-        "खून की गिनती कम या ज़्यादा बताई गई — क्या आगे जाँच करवानी चाहिए?",
+                "खून की गिनती कम या ज़्यादा बताई गई — क्या आगे जाँच करवानी चाहिए?",
     ),
     (
         "preg_thalassemia",
-        re.compile(r"थैलेसीमिया", re.I),
-        "थैलेसीमिया की जाँच में बात आई थी — क्या रिपोर्ट डॉक्टर को दिखानी चाहिए?",
+                "थैलेसीमिया की जाँच में बात आई थी — क्या रिपोर्ट डॉक्टर को दिखानी चाहिए?",
     ),
     (
         "preg_scan",
-        re.compile(r"स्कैन", re.I),
-        "प्रेग्नेंसी के स्कैन में बात आई थी — क्या उसे डॉक्टर को दिखाना चाहिए?",
+                "प्रेग्नेंसी के स्कैन में बात आई थी — क्या उसे डॉक्टर को दिखाना चाहिए?",
     ),
     (
         "preg_heart",
-        re.compile(r"दिल की", re.I),
-        "प्रेग्नेंसी या जन्म पर दिल की बात आई थी — क्या बच्चे के दिल की जाँच पूछनी चाहिए?",
+                "प्रेग्नेंसी या जन्म पर दिल की बात आई थी — क्या बच्चे के दिल की जाँच पूछनी चाहिए?",
     ),
     (
         "preg_transfusion",
-        re.compile(r"प्रेग्नेंसी में खून", re.I),
-        "प्रेग्नेंसी में खून चढ़ाना पड़ा था — क्या इस बारे में डॉक्टर से पूछना चाहिए?",
+                "प्रेग्नेंसी में खून चढ़ाना पड़ा था — क्या इस बारे में डॉक्टर से पूछना चाहिए?",
     ),
     (
         "preg_delivery",
-        re.compile(r"प्रसव में दिक्कत", re.I),
-        "प्रसव में दिक्कत हुई थी — क्या माँ की आगे की जाँच ज़रूरी है?",
+                "प्रसव में दिक्कत हुई थी — क्या माँ की आगे की जाँच ज़रूरी है?",
     ),
     (
         "ill_odor",
-        re.compile(r"गंध", re.I),
-        "पेशाब या मल की गंध अलग है — क्या इस बारे में जाँच पूछनी चाहिए?",
+                "पेशाब या मल की गंध अलग है — क्या इस बारे में जाँच पूछनी चाहिए?",
     ),
     (
         "ill_sudden",
-        re.compile(r"अचानक बहुत", re.I),
-        "जन्म के बाद अचानक बहुत बीमार हुए थे — क्या इसके कारण की जाँच ज़रूरी है?",
+                "जन्म के बाद अचानक बहुत बीमार हुए थे — क्या इसके कारण की जाँच ज़रूरी है?",
     ),
     (
         "body_bleeding_bruise",
-        re.compile(r"चोट पर खून|नील पड़", re.I),
-        "चोट पर खून देर तक बहता है, या आसानी से नील पड़ते हैं — क्या इसकी जाँच करवानी चाहिए?",
+                "चोट पर खून देर तक बहता है, या आसानी से नील पड़ते हैं — क्या इसकी जाँच करवानी चाहिए?",
     ),
     (
         "body_limb_pain",
-        re.compile(r"हाथ या पैर में दर्द", re.I),
-        "हाथ या पैर में बार-बार दर्द होता है — क्या इस बारे में डॉक्टर से पूछना चाहिए?",
+                "हाथ या पैर में बार-बार दर्द होता है — क्या इस बारे में डॉक्टर से पूछना चाहिए?",
     ),
     (
         "body_regression",
-        re.compile(r"सीखा हुआ", re.I),
-        "जो काम बच्चा पहले कर लेता था, अब नहीं कर पाता — क्या इसकी जाँच ज़रूरी है?",
+                "जो काम बच्चा पहले कर लेता था, अब नहीं कर पाता — क्या इसकी जाँच ज़रूरी है?",
     ),
     (
         "body_private_parts",
-        re.compile(r"गुप्त अंग", re.I),
-        "गुप्त अंग जैसे होने चाहिए वैसे नहीं दिखते — क्या डॉक्टर को दिखाना चाहिए?",
+                "गुप्त अंग जैसे होने चाहिए वैसे नहीं दिखते — क्या डॉक्टर को दिखाना चाहिए?",
     ),
     (
         "body_lumps_birth",
-        re.compile(r"जन्म से सूजन", re.I),
-        "जन्म से शरीर पर सूजन या गाँठ है — क्या इसे डॉक्टर को दिखाना चाहिए?",
+                "जन्म से शरीर पर सूजन या गाँठ है — क्या इसे डॉक्टर को दिखाना चाहिए?",
     ),
     (
         "body_proportion",
-        re.compile(r"हाथ-पैर छोटे", re.I),
-        "हाथ-पैर शरीर के मुकाबले बहुत छोटे हैं — क्या इसकी जाँच पूछनी चाहिए?",
+                "हाथ-पैर शरीर के मुकाबले बहुत छोटे हैं — क्या इसकी जाँच पूछनी चाहिए?",
     ),
     (
         "body_thumb",
-        re.compile(r"अंगूठा", re.I),
-        "अंगूठा या उँगली छोटी है या नहीं है — क्या डॉक्टर को दिखाना चाहिए?",
+                "अंगूठा या उँगली छोटी है या नहीं है — क्या डॉक्टर को दिखाना चाहिए?",
     ),
     (
         "body_puberty",
-        re.compile(r"बढ़ती उम्र", re.I),
-        "बढ़ती उम्र के बदलाव समय से जल्दी या देर से आए — क्या इस बारे में सलाह लेनी चाहिए?",
+                "बढ़ती उम्र के बदलाव समय से जल्दी या देर से आए — क्या इस बारे में सलाह लेनी चाहिए?",
     ),
 )
 
@@ -532,57 +407,45 @@ def _flagged_topic_ids(findings: dict, red_flags: list[str] | None) -> set[str]:
         head = blob.split(":", 1)[0].strip()
         if head in checklist._BY_ID:
             found.add(head)
-        for topic_id in checklist._BY_ID:
-            if topic_id in blob:
-                found.add(topic_id)
     return found
 
 
-_FLAG_DOMAIN_QUESTIONS: tuple[tuple[str, re.Pattern[str], str], ...] = (
+_FLAG_DOMAIN_QUESTIONS: tuple[tuple[str, str], ...] = (
     (
         "family_infant_death",
-        re.compile(r"गुजर|मृत्यु|guzar|died|death", re.I),
-        "हमारे परिवार में पहले एक बच्चा छोटी उम्र में गुजर गया था — क्या इस बच्चे की सेहत या आगे की देखभाल के लिए हमें डॉक्टर से कोई विशेष सलाह या जाँच पूछनी चाहिए?",
+                "हमारे परिवार में पहले एक बच्चा छोटी उम्र में गुजर गया था — क्या इस बच्चे की सेहत या आगे की देखभाल के लिए हमें डॉक्टर से कोई विशेष सलाह या जाँच पूछनी चाहिए?",
     ),
     (
         "bleeding_joints",
-        re.compile(r"घुटने|जोड़|सूजन|खून|नील|sujan|ghutn|bleed|transfusion", re.I),
-        "बच्चे के गिरने पर घुटने या जोड़ में सूजन आने (या खून/नील से जुड़ी बात) के बारे में कृपया देखकर बताएँ कि क्या कोई जाँच करवानी चाहिए?",
+                "बच्चे के गिरने पर घुटने या जोड़ में सूजन आने (या खून/नील से जुड़ी बात) के बारे में कृपया देखकर बताएँ कि क्या कोई जाँच करवानी चाहिए?",
     ),
     (
         "infections",
-        re.compile(r"भर्ती|अस्पताल|इंफेक्शन|संक्रमण|बुखार|एंटीबायोटिक|निमोनिया|hospital|infection", re.I),
-        "बच्चे को बार-बार बुखार या इंफेक्शन के कारण अस्पताल में भर्ती होना पड़ा है — इससे बचाव के लिए हमें आगे क्या जाँच या सावधानी रखनी चाहिए?",
+                "बच्चे को बार-बार बुखार या इंफेक्शन के कारण अस्पताल में भर्ती होना पड़ा है — इससे बचाव के लिए हमें आगे क्या जाँच या सावधानी रखनी चाहिए?",
     ),
     (
         "birth_nicu",
-        re.compile(r"पीलिया|नीली|रोशनी|NICU|काँच|कांच|टीके|BCG|नाल|गाँठ|गांठ|मवाद", re.I),
-        "जन्म के समय या BCG के टीके के बाद जो बात हुई थी (जैसे पीलिया की नीली रोशनी, NICU, नाल, या टीके की जगह पर सूजन/निशान) — क्या उसके लिए अभी बच्चे की कोई जाँच ज़रूरी है?",
+                "जन्म के समय या BCG के टीके के बाद जो बात हुई थी (जैसे पीलिया की नीली रोशनी, NICU, नाल, या टीके की जगह पर सूजन/निशान) — क्या उसके लिए अभी बच्चे की कोई जाँच ज़रूरी है?",
     ),
     (
         "milestones",
-        re.compile(r"बैठ|चल|बोल|वज़न|वजन|लंबाई|पेट|हड्डी|देखने|सुनने|बढ़त", re.I),
-        "बच्चे के बढ़ने, बैठने-चलने-बोलने, पेट के आकार या देखने-सुनने को जाँच कर कृपया बताएँ कि क्या किसी अतिरिक्त जाँच की ज़रूरत है?",
+                "बच्चे के बढ़ने, बैठने-चलने-बोलने, पेट के आकार या देखने-सुनने को जाँच कर कृपया बताएँ कि क्या किसी अतिरिक्त जाँच की ज़रूरत है?",
     ),
     (
         "metabolic_fasting",
-        re.compile(r"सुस्ती|उल्टी|झटके|दौरे|पेशाब|गंध|भूख", re.I),
-        "खाना देर से मिलने या हल्के बुखार में बच्चे को सुस्ती, उल्टी या झटके जैसी जो दिक्कत हुई थी — ऐसे समय में हमें क्या करना चाहिए और क्या कोई जाँच ज़रूरी है?",
+                "खाना देर से मिलने या हल्के बुखार में बच्चे को सुस्ती, उल्टी या झटके जैसी जो दिक्कत हुई थी — ऐसे समय में हमें क्या करना चाहिए और क्या कोई जाँच ज़रूरी है?",
     ),
     (
         "pregnancy",
-        re.compile(r"प्रेग्नेंसी|गर्भ|बीपी|BP|थायरॉइड|शुगर|स्कैन|थैलेसीमिया", re.I),
-        "प्रेग्नेंसी के समय रही बीपी, शुगर या थायरॉइड जैसी बात के लिए अभी माँ और बच्चे की कौन-सी नियमित जाँच करवानी चाहिए?",
+                "प्रेग्नेंसी के समय रही बीपी, शुगर या थायरॉइड जैसी बात के लिए अभी माँ और बच्चे की कौन-सी नियमित जाँच करवानी चाहिए?",
     ),
     (
         "consanguinity",
-        re.compile(r"रिश्तेदार|शादी", re.I),
-        "हमारी शादी रिश्तेदारी में हुई है — क्या बच्चे की सेहत के लिए डॉक्टर से कोई सामान्य परामर्श (काउंसलिंग) लेना अच्छा रहेगा?",
+                "हमारी शादी रिश्तेदारी में हुई है — क्या बच्चे की सेहत के लिए डॉक्टर से कोई सामान्य परामर्श (काउंसलिंग) लेना अच्छा रहेगा?",
     ),
     (
         "family_history",
-        re.compile(r"परिवार|खून|दौरे|झटके", re.I),
-        "परिवार में पहले जो सेहत से जुड़ी समस्या रही है, उसे ध्यान में रखते हुए क्या बच्चे के लिए कोई सामान्य जाँच पूछनी चाहिए?",
+                "परिवार में पहले जो सेहत से जुड़ी समस्या रही है, उसे ध्यान में रखते हुए क्या बच्चे के लिए कोई सामान्य जाँच पूछनी चाहिए?",
     ),
 )
 
@@ -591,11 +454,6 @@ _FORBIDDEN_DIAGNOSTIC_RE = re.compile(
     r"hemophilia|haemophilia|primary immunodeficiency|scid\b|spinal muscular atrophy)\b|"
     r"हीमोफीलिया|इम्यूनोडेफिशिएंसी|ड्यूशेन|पॉम्पे|म्यूकोपॉलीसेकेराइडोसिस"
 )
-_REPEAT_BACK_PREFIX_RE = re.compile(
-    r"^\s*(?:आपने\s+(?:यह\s+भी\s+)?बताया(?:\s+कि)?|मेरा\s+नाम\s+.*?\s+है|मेरे\s+एक\s+बच्चा\s+है)"
-)
-
-
 def _scrub_diagnostic_terms(text: str) -> str:
     if not text:
         return ""
@@ -603,45 +461,33 @@ def _scrub_diagnostic_terms(text: str) -> str:
     return cleaned.replace("गुज़र", "गुजर")
 
 
-def _strip_unspoken_mother_name(
-    mother: str,
-    doctor: str,
-    merged_findings: dict,
-    transcript: list[dict],
-) -> tuple[str, str]:
-    user_blob = _user_text(transcript).strip()
-    user_lower = user_blob.lower()
-    recorded = merged_findings.get("profile_mother_name")
-    recorded_detail = str(recorded.get("detail") or "").strip() if isinstance(recorded, dict) else ""
-    if _unknown_detail(recorded_detail) or "shilpa" in recorded_detail.lower() and "shilpa" not in user_lower and "शिल्पा" not in user_blob:
-        merged_findings.pop("profile_mother_name", None)
-        recorded_detail = ""
-    match = _MOTHER_NAME_SENTENCE_RE.match(mother or "")
-    if match:
-        claimed = match.group(1).strip()
-        if not recorded_detail and (claimed not in user_blob or user_blob in {"मेरा नाम", "मेरा नाम।"}):
-            mother = (mother or "")[match.end():].strip()
-        elif claimed == "शिल्पा" and "शिल्पा" not in user_blob and "shilpa" not in user_lower:
-            mother = (mother or "")[match.end():].strip()
-    if "shilpa" not in user_lower and "शिल्पा" not in user_blob:
-        doctor = re.sub(r"(?i)\bshilpa\b", "Not reported", doctor or "")
-        mother = re.sub(r"शिल्पा\s*(?:जी)?[,،:\s]*", "", mother or "").strip()
-    return mother, doctor
+def _drop_ungrounded_name(findings: dict, transcript: list[dict]) -> None:
+    """Drop a mother-name finding whose name never appears in her own words."""
+    recorded = findings.get("profile_mother_name")
+    if not isinstance(recorded, dict):
+        return
+    user = _user_text(transcript).lower()
+    skip = {"mother", "mothers", "name", "said", "info"}
+    tokens = [word.strip(".'") for word in str(recorded.get("detail") or "").split()]
+    names = [word for word in tokens if len(word) >= 4 and word.lower() not in skip]
+    if names and not any(word.lower() in user for word in names):
+        findings.pop("profile_mother_name", None)
 
 
 def _extract_question_lines(text: str) -> list[str]:
     questions: list[str] = []
     for raw_line in (text or "").splitlines():
-        line = raw_line.strip()
+        line = raw_line.strip().lstrip("•-* ")
         if not line:
             continue
-        cleaned = re.sub(r"^(?:[\d१२३४५६७८९]+[\.\)\-:]|[•\-\*])\s*", "", line).strip()
-        if not cleaned or _REPEAT_BACK_PREFIX_RE.match(cleaned):
+        head, sep, rest = line.partition(" ")
+        if sep and head.rstrip(".)-:").isdigit():
+            line = rest.strip()
+        if "?" not in line and "？" not in line:
             continue
-        if "?" in cleaned or "？" in cleaned:
-            cleaned = _scrub_diagnostic_terms(cleaned)
-            if cleaned not in questions:
-                questions.append(cleaned)
+        cleaned = _scrub_diagnostic_terms(line)
+        if cleaned and cleaned not in questions:
+            questions.append(cleaned)
     return questions
 
 
@@ -718,7 +564,7 @@ def _ensure_mother_covers_flags(
     combined_q = "\n".join(questions)
 
     flagged_topics = _flagged_topic_ids(findings, red_flags)
-    for domain, pattern, fallback_q in _FLAG_DOMAIN_QUESTIONS:
+    for domain, fallback_q in _FLAG_DOMAIN_QUESTIONS:
         domain_topics = {tid for tid, dom in TOPIC_TO_DOMAIN.items() if dom == domain}
         entry = (findings or {}).get(domain)
         flagged_in_list = any(
@@ -742,14 +588,12 @@ def _ensure_mother_covers_flags(
         # A sentence that names one event is not reused for a sibling that has its own question.
         if domain_hits and domain_hits <= _TOPIC_QUESTION_IDS:
             continue
-        if not pattern.search(combined_q):
+        if fallback_q not in combined_q:
             questions.append(fallback_q)
             combined_q = "\n".join(questions)
 
-    for topic_id, pattern, question in _TOPIC_MOTHER_QUESTIONS:
-        if topic_id not in flagged_topics:
-            continue
-        if pattern.search(combined_q):
+    for topic_id, question in _TOPIC_MOTHER_QUESTIONS:
+        if topic_id not in flagged_topics or question in combined_q:
             continue
         questions.append(question)
         combined_q = "\n".join(questions)
@@ -761,12 +605,7 @@ def _ensure_mother_covers_flags(
             questions.append(default_q)
 
     numbered = "\n".join(f"{idx}. {q}" for idx, q in enumerate(questions[:6], start=1))
-    footer = (
-        MOTHER_FLAG_FOOTER
-        if _has_any_red_flag(findings, red_flags)
-        else MOTHER_ROUTINE_FOOTER
-    )
-    return f"{MOTHER_QUESTIONS_HEADING}\n\n{numbered}\n\n{footer}"
+    return f"{MOTHER_QUESTIONS_HEADING}\n\n{numbered}\n\n{MOTHER_FLAG_FOOTER}"
 
 
 def default_mother_questions(
@@ -790,7 +629,6 @@ def build_fallback_summaries(
     for domain, value in merged_findings.items():
         if isinstance(value, dict) and value.get("is_red_flag"):
             _add_flag(merged_flags, str(domain), str(value.get("detail") or "").strip())
-    _supplement_from_transcript(transcript, merged_findings, merged_flags)
     merged_flags = _reconcile_flags(merged_findings, merged_flags)
     shell = "\n".join(f"{heading}\nNot reported." for heading in _REQUIRED_HEADINGS)
     doctor = _fill_red_flag_section(shell, merged_flags)
@@ -818,24 +656,11 @@ def _assemble(payload: dict, findings: dict, red_flags: list[str], transcript: l
     for domain, value in merged_findings.items():
         if isinstance(value, dict) and value.get("is_red_flag"):
             _add_flag(merged_flags, str(domain), str(value.get("detail") or "").strip())
-    _supplement_from_transcript(transcript, merged_findings, merged_flags)
+    _drop_ungrounded_name(merged_findings, transcript)
     merged_flags = _reconcile_flags(merged_findings, merged_flags)
     doctor = _fill_red_flag_section(cleaned["doctor_markdown"], merged_flags)
     doctor = _fill_empty_sections(doctor, merged_findings)
-    mother_raw, doctor = _strip_unspoken_mother_name(
-        cleaned["mother_hindi"], doctor, merged_findings, transcript
-    )
-    mother = _ensure_mother_covers_flags(mother_raw, merged_findings, merged_flags)
-    if merged_findings.get("profile_child_gender", {}).get("detail", "").startswith("Male"):
-        doctor = doctor.replace(
-            "**Child's Gender:** Not reported",
-            "**Child's Gender:** Male (mother said beta)",
-        )
-    elif merged_findings.get("profile_child_gender", {}).get("detail", "").startswith("Female"):
-        doctor = doctor.replace(
-            "**Child's Gender:** Not reported",
-            "**Child's Gender:** Female (mother said beti)",
-        )
+    mother = _ensure_mother_covers_flags(cleaned["mother_hindi"], merged_findings, merged_flags)
     return {
         "summary_doctor": doctor,
         "summary_mother": mother,
@@ -855,6 +680,7 @@ Your role is to act as a sanity-check and double-checker:
 - If the mother clearly stated a fact in the transcript (e.g., her name, child age/name, or a positive symptom/history/detail) that was missed or mis-parsed in the structured state, include it in `profile_corrections` or `topic_corrections`, and reflect it in `doctor_markdown`, `mother_hindi`, `extracted_findings`, and `red_flags`.
 - You are the judge of the transcript. When the deterministic draft was too rigid, misheard, or misclassified, override it: set `topic_corrections` to the corrected state (`{"state": "answered", "value": true/false, "details": {...}}`) and omit any false positive from `extracted_findings` and `red_flags`. A deterministic yes is a draft, not a fact you must repeat.
 - Each topic line shows the question that was asked. For yes/no topics `value: true` means she said yes to that exact question, which is worded so that yes is a concern. Only set `value: true` in `topic_corrections` when she reported that concern.
+- Every profile or topic correction must include `evidence`: an exact quote of the mother's words from the transcript. A correction without that quote is ignored. `details.delivery_type` is only "normal" or "operation". `details.place` is only "home" or "hospital".
 - If a topic state is `no_response`, `not_asked`, or `not_applicable`, and the mother did NOT answer it in the transcript, keep that exact label (`no_response`, `not_asked`, or `not_applicable`). NEVER turn `unknown`, `no_response`, `not_asked`, or `not_applicable` into `no`.
 - Do not invent any fact, child identity, answer, or diagnosis. Never name specific rare diseases in `mother_hindi`.
 - `mother_hindi` must contain 3 to 6 clear, natural Devanagari Hindi questions (each ending with `?`) for the mother to ask her doctor or ASHA/ANM दीदी at the next visit, directly covering every positive finding from the call.
@@ -871,10 +697,6 @@ Your role is to act as a sanity-check and double-checker:
 Return one JSON object and nothing else. Keys must be:
 {"doctor_markdown": "...", "mother_hindi": "...", "extracted_findings": {}, "red_flags": [], "topic_corrections": {}, "profile_corrections": {}}
 """.strip()
-
-
-def _answer_label(topic: dict) -> str:
-    return call_state.topic_answer_kind(topic)
 
 
 def _format_topic_detail(topic_id: str, saved: dict) -> str:
@@ -965,7 +787,7 @@ def state_to_findings_and_flags(
         if tid.startswith("intro_") or tid == "close_anything_else":
             continue
         saved = topics.get(tid) if isinstance(topics.get(tid), dict) else {"state": "not_asked"}
-        label = _answer_label(saved)
+        label = call_state.topic_answer_kind(saved)
         if label != "yes":
             continue
         detail = _format_topic_detail(tid, saved)
@@ -991,27 +813,26 @@ def state_to_findings_and_flags(
 _CORRECTION_STATES = {"answered", "unknown", "no_response", "not_asked"}
 
 
-def summary_model_chain(explicit: str | None = None) -> list[str]:
-    """Models to try, newest first, then down the list.
-
-    An explicit `GEMINI_SUMMARY_MODEL` starts at that slug and continues with
-    the later entries. An unknown slug is tried once, then the real chain, so
-    a retired name is never the only option.
-    """
-    preferred = (explicit if explicit is not None else os.environ.get("GEMINI_SUMMARY_MODEL") or "").strip()
-    if not preferred:
-        preferred = SUMMARY_MODEL_CHAIN[0]
-    if preferred in SUMMARY_MODEL_CHAIN:
-        start = SUMMARY_MODEL_CHAIN.index(preferred)
-        return list(SUMMARY_MODEL_CHAIN[start:])
-    return [preferred, *SUMMARY_MODEL_CHAIN]
-
-
 def _mentioned(text: str, transcript_blob: str) -> bool:
     cleaned = (text or "").strip()
     if not cleaned:
         return False
     return cleaned.lower() in transcript_blob or cleaned in transcript_blob
+
+
+def _quote_supported(evidence: object, transcript: list[dict] | None) -> bool:
+    """A correction stands only when its quote is her own words, copied exactly."""
+    quote = str(evidence or "").strip()
+    if len(quote) < 6:
+        return False
+    folded = quote.lower()
+    for turn in transcript or []:
+        if str(turn.get("role") or "").lower() not in ("user", "mother"):
+            continue
+        line = str(turn.get("text") or "")
+        if quote in line or folded in line.lower():
+            return True
+    return False
 
 
 def _apply_topic_correction(
@@ -1032,8 +853,7 @@ def _apply_topic_correction(
             if new_details:
                 topic["details"] = dict(new_details)
             else:
-                kept = {k: v for k, v in prior_details.items() if k in {"teeth", "periods"}}
-                topic["details"] = kept
+                topic["details"] = {}
         elif new_details:
             merged = dict(prior_details)
             merged.update(new_details)
@@ -1069,12 +889,13 @@ def reconcile_state_with_llm_payload(
             prof["caller_name"] = cname
             reconciled["topics"]["intro_name"]["state"] = "answered"
             reconciled["topics"]["intro_name"]["value"] = cname
-        mstat = call_state._canonical_marital(prof_corr.get("marital_status"))
-        if mstat:
+        grounded = _quote_supported(prof_corr.get("evidence"), transcript)
+        mstat = prof_corr.get("marital_status")
+        if grounded and mstat in ("married", "about_to_marry", "unmarried"):
             prof["marital_status"] = mstat
             reconciled["topics"]["intro_married"]["state"] = "answered"
             reconciled["topics"]["intro_married"]["value"] = mstat
-        if isinstance(prof_corr.get("children"), list) and prof_corr["children"]:
+        if grounded and isinstance(prof_corr.get("children"), list) and prof_corr["children"]:
             norm_kids = call_state._normalize_children(prof_corr["children"])
             if norm_kids:
                 prof["children"] = norm_kids
@@ -1104,9 +925,11 @@ def reconcile_state_with_llm_payload(
                 new_state = raw_state
             new_details = patch.get("details") if isinstance(patch.get("details"), dict) else {}
             new_instances = patch.get("instances") if isinstance(patch.get("instances"), list) else []
+            if not _quote_supported(patch.get("evidence"), transcript):
+                continue
             prior = cur.get("state")
             if prior == "answered":
-                if user_blob and new_state in _CORRECTION_STATES:
+                if new_state in _CORRECTION_STATES:
                     _apply_topic_correction(
                         cur, new_state, new_val, new_details, new_instances, replace=True
                     )
@@ -1116,12 +939,12 @@ def reconcile_state_with_llm_payload(
                     )
                 continue
             if prior == "not_applicable":
-                if user_blob and new_state in {"answered", "unknown"}:
+                if new_state in {"answered", "unknown"}:
                     _apply_topic_correction(
                         cur, new_state, new_val, new_details, new_instances, replace=True
                     )
                 continue
-            if not user_blob or new_state not in _CORRECTION_STATES:
+            if new_state not in _CORRECTION_STATES:
                 continue
             candidate = {"state": new_state, "value": new_val, "details": new_details}
             if new_state == "answered" and call_state._is_positive(candidate):
@@ -1156,7 +979,7 @@ def state_to_summary_context(state: dict, transcript: list[dict] | None = None) 
     for topic in checklist.TOPICS:
         saved = topics.get(topic["id"]) if isinstance(topics.get(topic["id"]), dict) else {}
         lines.append(
-            f"{topic['id']} (asked: {topic['question']}): state={_answer_label(saved)} "
+            f"{topic['id']} (asked: {topic['question']}): state={call_state.topic_answer_kind(saved)} "
             f"value={json.dumps(saved.get('value'), ensure_ascii=False)} "
             f"details={json.dumps(saved.get('details') or {}, ensure_ascii=False)} "
             f"instances={json.dumps(saved.get('instances') or [], ensure_ascii=False)}"
@@ -1197,7 +1020,7 @@ def build_state_fallback(
         topic["id"]
         for topic in checklist.TOPICS
         if not topic["id"].startswith("intro_")
-        and _answer_label(topics.get(topic["id"]) if isinstance(topics.get(topic["id"]), dict) else {}) == "no"
+        and call_state.topic_answer_kind(topics.get(topic["id"]) if isinstance(topics.get(topic["id"]), dict) else {}) == "no"
     ]
     if negatives:
         shell = shell.replace(
@@ -1215,7 +1038,7 @@ def build_state_fallback(
     ]
     for topic in checklist.TOPICS:
         saved = topics.get(topic["id"]) if isinstance(topics.get(topic["id"]), dict) else {"state": "not_asked"}
-        label = _answer_label(saved)
+        label = call_state.topic_answer_kind(saved)
         lines.append(f"- {topic['id']}: {label}")
 
     return {
@@ -1229,32 +1052,6 @@ def build_state_fallback(
         "red_flags": red_flags,
         "state": state,
     }
-
-
-async def _generate_accepted_model(client, models: list[str], user_content: str, system_prompt: str) -> dict:
-    """Call models in order. The first response the API accepts and that parses wins."""
-    from google.genai import types
-
-    last_error: Exception | None = None
-    for chosen in models:
-        try:
-            cfg: dict = {
-                "system_instruction": system_prompt,
-                "response_mime_type": "application/json",
-                "temperature": 0.2,
-                "max_output_tokens": 16384,
-            }
-            if "gemini-3" in chosen:
-                cfg["thinking_config"] = types.ThinkingConfig(thinking_level="LOW")
-            response = await client.aio.models.generate_content(
-                model=chosen,
-                contents=user_content,
-                config=cfg,
-            )
-            return _parse_json(response.text or "")
-        except Exception as exc:
-            last_error = exc
-    raise last_error or RuntimeError("no summary model accepted")
 
 
 async def _from_gemini(
@@ -1271,32 +1068,15 @@ async def _from_gemini(
         http_options={"api_version": "v1beta"},
     )
     try:
-        return await _generate_accepted_model(
-            client, summary_model_chain(model), user_content, system_prompt
+        response = await client.aio.models.generate_content(
+            model=model or models.TEXT_MODEL,
+            contents=user_content,
+            config=models.text_config(system=system_prompt, max_output_tokens=16384, temperature=0.2),
         )
+        return _parse_json(response.text or "")
     finally:
         await client.aio.aclose()
         client.close()
-
-
-async def _from_openai(user_content: str, system_prompt: str = DOCTOR_MOTHER_SUMMARY_PROMPT) -> dict:
-    from openai import AsyncOpenAI
-
-    client = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
-    try:
-        response = await client.chat.completions.create(
-            model="gpt-4o-mini",
-            temperature=0.2,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content},
-            ],
-        )
-        text = response.choices[0].message.content or ""
-        return _parse_json(text)
-    finally:
-        await client.close()
 
 
 def _model_findings(payload: dict, reconciled_state: dict) -> dict:
@@ -1348,7 +1128,7 @@ def _finalize_structured_summary(
     if isinstance(payload.get("questions_hindi"), list) and not payload.get("mother_hindi"):
         raw_mother = "\n".join(str(line) for line in payload["questions_hindi"] if str(line).strip())
     if transcript:
-        raw_mother, doctor = _strip_unspoken_mother_name(raw_mother, doctor, judged_findings, transcript)
+        _drop_ungrounded_name(judged_findings, transcript)
     mother = _ensure_mother_covers_flags(raw_mother, judged_findings, judged_flags)
     return {
         "summary_doctor": doctor,
@@ -1376,18 +1156,10 @@ async def generate_call_summaries(
             payload = await _from_gemini(user_content, STRUCTURED_STATE_SUMMARY_PROMPT)
             return _finalize_structured_summary(payload, state, transcript, findings, red_flags)
         except Exception:
-            try:
-                payload = await _from_openai(user_content, STRUCTURED_STATE_SUMMARY_PROMPT)
-                return _finalize_structured_summary(payload, state, transcript, findings, red_flags)
-            except Exception:
-                return build_state_fallback(state, findings, red_flags)
+            return build_state_fallback(state, findings, red_flags)
     user_content = _user_content(transcript, findings, red_flags)
     try:
         payload = await _from_gemini(user_content)
         return _assemble(payload, findings, red_flags, transcript)
     except Exception:
-        try:
-            payload = await _from_openai(user_content)
-            return _assemble(payload, findings, red_flags, transcript)
-        except Exception:
-            return build_fallback_summaries(transcript, findings, red_flags)
+        return build_fallback_summaries(transcript, findings, red_flags)

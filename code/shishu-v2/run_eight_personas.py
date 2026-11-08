@@ -2,14 +2,20 @@
 
 import asyncio
 import json
+import os
 import sys
 from inspect import signature
+
+from dotenv import load_dotenv
 
 import app
 import call_state
 import checklist
 import db
+import models
 import mother_report
+
+load_dotenv("/workspace/.env")
 
 
 def _intro(name: str, married: str, children: str) -> dict:
@@ -141,6 +147,7 @@ PERSONAS = {
         },
         "expect_close": "complete",
         "expect_yes": ("body_transfusion", "fam_bleeding"),
+        "clarify_steps": (8, 20, 35),
     },
     "p7_all_okay": {
         "desc": "Healthy 5yo child, no red flags anywhere",
@@ -202,24 +209,95 @@ def reply_for(name: str, state: dict, memory: dict) -> str | None:
     return "नहीं।"
 
 
+def _facts(spec: dict) -> str:
+    lines = [spec.get("desc") or ""]
+    for (topic_id, followup_id), answer in spec["table"].items():
+        which = topic_id if not followup_id else f"{topic_id} / {followup_id}"
+        lines.append(f"{which}: {answer}")
+    return "\n".join(lines)
+
+
+async def ask_mother(spec: dict, bot_line: str, step: int) -> str:
+    """One spoken reply to the line the bot actually said."""
+    if step in spec.get("clarify_steps", ()):
+        return "क्या मतलब?"
+    behaviour = ""
+    if spec.get("emergency_on"):
+        behaviour = (
+            "If she asks whether the baby was born much too early or much too late, "
+            "do not answer it. Say exactly: रुकिए, अभी मेरे बच्चे को साँस नहीं आ रही है "
+            "और होंठ नीले पड़ रहे हैं, इमरजेंसी है!"
+        )
+    from google import genai
+    from google.genai import types
+
+    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"], http_options={"api_version": "v1beta"})
+    try:
+        response = await client.aio.models.generate_content(
+            model=models.TEXT_MODEL,
+            contents=(
+                f"Step {step}.\n{behaviour}\nFacts:\n{_facts(spec)}\n\n"
+                f"The assistant just said: {bot_line or '(nothing)'}"
+            ),
+            config=models.text_config(
+                system=(
+                    "You are the mother on a phone call. Reply with one short spoken Hindi sentence "
+                    "to the assistant's last line, using only the facts. If the facts do not mention "
+                    "a problem, say नहीं. Never answer a question she did not just ask."
+                ),
+                schema=types.Schema(
+                    type="OBJECT",
+                    properties={"reply": types.Schema(type="STRING")},
+                    required=["reply"],
+                ),
+            ),
+        )
+        return str((json.loads(response.text or "{}")).get("reply") or "").strip() or "नहीं।"
+    finally:
+        await client.aio.aclose()
+        client.close()
+
+
+def _state_snapshot(state: dict) -> tuple:
+    topics = {
+        key: (row.get("state"), row.get("value"), row.get("details"))
+        for key, row in (state.get("topics") or {}).items()
+    }
+    return (topics, dict(state.get("profile") or {}))
+
+
+def _topic_words(question: dict) -> set[str]:
+    topic_id = (question or {}).get("topic_id") or ""
+    text = checklist.question_hi(topic_id) if topic_id in checklist._BY_ID else ""
+    return {word for word in text.replace("?", " ").split() if len(word) >= 4}
+
+
 async def one_call(name: str, url: str, headers: dict) -> dict:
     import websockets
 
-    memory = {"clarified": False, "reasked_after_clarify": False, "clarify_key": None}
+    memory = {"clarified": False, "reasked_after_clarify": False, "clarify_key": None,
+              "clarify_mutated": False, "desyncs": 0}
     call_id = None
     step = 0
     spoke = False
+    last_bot = ""
+    clarify_snapshot = None
     try:
         async with websockets.connect(url, **headers) as ws:
             while step < 95:
                 raw = await asyncio.wait_for(ws.recv(), timeout=90)
                 payload = json.loads(raw)
                 kind = payload.get("type")
+                if kind == "error":
+                    raise RuntimeError(str(payload.get("message") or "server error"))
                 if kind == "session_started":
                     call_id = payload.get("call_id")
                     print(f"[{name}] started call_id={call_id}", flush=True)
-                elif kind == "audio" or (kind == "transcript" and payload.get("role") == "assistant"):
+                elif kind == "audio":
                     spoke = True
+                elif kind == "transcript" and payload.get("role") == "assistant":
+                    spoke = True
+                    last_bot = (last_bot + " " + str(payload.get("text") or "")).strip()[-400:]
                 elif (
                     kind == "telemetry"
                     and (payload.get("last_event") or {}).get("type") == "turn_complete"
@@ -228,12 +306,35 @@ async def one_call(name: str, url: str, headers: dict) -> dict:
                 ):
                     spoke = False
                     state = (db.get_call(call_id) or {}).get("state") or {}
-                    text = reply_for(name, state, memory)
+                    if clarify_snapshot is not None:
+                        now = _state_snapshot(state)
+                        if now != clarify_snapshot:
+                            memory["clarify_mutated"] = True
+                        clarify_snapshot = None
+                    if state.get("phase") in ("closing", "ended"):
+                        last_bot = ""
+                        continue
+                    cur = state.get("current_question") or {}
+                    words = _topic_words(cur)
+                    if words and last_bot and not words & set(last_bot.split()):
+                        memory["desyncs"] += 1
+                    heard = last_bot
+                    try:
+                        text = await ask_mother(PERSONAS[name], heard, step + 1)
+                    except Exception as exc:
+                        print(f"[{name}] mother model failed ({exc}); using the fact table", flush=True)
+                        text = reply_for(name, state, memory)
+                    last_bot = ""
                     if not text:
                         continue
                     step += 1
-                    cur = state.get("current_question") or {}
-                    print(f"[{name}] step {step} ({cur.get('topic_id')}/{cur.get('followup_id')}): {text}", flush=True)
+                    if text.strip() in {"क्या मतलब?", "क्या मतलब"}:
+                        clarify_snapshot = _state_snapshot(state)
+                    print(
+                        f"[{name}] step {step} server={cur.get('topic_id')}/{cur.get('followup_id')} "
+                        f"bot={heard!r} -> {text}",
+                        flush=True,
+                    )
                     await ws.send(json.dumps({"type": "text", "text": text}))
                 elif kind == "call_completed":
                     return {"persona": name, "call_id": call_id, "steps": step, "memory": memory, "status": "completed"}
@@ -286,6 +387,7 @@ async def evaluate_call(row: dict) -> dict:
         and not missing_yes
         and not extra_yes
         and clarify_ok
+        and not row["memory"].get("clarify_mutated")
         and has_doctor_note
     )
     return {
@@ -304,6 +406,8 @@ async def evaluate_call(row: dict) -> dict:
         "yes_hindi_count": len(yes_lines),
         "questions_count": len(questions),
         "has_doctor_note": has_doctor_note,
+        "clarify_mutated": row["memory"].get("clarify_mutated"),
+        "desyncs": row["memory"].get("desyncs"),
         "pass": passed,
     }
 
@@ -341,7 +445,9 @@ async def main():
         print(
             f"- {r['persona']}: {status_str} (call={r['call_id']}, steps={r['steps']}, "
             f"close={r['close_reason']}, tool_err={r['tool_errors']}, unresolved={r['unresolved']}, "
-            f"missing_yes={r['missing_yes']}, extra_yes={r['extra_yes']}, pdf_yes={r['yes_hindi_count']}, "
+            f"missing_yes={r['missing_yes']}, extra_yes={r['extra_yes']}, "
+            f"clarify_mutated={r.get('clarify_mutated')}, desyncs={r.get('desyncs')}, "
+            f"pdf_yes={r['yes_hindi_count']}, "
             f"pdf_q={r['questions_count']}, doc_note={r['has_doctor_note']})"
         )
 

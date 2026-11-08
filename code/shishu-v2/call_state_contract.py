@@ -7,6 +7,11 @@ MODEL_TOPIC_STATES = ("answered", "unknown", "no_response")
 QUESTION_PHASES = ("asking", "waiting_for_answer", "closing", "ended")
 END_REASONS = ("emergency", "caller_stop", "silence", "time_limit", "browser_hangup")
 INTERNAL_CLOSE_REASONS = END_REASONS + ("complete",)
+CLOSE_REASON_NOTES = {
+    "silence": "the mother was silent for 30 seconds",
+    "time_limit": "the 20-minute limit was reached",
+    "caller_stop": "the mother asked to stop the call",
+}
 PROFILE_FIELDS = (
     "caller_name",
     "marital_status",

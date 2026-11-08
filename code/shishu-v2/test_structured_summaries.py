@@ -12,6 +12,7 @@ import answer_extractor  # noqa: E402
 import call_state  # noqa: E402
 import call_state_contract as contract  # noqa: E402
 import db  # noqa: E402
+import models  # noqa: E402
 import summarizer  # noqa: E402
 
 
@@ -150,6 +151,7 @@ class StructuredSummaryTests(unittest.TestCase):
                     "birth_nicu": {
                         "state": "answered",
                         "value": True,
+                        "evidence": "काँच के बक्से में 3 दिन पीलिया के लिए रखा था",
                         "details": {"reason": "पीलिया", "days": "3 दिन"},
                     },
                     "fam_cancer": {
@@ -191,9 +193,7 @@ class StructuredSummaryTests(unittest.TestCase):
             raise RuntimeError("offline")
 
         orig_gemini = summarizer._from_gemini
-        orig_openai = summarizer._from_openai
         summarizer._from_gemini = fail_provider
-        summarizer._from_openai = fail_provider
         try:
             res = asyncio.run(
                 summarizer.generate_call_summaries(
@@ -202,53 +202,16 @@ class StructuredSummaryTests(unittest.TestCase):
             )
         finally:
             summarizer._from_gemini = orig_gemini
-            summarizer._from_openai = orig_openai
 
         self.assertIn("fam_infant_death: yes", res["summary_doctor"])
         self.assertIn("गुजर", res["summary_mother"])
         self.assertIn("family_infant_death", res["findings"])
         self.assertTrue(any(f.startswith("fam_infant_death:") for f in res["red_flags"]))
 
-    def test_summary_model_chain_starts_at_the_newest_preview(self):
-        self.assertEqual(os.environ.get("GEMINI_SUMMARY_MODEL"), "gemini-3.1-pro-preview")
-        self.assertEqual(db.DEFAULT_SETTINGS["summary_model"], "gemini-3.1-pro-preview")
-        self.assertEqual(
-            summarizer.summary_model_chain(),
-            ["gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-2.5-pro"],
-        )
-        self.assertNotIn("gemini-2.5-flash", summarizer.summary_model_chain())
-        self.assertNotIn("gemini-3.8-flash", summarizer.summary_model_chain())
-        self.assertEqual(
-            summarizer.summary_model_chain("gemini-3-pro-preview"),
-            ["gemini-3-pro-preview", "gemini-2.5-pro"],
-        )
-        unknown = summarizer.summary_model_chain("gemini-3.8-flash")
-        self.assertEqual(unknown[0], "gemini-3.8-flash")
-        self.assertEqual(unknown[1:], list(summarizer.SUMMARY_MODEL_CHAIN))
-
-    def test_summary_call_uses_the_first_model_the_api_accepts(self):
-        seen: list[str] = []
-
-        class _Models:
-            async def generate_content(self, model, contents, config):
-                seen.append(model)
-                if model != "gemini-2.5-pro":
-                    raise RuntimeError(f"404 model {model} not found")
-                return type("Resp", (), {"text": '{"doctor_markdown":"ok","mother_hindi":"ठीक?"}'})()
-
-        class _Client:
-            aio = type("Aio", (), {"models": _Models()})()
-
-        payload = asyncio.run(
-            summarizer._generate_accepted_model(
-                _Client(),
-                list(summarizer.SUMMARY_MODEL_CHAIN),
-                "state",
-                summarizer.STRUCTURED_STATE_SUMMARY_PROMPT,
-            )
-        )
-        self.assertEqual(seen, list(summarizer.SUMMARY_MODEL_CHAIN))
-        self.assertEqual(payload["doctor_markdown"], "ok")
+    def test_text_calls_use_the_configured_flash_model(self):
+        self.assertEqual(models.TEXT_MODEL, os.environ.get("SHISHU_TEXT_MODEL", "gemini-3.8-flash"))
+        self.assertEqual(db.DEFAULT_SETTINGS["gemini_model"], models.LIVE_MODEL)
+        self.assertNotIn("summary_model", db.DEFAULT_SETTINGS)
 
     def test_frontier_model_can_override_a_false_positive(self):
         state = _state()
@@ -283,6 +246,7 @@ class StructuredSummaryTests(unittest.TestCase):
                     "birth_mode": {
                         "state": "answered",
                         "value": False,
+                        "evidence": "डिलीवरी नॉर्मल हुई, अस्पताल में।",
                         "details": {"delivery_type": "normal", "place": "hospital"},
                     }
                 },

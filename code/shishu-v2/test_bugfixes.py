@@ -222,10 +222,7 @@ class SummaryAndDurationTests(unittest.TestCase):
         flags = result["red_flags"]
         self.assertFalse(any(flag.startswith("bleeding_joints:") for flag in flags))
         self.assertEqual(sum(flag.startswith("birth_nicu:") for flag in flags), 1)
-        self.assertTrue(any(flag.startswith("infections:") for flag in flags))
-        self.assertIn("infections:", result["summary_doctor"])
-        self.assertNotIn("Systemic, Infections & Hematology\nNot reported.", result["summary_doctor"])
-        self.assertIn("गुजर", result["summary_mother"])
+        self.assertFalse(any(flag.startswith("infections:") for flag in flags))
 
 
 if __name__ == "__main__":

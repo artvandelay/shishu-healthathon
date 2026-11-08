@@ -16,6 +16,7 @@ from starlette.websockets import WebSocketState
 
 import answer_backstop
 import answer_extractor
+import models
 import audio_recorder
 import call_state
 import answer_tool
@@ -117,7 +118,7 @@ def _session_settings(settings: dict) -> dict:
     start_low = settings.get("vad_start_sensitivity") == "LOW"
     end_low = settings.get("vad_end_sensitivity") == "LOW"
     return {
-        "model": settings.get("gemini_model") or "gemini-3.1-flash-live-preview",
+        "model": os.environ.get("SHISHU_LIVE_MODEL") or settings.get("gemini_model") or models.LIVE_MODEL,
         "voice": "Kore",
         "prefix_padding_ms": int(float(settings.get("vad_prefix_padding_ms") or 300)),
         "silence_duration_ms": int(float(settings.get("vad_silence_ms") or 750)),
@@ -211,8 +212,6 @@ def _new_telemetry(
         "coverage": [],
         "end_refusals": 0,
         "end_requested_at": 0.0,
-        "force_close": False,
-        "force_close_at": 0.0,
         "close_reason": "",
         "reconnects": 0,
         "errors": [],
@@ -334,8 +333,6 @@ def _cancel_silence_close(state: _TurnState, telemetry: dict) -> None:
         return
     if telemetry.get("close_reason") != "silence":
         return
-    telemetry["force_close"] = False
-    telemetry["force_close_at"] = 0.0
     telemetry["close_reason"] = ""
     state.checked_in = False
     live_state = state.call_state
@@ -1089,6 +1086,7 @@ async def _handle_server_message(
             live_state
             and live_state.get("phase") == "asking"
             and state.awaiting_bot_reply
+            and state.bot_replied_since_user
             and not telemetry.get("end_requested")
         ):
             state.awaiting_bot_reply = False
@@ -1231,12 +1229,6 @@ async def _watchdog_loop(
                 if time.time() - float(telemetry.get("end_requested_at") or 0) > 30:
                     stop.set()
                     return
-                continue
-            if telemetry.get("force_close"):
-                if now - float(telemetry.get("force_close_at") or 0) > checklist.FORCE_END_GRACE_SEC:
-                    telemetry["end_requested"] = True
-                    telemetry["end_requested_at"] = now
-                    await _send_json(ws, ws_lock, {"type": "ending"})
                 continue
             cue = ""
             reason = ""
@@ -1703,11 +1695,11 @@ async def handle_gemini_ws(
             session_ctx, session, connect_ms = await _connect_live(
                 client, model, config
             )
-        except Exception:
+        except Exception as exc:
             await _send_json(
                 ws,
                 ws_lock,
-                {"type": "error", "message": "Gemini Live connection failed"},
+                {"type": "error", "message": f"Gemini Live connection failed: {exc}"[:300]},
             )
             return
         session = _SessionProxy(session)

@@ -187,6 +187,23 @@ class TurnCompleteTests(unittest.TestCase):
         self.assertIn("saved her last answer", session.texts[0])
         self.assertTrue(turn.awaiting_bot_reply)
 
+    def test_an_empty_bot_turn_is_not_counted_as_her_silence(self):
+        call_id = db.create_call("gemini")
+        state, _ = _asked(_with_children(3), "birth_mode")
+        turn = gemini_live._TurnState()
+        turn.call_state = state
+        turn.tool_called_since_user = True
+        turn.awaiting_bot_reply = True
+        turn.bot_replied_since_user = False
+        turn.last_user_text = "ऑपरेशन से।"
+        telemetry = gemini_live._new_telemetry("gemini-3.1-flash-live-preview", "Kore", 1300, 300, 0)
+        asyncio.run(gemini_live._handle_server_message(
+            _turn_complete(), _FakeSession(), asyncio.Lock(), _FakeWs(), asyncio.Lock(),
+            call_id, telemetry, turn, None, set(), set(),
+        ))
+        self.assertTrue(turn.awaiting_bot_reply)
+        self.assertEqual(turn.quiet_from, 0.0)
+
     def test_non_answer_changes_nothing(self):
         turn, session, telemetry = self._run("", {"kind": "clarification"})
         self.assertNotIn("delivery_type", turn.call_state["topics"]["birth_mode"].get("details") or {})

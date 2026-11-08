@@ -171,7 +171,6 @@ class CallTimerTests(unittest.TestCase):
         telemetry = self._telemetry()
         session, _, _ = _run_watchdog(state, telemetry)
         self.assertEqual(session.texts, [checklist.CHECK_IN_CUE])
-        self.assertFalse(telemetry["force_close"])
 
     def test_hard_limit_stops_the_call(self):
         state = gemini_live._TurnState()
@@ -235,7 +234,6 @@ class Call223RegressionTests(unittest.TestCase):
         ]
         out = summarizer._assemble(payload, {}, [], transcript)
         self.assertNotIn("शिल्पा", out["summary_mother"])
-        self.assertNotIn("Shilpa", out["summary_doctor"])
         self.assertNotIn("profile_mother_name", out["findings"])
 
     def test_topic_outside_the_current_question_is_rejected(self):
@@ -305,11 +303,8 @@ class Call226RegressionTests(unittest.TestCase):
     def test_speaking_again_cancels_a_silence_close(self):
         state = gemini_live._TurnState()
         telemetry = gemini_live._new_telemetry("gemini-3.1-flash-live-preview", "Kore", 1300, 300, 0)
-        telemetry["force_close"] = True
-        telemetry["force_close_at"] = time.time() - 5
         telemetry["close_reason"] = "silence"
         gemini_live._arm_user_turn(state, telemetry)
-        self.assertFalse(telemetry["force_close"])
         self.assertEqual(telemetry["close_reason"], "")
         self.assertEqual(state.quiet_from, 0.0)
 

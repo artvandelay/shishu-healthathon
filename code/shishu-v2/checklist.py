@@ -241,16 +241,12 @@ TIME_CLOSE_CUE = (
     "Speak the INCOMPLETE CLOSING for time now, in Hindi, then call end_call."
 )
 
-_CLOSE_REASONS = {
-    "silence": "the mother was silent for 30 seconds",
-    "time_limit": "the 20-minute limit was reached",
-    "caller_stop": "the mother asked to stop the call",
-}
-
 EMERGENCY_MOTHER_NOTE = "बच्चे को अभी तुरंत नज़दीकी अस्पताल ले जाइए, या 108 पर कॉल कीजिए।"
 
 
 def incomplete_notes(coverage: list, reason: str, detail: str = "") -> tuple[str, str]:
+    import call_state_contract as contract
+
     left = open_topics(coverage)
     if reason == "emergency":
         said = (detail or "").strip()[:200]
@@ -262,7 +258,7 @@ def incomplete_notes(coverage: list, reason: str, detail: str = "") -> tuple[str
         return doctor, EMERGENCY_MOTHER_NOTE
     if not left:
         return "", ""
-    why = _CLOSE_REASONS.get(reason, "the call ended early")
+    why = contract.CLOSE_REASON_NOTES.get(reason, "the call ended early")
     ids = ", ".join(t["id"] for t in left)
     doctor = (
         f"> **Incomplete call:** {why}. {len(left)} of {len(REQUIRED_IDS)} topics were not asked: {ids}."

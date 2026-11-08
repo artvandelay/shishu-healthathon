@@ -16,8 +16,12 @@ RECORD_ANSWERS_DECL = {
         "Use all for every child, specific for named child IDs, and none when no child applies. "
         "Never submit not_applicable. "
         "Do not copy transcript text. "
-        "Send value directly as true, false, a short string, a number, a child list, or null. "
-        "Do not wrap value in another object."
+        "Yes/no topics: value true or false. "
+        "birth_mode: value and details.delivery_type are normal or operation; details.place is home or hospital. "
+        "profile.marital_status: married, about_to_marry, or unmarried. "
+        "profile.children: a list of {age: {value, unit: years or months}, sex: male, female, or unknown}. "
+        "A follow-up answer goes in details.<followup_id>. affected_child uses child_ids from the server. "
+        "state unknown when she does not know. Do not record a clarification."
     ),
     "parameters": {
         "type": "OBJECT",

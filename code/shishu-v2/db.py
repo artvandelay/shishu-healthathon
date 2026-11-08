@@ -6,6 +6,8 @@ import threading
 import time
 from typing import Any
 
+import models
+
 DATA_DIR = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), "storage"))
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(os.path.join(DATA_DIR, "audio"), exist_ok=True)
@@ -15,7 +17,7 @@ _db_lock = threading.Lock()
 
 DEFAULT_SETTINGS: dict[str, str] = {
     "active_engine": "gemini",
-    "gemini_model": "gemini-3.1-flash-live-preview",
+    "gemini_model": models.LIVE_MODEL,
     "gemini_voice": "Kore",
     "openai_model": "gpt-live-1",
     "openai_voice": "marin",
@@ -25,7 +27,6 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "vad_start_sensitivity": "HIGH",
     "vad_end_sensitivity": "HIGH",
     "watchdog_timeout_sec": "8.0",
-    "summary_model": "gemini-3.1-pro-preview",
 }
 
 _CALL_EXTRA_COLUMNS = (
@@ -85,10 +86,6 @@ def _init_db() -> None:
         )
         cur.execute(
             "UPDATE settings SET value = '8.0' WHERE key = 'watchdog_timeout_sec' AND value = '4.0'",
-        )
-        cur.execute(
-            "UPDATE settings SET value = ? WHERE key = 'summary_model' AND value IN ('gemini-2.5-flash', 'gemini-3.8-flash')",
-            (DEFAULT_SETTINGS["summary_model"],),
         )
         cur.execute(
             """

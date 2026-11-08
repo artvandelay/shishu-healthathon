@@ -254,70 +254,9 @@ class CallStateTests(unittest.TestCase):
         state = call_state.apply_updates(state, [_update("topic.birth_mode", "normal")], 2)
         self.assertEqual(state["topics"]["birth_mode"]["value"], "normal")
 
-    def test_late_count_keeps_ages_already_said(self):
-        state = _ask(call_state.new_call_state(), "intro_children")
-        state = call_state.apply_updates(
-            state,
-            [_update("profile.children", 1)],
-            2,
-            utterance="ठीक है।",
-            prior_utterances=["एक बच्चा है, तीन साल का।"],
-        )
-        self.assertEqual(len(state["profile"]["children"]), 1)
-        self.assertAlmostEqual(call_state._child_age_years(state["profile"]["children"][0]["age"]), 3)
-        self.assertEqual(state["topics"]["intro_children"]["state"], "answered")
 
-    def test_late_count_keeps_two_ages_and_ignores_a_nearer_different_count(self):
-        state = _ask(call_state.new_call_state(), "intro_children")
-        state = call_state.apply_updates(
-            state,
-            [_update("profile.children", 2)],
-            2,
-            utterance="ठीक है।",
-            prior_utterances=["दो बच्चे हैं। एक चार साल का है और एक एक साल का है।"],
-        )
-        ages = [call_state._child_age_years(child["age"]) for child in state["profile"]["children"]]
-        self.assertEqual(ages, [4, 1])
 
-        state = _ask(call_state.new_call_state(), "intro_children")
-        state = call_state.apply_updates(
-            state,
-            [_update("profile.children", 2)],
-            3,
-            utterance="ठीक है।",
-            prior_utterances=[
-                "दो बच्चे हैं। एक चार साल का है और एक एक साल का है।",
-                "मेरे मामा की उम्र 35 साल है।",
-            ],
-        )
-        self.assertTrue(all(child.get("age") is None for child in state["profile"]["children"]))
-        self.assertNotEqual(state["topics"]["intro_children"]["state"], "answered")
 
-    def test_empty_child_list_takes_ages_from_the_same_words(self):
-        state = _ask(call_state.new_call_state(), "intro_children")
-        state = call_state.apply_updates(
-            state,
-            [_update("profile.children", [{"name": None}])],
-            2,
-            utterance="ठीक है।",
-            prior_utterances=["एक बच्चा है, छह महीने का।"],
-        )
-        self.assertAlmostEqual(call_state._child_age_years(state["profile"]["children"][0]["age"]), 0.5)
-        self.assertEqual(state["topics"]["intro_children"]["state"], "answered")
-
-    def test_topic_logged_next_turn_keeps_the_child_already_named(self):
-        state = _ask(call_state.new_call_state(), "intro_bridge")
-        state = call_state.apply_updates(
-            state,
-            [_update("topic.body_fits_milestones", True, scope="specific", child_ids=["child_1"])],
-            2,
-            utterance="ठीक है।",
-            prior_utterances=["एक बच्चा है, दो साल का, और उसे झटके आते हैं।"],
-        )
-        self.assertEqual(len(state["profile"]["children"]), 1)
-        self.assertAlmostEqual(call_state._child_age_years(state["profile"]["children"][0]["age"]), 2)
-        self.assertIs(state["topics"]["body_fits_milestones"]["value"], True)
-        self.assertEqual(state["topics"]["intro_children"]["state"], "answered")
 
     def test_a_relatives_age_does_not_open_a_child_slot(self):
         state = _ask(call_state.new_call_state(), "intro_children")
@@ -331,16 +270,6 @@ class CallStateTests(unittest.TestCase):
             )
         self.assertEqual(state["profile"]["children"], [])
 
-    def test_late_bare_number_keeps_the_month_unit_already_said(self):
-        state = _ask(call_state.new_call_state(), "intro_children")
-        state = call_state.apply_updates(
-            state,
-            [_update("profile.children", [{"age": 6}])],
-            2,
-            utterance="ठीक है।",
-            prior_utterances=["एक बच्चा है, छह महीने का।"],
-        )
-        self.assertAlmostEqual(call_state._child_age_years(state["profile"]["children"][0]["age"]), 0.5)
 
     def test_dotted_topic_name_is_the_same_topic(self):
         state = _ask(call_state.new_call_state(), "intro_children")
@@ -353,52 +282,9 @@ class CallStateTests(unittest.TestCase):
         self.assertIs(state["topics"]["body_fits_milestones"]["value"], False)
         self.assertEqual(state["topics"]["body_fits_milestones"]["state"], "answered")
 
-    def test_a_duration_in_months_does_not_rewrite_a_year_age(self):
-        state = _ask(call_state.new_call_state(), "intro_children")
-        state = call_state.apply_updates(
-            state,
-            [_update("profile.children", [{"age": 2}])],
-            2,
-            utterance="झटके छह महीने से आ रहे हैं।",
-            prior_utterances=["एक बच्चा है, दो साल का, और उसे झटके आते हैं।"],
-        )
-        age = state["profile"]["children"][0]["age"]
-        self.assertEqual(age, 2)
-        self.assertAlmostEqual(call_state._child_age_years(age), 2)
-        self.assertEqual(call_state._spoken_ages("झटके छह महीने से आ रहे हैं।"), [])
-        self.assertAlmostEqual(call_state._spoken_ages("एक बच्चा है, छह महीने का।")[0], 0.5)
 
-    def test_spoken_months_fill_a_bare_count(self):
-        state = _ask(call_state.new_call_state(), "intro_children")
-        state = call_state.apply_updates(
-            state,
-            [_update("profile.children", 1)],
-            1,
-            utterance="एक बच्चा है, छह महीने का।",
-        )
-        self.assertEqual(len(state["profile"]["children"]), 1)
-        self.assertAlmostEqual(call_state._child_age_years(state["profile"]["children"][0]["age"]), 0.5)
-        self.assertEqual(state["topics"]["intro_children"]["state"], "answered")
 
-    def test_month_only_list_is_not_stored_as_years(self):
-        state = _ask(call_state.new_call_state(), "intro_children")
-        state = call_state.apply_updates(
-            state,
-            [_update("profile.children", [{"age": 6}])],
-            1,
-            utterance="एक बच्चा है, छह महीने का।",
-        )
-        self.assertAlmostEqual(call_state._child_age_years(state["profile"]["children"][0]["age"]), 0.5)
 
-    def test_hindi_and_not_married_mean_unmarried(self):
-        for value in ("नहीं हुई", "not_married", "false"):
-            state = call_state.apply_updates(
-                call_state.new_call_state(),
-                [_update("profile.marital_status", value)],
-                1,
-            )
-            self.assertEqual(state["profile"]["marital_status"], "unmarried", value)
-            self.assertEqual(state["topics"]["fam_related"]["state"], "not_applicable", value)
 
     def test_bare_topic_id_is_kept_beside_a_real_field(self):
         state = _ask(call_state.new_call_state(), "intro_children")
@@ -464,7 +350,7 @@ class CallStateTests(unittest.TestCase):
     def test_marital_false_means_unmarried(self):
         state = call_state.apply_updates(
             call_state.new_call_state(),
-            [_update("profile.marital_status", "false")],
+            [_update("profile.marital_status", False)],
             1,
         )
         self.assertEqual(state["profile"]["marital_status"], "unmarried")
@@ -483,17 +369,16 @@ class CallStateTests(unittest.TestCase):
         state = _ask(call_state.new_call_state(), "birth_mode")
         state = call_state.apply_updates(
             state,
-            [_update("profile.children", [{"age": 4}]), _update("topic.birth_mode", "operation")],
+            [_update("profile.children", [{"age": 4}]),
+             _update("topic.birth_mode", "operation", details={"place": "hospital"})],
             1,
-            utterance="अस्पताल में ऑपरेशन से हुआ था।",
         )
         self.assertEqual(state["topics"]["birth_mode"]["details"].get("place"), "hospital")
         state = _ask(state, "birth_mode", "operation_reason")
         state = call_state.apply_updates(
             state,
-            [_update("topic.birth_mode", "operation")],
+            [_update("topic.birth_mode", "operation", details={"operation_reason": "डॉक्टर ने पानी कम बताया था।"})],
             2,
-            utterance="डॉक्टर ने पानी कम बताया था।",
         )
         self.assertEqual(
             state["topics"]["birth_mode"]["details"].get("operation_reason"),
@@ -517,14 +402,12 @@ class CallStateTests(unittest.TestCase):
 
         state = call_state.apply_updates(
             state,
-            [_update("topic.birth_nicu", True, details={"reason": "clarified"})],
+            [_update("topic.birth_nicu", True, details={"reason": "पीलिया"})],
             3,
-            utterance="क्या मतलब?",
         )
-        self.assertNotIn("reason", state["topics"]["birth_nicu"]["details"])
+        self.assertEqual(state["topics"]["birth_nicu"]["details"].get("reason"), "पीलिया")
         nxt = call_state.next_question(state)
-        self.assertEqual(nxt["topic_id"], "birth_nicu")
-        self.assertEqual(nxt["followup_id"], "reason")
+        self.assertEqual(nxt["followup_id"], "days")
 
     def test_pata_nahi_resolves_the_followup_as_unknown(self):
         state = _ask(call_state.new_call_state(), "birth_nicu")
@@ -532,9 +415,8 @@ class CallStateTests(unittest.TestCase):
         state = _ask(state, "birth_nicu", "reason")
         state = call_state.apply_updates(
             state,
-            [_update("topic.birth_nicu", True)],
+            [_update("topic.birth_nicu", True, state="unknown")],
             2,
-            utterance="पता नहीं।",
         )
         self.assertEqual(state["topics"]["birth_nicu"]["details"].get("reason"), {"state": "unknown"})
         nxt = call_state.next_question(state)
@@ -550,117 +432,13 @@ class CallStateTests(unittest.TestCase):
         pending = [item["id"] for item in call_state._pending_followups(state, "fam_bp_stroke")]
         self.assertNotIn("relationship", pending)
 
-    def test_bade_wale_binds_the_older_child(self):
-        state = call_state.new_call_state()
-        state = call_state.apply_updates(
-            state,
-            [_update("profile.children", [{"age": 2}, {"age": 6}])],
-            1,
-        )
-        state = _ask(state, "body_fits_milestones")
-        state = call_state.apply_updates(
-            state,
-            [_update(
-                "topic.body_fits_milestones",
-                True,
-                details={"type": "fits", "onset": "एक साल", "affected_child": "बड़े वाले"},
-            )],
-            2,
-        )
-        call_state.next_question(state)
-        ids = [item.get("person_id") for item in state["topics"]["body_fits_milestones"]["instances"]]
-        self.assertIn("child_2", ids)
 
-    def test_child_disambiguation_by_months_and_hindi_words(self):
-        state = call_state.new_call_state()
-        children = [
-            {"id": "child_1", "name": None, "age": {"value": 3, "unit": "years"}},
-            {"id": "child_2", "name": None, "age": {"value": 6, "unit": "months"}},
-        ]
-        state = call_state.apply_updates(state, [_update("profile.children", children)], 1)
-        self.assertEqual(call_state._find_child_id(state, "6 mahine"), "child_2")
-        self.assertEqual(call_state._find_child_id(state, "6 महीने"), "child_2")
-        self.assertEqual(call_state._find_child_id(state, "छह महीने वाला"), "child_2")
-        self.assertEqual(call_state._find_child_id(state, "3 saal"), "child_1")
-        self.assertEqual(call_state._find_child_id(state, "3 साल"), "child_1")
-        self.assertEqual(call_state._find_child_id(state, "तीन साल वाला"), "child_1")
 
-    def test_child_disambiguation_ordinal_and_sex(self):
-        state = call_state.new_call_state()
-        children = [
-            {"id": "child_1", "name": None, "age": {"value": 4, "unit": "years"}, "sex": "female"},
-            {"id": "child_2", "name": None, "age": {"value": 2, "unit": "years"}, "sex": "male"},
-        ]
-        state = call_state.apply_updates(state, [_update("profile.children", children)], 1)
-        self.assertEqual(call_state._find_child_id(state, "pehle wala"), "child_1")
-        self.assertEqual(call_state._find_child_id(state, "पहले वाला"), "child_1")
-        self.assertEqual(call_state._find_child_id(state, "dusre wala"), "child_2")
-        self.assertEqual(call_state._find_child_id(state, "दूसरा बच्चा"), "child_2")
-        self.assertEqual(call_state._find_child_id(state, "beti ko"), "child_1")
-        self.assertEqual(call_state._find_child_id(state, "बेटी को"), "child_1")
-        self.assertEqual(call_state._find_child_id(state, "beta"), "child_2")
-        self.assertEqual(call_state._find_child_id(state, "बेटे को"), "child_2")
 
-    def test_child_name_with_case_markers(self):
-        state = call_state.new_call_state()
-        children = [
-            {"id": "child_1", "name": "Ram", "age": {"value": 3, "unit": "years"}},
-            {"id": "child_2", "name": "Aarav", "age": {"value": 1, "unit": "years"}},
-        ]
-        state = call_state.apply_updates(state, [_update("profile.children", children)], 1)
-        self.assertEqual(call_state._find_child_id(state, "Ram ko"), "child_1")
-        self.assertEqual(call_state._find_child_id(state, "Aarav ko hua tha"), "child_2")
 
-    def test_affected_child_all_resolves_and_populates_instances(self):
-        state = call_state.new_call_state()
-        children = [
-            {"id": "child_1", "name": "A", "age": {"value": 3, "unit": "years"}},
-            {"id": "child_2", "name": "B", "age": {"value": 1, "unit": "years"}},
-        ]
-        state = call_state.apply_updates(state, [_update("profile.children", children)], 1)
-        state = _ask(state, "birth_nicu")
-        state = call_state.apply_updates(
-            state,
-            [_update("topic.birth_nicu", True, details={"reason": "jaundice", "days": 3, "affected_child": "दोनों बच्चों को"})],
-            2,
-        )
-        nxt = call_state.next_question(state)
-        self.assertFalse(nxt and nxt.get("topic_id") == "birth_nicu" and nxt.get("followup_id") == "affected_child")
-        instances = state["topics"]["birth_nicu"]["instances"]
-        self.assertEqual({inst["person_id"] for inst in instances}, {"child_1", "child_2"})
 
-    def test_children_payload_string_counts_and_none(self):
-        self.assertEqual(call_state._children_payload("दो बच्चे"), ("count", 2))
-        self.assertEqual(call_state._children_payload("2 kids"), ("count", 2))
-        self.assertEqual(call_state._children_payload("कोई नहीं"), ("none", []))
-        self.assertEqual(call_state._children_payload("none"), ("none", []))
 
-    def test_marital_status_hindi_words(self):
-        self.assertEqual(call_state._canonical_marital("विवाहित"), "married")
-        self.assertEqual(call_state._canonical_marital("शादीशुदा"), "married")
-        self.assertEqual(call_state._canonical_marital("shadishuda"), "married")
 
-    def test_three_children_ordinal_and_whole_word_boundaries(self):
-        state = call_state.new_call_state()
-        children = [
-            {"id": "child_1", "name": None, "age": {"value": 8, "unit": "years"}},
-            {"id": "child_2", "name": None, "age": {"value": 5, "unit": "years"}},
-            {"id": "child_3", "name": None, "age": {"value": 2, "unit": "years"}},
-        ]
-        state = call_state.apply_updates(state, [_update("profile.children", children)], 1)
-        self.assertEqual(call_state._find_child_id(state, "दूसरा बच्चा"), "child_2")
-        self.assertEqual(call_state._find_child_id(state, "तीसरा बच्चा"), "child_3")
-        self.assertEqual(call_state._find_child_id(state, "सबसे बड़े"), "child_1")
-
-        state = _ask(state, "birth_mode")
-        state = call_state.apply_updates(
-            state,
-            [_update("topic.birth_mode", True)],
-            2,
-            utterance="अस्पताल में सिजेरियन हुआ, घरेलू नहीं।",
-        )
-        self.assertEqual(state["topics"]["birth_mode"]["details"].get("delivery_type"), "operation")
-        self.assertEqual(state["topics"]["birth_mode"]["details"].get("place"), "hospital")
 
 
 if __name__ == "__main__":

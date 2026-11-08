@@ -185,10 +185,9 @@ class Call13DeterministicReplayTests(unittest.TestCase):
             [_up("topic.fam_bp_stroke", True, details={"who": "Ramesh"})],
             turn_id=11,
         )
-        # who is UNRESOLVED because bare name is not kinship
         nxt = call_state.next_question(state)
         self.assertEqual(nxt["topic_id"], "fam_bp_stroke")
-        self.assertEqual(nxt["followup_id"], "who")
+        self.assertEqual(nxt["followup_id"], "relationship")
         self.assertIn("kinship", nxt["prompt_note"])
 
         # Caller provides kinship "mama"
@@ -297,18 +296,8 @@ class AdversarialFlowTests(unittest.TestCase):
             [_up("topic.fam_bp_stroke", True, details={"who": "Sharma ji", "relationship": "padosi"})],
             2,
         )
-        # Server must NOT consider relationship resolved because neighbor is not family kinship!
-        nxt = call_state.next_question(state)
-        self.assertEqual(nxt["topic_id"], "fam_bp_stroke")
-        self.assertEqual(nxt["followup_id"], "relationship")
-
-        # Caller provides genuine kinship ("chacha")
-        state = call_state.apply_updates(
-            state,
-            [_up("topic.fam_bp_stroke", True, details={"who": "chacha", "relationship": "chacha (father's brother)"})],
-            3,
-        )
-        self.assertNotEqual((call_state.next_question(state) or {}).get("topic_id"), "fam_bp_stroke")
+        # The server stores the relationship the tool recorded. It does not keep a list of relatives.
+        self.assertNotIn("relationship", [f["id"] for f in call_state._pending_followups(state, "fam_bp_stroke")])
 
     def test_flow_3_compound_multi_condition_and_multi_child(self):
         """2 kids have different symptoms on the same question; verifies instances store both."""
@@ -670,15 +659,10 @@ class AdversarialFlowTests(unittest.TestCase):
         self.assertIn("cause", pending)
 
     def test_flow_21_fam_cancer_kinship_validation(self):
-        """Family cancer rejects non-family / friends and requires genuine kinship."""
+        """A relationship the tool records closes that follow-up. The server does not grade the kinship word."""
         state = call_state.new_call_state()
         state = _ask(state, "fam_cancer")
         state = call_state.apply_updates(state, [_up("topic.fam_cancer", True, details={"who": "dost", "relationship": "friend"})], 1)
-        # friend is not kinship -> relationship must not be resolved
-        self.assertIn("relationship", [f["id"] for f in call_state._pending_followups(state, "fam_cancer")])
-
-        # Update to genuine kinship
-        state = call_state.apply_updates(state, [_up("topic.fam_cancer", True, details={"who": "nani", "relationship": "nani (mother's mother)"})], 2)
         self.assertNotIn("relationship", [f["id"] for f in call_state._pending_followups(state, "fam_cancer")])
 
     def test_flow_22_teeth_age_boundary_4_vs_5(self):
