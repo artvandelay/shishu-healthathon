@@ -587,6 +587,46 @@ def campaign() -> list[Scenario]:
             expect_yes=("birth_nicu",),
         ),
         Scenario(
+            name="no_flags_four_together",
+            group="no_flags",
+            caller_name="लता",
+            marital_text=married,
+            children_text="चारों बच्चे हैं, दो, चार, छह और आठ साल के।",
+            children_value=4,
+        ),
+        Scenario(
+            name="flags_tenth_month",
+            group="red_flags",
+            caller_name="कुसुम",
+            marital_text=married,
+            children_text="एक बेटा है, दो साल का।",
+            children_value=1,
+            positives={
+                "birth_term": {
+                    "value": False,
+                    "utterance": "दसवें महीने में पैदा हुआ।",
+                    "details": {},
+                },
+            },
+            expect_yes=("birth_term",),
+        ),
+        Scenario(
+            name="flags_paune_child_fits",
+            group="red_flags",
+            caller_name="रचना",
+            marital_text=married,
+            children_text="एक पौने साल का और एक तीन साल का।",
+            children_value=2,
+            positives={
+                "body_fits_milestones": {
+                    "value": True,
+                    "utterance": "पौने साल वाले को झटके आते हैं।",
+                    "details": {"affected_child": "पौने साल वाले"},
+                },
+            },
+            expect_yes=("body_fits_milestones",),
+        ),
+        Scenario(
             name="flags_second_pregnancy_bleed",
             group="red_flags",
             caller_name="अंजलि",

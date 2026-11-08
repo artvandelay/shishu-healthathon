@@ -210,6 +210,8 @@ A pregnancy number is दूसरी प्रेग्नेंसी, not a b
 
 A bare डेढ़ or 1.5 is not one child. The same decimal rule covers a number with no child word beside it. `196` unit tests. 63 scenarios, 0 failed.
 
+Trio: चारों बच्चे with ages 2, 4, 6 and 8 (no flags), दसवें महीने में is late, and झटके on the पौने साल child bind to the younger child only. Pass. 66 scenarios, 0 failed. `196` unit tests.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.
