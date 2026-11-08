@@ -1204,6 +1204,39 @@ def _retag_month_only(
     return tagged
 
 
+def _prefer_spoken_units(
+    children: list[dict],
+    utterance: str,
+    prior: list[str] | None = None,
+) -> list[dict]:
+    """A month she said beats a year unit the tool stamped on the same number.
+
+    छह महीने stored as 6 years is 6 months. दो साल stored as 2 years stays 2 years.
+    A number she used for both units is left as the tool sent it.
+    """
+    records = _spoken_age_records(utterance)
+    if not records:
+        for text in reversed(list(prior or [])):
+            records = _spoken_age_records(text or "")
+            if records:
+                break
+    if not records:
+        return children
+    month_values = {item["value"] for item in records if item.get("unit") == "months"}
+    year_values = {item["value"] for item in records if item.get("unit") == "years"}
+    out = []
+    for child in children:
+        child = dict(child)
+        age = child.get("age")
+        if isinstance(age, dict):
+            unit = str(age.get("unit") or "").lower()
+            value = age.get("value")
+            if unit in {"year", "years", "saal"} and value in month_values and value not in year_values:
+                child["age"] = {"value": value, "unit": "months"}
+        out.append(child)
+    return out
+
+
 _SEX_WORDS = (
     ("बेटी", "female"),
     ("लड़की", "female"),
@@ -1711,6 +1744,7 @@ def apply_updates(
                             for child, age in zip(norm, spoken_list):
                                 child["age"] = age
                     norm = _retag_month_only(norm, utterance, prior_utterances)
+                    norm = _prefer_spoken_units(norm, utterance, prior_utterances)
                     state["profile"]["children"] = norm
                     if norm and all(_child_age_years(c.get("age")) is not None for c in norm):
                         intro_c = state["topics"]["intro_children"]
