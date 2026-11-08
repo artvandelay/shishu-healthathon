@@ -18,17 +18,6 @@ load_dotenv()
 _ANSWERS = ("yes", "no", "unknown", "not_asked")
 _VERSION = 4
 
-_DOMAIN_TOPIC = {
-    "birth_nicu": "birth_nicu",
-    "milestones": "body_fits_milestones",
-    "bleeding_joints": "body_joint_swelling",
-    "metabolic_fasting": "ill_fasting",
-    "infections": "ill_admissions",
-    "pregnancy": "preg_conditions",
-    "consanguinity": "fam_related",
-    "family_infant_death": "fam_infant_death",
-    "family_history": "fam_fits_delay",
-}
 
 _PROMPT = """
 You read a finished SHISHU screening call. You do not talk to the mother.
@@ -130,7 +119,7 @@ def fallback_from_call(call: dict) -> dict:
     for domain, value in findings.items():
         if not isinstance(value, dict):
             continue
-        topic_id = _DOMAIN_TOPIC.get(str(domain))
+        topic_id = checklist.OLD_DOMAIN_TO_TOPIC.get(str(domain))
         if topic_id is None and str(domain) in checklist._BY_ID:
             topic_id = str(domain)
         if topic_id is None:
@@ -202,19 +191,13 @@ def _user_content(call: dict) -> str:
 
 
 async def _from_gemini(user_content: str) -> dict:
-    from google import genai
-
-    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"], http_options={"api_version": "v1beta"})
-    try:
-        response = await client.aio.models.generate_content(
-            model=models.TEXT_MODEL,
-            contents=user_content,
-            config=models.text_config(system=_PROMPT, max_output_tokens=8192, temperature=0.2),
-        )
-        return parse_payload(response.text or "")
-    finally:
-        await client.aio.aclose()
-        client.close()
+    client = models.text_client()
+    response = await client.aio.models.generate_content(
+        model=models.TEXT_MODEL,
+        contents=user_content,
+        config=models.text_config(system=_PROMPT, max_output_tokens=8192, temperature=0.2),
+    )
+    return parse_payload(response.text or "")
 
 
 async def _from_llm(call: dict) -> dict:

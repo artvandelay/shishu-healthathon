@@ -65,10 +65,7 @@ def _init_db() -> None:
                 "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
                 (key, value),
             )
-        cur.execute(
-            "UPDATE settings SET value = ? WHERE key = 'gemini_model' AND value = 'gemini-3.8-live'",
-            (DEFAULT_SETTINGS["gemini_model"],),
-        )
+        cur.execute("DELETE FROM settings WHERE key = 'summary_model'")
         cur.execute(
             "UPDATE settings SET value = 'Kore' WHERE key = 'gemini_voice'",
         )

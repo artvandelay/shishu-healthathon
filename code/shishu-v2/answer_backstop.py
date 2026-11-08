@@ -6,9 +6,7 @@ updates record_answers takes, so call_state applies them the same way.
 """
 
 import json
-import os
 
-from google import genai
 from google.genai import types
 
 import checklist
@@ -104,18 +102,14 @@ def user_content(question: dict, bot_text: str, user_text: str) -> str:
 
 
 async def extract(question: dict, state: dict, bot_text: str, user_text: str) -> dict:
-    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"], http_options={"api_version": "v1beta"})
-    try:
-        response = await client.aio.models.generate_content(
-            model=models.TEXT_MODEL,
-            contents=user_content(question, bot_text, user_text),
-            config=models.text_config(system=_PROMPT, schema=response_schema(question, state)),
-        )
-        result = json.loads(response.text or "{}")
-        return result if isinstance(result, dict) else {}
-    finally:
-        await client.aio.aclose()
-        client.close()
+    client = models.text_client()
+    response = await client.aio.models.generate_content(
+        model=models.TEXT_MODEL,
+        contents=user_content(question, bot_text, user_text),
+        config=models.text_config(system=_PROMPT, schema=response_schema(question, state)),
+    )
+    result = json.loads(response.text or "{}")
+    return result if isinstance(result, dict) else {}
 
 
 def _update(field: str, status: str, value=None, details: dict | None = None, child_ids: list | None = None) -> dict:

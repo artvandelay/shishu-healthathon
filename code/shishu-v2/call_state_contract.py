@@ -4,7 +4,9 @@ import checklist
 
 TOPIC_STATES = ("not_asked", "answered", "unknown", "no_response", "not_applicable")
 MODEL_TOPIC_STATES = ("answered", "unknown", "no_response")
-QUESTION_PHASES = ("asking", "waiting_for_answer", "closing", "ended")
+CALL_PHASES = ("asking", "closing", "ended")
+DELIVERY_TYPES = ("normal", "operation")
+BIRTH_PLACES = ("home", "hospital")
 END_REASONS = ("emergency", "caller_stop", "silence", "time_limit", "browser_hangup")
 INTERNAL_CLOSE_REASONS = END_REASONS + ("complete",)
 CLOSE_REASON_NOTES = {
@@ -82,7 +84,9 @@ def normalize_state(raw: object) -> dict:
     if not isinstance(raw, dict):
         return state
     phase = raw.get("phase")
-    if phase in QUESTION_PHASES:
+    if phase == "waiting_for_answer":
+        phase = "asking"
+    if phase in CALL_PHASES:
         state["phase"] = phase
     profile = raw.get("profile")
     if isinstance(profile, dict):
@@ -101,11 +105,10 @@ def normalize_state(raw: object) -> dict:
             if isinstance(saved, dict):
                 state["topics"][topic_id] = _copy_topic(saved)
     current = raw.get("current_question")
-    if isinstance(current, dict) and current.get("phase") in QUESTION_PHASES:
+    if isinstance(current, dict):
         state["current_question"] = {
             "topic_id": current.get("topic_id"),
             "followup_id": current.get("followup_id"),
-            "phase": current.get("phase"),
         }
     close_reason = raw.get("close_reason")
     if close_reason in INTERNAL_CLOSE_REASONS or close_reason is None:

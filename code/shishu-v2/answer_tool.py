@@ -38,6 +38,7 @@ RECORD_ANSWERS_DECL = {
                         },
                         "state": {
                             "type": "STRING",
+                            "enum": ["answered", "unknown", "no_response"],
                             "description": "answered, unknown, or no_response",
                         },
                         "value": {
@@ -55,6 +56,7 @@ RECORD_ANSWERS_DECL = {
                         },
                         "scope": {
                             "type": "STRING",
+                            "enum": ["all", "specific", "none"],
                             "description": "all, specific, or none",
                         },
                         "child_ids": {
@@ -62,7 +64,23 @@ RECORD_ANSWERS_DECL = {
                             "items": {"type": "STRING"},
                             "description": "Child IDs from the server profile. Empty when scope is not specific.",
                         },
-                        "details": {"type": "OBJECT"},
+                        "details": {
+                            "type": "OBJECT",
+                            "description": (
+                                "Follow-up answers keyed by follow-up id. "
+                                "birth_mode also uses delivery_type and place."
+                            ),
+                            "properties": {
+                                "delivery_type": {
+                                    "type": "STRING",
+                                    "enum": list(contract.DELIVERY_TYPES),
+                                },
+                                "place": {
+                                    "type": "STRING",
+                                    "enum": list(contract.BIRTH_PLACES),
+                                },
+                            },
+                        },
                     },
                     "required": ["field", "state", "value", "scope", "child_ids", "details"],
                 },

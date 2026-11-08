@@ -422,34 +422,9 @@ class MotherActionableQuestionsTests(unittest.TestCase):
 
 
 class Call228RegressionTests(unittest.TestCase):
-    def test_pregnancy_and_birth_nicu_domains_not_treated_as_group_skip(self):
-        domain, topics = gemini_live._normalize_finding(
-            "pregnancy",
-            "Mother had low hemoglobin in second pregnancy.",
-            ["body_blood_count"],
-        )
-        self.assertEqual(domain, "pregnancy")
-        self.assertEqual(topics, ["body_blood_count"])
-        self.assertNotIn("pregnancy", topics)
-
-        domain2, topics2 = gemini_live._normalize_finding(
-            "birth_nicu",
-            "Heavy cord bleeding on third child.",
-            ["birth_cord_bleed"],
-        )
-        self.assertEqual(domain2, "birth_nicu")
-        self.assertEqual(topics2, ["birth_cord_bleed"])
-
     def test_children_detail_does_not_overwrite_mother_name(self):
         call_id = db.create_call("gemini")
         db.record_finding_db(call_id, "profile_mother_name", "info", "Mother's name is Jia.", False)
-        domain, topics = gemini_live._normalize_finding(
-            "profile_mother_name",
-            "Mother has three children, ages 10, 8, and 6 years old",
-            ["intro_children"],
-        )
-        self.assertEqual(domain, "profile_child_age")
-        self.assertIn("intro_children", topics)
         db.record_finding_db(
             call_id,
             "profile_mother_name",

@@ -7,7 +7,6 @@ import call_state_contract as contract
 
 TOPIC_STATES = contract.TOPIC_STATES
 MODEL_TOPIC_STATES = contract.MODEL_TOPIC_STATES
-QUESTION_PHASES = contract.QUESTION_PHASES
 END_REASONS = contract.END_REASONS
 INTERNAL_CLOSE_REASONS = contract.INTERNAL_CLOSE_REASONS
 PROFILE_FIELDS = contract.PROFILE_FIELDS
@@ -842,11 +841,11 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str = "") -> None:
         return
     details = dict(topic.get("details") or {})
     value = str(topic.get("value") or "").strip().lower()
-    if value in {"normal", "operation"}:
+    if value in contract.DELIVERY_TYPES:
         details["delivery_type"] = value
-    elif details.get("delivery_type") not in {"normal", "operation"}:
+    elif details.get("delivery_type") not in contract.DELIVERY_TYPES:
         details.pop("delivery_type", None)
-    if details.get("place") not in {"home", "hospital"}:
+    if details.get("place") not in contract.BIRTH_PLACES:
         details.pop("place", None)
     topic["details"] = details
 
@@ -1060,18 +1059,9 @@ def begin_question(state: dict, question: dict) -> dict:
     state["current_question"] = {
         "topic_id": question.get("topic_id"),
         "followup_id": question.get("followup_id"),
-        "phase": "asking",
     }
     if state.get("phase") not in ("closing", "ended"):
         state["phase"] = "asking"
-    return state
-
-
-def wait_for_answer(state: dict) -> dict:
-    state = copy.deepcopy(state)
-    current = state.get("current_question")
-    if isinstance(current, dict) and state.get("phase") not in ("closing", "ended"):
-        current["phase"] = "waiting_for_answer"
     return state
 
 
@@ -1081,11 +1071,6 @@ def request_close(state: dict, reason: str) -> dict:
     state = copy.deepcopy(state)
     state["close_reason"] = reason
     state["phase"] = "closing"
-    current = state.get("current_question")
-    if not isinstance(current, dict):
-        current = {"topic_id": None, "followup_id": None, "phase": "closing"}
-        state["current_question"] = current
-    current["phase"] = "closing"
     return state
 
 

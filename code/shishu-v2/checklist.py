@@ -119,6 +119,21 @@ TOPICS: tuple[dict, ...] = (
      "question": "क्या इसके अलावा डॉक्टर को कुछ और बताना है?"},
 )
 
+# Old saved findings used these domain names. This is not the reverse of the
+# doctor-note grouping: several topics share a domain, and the old reader
+# picks one topic per domain.
+OLD_DOMAIN_TO_TOPIC = {
+    "birth_nicu": "birth_nicu",
+    "milestones": "body_fits_milestones",
+    "bleeding_joints": "body_joint_swelling",
+    "metabolic_fasting": "ill_fasting",
+    "infections": "ill_admissions",
+    "pregnancy": "preg_conditions",
+    "consanguinity": "fam_related",
+    "family_infant_death": "fam_infant_death",
+    "family_history": "fam_fits_delay",
+}
+
 _BY_ID: dict[str, dict] = {t["id"]: t for t in TOPICS}
 REQUIRED_IDS: tuple[str, ...] = tuple(t["id"] for t in TOPICS if not t.get("optional"))
 

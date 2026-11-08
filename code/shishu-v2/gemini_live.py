@@ -3,8 +3,8 @@
 import asyncio
 import base64
 import json
+import logging
 import os
-import re
 import time
 from pathlib import Path
 
@@ -31,6 +31,7 @@ from prompts import (
 )
 from summarizer import generate_call_summaries
 
+logger = logging.getLogger(__name__)
 _background_tasks: set[asyncio.Task] = set()
 
 _ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
@@ -340,10 +341,6 @@ def _cancel_silence_close(state: _TurnState, telemetry: dict) -> None:
         restored = dict(live_state)
         restored["close_reason"] = None
         restored["phase"] = "asking"
-        current = dict(restored.get("current_question") or {})
-        if current:
-            current["phase"] = "waiting_for_answer"
-            restored["current_question"] = current
         state.call_state = restored
         if state.call_id:
             try:
@@ -401,159 +398,6 @@ async def _send_realtime_safe(
             return True
         return False
 
-
-_MARRIAGE_DETAIL_RE = re.compile(
-    r"\b(married|marriage|unmarried|shaadi)\b",
-    re.I,
-)
-_CHILDREN_DETAIL_RE = re.compile(
-    r"\b(children|child|kids|years?\s+old|months?\s+old|saal|mahine|beta|beti|son|daughter)\b",
-    re.I,
-)
-_NO_MORE_USER_RE = re.compile(
-    r"^\s*(?:नहीं|नही|ना|बस|बस इतना ही|और कुछ नहीं|कुछ नहीं|nahi|no|bas|nothing)(?:\s*[.,!?;:।].*|\s+.*)?$",
-    re.I,
-)
-_NO_CHILD_RE = re.compile(
-    r"\b(no\s+child|no\s+children|don'?t\s+have\s+(?:any\s+)?children|do\s+not\s+have\s+(?:any\s+)?children|"
-    r"childless|0\s+children|zero\s+children|"
-    r"unmarried|not\s+married|never\s+married|single|"
-    r"never\s+(?:been\s+)?pregnant|haven'?t\s+been\s+pregnant|"
-    r"have\s+not\s+been\s+pregnant|not\s+pregnant|wasn'?t\s+pregnant|was\s+not\s+pregnant|"
-    r"to\s+be\s+married)\b"
-    r"|बच्चे\s+नहीं|कोई\s+बच्चा\s+नहीं|बच्चा\s+नहीं\s+है|चिल्ड्रन"
-    r"|प्रेग्नेंट\s+नहीं|गर्भवती\s+नहीं|शादी\s+नहीं\s+हुई|शादी\s+होने\s+वाली|अविवाहित",
-    re.I,
-)
-_NO_CHILD_ONLY_RE = re.compile(
-    r"\b(no\s+child|no\s+children|don'?t\s+have\s+(?:any\s+)?children|do\s+not\s+have\s+(?:any\s+)?children|"
-    r"childless|0\s+children|zero\s+children)\b"
-    r"|बच्चे\s+नहीं|कोई\s+बच्चा\s+नहीं|बच्चा\s+नहीं\s+है|डोंट\s+हैव\s+चिल्ड्रन",
-    re.I,
-)
-_UNMARRIED_RE = re.compile(
-    r"\b(unmarried|not\s+married|never\s+married|single|not\s+yet\s+married)\b"
-    r"|शादी\s+नहीं\s+हुई|अविवाहित|नो,\s*इट्स\s+नॉट",
-    re.I,
-)
-_EVER_PREGNANT_NO_RE = re.compile(
-    r"\b(never\s+(?:been\s+)?pregnant|haven'?t\s+(?:ever\s+)?been\s+pregnant|"
-    r"have\s+not\s+(?:ever\s+)?been\s+pregnant|never\s+conceived)\b"
-    r"|कभी\s+प्रेग्नेंट\s+नहीं|कभी\s+गर्भवती\s+नहीं",
-    re.I,
-)
-_NEVER_PREGNANT_RE = re.compile(
-    r"\b(never\s+(?:been\s+)?pregnant|haven'?t\s+been\s+pregnant|have\s+not\s+been\s+pregnant|"
-    r"not\s+pregnant|wasn'?t\s+pregnant|was\s+not\s+pregnant|no\s+pregnancy|"
-    r"not\s+currently\s+pregnant)\b"
-    r"|प्रेग्नेंट\s+नहीं|गर्भवती\s+नहीं",
-    re.I,
-)
-_PREG_DELIVERY_TOPICS = (
-    "preg_conditions",
-    "preg_scan",
-    "preg_heart",
-    "preg_transfusion",
-    "preg_delivery",
-)
-_VALID_DOMAINS = {
-    "profile_mother_name",
-    "profile_child_name",
-    "profile_child_age",
-    "profile_child_gender",
-    "chief_complaint",
-    "birth_nicu",
-    "milestones",
-    "bleeding_joints",
-    "metabolic_fasting",
-    "infections",
-    "pregnancy",
-    "consanguinity",
-    "family_infant_death",
-    "family_history",
-    "coverage",
-}
-_TOPIC_AS_DOMAIN = {
-    "intro_name": "profile_mother_name",
-    "intro_children": "profile_child_age",
-    "profile_children": "profile_child_age",
-    "profile_married": "coverage",
-    "consaguinity": "consanguinity",
-}
-_DOMAIN_AS_TOPIC = {
-    "profile_children": "intro_children",
-    "profile_married": "intro_married",
-    "consaguinity": "fam_related",
-}
-
-
-def _normalize_finding(
-    domain: str,
-    detail: str,
-    raw_topics: list,
-    last_user_text: str = "",
-    status: str = "",
-) -> tuple[str, list]:
-    """A checklist id in domain still counts as covered, without erasing valid clinical domains."""
-    topics = list(raw_topics)
-    if domain in _TOPIC_AS_DOMAIN and domain not in _VALID_DOMAINS:
-        mapped_topic = _DOMAIN_AS_TOPIC.get(domain, domain)
-        if mapped_topic in checklist._BY_ID and mapped_topic not in topics:
-            topics.append(mapped_topic)
-        domain = _TOPIC_AS_DOMAIN[domain]
-    elif domain == "birth_nicu" and not topics:
-        topics.append("birth_nicu")
-    elif domain not in _VALID_DOMAINS and (domain in checklist._BY_ID or domain in checklist.GROUPS):
-        if domain not in topics:
-            topics.append(domain)
-        domain = _TOPIC_AS_DOMAIN.get(domain, "coverage")
-    marriage = "intro_married" in topics or bool(_MARRIAGE_DETAIL_RE.search(detail or ""))
-    children_info = "intro_children" in topics or bool(_CHILDREN_DETAIL_RE.search(detail or ""))
-    if domain == "profile_mother_name" and "intro_name" not in topics:
-        if marriage:
-            domain = "coverage"
-            if "intro_married" not in topics:
-                topics.append("intro_married")
-        elif children_info:
-            domain = "profile_child_age"
-            if "intro_children" not in topics:
-                topics.append("intro_children")
-    combined_text = f"{detail} {last_user_text}"
-    user_no = bool(_NO_MORE_USER_RE.match((last_user_text or "").strip()))
-    unmarried_now = (
-        "intro_married" in topics
-        and (status == "negative" or user_no or bool(_UNMARRIED_RE.search(combined_text)))
-    )
-    no_child_now = bool(_NO_CHILD_ONLY_RE.search(combined_text)) or (
-        "intro_children" in topics and status == "negative"
-    )
-    never_preg_now = bool(_NEVER_PREGNANT_RE.search(combined_text))
-    ever_preg_no = bool(_EVER_PREGNANT_NO_RE.search(combined_text))
-    allow_group_skip = unmarried_now or no_child_now or never_preg_now
-    if not allow_group_skip:
-        topics = [t for t in topics if str(t).strip() not in checklist.GROUPS]
-    else:
-        if unmarried_now:
-            for item in ("intro_children", "birth", "body", "illness", *_PREG_DELIVERY_TOPICS, "fam_related"):
-                if item not in topics:
-                    topics.append(item)
-        if no_child_now:
-            for grp in ("birth", "body", "illness"):
-                if grp not in topics:
-                    topics.append(grp)
-            for pt in _PREG_DELIVERY_TOPICS:
-                if pt not in topics:
-                    topics.append(pt)
-        if never_preg_now:
-            for pt in _PREG_DELIVERY_TOPICS:
-                if pt not in topics:
-                    topics.append(pt)
-            if ever_preg_no and "fam_miscarriage" not in topics:
-                topics.append("fam_miscarriage")
-            if domain == "pregnancy" or any(str(t).startswith("preg_") for t in topics):
-                if "pregnancy" not in topics:
-                    topics.append("pregnancy")
-    return domain, topics
 
 
 async def _emit(
@@ -1105,13 +949,6 @@ async def _handle_server_message(
             state.call_state = ended
             try:
                 db.save_call_state(call_id, ended)
-            except Exception:
-                pass
-        elif live_state and live_state.get("phase") == "asking":
-            waited = call_state.wait_for_answer(live_state)
-            state.call_state = waited
-            try:
-                db.save_call_state(call_id, waited)
             except Exception:
                 pass
         if not state.awaiting_bot_reply or telemetry.get("end_requested"):
@@ -1696,10 +1533,11 @@ async def handle_gemini_ws(
                 client, model, config
             )
         except Exception as exc:
+            logger.warning("gemini live connect failed: %s", exc)
             await _send_json(
                 ws,
                 ws_lock,
-                {"type": "error", "message": f"Gemini Live connection failed: {exc}"[:300]},
+                {"type": "error", "message": "Gemini Live connection failed"},
             )
             return
         session = _SessionProxy(session)

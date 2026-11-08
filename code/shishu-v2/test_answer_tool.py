@@ -15,6 +15,11 @@ class AnswerToolTests(unittest.TestCase):
         self.assertIn("updates", params["required"])
         item = params["properties"]["updates"]["items"]
         self.assertIn("child_ids", item["properties"])
+        self.assertEqual(item["properties"]["state"]["enum"], ["answered", "unknown", "no_response"])
+        self.assertEqual(item["properties"]["scope"]["enum"], ["all", "specific", "none"])
+        details = item["properties"]["details"]["properties"]
+        self.assertEqual(details["delivery_type"]["enum"], ["normal", "operation"])
+        self.assertEqual(details["place"]["enum"], ["home", "hospital"])
         self.assertIn("child_ids", item["required"])
         self.assertEqual(item["properties"]["child_ids"]["items"]["type"], "STRING")
 
