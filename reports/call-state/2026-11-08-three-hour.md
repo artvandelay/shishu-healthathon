@@ -286,6 +286,10 @@ Trio: son and daughter of one age (no flags), odor for that family (still a yes)
 
 Trio: sons at three and five with no साल (no flags), fits with दो-दो (still a yes, three children), and the boy's 4 sent as the count (still three children, no हाँ lines). Pass.
 
+## 16:28 IST
+
+लड़के को झटके, when only one child is a boy, is that boy. The report names him (बड़ा बेटा) and does not ask which child. Two sexes in one sentence stay unbound. बच्चा still does not pick a sex. `197` unit tests. 102 scenarios, 0 failed. The दो-दो fits scenario is the one that now names the boy.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

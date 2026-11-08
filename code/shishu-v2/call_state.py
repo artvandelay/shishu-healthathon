@@ -2951,8 +2951,40 @@ def apply_updates(
     if not wrote:
         raise ValueError(problems[0] if problems else "no applicable update")
     _bind_lone_child(state)
+    _bind_unique_sex(state, utterance, turn_id)
     _apply_rules(state)
     return state
+
+
+def _bind_unique_sex(state: dict, utterance: str, turn_id: int) -> None:
+    """लड़के को झटके, when only one child is a boy, is that boy.
+
+    Two boys, or both a boy and a girl named in the same sentence, stay unbound.
+    बच्चा does not pick a sex.
+    """
+    sexes = set(_spoken_sexes(utterance or ""))
+    if len(sexes) != 1:
+        return
+    child_id = _find_child_id(state, utterance or "")
+    if not child_id:
+        return
+    for topic_id, topic in state["topics"].items():
+        if turn_id not in (topic.get("source_turn_ids") or []):
+            continue
+        followups = TOPIC_RULES.get(topic_id, {}).get("followups") or []
+        if not any(spec.get("id") == "affected_child" for spec in followups):
+            continue
+        if not _is_positive(topic, topic_id):
+            continue
+        instances = [item for item in (topic.get("instances") or []) if isinstance(item, dict)]
+        if any(item.get("person_id") == child_id for item in instances):
+            continue
+        instances.append({
+            "person_id": child_id,
+            "value": topic.get("value"),
+            "details": dict(topic.get("details") or {}),
+        })
+        topic["instances"] = instances
 
 
 def _bind_lone_child(state: dict) -> None:

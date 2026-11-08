@@ -816,6 +816,39 @@ class CallStateTests(unittest.TestCase):
         instances = state["topics"]["birth_nicu"]["instances"]
         self.assertEqual({inst["person_id"] for inst in instances}, {"child_1", "child_2"})
 
+    def test_the_only_child_of_that_sex_is_the_one_named(self):
+        state = call_state.apply_updates(
+            call_state.new_call_state(),
+            [_update("profile.children", [
+                {"id": "child_1", "sex": "male", "age": {"value": 4, "unit": "years"}},
+                {"id": "child_2", "sex": "female", "age": {"value": 2, "unit": "years"}},
+                {"id": "child_3", "sex": "female", "age": {"value": 2, "unit": "years"}},
+            ])],
+            1,
+            utterance="एक लड़का चार साल का और दो लड़कियाँ दो-दो साल की।",
+        )
+        state = call_state.apply_updates(
+            _ask(state, "body_fits_milestones"),
+            [_update("topic.body_fits_milestones", True)],
+            2,
+            utterance="लड़के को झटके आते हैं।",
+        )
+        self.assertEqual(
+            [item["person_id"] for item in state["topics"]["body_fits_milestones"]["instances"]],
+            ["child_1"],
+        )
+        nxt = call_state.next_question(state)
+        self.assertFalse(
+            nxt and nxt.get("topic_id") == "body_fits_milestones" and nxt.get("followup_id") == "affected_child"
+        )
+        both = call_state.apply_updates(
+            _ask(state, "body_blue"),
+            [_update("topic.body_blue", True)],
+            3,
+            utterance="लड़के और लड़की दोनों के होंठ नीले होते हैं।",
+        )
+        self.assertEqual(both["topics"]["body_blue"].get("instances") or [], [])
+
     def test_children_payload_string_counts_and_none(self):
         self.assertEqual(call_state._children_payload("दो बच्चे"), ("count", 2))
         self.assertEqual(call_state._children_payload("2 kids"), ("count", 2))
