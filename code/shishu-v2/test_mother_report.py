@@ -129,7 +129,10 @@ class ReportTests(unittest.TestCase):
         self.assertIn("आरव", report["who"])
         self.assertNotIn("Shilpa", mother_report.render_html(report))
         self.assertEqual(report["yes"], ["जन्म के बाद तीन दिन नीली रोशनी में रहा।"])
-        self.assertEqual(sum(1 for q in report["questions"] if "थैलेसीमिया" in q), 1)
+        self.assertFalse(any("थैलेसीमिया" in q for q in report["questions"]))
+        html = mother_report.render_html(report)
+        self.assertEqual(html.count(mother_report.THALASSEMIA_LINE), 1)
+        self.assertLess(html.index('class="universal"'), html.index('class="page2"'))
         titles = [group["title"] for group in report["groups"]]
         self.assertIn("जन्म", titles)
         self.assertTrue(report["unknown"])
@@ -141,8 +144,13 @@ class ReportTests(unittest.TestCase):
             {"answers": {}, "yes_hindi": []},
         )
         self.assertEqual(report["yes"], [])
-        self.assertIn("कोई बात हाँ में नहीं आई", mother_report.render_html(report))
-        self.assertGreaterEqual(len(report["questions"]), 3)
+        html = mother_report.render_html(report)
+        self.assertIn("कोई बात हाँ में नहीं आई", html)
+        self.assertEqual(report["questions"], [])
+        self.assertNotIn("डॉक्टर या स्वास्थ्य कार्यकर्ता (ASHA/ANM दीदी) से ये पूछें", html)
+        self.assertNotIn("वज़न, लंबाई और सीखना", html)
+        self.assertNotIn("सभी ज़रूरी टीके", html)
+        self.assertNotIn("खान-पान", html)
 
     def test_incomplete_lists_unasked_groups_and_not_as_no(self):
         report = mother_report.build(
@@ -160,6 +168,54 @@ class ReportTests(unittest.TestCase):
         self.assertIn(checklist.question_hi("ill_admissions") + "</span><span class=\"ans\">पूछा नहीं गया", html)
         self.assertNotIn(checklist.question_hi("ill_admissions") + "</span><span class=\"ans\">नहीं", html)
         self.assertNotIn(checklist.question_hi("birth_nicu") + "</span><span class=\"ans\">नहीं", html)
+
+
+class QuestionPaddingTests(unittest.TestCase):
+    def test_summary_pad_lines_are_dropped_and_a_finding_question_stays(self):
+        import summarizer
+
+        real = "क्या जन्म के बाद नीली रोशनी के लिए अभी जाँच करवाएँ?"
+        summary = "\n".join(
+            f"{idx}. {question}"
+            for idx, question in enumerate([real, *summarizer._DEFAULT_MOTHER_QUESTIONS], start=1)
+        )
+        report = mother_report.build(
+            _call(summary_mother=summary),
+            {"answers": {}, "yes_hindi": []},
+        )
+        self.assertEqual(report["questions"], [real])
+        html = mother_report.render_html(report)
+        self.assertIn(real, html)
+        self.assertNotIn("सभी ज़रूरी टीके", html)
+        self.assertNotIn("खान-पान", html)
+        self.assertNotIn("एनीमिया", html)
+        self.assertNotIn("<li>" + mother_report.THALASSEMIA_LINE, html)
+
+
+class UniversalThalassemiaTests(unittest.TestCase):
+    def test_thalassemia_box_is_fixed_at_the_end_of_page_1(self):
+        covered = _call(telemetry={"coverage": list(checklist.REQUIRED_IDS), "close_reason": ""})
+        report = mother_report.build(
+            covered,
+            {"answers": {"preg_thalassemia": {"answer": "no", "evidence": ""}}, "yes_hindi": []},
+        )
+        self.assertEqual(report["universal"], mother_report.THALASSEMIA_LINE)
+        self.assertNotIn(mother_report.THALASSEMIA_LINE, report["questions"])
+        html = mother_report.render_html(report)
+        self.assertIn("सभी के लिए एक जैसी सलाह", html)
+        self.assertIn("यह इस माँ या बच्चे के बारे में नहीं है।", html)
+        self.assertEqual(html.count(mother_report.THALASSEMIA_LINE), 1)
+        self.assertLess(html.index("इस कॉल में जो हाँ था"), html.index('class="universal"'))
+        self.assertLess(html.index('class="universal"'), html.index('class="page2"'))
+        self.assertNotIn(f"<li>{mother_report.THALASSEMIA_LINE}</li>", html)
+        yes_html = mother_report.render_html(
+            mother_report.build(
+                covered,
+                {"answers": {"preg_thalassemia": {"answer": "yes", "evidence": ""}}, "yes_hindi": []},
+            )
+        )
+        self.assertIn(mother_report.THALASSEMIA_LINE, yes_html)
+        self.assertIn("सभी के लिए एक जैसी सलाह", yes_html)
 
 
 class UngroundedNoTests(unittest.TestCase):

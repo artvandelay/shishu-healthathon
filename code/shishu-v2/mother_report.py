@@ -33,9 +33,17 @@ _ROUTINE = (
     "बच्चे के सभी ज़रूरी टीके, और सुनने-देखने की जाँच, पूरी है या कोई टीका बाकी है?",
     "रोज़ के खान-पान के लिए अभी किन बातों का ध्यान रखूँ, और किन लक्षणों पर तुरंत डॉक्टर या स्वास्थ्य कार्यकर्ता को दिखाऊँ?",
 )
+# Same filler the summary builder still writes when it pads a short list.
+# The PDF drops these exact lines. A question about a real finding stays.
+_SUMMARY_PAD = (
+    "बच्चे के सभी ज़रूरी टीके (टीकाकरण कार्ड के अनुसार, जैसे BCG) और सुनने-देखने की सामान्य जाँच पूरी है या कोई अगला टीका बाकी है?",
+    "बच्चे के रोज़ के खान-पान और सेहत के लिए अभी मुझे किन बातों का ध्यान रखना चाहिए, और किन लक्षणों के दिखने पर तुरंत डॉक्टर या स्वास्थ्य कार्यकर्ता को दिखाना चाहिए?",
+    "क्या परिवार या प्रेग्नेंसी की सामान्य सेहत के लिए खून की कमी (एनीमिया) या थैलेसीमिया जैसी किसी सामान्य जाँच की ज़रूरत है?",
+)
 THALASSEMIA_LINE = (
     "अगली प्रेग्नेंसी से पहले माँ और पिता दोनों की थैलेसीमिया जाँच (स्क्रीनिंग) करवा लें।"
 )
+_GENERIC_QUESTIONS = _ROUTINE + _SUMMARY_PAD
 _CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
 _CSS = """
@@ -107,6 +115,16 @@ h2 { margin: 16px 0 6px; font-size: 13pt; }
 .yes { margin: 0; padding: 0; list-style: none; }
 .yes li { margin: 0 0 6px; padding-left: 12px; border-left: 2px solid #DAA550; }
 .calm { margin: 0; color: #565F75; }
+.universal {
+  margin: 14px 0 0;
+  padding: 8px 12px;
+  border: 1px dashed #8E95A3;
+  background: #F4F6F8;
+  font-size: 11pt;
+  break-inside: avoid;
+}
+.universal b { display: block; font-size: 10pt; color: #565F75; margin-bottom: 2px; }
+.universal .why { display: block; font-size: 10pt; color: #565F75; margin-bottom: 4px; }
 .page2 { break-before: page; }
 .page2 h1 { margin-top: 0; }
 .group { margin: 12px 0 2px; font-size: 11pt; font-weight: 700; color: #DAA550; break-after: avoid; }
@@ -255,14 +273,23 @@ def _child(call: dict) -> str:
     return " · ".join(bits)
 
 
+def _norm_q(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip())
+
+
 def _questions(summary_mother: str) -> list[str]:
+    """Real question lines only. An empty summary stays empty."""
+    generic = {_norm_q(q) for q in _GENERIC_QUESTIONS}
     found: list[str] = []
     for line in (summary_mother or "").splitlines():
         cleaned = re.sub(r"^(?:[\d१२३४५६७८९]+[\.\)\-:]|[•\-\*])\s*", "", line.strip())
-        if "?" in cleaned or "？" in cleaned:
-            if cleaned not in found:
-                found.append(cleaned)
-    return found or list(_ROUTINE)
+        if "?" not in cleaned and "？" not in cleaned:
+            continue
+        if _norm_q(cleaned) in generic:
+            continue
+        if cleaned not in found:
+            found.append(cleaned)
+    return found
 
 
 def _incomplete(call: dict) -> bool:
@@ -331,9 +358,6 @@ def build(call: dict, extracted: dict | None = None) -> dict:
         date, clock = "", ""
     incomplete = _incomplete(call)
     questions = [hindi_text(q) for q in _questions(str(call.get("summary_mother") or ""))]
-    if ground_kind(call, "preg_thalassemia", answers) in {"no", "unknown"}:
-        if not any("थैलेसीमिया" in q for q in questions):
-            questions.append(THALASSEMIA_LINE)
     yes = [
         str(line).strip()
         for line in (extracted.get("yes_hindi") or [])
@@ -392,6 +416,7 @@ def build(call: dict, extracted: dict | None = None) -> dict:
         "incomplete": incomplete,
         "emergency": str((call.get("telemetry") or {}).get("close_reason") or "") == "emergency",
         "questions": questions,
+        "universal": THALASSEMIA_LINE,
         "yes": yes,
         "groups": groups,
         "unknown": unknown,
@@ -409,7 +434,21 @@ def filename(call: dict) -> str:
 
 
 def render_html(report: dict) -> str:
-    questions = "\n".join(f"<li>{html.escape(q)}</li>" for q in report["questions"])
+    if report["questions"]:
+        items = "\n".join(f"<li>{html.escape(q)}</li>" for q in report["questions"])
+        questions = (
+            "<h1>डॉक्टर या स्वास्थ्य कार्यकर्ता (ASHA/ANM दीदी) से ये पूछें</h1>\n"
+            f"<ol>{items}</ol>\n"
+        )
+    else:
+        questions = ""
+    universal = (
+        '<aside class="universal">'
+        "<b>सभी के लिए एक जैसी सलाह</b>"
+        '<span class="why">यह इस माँ या बच्चे के बारे में नहीं है।</span>'
+        f"<span>{html.escape(report.get('universal') or THALASSEMIA_LINE)}</span>"
+        "</aside>"
+    )
     if report["yes"]:
         yes = '<ul class="yes">' + "".join(f"<li>{html.escape(line)}</li>" for line in report["yes"]) + "</ul>"
     elif report.get("unasked") and not report["groups"]:
@@ -477,11 +516,10 @@ def render_html(report: dict) -> str:
 </header>
 <div class="notice">यह कोई बीमारी की पुष्टि (डायग्नोसिस) नहीं है।<span>केवल डॉक्टर जाँच करके सही सलाह दे सकते हैं।</span></div>
 {band}
-<h1>डॉक्टर या स्वास्थ्य कार्यकर्ता (ASHA/ANM दीदी) से ये पूछें</h1>
-<ol>{questions}</ol>
-<p class="note">अगर इसमें कुछ गलत है, या आप कुछ और बताना चाहती हैं, तो दोबारा कॉल कर सकती हैं।</p>
+{questions}<p class="note">अगर इसमें कुछ गलत है, या आप कुछ और बताना चाहती हैं, तो दोबारा कॉल कर सकती हैं।</p>
 <h2>इस कॉल में जो हाँ था</h2>
 {yes}
+{universal}
 <section class="page2">
   <h1>विवरण</h1>
   <p class="meta">{html.escape(report["who"])}</p>
