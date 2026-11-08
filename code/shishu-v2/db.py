@@ -17,9 +17,6 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "active_engine": "gemini",
     "gemini_model": "gemini-3.1-flash-live-preview",
     "gemini_voice": "Kore",
-    "openai_model": "gpt-live-1",
-    "openai_voice": "marin",
-    "openai_backend_model": "gpt-5.6-luna",
     "vad_prefix_padding_ms": "300",
     "vad_silence_ms": "750",
     "vad_start_sensitivity": "HIGH",
@@ -71,7 +68,7 @@ def _init_db() -> None:
             "UPDATE settings SET value = 'Kore' WHERE key = 'gemini_voice'",
         )
         cur.execute(
-            "UPDATE settings SET value = 'marin' WHERE key = 'openai_voice'",
+            "DELETE FROM settings WHERE key IN ('openai_model', 'openai_voice', 'openai_backend_model')",
         )
         cur.execute(
             "UPDATE settings SET value = 'gemini' WHERE key = 'active_engine'",

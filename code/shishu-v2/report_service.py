@@ -1,0 +1,92 @@
+"""One mother PDF per completed call, written only after extraction."""
+
+import asyncio
+import os
+import tempfile
+from pathlib import Path
+
+import answer_extractor
+import db
+import mother_report
+
+_REPORTS = Path(db.DATA_DIR) / "mother-pdfs"
+_inflight: dict[int, asyncio.Task] = {}
+_claim_guard: asyncio.Lock | None = None
+
+
+def pdf_path(call_id: int) -> Path:
+    return _REPORTS / f"call-{int(call_id)}.pdf"
+
+
+def _read_pdf(path: Path) -> bytes | None:
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:
+        return None
+    if data.startswith(b"%PDF") and len(data) > len(b"%PDF"):
+        return data
+    return None
+
+
+def ready_pdf(call_id: int) -> tuple[bytes, str] | None:
+    """Return a stored PDF, or None while it is missing or not a PDF."""
+    data = _read_pdf(pdf_path(call_id))
+    if data is None:
+        return None
+    call = db.get_call(call_id) or {}
+    return data, mother_report.filename(call)
+
+
+def _atomic_write(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as temporary:
+            temporary.write(data)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        os.replace(temporary_name, path)
+    finally:
+        try:
+            os.unlink(temporary_name)
+        except FileNotFoundError:
+            pass
+
+
+def _guard() -> asyncio.Lock:
+    global _claim_guard
+    if _claim_guard is None:
+        _claim_guard = asyncio.Lock()
+    return _claim_guard
+
+
+async def _claim(call_id: int) -> asyncio.Task:
+    async with _guard():
+        task = _inflight.get(call_id)
+        if task is None or task.done():
+            task = asyncio.create_task(_build(call_id))
+            _inflight[call_id] = task
+        return task
+
+
+async def _build(call_id: int) -> tuple[bytes, str]:
+    call = await asyncio.to_thread(db.get_call, call_id)
+    if call is None:
+        raise LookupError(f"Call {call_id} was not found")
+    extracted = await answer_extractor.cached_answers(call)
+    report = mother_report.build(call, extracted)
+    pdf = await asyncio.to_thread(mother_report.render_pdf, report)
+    if not pdf.startswith(b"%PDF"):
+        raise ValueError("Renderer did not return a PDF")
+    await asyncio.to_thread(_atomic_write, pdf_path(call_id), pdf)
+    return pdf, mother_report.filename(call)
+
+
+async def mother_pdf(call_id: int) -> tuple[bytes, str]:
+    """Extract, render, and atomically store this call's one PDF.
+
+    Overlapping calls for the same id share one build. A later call, including
+    Retry, builds again and overwrites call-{id}.pdf.
+    """
+    task = await _claim(call_id)
+    return await task

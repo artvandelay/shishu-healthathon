@@ -55,12 +55,7 @@ class PromptTests(unittest.TestCase):
         self.assertIn("Aapki report taiyaar ho rahi hai, kripya is page par bane rahiye", text)
         self.assertIn("Ab tak ki report is page par taiyaar ho rahi hai", text)
         self.assertIn("STYLE EXAMPLES FROM REAL CALLS", text)
-        for other in (
-            text,
-            prompts.OPENAI_LIVE_VOICE_PROMPT,
-            prompts.OPENAI_RESPONSES_BACKEND_PROMPT,
-        ):
-            self.assertNotIn("set_progress", other)
+        self.assertNotIn("set_progress", text)
 
 
 class GeminiConfigTests(unittest.TestCase):

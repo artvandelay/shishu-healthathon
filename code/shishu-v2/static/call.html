@@ -669,7 +669,7 @@
         <span id="mic-level" class="mic-level"></span>
       </div>
       <p id="caption"></p>
-      <p id="wait" role="status" hidden><span class="hi">आपकी रिपोर्ट तैयार हो रही है।</span><span class="en">Your report is being prepared.</span><br><span class="hi">कृपया इस पेज पर बने रहिए।</span><span class="en">Please stay on this page.</span><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span></p>
+      <p id="wait" role="status" hidden><span class="hi">रिपोर्ट तैयार हो रही है…</span><span class="en">Preparing report…</span><br><span class="hi">कृपया इस पेज पर बने रहिए।</span><span class="en">Please stay on this page.</span><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span></p>
       <p id="consent-row" class="consent-row">
         <label><input id="consent-check" type="checkbox"><span><span class="hi">मैं सहमत हूँ</span><span class="en">I agree</span></span></label>
         <a href="https://github.com/artvandelay/shishu-healthathon/blob/main/docs/SHISHU-consent.pdf" target="_blank" rel="noopener"><span class="hi">सहमति पत्र</span><span class="en">Consent</span></a>
@@ -900,21 +900,9 @@
         errorEl.textContent = "";
       }
 
-      function engineLabel(name) {
-        if (name === "openai") return "OpenAI GPT-Live-1 · 24 kHz";
-        return "Gemini 3.1 Flash Live · 16 kHz";
-      }
-
-      function chosenEngine(configEngine) {
-        const query = new URLSearchParams(location.search).get("engine");
-        if (query === "gemini" || query === "openai") return query;
-        return configEngine === "openai" ? "openai" : "gemini";
-      }
-
-      function wsUrl(name) {
+      function wsUrl() {
         const proto = location.protocol === "https:" ? "wss:" : "ws:";
-        const path = name === "openai" ? "/ws/openai" : "/ws/gemini";
-        return proto + "//" + location.host + path;
+        return proto + "//" + location.host + "/ws/gemini";
       }
 
       function loginRedirect() {
@@ -922,9 +910,9 @@
         location.href = "/login?next=" + encodeURIComponent(next || "/");
       }
 
-      function showEngine(name) {
-        engine = name;
-        captureRate = name === "openai" ? 24000 : 16000;
+      function showEngine() {
+        engine = "gemini";
+        captureRate = 16000;
         engineNote.textContent = "";
       }
 
@@ -1396,23 +1384,24 @@
           flowGroup = msg.group || "";
           renderHud();
         } else if (msg.type === "ending") {
-          waitForPlaybackThenEnd();
+          beginPreparing();
+          hangupWhenQuiet();
         } else if (msg.type === "call_completed") {
-          prepareShare(msg);
+          revealReadyReport(msg.call_id);
+        } else if (msg.type === "report_failed") {
+          showReportRetry(msg.call_id);
         } else if (msg.type === "error") {
           showError(msg.message ? { hi: msg.message, en: "The call hit an error." } : { hi: "कॉल में गड़बड़ी आ गई।", en: "The call hit an error." });
         }
       }
 
-      const FALLBACK_MOTHER_QUESTIONS = "अगली बार जब आप डॉक्टर या स्वास्थ्य कार्यकर्ता (ASHA/ANM दीदी) से मिलें, तो ये सवाल ज़रूर पूछें:\n\n1. मेरे बच्चे की उम्र के हिसाब से उसका वज़न, लंबाई और सीखना-बढ़ना (बैठना, चलना, बोलना) ठीक चल रहा है या नहीं?\n2. बच्चे के सभी ज़रूरी टीके (टीकाकरण कार्ड के अनुसार, जैसे BCG) और सुनने-देखने की सामान्य जाँच पूरी है या कोई अगला टीका बाकी है?\n3. बच्चे के रोज़ के खान-पान और सेहत के लिए अभी मुझे किन बातों का ध्यान रखना चाहिए, और किन लक्षणों के दिखने पर तुरंत डॉक्टर या स्वास्थ्य कार्यकर्ता को दिखाना चाहिए?\n\nनोट: ये सवाल आपकी अगली विज़िट में डॉक्टर या स्वास्थ्य कार्यकर्ता (ASHA/ANM दीदी) से पूछने के लिए हैं। यह किसी बीमारी की पुष्टि (डायग्नोसिस) नहीं है।";
+      let reportPending = false;
+      let hangupArmed = false;
 
       function onSocketClose() {
         if (phase === "done") return;
-        if (phase === "summarizing") {
-          prepareShare({
-            call_id: callId,
-            summary_mother: FALLBACK_MOTHER_QUESTIONS
-          });
+        if (phase === "preparing") {
+          if (!reportPending) showReportRetry(callId);
           return;
         }
         if (phase === "live" || phase === "connecting") {
@@ -1431,7 +1420,7 @@
         socketOpened = false;
         return new Promise(function (resolve, reject) {
           connectReject = reject;
-          const sock = new WebSocket(wsUrl(engine));
+          const sock = new WebSocket(wsUrl());
           ws = sock;
           sock.onopen = function () {
             socketOpened = true;
@@ -1553,7 +1542,7 @@
           if (!res.ok) throw new Error("Could not read the voice engine setting.");
           const cfg = await res.json();
           if (phase !== "connecting") return;
-          showEngine(chosenEngine(cfg.active_engine));
+          showEngine();
           applyConfig(cfg);
           await wireMic();
           if (phase !== "connecting") {
@@ -1584,11 +1573,31 @@
         }
       }
 
-      function waitForPlaybackThenEnd() {
+      function beginPreparing() {
+        if (phase === "preparing" || phase === "done") return;
+        stopCapture();
+        stopTimer();
+        leaveLiveChrome();
+        avatarWrap.classList.remove("live", "speaking");
+        phase = "preparing";
+        setStatus("");
+        stageEl.classList.add("working");
+        avatarWrap.classList.add("working");
+        waitEl.hidden = false;
+        callBtn.disabled = true;
+        if (summaryTimer) clearTimeout(summaryTimer);
+        summaryTimer = setTimeout(function () {
+          if (phase === "preparing") showReportRetry(callId);
+        }, 60000);
+      }
+
+      function hangupWhenQuiet() {
+        if (hangupArmed || phase !== "preparing") return;
+        hangupArmed = true;
         const startedAt = Date.now();
         let quietSince = 0;
         const timer = setInterval(function () {
-          if (phase !== "live") {
+          if (phase !== "preparing") {
             clearInterval(timer);
             return;
           }
@@ -1601,7 +1610,10 @@
           const quietLongEnough = quietSince && Date.now() - quietSince >= 2500;
           if (quietLongEnough || Date.now() - startedAt >= 30000) {
             clearInterval(timer);
-            endCall();
+            const sock = ws;
+            if (sock && sock.readyState === WebSocket.OPEN) {
+              try { sock.send(JSON.stringify({ type: "hangup" })); } catch (err) { /* the server also ends */ }
+            }
           }
         }, 250);
       }
@@ -1624,22 +1636,8 @@
           showConsentRow();
           return;
         }
-        phase = "summarizing";
-        setStatus("");
-        stageEl.classList.add("working");
-        avatarWrap.classList.add("working");
-        waitEl.hidden = false;
-        callBtn.disabled = true;
-        if (summaryTimer) clearTimeout(summaryTimer);
-        summaryTimer = setTimeout(function () {
-          if (phase === "summarizing") {
-            showThanks({
-              call_id: callId,
-              summary_mother: FALLBACK_MOTHER_QUESTIONS,
-              pdf_failed: true
-            });
-          }
-        }, 60000);
+        hangupArmed = true;
+        beginPreparing();
         try {
           sock.send(JSON.stringify({ type: "hangup" }));
         } catch (err) {
@@ -1666,21 +1664,38 @@
           });
       }
 
-      function prepareShare(msg) {
-        const id = msg.call_id != null ? msg.call_id : callId;
-        if (id == null) {
-          showThanks(Object.assign({ pdf_failed: true }, msg));
+      function revealReadyReport(id) {
+        if (id != null) callId = id;
+        if (callId == null) {
+          showReportRetry(null);
           return;
         }
-        stageEl.classList.add("working");
-        avatarWrap.classList.add("working");
-        waitEl.hidden = false;
-        fetchMotherPdf(id).then(function (file) {
-          if (phase !== "summarizing" && phase !== "done") return;
-          showThanks(Object.assign({ pdfFile: file }, msg));
+        if (phase !== "preparing" && phase !== "done") beginPreparing();
+        reportPending = true;
+        fetchMotherPdf(callId).then(function (file) {
+          reportPending = false;
+          showThanks({ call_id: callId, pdfFile: file });
         }).catch(function () {
-          if (phase !== "summarizing" && phase !== "done") return;
-          showThanks(Object.assign({ pdf_failed: true }, msg));
+          reportPending = false;
+          showReportRetry(callId);
+        });
+      }
+
+      function showReportRetry(id) {
+        if (id != null) callId = id;
+        showThanks({ call_id: callId, pdf_failed: true });
+      }
+
+      function requestReport() {
+        return fetch("/api/calls/" + encodeURIComponent(callId) + "/mother.pdf", {
+          method: "POST",
+          credentials: "same-origin"
+        }).then(function (res) {
+          if (!res.ok) throw new Error("pdf");
+          const name = pdfName(res);
+          return res.blob().then(function (blob) {
+            return new File([blob], name, { type: "application/pdf" });
+          });
         });
       }
 
@@ -1743,6 +1758,8 @@
         stopTimer();
         leaveLiveChrome();
         phase = "idle";
+        hangupArmed = false;
+        reportPending = false;
         callId = null;
         modelName = "";
         voiceName = "";
@@ -1973,13 +1990,20 @@
       newCallBtn.addEventListener("click", resetForNewCall);
       document.getElementById("share-pdf").addEventListener("click", sharePdf);
       document.getElementById("retry-pdf").addEventListener("click", function () {
+        if (callId == null) return;
         thanksEl.hidden = true;
         stageEl.hidden = false;
         stageEl.classList.add("working");
         avatarWrap.classList.add("working");
         waitEl.hidden = false;
-        phase = "summarizing";
-        prepareShare({ call_id: callId });
+        phase = "preparing";
+        document.getElementById("share-pdf").hidden = true;
+        document.getElementById("retry-pdf").hidden = true;
+        requestReport().then(function (file) {
+          showThanks({ call_id: callId, pdfFile: file });
+        }).catch(function () {
+          showReportRetry(callId);
+        });
       });
 
       fetch("/api/config", { credentials: "same-origin", headers: { "Accept": "application/json" } })
@@ -1993,7 +2017,7 @@
         })
         .then(function (cfg) {
           if (!cfg) return;
-          showEngine(chosenEngine(cfg.active_engine));
+          showEngine();
           applyConfig(cfg);
         })
         .catch(function () { /* the start button reports a real failure */ });

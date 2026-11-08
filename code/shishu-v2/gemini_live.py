@@ -2,10 +2,12 @@
 
 import asyncio
 import base64
+import inspect
 import json
 import os
 import re
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -14,7 +16,6 @@ from google import genai
 from google.genai import types
 from starlette.websockets import WebSocketState
 
-import answer_extractor
 import audio_recorder
 import db
 import checklist
@@ -1410,13 +1411,31 @@ async def _write_doctor_note(
         return
 
 
+async def _report_is_ready(
+    on_call_completed: Callable[[int], Awaitable[bool] | bool] | None,
+    call_id: int,
+) -> bool:
+    if on_call_completed is None:
+        return False
+    try:
+        result = on_call_completed(call_id)
+        if inspect.isawaitable(result):
+            result = await result
+        return bool(result)
+    except Exception:
+        return False
+
+
 async def _finalize(
     ws: WebSocket,
     ws_lock: asyncio.Lock,
     call_id: int,
     telemetry: dict | None,
     recorder: audio_recorder.CallAudioRecorder,
+    on_call_completed: Callable[[int], Awaitable[bool] | bool] | None = None,
 ) -> None:
+    # Stop the voice UI before any report work. A duplicate ending is harmless.
+    await _send_json(ws, ws_lock, {"type": "ending"})
     filename = ""
     duration = 0
     try:
@@ -1435,48 +1454,21 @@ async def _finalize(
     transcript = list(call.get("transcript") or [])
     findings = dict(call.get("findings") or {})
     red_flags = list(call.get("red_flags") or [])
-    try:
-        extracted = await answer_extractor.cached_answers(call)
-    except Exception:
-        extracted = answer_extractor.fallback_from_call(call)
-        await _report_error(
-            ws,
-            ws_lock,
-            call_id,
-            telemetry,
-            "Mother report extract failed",
-        )
-    summary_mother = answer_extractor.mother_summary(extracted, findings, red_flags)
-    if telemetry is not None:
-        close_reason = str(telemetry.get("close_reason") or "")
-        _doctor_note, mother_note = checklist.incomplete_notes(
-            telemetry.get("coverage") or [], close_reason, str(telemetry.get("emergency_detail") or "")
-        )
-        if mother_note:
-            if close_reason == "emergency":
-                summary_mother = (mother_note + "\n\n" + summary_mother).strip()
-            else:
-                summary_mother = (summary_mother + "\n\n" + mother_note).strip()
     db.complete_call(
         call_id,
         int(duration),
         filename,
         "",
-        summary_mother,
+        "",
         findings=findings,
         red_flags=red_flags,
     )
     _spawn_doctor_note(call_id, transcript, findings, red_flags, telemetry)
-    await _send_json(
-        ws,
-        ws_lock,
-        {
-            "type": "call_completed",
-            "call_id": call_id,
-            "summary_mother": summary_mother,
-            "red_flags": red_flags,
-        },
-    )
+    ready = await _report_is_ready(on_call_completed, call_id)
+    if ready:
+        await _send_json(ws, ws_lock, {"type": "call_completed", "call_id": call_id})
+    else:
+        await _send_json(ws, ws_lock, {"type": "report_failed", "call_id": call_id})
 
 
 async def _stop_tasks(*tasks: asyncio.Task | None) -> None:
@@ -1503,7 +1495,10 @@ async def _connect_live(client: genai.Client, model: str, config: types.LiveConn
 
 
 async def handle_gemini_ws(
-    ws: WebSocket, caller_name: str = "", user_role: str = "user"
+    ws: WebSocket,
+    caller_name: str = "",
+    user_role: str = "user",
+    on_call_completed: Callable[[int], Awaitable[bool] | bool] | None = None,
 ) -> None:
     load_dotenv(_ENV_PATH)
     if ws.client_state == WebSocketState.CONNECTING:
@@ -1689,7 +1684,14 @@ async def handle_gemini_ws(
         if call_id is not None and recorder is not None and not finalized:
             finalized = True
             try:
-                await _finalize(ws, ws_lock, call_id, telemetry, recorder)
+                await _finalize(
+                    ws,
+                    ws_lock,
+                    call_id,
+                    telemetry,
+                    recorder,
+                    on_call_completed,
+                )
             except Exception:
                 await _send_json(
                     ws,

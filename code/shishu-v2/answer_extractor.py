@@ -2,19 +2,21 @@
 
 import json
 import os
+import re
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 import checklist
 import db
+import question_flow
 import summarizer
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 load_dotenv()
 
 _ANSWERS = ("yes", "no", "unknown", "not_asked")
-_VERSION = 4
+_VERSION = 6
 
 _DOMAIN_TOPIC = {
     "birth_nicu": "birth_nicu",
@@ -37,18 +39,11 @@ For every topic id, set answer to one of: yes, no, unknown, not_asked.
 - no: she said it did not happen, or said it was normal. A normal delivery, a full-term birth, a normal newborn hearing/vision test, growing like other children, a normal scan, a delivery without problems, being married, and having children are no, not yes.
 - yes: only when a screened clinical concern or positive history happened (for example: C-section or preterm birth, NICU or blue light, blood transfusions, low hemoglobin, knee swelling, high BP/sugar/thyroid or transfusion in pregnancy, consanguinity, miscarriage or infant death, or a family member needing transfusions).
 A later clear answer replaces an earlier one. Do not invent. Intro topics (name, marriage, children, bridge) and close_anything_else are never yes.
+For every yes, no, or unknown answer, evidence MUST be a non-empty, verbatim contiguous quote from the user turn that answers that topic. Do not translate, paraphrase, combine separate turns, or reuse a reply from a different question. A one-word answer such as "नहीं" is valid only for the topic asked just before that reply. If that question's answer has no exact user quote, use not_asked.
 
-yes_hindi is a list of complete, self-contained Hindi (Devanagari) sentences — ONLY for topics where you set answer to "yes" (clinical concerns or positive findings a doctor should notice).
-- Do NOT put marriage, number of children, normal hearing/vision test, normal growth, normal scan, uncomplicated delivery, or close_anything_else in yes_hindi. If a topic's answer is "no", it must NEVER appear in yes_hindi.
-- Every item in yes_hindi MUST state BOTH what the question/topic was AND what the mother answered (for example: "जन्म के तरीके के सवाल पर माँ ने बताया कि बच्चे का जन्म 8 महीने में ऑपरेशन से हुआ था क्योंकि बच्चा बहुत छोटा था।" or "बच्चे को खून चढ़ाने के सवाल पर माँ ने बताया कि अब तक चार बार खून चढ़ाना पड़ा है और हीमोग्लोबिन कम रहता है।").
-- NEVER output a bare reply or raw transcript quote without the question context (never write "हाँ।", "हां।", "ऑपरेशन", "वह 8 महीने में पैदा हो गया था।", or "मेरे कैसे तो मौसी होती है।").
-- Write in clear, natural Hindi (Devanagari). No disease names. No nos. No English.
+You may receive saved live-call findings after the transcript. They are fallible, broad notes from the call and may help identify the relevant topic. The transcript is authoritative: use a finding only when the user turn that answers that topic supports it.
 
-questions_hindi is 3 to 6 Hindi questions she should ask a doctor or ASHA/ANM at the next visit.
-Each item is one full question and ends with ?.
-Base them on the yes answers. Do not name a disease. Do not say this is a diagnosis.
-
-Return JSON only: {"answers": {"topic_id": {"answer": "no", "evidence": "short quote"}}, "yes_hindi": ["..."], "questions_hindi": ["..."]}
+Return JSON only: {"answers": {"topic_id": {"answer": "no", "evidence": "short quote"}}}
 """.strip()
 
 
@@ -68,6 +63,186 @@ def _transcript_text(transcript: list) -> str:
         if text:
             lines.append(f"{role}: {text}")
     return "\n".join(lines)
+
+
+def _live_findings_text(call: dict) -> str:
+    lines = []
+    for domain, finding in (call.get("findings") or {}).items():
+        if not isinstance(finding, dict):
+            continue
+        status = str(finding.get("status") or "").strip()
+        detail = str(finding.get("detail") or "").strip()
+        if status or detail:
+            lines.append(f"{domain}: status={status}; detail={detail}")
+    return "\n".join(lines) or "(none saved)"
+
+
+# Grammar and acknowledgements. These are not question identity.
+_STOP = {
+    "theek", "thik", "hai", "hain", "ji", "achha", "accha", "kya", "mein", "main",
+    "aur", "ya", "se", "par", "ko", "ka", "ke", "ki", "tha", "thi", "hua", "hui",
+    "hue", "aap", "aapke", "aapki", "aapka", "kisi", "koi", "nahin", "nahi",
+    "yeh", "woh", "toh", "bhi", "hota", "hoti", "hote", "liye", "tak", "bahut",
+    "abhi", "bas", "gayi", "gaya", "gaye", "sakti", "sakta", "karte", "karti",
+    "ठीक", "जी", "है", "हैं", "क्या", "में", "की", "के", "का", "को", "से", "या",
+    "और", "था", "थी", "हुआ", "हुई", "किसी", "कोई", "यह", "तो", "भी", "नहीं",
+    "बहुत", "अभी", "गई", "गया", "सकती", "सकता",
+}
+
+
+def _fold(text: str) -> str:
+    """Casefold and drop virama so loose spellings of the same word still match."""
+    return (text or "").replace("\u094d", "").casefold()
+
+
+def _tokens(text: str) -> set[str]:
+    found = set(re.findall(r"[a-z]{4,}|[\u0900-\u097f]{2,}", _fold(text)))
+    return {token for token in found if token not in _STOP}
+
+
+def _topic_blob(topic_id: str) -> str:
+    topic = checklist._BY_ID[topic_id]
+    return " ".join(
+        (
+            str(topic.get("words") or ""),
+            question_flow.WIDE_WORDS.get(topic_id, ""),
+            checklist.question_hi(topic_id),
+        )
+    )
+
+
+_TOPIC_TOKENS = {topic["id"]: _tokens(_topic_blob(topic["id"])) for topic in checklist.TOPICS}
+_TOKEN_OWNERS: dict[str, set[str]] = {}
+for _topic_id, _topic_tokens in _TOPIC_TOKENS.items():
+    for _token in _topic_tokens:
+        _TOKEN_OWNERS.setdefault(_token, set()).add(_topic_id)
+
+
+def _exact_question(assistant: str, topic_id: str) -> bool:
+    text = _fold(assistant)
+    topic = checklist._BY_ID[topic_id]
+    phrases = (
+        checklist.question_hi(topic_id).rstrip(" ?？"),
+        str(topic.get("words") or ""),
+        question_flow.WIDE_WORDS.get(topic_id, ""),
+    )
+    for phrase in phrases:
+        folded = _fold(phrase).strip(" ?？")
+        if len(folded) >= 12 and folded in text:
+            return True
+    return False
+
+
+def _score_topic(assistant_tokens: set[str], topic_id: str) -> tuple[int, int]:
+    found = assistant_tokens & _TOPIC_TOKENS[topic_id]
+    distinctive = sum(1 for token in found if _TOKEN_OWNERS.get(token) == {topic_id})
+    return distinctive, len(found)
+
+
+def _match_topic(assistant: str) -> str | None:
+    """Pick the one checklist question this assistant turn asked.
+
+    Uses the question text that already belongs to the topic. A turn that
+    matches two topics equally is left unmatched.
+    """
+    exact = [
+        topic["id"]
+        for topic in checklist.TOPICS
+        if _exact_question(assistant, topic["id"])
+    ]
+    if len(exact) == 1:
+        return exact[0]
+    tokens = _tokens(assistant)
+    ranked = sorted(
+        ((_score_topic(tokens, topic["id"]), topic["id"]) for topic in checklist.TOPICS),
+        reverse=True,
+    )
+    (best_distinct, best_total), best_id = ranked[0]
+    (next_distinct, next_total), _next_id = ranked[1]
+    if best_total < 2 or (best_distinct, best_total) == (next_distinct, next_total):
+        return None
+    if best_distinct == 0 and best_total < 3:
+        return None
+    return best_id
+
+
+def _answer_turns(transcript: list) -> dict[str, list[str]]:
+    """Map each topic to the user turns that answer its question."""
+    paired: dict[str, list[str]] = {}
+    assistant: str | None = None
+    users: list[str] = []
+
+    def flush() -> None:
+        nonlocal assistant, users
+        if assistant:
+            topic_id = _match_topic(assistant)
+            if topic_id:
+                bucket = paired.setdefault(topic_id, [])
+                for text in users:
+                    if text.strip() and text not in bucket:
+                        bucket.append(text)
+        assistant = None
+        users = []
+
+    for turn in transcript or []:
+        role = str(turn.get("role") or "")
+        text = str(turn.get("text") or "")
+        if role == "assistant":
+            flush()
+            assistant = text
+            users = []
+        elif role == "user" and assistant is not None:
+            users.append(text)
+    flush()
+    return paired
+
+
+def _quote_in_text(quote: str, text: str) -> bool:
+    normalized_quote = " ".join(_fold(quote).split())
+    if not normalized_quote:
+        return False
+    return normalized_quote in " ".join(_fold(text).split())
+
+
+def validate_answers(call: dict, extracted: dict) -> dict:
+    """Keep a verdict only when its quote is in the user turn for that topic."""
+    transcript = list((call or {}).get("transcript") or [])
+    turns = _answer_turns(transcript)
+    answers: dict[str, dict] = {}
+    for topic_id, entry in ((extracted or {}).get("answers") or {}).items():
+        if topic_id not in checklist._BY_ID or not isinstance(entry, dict):
+            continue
+        answer = str(entry.get("answer") or "")
+        evidence = str(entry.get("evidence") or "").strip()
+        matched = any(_quote_in_text(evidence, text) for text in turns.get(topic_id, []))
+        if answer in {"yes", "no", "unknown"} and not matched:
+            answer, evidence = "not_asked", ""
+        if answer in _ANSWERS:
+            answers[topic_id] = {"answer": answer, "evidence": evidence[:240]}
+    return {"version": _VERSION, "answers": answers}
+
+
+def report_content(extracted: dict) -> dict:
+    """Positive lines and doctor questions from validated yes answers only."""
+    yes: list[str] = []
+    questions: list[str] = []
+    answers = (extracted or {}).get("answers") or {}
+    for topic in checklist.TOPICS:
+        topic_id = topic["id"]
+        if topic_id.startswith("intro_") or topic_id == "close_anything_else":
+            continue
+        entry = answers.get(topic_id) or {}
+        if not isinstance(entry, dict) or str(entry.get("answer") or "") != "yes":
+            continue
+        evidence = str(entry.get("evidence") or "").strip()
+        if not evidence:
+            continue
+        question = checklist.question_hi(topic_id).strip()
+        yes.append(f'{question} — माँ का जवाब: “{evidence}”')
+        questions.append(
+            f'{question} माँ ने कहा “{evidence}”. क्या डॉक्टर या ASHA/ANM दीदी से इसकी जाँच पूछें?'
+        )
+    return {"yes": yes, "questions": questions}
 
 
 def parse_payload(text: str) -> dict:
@@ -100,26 +275,7 @@ def parse_payload(text: str) -> dict:
         if answer not in _ANSWERS:
             continue
         answers[topic_id] = {"answer": answer, "evidence": evidence[:240]}
-    yes_hindi: list[str] = []
-    for item in data.get("yes_hindi") or []:
-        line = summarizer._scrub_diagnostic_terms(str(item).strip())
-        if line and line not in yes_hindi:
-            yes_hindi.append(line)
-    questions_hindi: list[str] = []
-    for item in data.get("questions_hindi") or []:
-        line = summarizer._scrub_diagnostic_terms(str(item).strip())
-        if not line:
-            continue
-        if "?" not in line and "？" not in line:
-            line = line.rstrip("।") + "?"
-        if line not in questions_hindi:
-            questions_hindi.append(line)
-    return {
-        "version": _VERSION,
-        "answers": answers,
-        "yes_hindi": yes_hindi,
-        "questions_hindi": questions_hindi[:6],
-    }
+    return {"version": _VERSION, "answers": answers}
 
 
 def fallback_from_call(call: dict) -> dict:
@@ -144,50 +300,10 @@ def fallback_from_call(call: dict) -> dict:
         else:
             continue
         answers[topic_id] = {"answer": kind, "evidence": detail[:240]}
-    coverage = list((call.get("telemetry") or {}).get("coverage") or [])
-    for topic_id in coverage:
-        if topic_id in checklist._BY_ID and topic_id not in answers:
-            answers[topic_id] = {"answer": "unknown", "evidence": ""}
     for topic in checklist.TOPICS:
         if topic["id"] not in answers:
             answers[topic["id"]] = {"answer": "not_asked", "evidence": ""}
-    yes_hindi = []
-    for topic_id, entry in answers.items():
-        if entry["answer"] != "yes":
-            continue
-        line = checklist.question_hi(topic_id).rstrip("?")
-        if line.startswith("क्या "):
-            line = line[4:]
-        line = summarizer._scrub_diagnostic_terms(line.strip())
-        if line and not topic_id.startswith("intro_"):
-            yes_hindi.append(line)
-    return {
-        "version": _VERSION,
-        "answers": answers,
-        "yes_hindi": yes_hindi,
-        "questions_hindi": [],
-    }
-
-
-def mother_summary(
-    extracted: dict,
-    findings: dict | None = None,
-    red_flags: list | None = None,
-) -> str:
-    """Hindi question list for the mother PDF. Does not write the doctor note."""
-    questions = [
-        str(item).strip()
-        for item in (extracted or {}).get("questions_hindi") or []
-        if str(item).strip()
-    ]
-    if len(questions) < 3:
-        return summarizer.default_mother_questions(findings, red_flags)
-    numbered = "\n".join(f"{idx}. {question}" for idx, question in enumerate(questions[:6], start=1))
-    return (
-        f"{summarizer.MOTHER_QUESTIONS_HEADING}\n\n"
-        f"{numbered}\n\n"
-        f"{summarizer.MOTHER_FLAG_FOOTER}"
-    )
+    return validate_answers(call, {"version": _VERSION, "answers": answers})
 
 
 def _user_content(call: dict) -> str:
@@ -196,6 +312,8 @@ def _user_content(call: dict) -> str:
         + _topics_brief()
         + "\n\nTranscript:\n"
         + _transcript_text(call.get("transcript") or [])
+        + "\n\nSaved live-call findings (hints only; transcript evidence wins):\n"
+        + _live_findings_text(call)
     )
 
 
@@ -250,17 +368,20 @@ async def _from_llm(call: dict) -> dict:
 async def cached_answers(call: dict) -> dict:
     call_id = int(call["id"])
     saved = db.get_answers(call_id)
-    if (
-        isinstance(saved, dict)
-        and saved.get("version") == _VERSION
-        and isinstance(saved.get("answers"), dict)
-    ):
-        return saved
+    if isinstance(saved, dict) and isinstance(saved.get("answers"), dict):
+        result = validate_answers(call, saved)
+        if (
+            saved.get("version") != _VERSION
+            or "yes_hindi" in saved
+            or "questions_hindi" in saved
+        ):
+            db.save_answers(call_id, result)
+        return result
     try:
         result = await _from_llm(call)
     except Exception:
         result = fallback_from_call(call)
-    if isinstance(result, dict):
-        result["version"] = _VERSION
+    result = validate_answers(call, result)
+    result["version"] = _VERSION
     db.save_answers(call_id, result)
     return result

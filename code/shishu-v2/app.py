@@ -18,11 +18,9 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(_REPO_ROOT / ".env")
 load_dotenv()
 
-import answer_extractor
 import db
 import gemini_live
-import mother_report
-import openai_live
+import report_service
 import seed
 
 COOKIE_NAME = "shishu_auth"
@@ -318,8 +316,13 @@ async def set_config(request: Request):
     except Exception:
         body = None
     engine = body.get("active_engine") if isinstance(body, dict) else None
-    if engine not in {"gemini", "openai"}:
-        raise HTTPException(status_code=400, detail="active_engine must be gemini or openai")
+    if isinstance(engine, str):
+        engine = engine.strip().lower()
+    # A stored or posted "openai" value is the removed live-voice engine.
+    if engine == "openai":
+        engine = "gemini"
+    if engine != "gemini":
+        raise HTTPException(status_code=400, detail="active_engine must be gemini")
     db.set_setting("active_engine", "gemini")
     return {"ok": True, "active_engine": "gemini"}
 
@@ -375,8 +378,15 @@ def get_call(call_id: int, request: Request):
     return call
 
 
-@app.get("/api/calls/{call_id}/mother.pdf")
-async def mother_pdf(call_id: int, request: Request):
+def _pdf_response(pdf: bytes, name: str) -> Response:
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+    )
+
+
+def _authorize_mother_pdf(call_id: int, request: Request) -> None:
     call = db.get_call(call_id)
     if call is None:
         raise HTTPException(status_code=404, detail="Call not found")
@@ -386,17 +396,28 @@ async def mother_pdf(call_id: int, request: Request):
     owner = role == "user" and (call.get("caller_name") or "") == username
     if role != "admin" and not owner:
         raise HTTPException(status_code=403, detail="Not allowed")
+
+
+@app.get("/api/calls/{call_id}/mother.pdf")
+async def mother_pdf(call_id: int, request: Request):
+    _authorize_mother_pdf(call_id, request)
+    ready = report_service.ready_pdf(call_id)
+    if ready is None:
+        raise HTTPException(status_code=409, detail="Report is not ready")
+    pdf, name = ready
+    return _pdf_response(pdf, name)
+
+
+@app.post("/api/calls/{call_id}/mother.pdf")
+async def rebuild_mother_pdf(call_id: int, request: Request):
+    _authorize_mother_pdf(call_id, request)
     try:
-        answers = await answer_extractor.cached_answers(call)
-        pdf = mother_report.render_pdf(mother_report.build(call, answers))
+        pdf, name = await report_service.mother_pdf(call_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Call not found") from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail="Could not build the report") from exc
-    name = mother_report.filename(call)
-    return Response(
-        content=pdf,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{name}"'},
-    )
+    return _pdf_response(pdf, name)
 
 
 @app.get("/api/audio/{call_id}")
@@ -416,6 +437,15 @@ async def _reject_ws(ws: WebSocket) -> None:
     await ws.close(code=1008)
 
 
+async def _prepare_mother_pdf(call_id: int) -> bool:
+    """Build the one PDF for this call. Share stays hidden until this is true."""
+    try:
+        await report_service.mother_pdf(call_id)
+    except Exception:
+        return False
+    return report_service.ready_pdf(call_id) is not None
+
+
 def _ws_identity(ws: WebSocket) -> tuple[str, str]:
     role, username = _identity_from_cookies(ws.cookies)
     return role or "user", username
@@ -427,13 +457,9 @@ async def ws_gemini(ws: WebSocket) -> None:
         await _reject_ws(ws)
         return
     role, username = _ws_identity(ws)
-    await gemini_live.handle_gemini_ws(ws, caller_name=username, user_role=role)
-
-
-@app.websocket("/ws/openai")
-async def ws_openai(ws: WebSocket) -> None:
-    if not _authorized(ws.cookies.get(COOKIE_NAME)):
-        await _reject_ws(ws)
-        return
-    role, username = _ws_identity(ws)
-    await openai_live.handle_openai_ws(ws, caller_name=username, user_role=role)
+    await gemini_live.handle_gemini_ws(
+        ws,
+        caller_name=username,
+        user_role=role,
+        on_call_completed=_prepare_mother_pdf,
+    )

@@ -74,20 +74,6 @@
       font-size: 12px;
     }
 
-    .engine {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-
-    .engine-label {
-      color: var(--muted);
-      font-size: 13px;
-      font-weight: 650;
-    }
-
-    .engine button,
     .refresh,
     .ghost {
       border: 1px solid var(--line);
@@ -103,12 +89,6 @@
       display: inline-flex;
       align-items: center;
       text-decoration: none;
-    }
-
-    .engine button[aria-pressed="true"] {
-      background: var(--navy);
-      border-color: var(--navy);
-      color: #fff;
     }
 
     .test {
@@ -638,11 +618,6 @@
         <span>Clinical dashboard</span>
       </div>
     </div>
-    <div class="engine" role="group" aria-label="Active voice engine">
-      <span class="engine-label">Active Voice Engine</span>
-      <button id="eng-gemini" type="button" aria-pressed="true">Gemini 3.1 Flash Live</button>
-      <button id="eng-openai" type="button" aria-pressed="false" disabled title="Deprecated — using Gemini Live">OpenAI GPT-Live-1 (Deprecated)</button>
-    </div>
     <a class="test" href="/">Test Call -&gt;</a>
     <button id="logout-btn" class="ghost" type="button">Log out</button>
   </header>
@@ -768,8 +743,6 @@
       const motherEl = document.getElementById("mother");
       const findingsEl = document.getElementById("findings");
       const transcriptEl = document.getElementById("transcript");
-      const geminiBtn = document.getElementById("eng-gemini");
-      const openaiBtn = document.getElementById("eng-openai");
 
       let calls = [];
       let bugs = [];
@@ -847,12 +820,6 @@
         return [];
       }
 
-      function normalizeEngine(value) {
-        const v = String(value || "").toLowerCase();
-        if (v.indexOf("openai") !== -1 || v.indexOf("gpt") !== -1) return "openai";
-        return "gemini";
-      }
-
       function engineBadge(call) {
         const model = String((call && call.model_used) || "").trim();
         const engine = String((call && call.engine) || call || "").toLowerCase();
@@ -909,12 +876,6 @@
           .replace(/^profile_/, "")
           .replace(/_/g, " ")
           .replace(/\b\w/g, function (ch) { return ch.toUpperCase(); });
-      }
-
-      function paintEngine(active) {
-        const name = normalizeEngine(active);
-        geminiBtn.setAttribute("aria-pressed", name === "gemini" ? "true" : "false");
-        openaiBtn.setAttribute("aria-pressed", name === "openai" ? "true" : "false");
       }
 
       function renderList() {
@@ -1236,11 +1197,8 @@
       function applySettings(data) {
         const s = unwrapSettings(data);
         settingsCache = s;
-        if (s.active_engine) paintEngine(s.active_engine);
         ensureOption(document.getElementById("set-gemini-model"), s.gemini_model || "gemini-3.1-flash-live-preview");
         ensureOption(document.getElementById("set-gemini-voice"), s.gemini_voice || "Kore");
-        ensureOption(document.getElementById("set-openai-voice"), s.openai_voice || "marin");
-        ensureOption(document.getElementById("set-openai-backend"), s.openai_backend_model || "gpt-5.6-luna");
         document.getElementById("set-vad-prefix").value = s.vad_prefix_padding_ms || "300";
         document.getElementById("set-vad-silence").value = s.vad_silence_ms || "750";
         document.getElementById("set-vad-end").value = s.vad_end_sensitivity === "LOW" ? "LOW" : "HIGH";
@@ -1257,8 +1215,6 @@
           active_engine: currentEngine(),
           gemini_model: document.getElementById("set-gemini-model").value,
           gemini_voice: "Kore",
-          openai_voice: "marin",
-          openai_backend_model: document.getElementById("set-openai-backend").value,
           vad_prefix_padding_ms: document.getElementById("set-vad-prefix").value,
           vad_silence_ms: document.getElementById("set-vad-silence").value,
           vad_end_sensitivity: document.getElementById("set-vad-end").value,
@@ -1501,30 +1457,6 @@
         }
       }
 
-      async function setEngine(name) {
-        geminiBtn.disabled = true;
-        openaiBtn.disabled = true;
-        try {
-          const res = await api("/api/config", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ active_engine: name })
-          });
-          if (!res) return;
-          const data = await res.json();
-          paintEngine(data.active_engine || name);
-          settingsCache.active_engine = normalizeEngine(data.active_engine || name);
-          showNotice("Active engine is now " + (normalizeEngine(data.active_engine || name) === "openai"
-            ? "OpenAI GPT-Live-1."
-            : "Gemini 3.1 Flash Live."));
-        } catch (err) {
-          showNotice(err.message || "Could not change the voice engine.");
-        } finally {
-          geminiBtn.disabled = false;
-          openaiBtn.disabled = false;
-        }
-      }
-
       async function copyReport() {
         const text = current && current.summary_doctor ? current.summary_doctor : "";
         try {
@@ -1555,8 +1487,6 @@
         if (player.getAttribute("src")) audioNote.hidden = false;
       });
 
-      geminiBtn.addEventListener("click", function () { setEngine("gemini"); });
-      openaiBtn.addEventListener("click", function () { setEngine("openai"); });
       document.getElementById("refresh").addEventListener("click", function () {
         refreshList().catch(function (err) { showNotice(err.message); });
       });
@@ -1587,7 +1517,7 @@
         const cfgRes = await api("/api/config");
         const callsRes = await api("/api/calls", { cache: "no-store" });
         if (!cfgRes || !callsRes) return;
-        paintEngine((await cfgRes.json()).active_engine);
+        await cfgRes.json();
         calls = asCalls(await callsRes.json());
         updatedEl.textContent = "Updated " + new Date().toLocaleTimeString(undefined, {
           hour: "2-digit",

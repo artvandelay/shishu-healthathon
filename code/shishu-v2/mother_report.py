@@ -7,6 +7,7 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import answer_extractor
 import checklist
 
 _STATIC = Path(__file__).resolve().parent / "static"
@@ -28,22 +29,9 @@ _MONTHS = (
     "नवम्बर",
     "दिसम्बर",
 )
-_ROUTINE = (
-    "मेरे बच्चे की उम्र के हिसाब से उसका वज़न, लंबाई और सीखना-बढ़ना (बैठना, चलना, बोलना) ठीक चल रहा है या नहीं?",
-    "बच्चे के सभी ज़रूरी टीके, और सुनने-देखने की जाँच, पूरी है या कोई टीका बाकी है?",
-    "रोज़ के खान-पान के लिए अभी किन बातों का ध्यान रखूँ, और किन लक्षणों पर तुरंत डॉक्टर या स्वास्थ्य कार्यकर्ता को दिखाऊँ?",
-)
-# Same filler the summary builder still writes when it pads a short list.
-# The PDF drops these exact lines. A question about a real finding stays.
-_SUMMARY_PAD = (
-    "बच्चे के सभी ज़रूरी टीके (टीकाकरण कार्ड के अनुसार, जैसे BCG) और सुनने-देखने की सामान्य जाँच पूरी है या कोई अगला टीका बाकी है?",
-    "बच्चे के रोज़ के खान-पान और सेहत के लिए अभी मुझे किन बातों का ध्यान रखना चाहिए, और किन लक्षणों के दिखने पर तुरंत डॉक्टर या स्वास्थ्य कार्यकर्ता को दिखाना चाहिए?",
-    "क्या परिवार या प्रेग्नेंसी की सामान्य सेहत के लिए खून की कमी (एनीमिया) या थैलेसीमिया जैसी किसी सामान्य जाँच की ज़रूरत है?",
-)
 THALASSEMIA_LINE = (
     "अगली प्रेग्नेंसी से पहले माँ और पिता दोनों की थैलेसीमिया जाँच (स्क्रीनिंग) करवा लें।"
 )
-_GENERIC_QUESTIONS = _ROUTINE + _SUMMARY_PAD
 _CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
 _CSS = """
@@ -273,25 +261,6 @@ def _child(call: dict) -> str:
     return " · ".join(bits)
 
 
-def _norm_q(text: str) -> str:
-    return re.sub(r"\s+", " ", (text or "").strip())
-
-
-def _questions(summary_mother: str) -> list[str]:
-    """Real question lines only. An empty summary stays empty."""
-    generic = {_norm_q(q) for q in _GENERIC_QUESTIONS}
-    found: list[str] = []
-    for line in (summary_mother or "").splitlines():
-        cleaned = re.sub(r"^(?:[\d१२३४५६७८९]+[\.\)\-:]|[•\-\*])\s*", "", line.strip())
-        if "?" not in cleaned and "？" not in cleaned:
-            continue
-        if _norm_q(cleaned) in generic:
-            continue
-        if cleaned not in found:
-            found.append(cleaned)
-    return found
-
-
 def _incomplete(call: dict) -> bool:
     telemetry = call.get("telemetry") or {}
     reason = str(telemetry.get("close_reason") or "")
@@ -303,10 +272,6 @@ def _incomplete(call: dict) -> bool:
     return bool(checklist.open_topics(coverage))
 
 
-def _has_hindi(text: str) -> bool:
-    return any("\u0900" <= char <= "\u097f" for char in text)
-
-
 def _answer(answers: dict, topic_id: str) -> str:
     entry = (answers or {}).get(topic_id) or {}
     if isinstance(entry, dict):
@@ -314,42 +279,10 @@ def _answer(answers: dict, topic_id: str) -> str:
     return str(entry or "")
 
 
-def _user_text(call: dict) -> str:
-    parts = []
-    for turn in call.get("transcript") or []:
-        if str(turn.get("role") or "") != "user":
-            continue
-        text = str(turn.get("text") or "").strip()
-        if text:
-            parts.append(text)
-    return " ".join(parts).lower()
-
-
-def _covered(call: dict) -> set[str]:
-    telemetry = call.get("telemetry") or {}
-    return {str(topic_id) for topic_id in (telemetry.get("coverage") or [])}
-
-
-def ground_kind(call: dict, topic_id: str, answers: dict) -> str:
-    """A yes, no, or unknown counts only if she said it, or the live call recorded it.
-
-    A model that fills in 'no' for a question she never heard is not an answer.
-    """
-    entry = (answers or {}).get(topic_id) or {}
-    kind = _answer(answers, topic_id)
-    if kind not in {"yes", "no", "unknown"}:
-        return "unknown" if topic_id in _covered(call) else "not_asked"
-    evidence = str(entry.get("evidence") or "").strip().lower() if isinstance(entry, dict) else ""
-    said = _user_text(call)
-    quoted = len(evidence) >= 12 and evidence in said
-    if quoted or topic_id in _covered(call):
-        return kind
-    return "not_asked"
-
-
 def build(call: dict, extracted: dict | None = None) -> dict:
     extracted = extracted or {}
     answers = extracted.get("answers") or {}
+    content = answer_extractor.report_content(extracted)
     when = _ist(str(call.get("started_at") or ""))
     if when:
         date = f"{when.day} {_MONTHS[when.month]} {when.year}"
@@ -357,31 +290,8 @@ def build(call: dict, extracted: dict | None = None) -> dict:
     else:
         date, clock = "", ""
     incomplete = _incomplete(call)
-    questions = [hindi_text(q) for q in _questions(str(call.get("summary_mother") or ""))]
-    yes = [
-        str(line).strip()
-        for line in (extracted.get("yes_hindi") or [])
-        if str(line).strip() and _has_hindi(str(line))
-    ]
-    yes = [hindi_text(line) for line in yes]
-    grounded_yes = any(
-        ground_kind(call, topic["id"], answers) == "yes"
-        for topic in checklist.TOPICS
-        if not topic["id"].startswith("intro_")
-    )
-    if not grounded_yes and not _user_text(call).strip():
-        yes = []
-    if not yes and _user_text(call).strip():
-        for topic in checklist.TOPICS:
-            if topic["id"].startswith("intro_"):
-                continue
-            if ground_kind(call, topic["id"], answers) != "yes":
-                continue
-            line = checklist.question_hi(topic["id"]).rstrip("?").strip()
-            if line.startswith("क्या "):
-                line = line[4:]
-            if line:
-                yes.append(line)
+    questions = [hindi_text(question) for question in content["questions"]]
+    yes = [hindi_text(line) for line in content["yes"]]
     groups = []
     unknown = []
     unasked = []
@@ -392,7 +302,7 @@ def build(call: dict, extracted: dict | None = None) -> dict:
         for topic in checklist.TOPICS:
             if topic["group"] != group:
                 continue
-            kind = ground_kind(call, topic["id"], answers)
+            kind = _answer(answers, topic["id"]) or "not_asked"
             if kind == "no":
                 nos.append(checklist.question_hi(topic["id"]))
             elif kind == "unknown":

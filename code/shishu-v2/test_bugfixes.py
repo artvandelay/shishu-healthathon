@@ -130,7 +130,6 @@ class PromptAndCopyTests(unittest.TestCase):
         self.assertIn("NEVER ANSWER YOUR OWN QUESTIONS", prompts.GEMINI_LIVE_SYSTEM_PROMPT)
         self.assertIn("CLARIFICATION POLICY", prompts.GEMINI_LIVE_SYSTEM_PROMPT)
         self.assertIn("SPOKEN OUTPUT", prompts.GEMINI_LIVE_SYSTEM_PROMPT)
-        self.assertIn("SPOKEN OUTPUT", prompts.OPENAI_LIVE_VOICE_PROMPT)
         self.assertNotIn("The same recap in Roman Hindi", prompts.DOCTOR_MOTHER_SUMMARY_PROMPT)
 
     def test_default_gemini_model_is_31_flash_live(self):
@@ -138,12 +137,25 @@ class PromptAndCopyTests(unittest.TestCase):
         self.assertEqual(db.DEFAULT_SETTINGS["gemini_model"], "gemini-3.1-flash-live-preview")
 
     def test_intro_permits_short_or_long_and_clarifications_and_hardcoded_voices(self):
-        import gemini_live, openai_live
+        import gemini_live
         intro = prompts.CLINICAL_CLUSTERS_REFERENCE
         self.assertIn("chhota ya lamba", intro)
         self.assertIn("bejhijhak poochh sakti hain", intro)
         self.assertEqual(gemini_live._session_settings({})["voice"], "Kore")
-        self.assertEqual(openai_live.LIVE_VOICE, "marin")
+
+    def test_persisted_openai_engine_migrates_to_gemini(self):
+        import db
+        db.set_setting("active_engine", "openai")
+        db.set_setting("openai_model", "gpt-live-1")
+        db.set_setting("openai_voice", "marin")
+        db.set_setting("openai_backend_model", "gpt-5.6-luna")
+        db._init_db()
+        settings = db.get_all_settings()
+        self.assertEqual(settings["active_engine"], "gemini")
+        self.assertEqual(db.get_setting("active_engine"), "gemini")
+        self.assertNotIn("openai_model", settings)
+        self.assertNotIn("openai_voice", settings)
+        self.assertNotIn("openai_backend_model", settings)
 
     def test_logo_png_is_served(self):
         html = (_HERE / "static" / "call.html").read_text(encoding="utf-8")
