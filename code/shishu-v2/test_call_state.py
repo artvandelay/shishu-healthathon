@@ -2034,6 +2034,16 @@ class CallStateTests(unittest.TestCase):
             call_state.topic_answer_kind(complaint["topics"]["close_anything_else"], "close_anything_else"),
             "yes",
         )
+        separate = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "close_anything_else"),
+            [_update("topic.close_anything_else", True)],
+            1,
+            utterance="और कुछ नहीं। पेट में दर्द रहता है।",
+        )
+        self.assertEqual(
+            call_state.topic_answer_kind(separate["topics"]["close_anything_else"], "close_anything_else"),
+            "yes",
+        )
         nothing_else = call_state.apply_updates(
             _ask(call_state.new_call_state(), "close_anything_else"),
             [_update("topic.close_anything_else", "नहीं, बस इतना ही।")],

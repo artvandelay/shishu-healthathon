@@ -542,7 +542,11 @@ _REASSURE_RE = re.compile(
 
 
 def _clauses(text: str) -> list[str]:
-    return [bit.strip() for bit in re.split(r"[,،;]| और | and ", text or "") if bit.strip()]
+    return [
+        bit.strip()
+        for bit in re.split(r"[।!?]|[,،;]|(?<!\d)\.(?!\d)| और | and ", text or "")
+        if bit.strip()
+    ]
 
 
 def _clause_is_reassurance(clause: str) -> bool:

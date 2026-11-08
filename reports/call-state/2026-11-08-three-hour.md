@@ -232,6 +232,12 @@ A bare नहीं does not erase a different clause. और कुछ नह�
 
 Trio: ages with और only before the last (no flags, three children), pain after और कुछ नहीं (still a yes), and नहीं, बस इतना ही sent as true (no हाँ lines). Pass.
 
+## 16:15 IST
+
+A danda is a clause boundary, the same as a comma. और कुछ नहीं। पेट में दर्द रहता है stays a complaint. नहीं। बस इतना ही। stays a no. `196` unit tests. 78 scenarios, 0 failed.
+
+Trio: एक बेटा है। दो साल का है। (no flags), pain after a sentence break (still a yes), and नहीं। बस इतना ही। sent as true (no हाँ lines). Pass.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.
