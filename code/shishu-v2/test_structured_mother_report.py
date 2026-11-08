@@ -148,6 +148,8 @@ class StructuredMotherReportTests(unittest.TestCase):
         self.assertIn(question, _joined(report_normal["groups"]))
         self.assertIn(question + '</span><span class="ans">नहीं</span>', rendered)
         self.assertEqual(mother_report.hindi_text("heavy"), "ज़्यादा")
+        self.assertEqual(mother_report._shown_value(["bp", "sugar"]), "बीपी, शुगर")
+        self.assertNotIn("[", mother_report._shown_value(["bp", "sugar"]))
         self.assertEqual(mother_report._format_age({"value": 6, "unit": "months"}), "6 महीने")
         self.assertEqual(mother_report._format_age({"value": 0.5, "unit": "years"}), "आधा साल")
         self.assertEqual(mother_report._format_age({"value": 1.5, "unit": "years"}), "डेढ़ साल")

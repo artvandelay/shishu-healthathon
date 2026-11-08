@@ -350,6 +350,8 @@ def _issues(scenario, state, errors, report, fallback, said) -> list[str]:
             issues.append("yes line has a leading space")
         if "child_" in line:
             issues.append("raw child id in yes")
+        if "[" in line or "]" in line:
+            issues.append("python list in yes line")
     if scenario.expect_close == "complete" and isinstance(scenario.children_value, int):
         children = (state.get("profile") or {}).get("children") or []
         records = call_state._spoken_age_records(scenario.children_text)
@@ -540,6 +542,21 @@ def campaign() -> list[Scenario]:
             marital_text=married,
             children_text="एक बेटी है, पंद्रह दिन की है।",
             children_value=1,
+        ),
+        Scenario(
+            name="flags_pregnancy_bp_and_sugar",
+            group="red_flags",
+            caller_name="ज्योति",
+            marital_text=married,
+            children_text="एक बेटी है, दो साल की।",
+            children_value=1,
+            positives={
+                "preg_conditions": {
+                    "value": True,
+                    "utterance": "बीपी और शुगर था, डिलीवरी के बाद भी रहा।",
+                },
+            },
+            expect_yes=("preg_conditions",),
         ),
         Scenario(
             name="flags_nicu_fifteen_days",

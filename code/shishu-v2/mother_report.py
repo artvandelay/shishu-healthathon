@@ -267,6 +267,7 @@ _TOKEN_HI = {
     "vomiting": "उल्टी",
     "ulti": "उल्टी",
     "sugar": "शुगर",
+    "bp": "बीपी",
     "diabetes": "शुगर",
     "thyroid": "थायरॉइड",
     "stroke": "लकवा",
@@ -546,6 +547,9 @@ def _child_label(state: dict, child_id: object) -> str:
 
 
 def _shown_value(value: object) -> str:
+    if isinstance(value, (list, tuple)):
+        parts = [_shown_value(item) for item in value]
+        return ", ".join(part for part in parts if part)
     if value is None or isinstance(value, (dict, bool)):
         return ""
     text = str(value).strip().strip("।.! ")

@@ -104,7 +104,9 @@ The same rule covers term, NICU reason, and a day count. पूरे नौ म
 
 A later hearing, scan, thalassemia, growth, or puberty utterance replaces the stored result. बीपी नहीं, शुगर replaces the pregnancy condition. अब नहीं रहा replaces “it continued”. नहीं denies only the word beside it, not the next clause.
 
-मेरा नाम मीरा है is stored as मीरा. A bare name is left as it is. `187` unit tests. 37 scenarios, 0 failed.
+मेरा नाम मीरा है is stored as मीरा. A bare name is left as it is.
+
+A list stored on a finding is printed as its items. Pregnancy BP and sugar are बीपी, शुगर, not a Python list. `187` unit tests. 38 scenarios, 0 failed.
 
 ## Not hardcoded
 
