@@ -1506,6 +1506,14 @@ def _ages_with_unit(
         if skip_event_month and _is_event_month_after(folded, match.end()):
             continue
         found.append((match.start(), {"value": _spoken_number(match.group(1)), "unit": unit_name}))
+        # दो-दो साल is that age for each of the children just named.
+        number = match.group(1)
+        if re.match(rf"{re.escape(number)}-\s*$", folded[max(0, match.start() - len(number) - 1):match.start()]):
+            earlier = folded[: match.start()]
+            prev = re.search(rf"(\d+)\s+{_CHILD_COUNT_WORD}[^\d]*$", earlier)
+            copies = int(prev.group(1)) if prev else 2
+            for _extra in range(max(0, copies - 1)):
+                found.append((match.start(), {"value": _spoken_number(number), "unit": unit_name}))
     # दो साल, चार और छह shares the unit on the first number.
     # दो साल का और छह महीने keeps both units, so a unit after the tail does not join.
     lead = re.compile(
@@ -1539,8 +1547,32 @@ def _spoken_age_records(utterance: str) -> list[dict]:
     found.extend(_ages_with_unit(folded, _YEAR_UNIT, "years"))
     found.extend(_ages_with_unit(folded, _WEEK_UNIT, "weeks", require_copula=True))
     found.extend(_ages_with_unit(folded, _DAY_UNIT, "days", require_copula=True))
+    found.extend(_bare_years_before_ke(folded, found))
     found.sort()
     return _merge_year_and_months(folded, _merge_weeks_and_days(folded, found))
+
+
+def _bare_years_before_ke(folded: str, found: list) -> list:
+    """तीन और पाँच के is three and five years. A number that already has a unit stays.
+
+    के by itself is the year. छह महीने के is not this pattern.
+    """
+    taken = {start for start, _record in found}
+    extra = []
+    bare = re.compile(
+        r"(?<![\d.])(\d+(?:\.\d+)?(?:\s*(?:,|और|and)\s*\d+(?:\.\d+)?)*)\s+के(?![\u0900-\u0963\u0966-\u097F])",
+        re.I,
+    )
+    for match in bare.finditer(folded):
+        blob_at = match.start(1)
+        for num in re.finditer(r"\d+(?:\.\d+)?", match.group(1)):
+            at = blob_at + num.start()
+            if at in taken:
+                continue
+            if re.search(r"(?:साल|वर्ष|महीन|हफ्त|हफ़्त|दिन)\s*$", folded[max(0, at - 12):at]):
+                continue
+            extra.append((at, {"value": _spoken_number(num.group(0)), "unit": "years"}))
+    return extra
 
 
 def _merge_weeks_and_days(folded: str, found: list) -> list:

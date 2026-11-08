@@ -280,6 +280,12 @@ Trio: the daughter and not the nephew (no flags), fits for that daughter (still 
 
 Trio: son and daughter of one age (no flags), odor for that family (still a yes), and the age 3 sent as the count (two children of three, no हाँ lines). Pass.
 
+## 16:25 IST
+
+दो बेटे हैं तीन और पाँच के is two boys, three and five. के without a unit is years. चार साल के stays four years, and छह महीने के stays months. दो-दो साल repeats that age for the children just named: one boy of four and two girls of two. `196` unit tests. 102 scenarios, 0 failed.
+
+Trio: sons at three and five with no साल (no flags), fits with दो-दो (still a yes, three children), and the boy's 4 sent as the count (still three children, no हाँ lines). Pass.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.
