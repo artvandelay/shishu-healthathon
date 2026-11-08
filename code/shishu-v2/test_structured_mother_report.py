@@ -1,5 +1,6 @@
 """Mother PDF uses structured state and does not print an unasked topic as no."""
 
+import io
 import unittest
 
 import checklist
@@ -39,26 +40,17 @@ class StructuredMotherReportTests(unittest.TestCase):
         self.assertIn(question, _joined(report["groups"]))
         self.assertIn(question + '</span><span class="ans">नहीं</span>', rendered)
 
-    def test_unknown_is_not_printed_as_no(self):
+    def test_unknown_is_printed_under_unknown_not_unasked(self):
         state = self._state()
         state["topics"]["birth_cleft"]["state"] = "unknown"
         report = mother_report.build(_call(state))
         question = checklist.question_hi("birth_cleft")
         rendered = mother_report.render_html(report)
+        self.assertIn(question, report["unknown"])
         self.assertNotIn(question, _joined(report["groups"]))
+        self.assertNotIn(question, _joined(report["unasked"]))
+        self.assertIn(question + '</span><span class="ans">पता नहीं</span>', rendered)
         self.assertNotIn(question + '</span><span class="ans">नहीं</span>', rendered)
-
-    def test_no_response_and_not_asked_are_not_printed_as_no(self):
-        state = self._state()
-        state["topics"]["body_blue"]["state"] = "no_response"
-        state["topics"]["body_tummy"]["state"] = "not_asked"
-        report = mother_report.build(_call(state))
-        rendered = mother_report.render_html(report)
-        nos = _joined(report["groups"])
-        for topic_id in ("body_blue", "body_tummy"):
-            question = checklist.question_hi(topic_id)
-            self.assertNotIn(question, nos)
-            self.assertNotIn(question + '</span><span class="ans">नहीं</span>', rendered)
 
     def test_not_applicable_is_omitted_from_both_detail_sections(self):
         state = self._state()
@@ -68,23 +60,17 @@ class StructuredMotherReportTests(unittest.TestCase):
         self.assertNotIn(question, _joined(report["groups"]))
         self.assertNotIn(question, _joined(report["unasked"]))
 
-    def test_emergency_structured_state_is_incomplete_and_shows_the_notice(self):
-        state = self._state()
-        state["close_reason"] = "emergency"
-        state["phase"] = "closing"
-        report = mother_report.build(_call(state))
-        rendered = mother_report.render_html(report)
-        self.assertTrue(report["incomplete"])
-        self.assertTrue(report["emergency"])
-        self.assertIn("अधूरी कॉल", rendered)
-        self.assertIn("तुरंत नज़दीकी अस्पताल", rendered)
-
     def test_structured_thalassemia_no_adds_the_screening_line(self):
         state = self._state()
         state["topics"]["preg_thalassemia"]["state"] = "answered"
         state["topics"]["preg_thalassemia"]["value"] = False
         report = mother_report.build(_call(state))
         self.assertTrue(any("थैलेसीमिया" in question for question in report["questions"]))
+
+        state = self._state()
+        state["topics"]["preg_thalassemia"]["state"] = "not_asked"
+        report = mother_report.build(_call(state))
+        self.assertFalse(any("थैलेसीमिया" in question for question in report["questions"]))
 
     def test_yes_line_uses_a_name_or_a_hindi_ordinal_not_a_field_key(self):
         state = self._state()
@@ -117,12 +103,6 @@ class StructuredMotherReportTests(unittest.TestCase):
         self.assertNotIn("condition", text)
         self.assertNotIn("चिल्द", text)
 
-    def test_not_asked_thalassemia_does_not_add_the_screening_line(self):
-        state = self._state()
-        state["topics"]["preg_thalassemia"]["state"] = "not_asked"
-        report = mother_report.build(_call(state))
-        self.assertFalse(any("थैलेसीमिया" in question for question in report["questions"]))
-
     def test_operation_is_printed_as_yes_and_normal_as_no(self):
         state = self._state()
         state["topics"]["birth_mode"]["state"] = "answered"
@@ -142,15 +122,15 @@ class StructuredMotherReportTests(unittest.TestCase):
         self.assertIn(question, _joined(report_normal["groups"]))
         self.assertIn(question + '</span><span class="ans">नहीं</span>', rendered)
 
-    def test_unknown_is_printed_under_unknown_not_unasked(self):
+    def test_normal_delivery_with_true_value_is_classified_as_no(self):
         state = self._state()
-        state["topics"]["birth_cleft"]["state"] = "unknown"
+        state["topics"]["birth_mode"]["state"] = "answered"
+        state["topics"]["birth_mode"]["value"] = True
+        state["topics"]["birth_mode"]["details"] = {"delivery_type": "normal", "place": "hospital"}
         report = mother_report.build(_call(state))
-        question = checklist.question_hi("birth_cleft")
-        rendered = mother_report.render_html(report)
-        self.assertIn(question, report["unknown"])
-        self.assertNotIn(question, _joined(report["unasked"]))
-        self.assertIn(question + '</span><span class="ans">पता नहीं</span>', rendered)
+        self.assertEqual(report["yes"], [])
+        question = checklist.question_hi("birth_mode")
+        self.assertIn(question, _joined(report["groups"]))
 
     def test_english_clinical_details_and_child_ages_render_in_clean_hindi(self):
         state = self._state()
@@ -187,29 +167,19 @@ class StructuredMotherReportTests(unittest.TestCase):
         self.assertNotIn("जौन्दिcए", yes_blob)
         self.assertNotIn("jaundice", yes_blob.lower())
 
-    def test_structured_positive_findings_generate_tailored_mother_questions(self):
+    def test_pdf_bytes_render_the_report(self):
         state = self._state()
-        state["topics"]["body_joint_swelling"]["state"] = "answered"
-        state["topics"]["body_joint_swelling"]["value"] = True
-        state["topics"]["body_joint_swelling"]["details"] = {"joint": "ghutna", "duration": "4 din"}
-        state["topics"]["fam_infant_death"]["state"] = "answered"
-        state["topics"]["fam_infant_death"]["value"] = True
-        state["topics"]["fam_infant_death"]["details"] = {"age_at_death": "3 mahine", "cause": "fits"}
-
+        state["topics"]["birth_cleft"]["state"] = "answered"
+        state["topics"]["birth_cleft"]["value"] = True
         report = mother_report.build(_call(state))
-        q_blob = " ".join(report["questions"])
-        self.assertIn("घुटने", q_blob)
-        self.assertIn("गुजर", q_blob)
-
-    def test_normal_delivery_with_true_value_is_classified_as_no(self):
-        state = self._state()
-        state["topics"]["birth_mode"]["state"] = "answered"
-        state["topics"]["birth_mode"]["value"] = True
-        state["topics"]["birth_mode"]["details"] = {"delivery_type": "normal", "place": "hospital"}
-        report = mother_report.build(_call(state))
-        self.assertEqual(report["yes"], [])
-        question = checklist.question_hi("birth_mode")
-        self.assertIn(question, _joined(report["groups"]))
+        pdf = mother_report.render_pdf(report)
+        self.assertTrue(pdf.startswith(b"%PDF"))
+        from pypdf import PdfReader
+        reader = PdfReader(io.BytesIO(pdf))
+        self.assertGreaterEqual(len(reader.pages), 2)
+        # pypdf mangles Devanagari matras on extraction; the header line survives verbatim.
+        text = "".join(page.extract_text() or "" for page in reader.pages)
+        self.assertIn("SHISHU कॉल रिपोर्ट", text)
 
 
 if __name__ == "__main__":

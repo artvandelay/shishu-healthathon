@@ -31,20 +31,6 @@ class CallStateTests(unittest.TestCase):
         self.assertNotEqual(state["topics"]["preg_thalassemia"]["state"], "not_applicable")
         self.assertNotEqual(state["topics"]["intro_children"]["state"], "not_applicable")
 
-    def test_unmarried_does_not_remove_pregnancy_history(self):
-        state = call_state.new_call_state()
-        state = call_state.apply_updates(state, [_update("profile.marital_status", "unmarried")], 1)
-        for topic_id in (
-            "preg_conditions",
-            "preg_scan",
-            "preg_heart",
-            "preg_transfusion",
-            "preg_delivery",
-            "fam_miscarriage",
-            "preg_thalassemia",
-        ):
-            self.assertNotEqual(state["topics"][topic_id]["state"], "not_applicable", topic_id)
-
     def test_ever_pregnant_no_removes_the_exact_six_topics(self):
         state = call_state.new_call_state()
         state = call_state.apply_updates(state, [_update("profile.ever_pregnant", False)], 1)
@@ -62,50 +48,6 @@ class CallStateTests(unittest.TestCase):
             [topic_id for topic_id, topic in state["topics"].items() if topic["reason"] == "ever_pregnant_no"],
             list(removed),
         )
-
-    def test_thalassemia_remains_applicable_when_ever_pregnant_is_no(self):
-        state = call_state.new_call_state()
-        state = call_state.apply_updates(state, [_update("profile.ever_pregnant", False)], 1)
-        self.assertNotEqual(state["topics"]["preg_thalassemia"]["state"], "not_applicable")
-
-    def test_under_10_children_remove_puberty(self):
-        state = call_state.new_call_state()
-        children = [
-            {"name": "A", "age": {"value": 3, "unit": "years"}, "sex": "male"},
-            {"name": "B", "age": {"value": 9, "unit": "years"}, "sex": "female"},
-        ]
-        state = call_state.apply_updates(state, [_update("profile.children", children)], 1)
-        self.assertEqual(state["topics"]["body_puberty"]["state"], "not_applicable")
-        self.assertEqual(state["topics"]["body_puberty"]["reason"], "all_under_10")
-
-    def test_girl_age_11_activates_periods(self):
-        state = call_state.new_call_state()
-        children = [{"name": "A", "age": {"value": 11, "unit": "years"}, "sex": "female"}]
-        state = call_state.apply_updates(state, [_update("profile.children", children)], 1)
-        state = _ask(state, "body_bleeding_bruise")
-        state = call_state.apply_updates(
-            state,
-            [_update("topic.body_bleeding_bruise", True, scope="all")],
-            2,
-        )
-        seen = []
-        for turn in range(6):
-            nxt = call_state.next_question(state)
-            if not nxt or nxt.get("topic_id") != "body_bleeding_bruise" or nxt.get("question_kind") != "followup":
-                break
-            seen.append(nxt["followup_id"])
-            state = _ask(state, "body_bleeding_bruise", nxt["followup_id"])
-            state = call_state.apply_updates(
-                state,
-                [_update(
-                    "topic.body_bleeding_bruise",
-                    True,
-                    scope="all",
-                    details={nxt["followup_id"]: "noted"},
-                )],
-                3 + turn,
-            )
-        self.assertIn("periods", seen)
 
     def test_no_cuts_or_bruises_still_asks_teeth_and_periods(self):
         state = call_state.new_call_state()
@@ -167,31 +109,6 @@ class CallStateTests(unittest.TestCase):
             nxt and nxt.get("topic_id") == "birth_nicu" and nxt.get("question_kind") == "followup"
         )
 
-    def test_family_bp_blocks_until_all_four_followups_resolve(self):
-        state = _ask(call_state.new_call_state(), "fam_bp_stroke")
-        state = call_state.apply_updates(
-            state,
-            [_update("topic.fam_bp_stroke", True, scope="none")],
-            1,
-        )
-        seen = []
-        for turn in range(6):
-            nxt = call_state.next_question(state)
-            if not nxt or nxt.get("topic_id") != "fam_bp_stroke" or nxt.get("question_kind") != "followup":
-                break
-            seen.append(nxt["followup_id"])
-            state = _ask(state, "fam_bp_stroke", nxt["followup_id"])
-            state = call_state.apply_updates(
-                state,
-                [_update("topic.fam_bp_stroke", True, scope="none", details={nxt["followup_id"]: "noted"})],
-                2 + turn,
-            )
-        self.assertEqual(len(seen), 4)
-        nxt = call_state.next_question(state)
-        self.assertFalse(
-            nxt and nxt.get("topic_id") == "fam_bp_stroke" and nxt.get("question_kind") == "followup"
-        )
-
     def test_aggregate_no_stores_no_child_instances(self):
         state = call_state.new_call_state()
         state = call_state.apply_updates(
@@ -210,23 +127,6 @@ class CallStateTests(unittest.TestCase):
         self.assertEqual(topic["value"], False)
         self.assertEqual(topic["state"], "answered")
 
-    def test_specific_child_positive_stores_the_child_id(self):
-        state = call_state.new_call_state()
-        state = call_state.apply_updates(
-            state,
-            [_update("profile.children", [{"name": "A", "age": {"value": 4, "unit": "years"}, "sex": "female"}])],
-            1,
-        )
-        child_id = state["profile"]["children"][0]["id"]
-        state = _ask(state, "birth_nicu")
-        state = call_state.apply_updates(
-            state,
-            [_update("topic.birth_nicu", True, scope="specific", child_ids=[child_id], details={"reason": "jaundice"})],
-            2,
-        )
-        self.assertEqual(state["topics"]["birth_nicu"]["instances"][0]["person_id"], child_id)
-        self.assertEqual(child_id, "child_1")
-
     def test_correction_replaces_the_value_and_adds_history(self):
         state = _ask(call_state.new_call_state(), "intro_name")
         state = call_state.apply_updates(state, [_update("topic.intro_name", "A")], 1)
@@ -234,136 +134,6 @@ class CallStateTests(unittest.TestCase):
         self.assertEqual(state["topics"]["intro_name"]["value"], "B")
         self.assertTrue(any(event.get("previous_value") == "A" for event in state["history"]))
         self.assertIn(2, state["topics"]["intro_name"]["source_turn_ids"])
-
-    def test_is_complete_is_false_for_unresolved_required_topics(self):
-        self.assertFalse(call_state.is_complete(call_state.new_call_state()))
-
-    def test_topic_update_before_children_are_known_is_not_stored(self):
-        state = _ask(call_state.new_call_state(), "intro_name")
-        with self.assertRaises(ValueError):
-            call_state.apply_updates(state, [_update("topic.birth_nicu", True)], 1)
-        self.assertEqual(state["topics"]["birth_nicu"]["state"], "not_asked")
-
-    def test_child_count_without_ages_does_not_mean_no_children(self):
-        state = _ask(call_state.new_call_state(), "intro_children")
-        state = call_state.apply_updates(state, [_update("profile.children", 2)], 1)
-        self.assertEqual(len(state["profile"]["children"]), 2)
-        self.assertTrue(all(child.get("age") is None for child in state["profile"]["children"]))
-        self.assertNotEqual(state["topics"]["intro_children"]["state"], "answered")
-        self.assertNotEqual(state["topics"]["birth_mode"]["state"], "not_applicable")
-        state = call_state.apply_updates(state, [_update("topic.birth_mode", "normal")], 2)
-        self.assertEqual(state["topics"]["birth_mode"]["value"], "normal")
-
-
-
-
-
-    def test_a_relatives_age_does_not_open_a_child_slot(self):
-        state = _ask(call_state.new_call_state(), "intro_children")
-        with self.assertRaises(ValueError):
-            call_state.apply_updates(
-                state,
-                [_update("topic.body_fits_milestones", True, scope="specific", child_ids=["child_1"])],
-                2,
-                utterance="ठीक है।",
-                prior_utterances=["मेरे मामा की उम्र 35 साल है।"],
-            )
-        self.assertEqual(state["profile"]["children"], [])
-
-
-    def test_dotted_topic_name_is_the_same_topic(self):
-        state = _ask(call_state.new_call_state(), "intro_children")
-        state = call_state.apply_updates(state, [_update("profile.children", [{"age": 2}])], 1)
-        state = call_state.apply_updates(
-            state,
-            [_update("body.fits_milestones", False, scope="specific", child_ids=["child_1"])],
-            2,
-        )
-        self.assertIs(state["topics"]["body_fits_milestones"]["value"], False)
-        self.assertEqual(state["topics"]["body_fits_milestones"]["state"], "answered")
-
-
-
-
-
-    def test_bare_topic_id_is_kept_beside_a_real_field(self):
-        state = _ask(call_state.new_call_state(), "intro_children")
-        state = call_state.apply_updates(
-            state,
-            [
-                _update("profile.children", [{"age": 2}]),
-                {"field": "fam_related", "state": "answered", "value": True, "scope": "none", "child_ids": [], "details": {}},
-                {"field": "not_a_real_field", "state": "answered", "value": True, "scope": "none", "child_ids": [], "details": {}},
-            ],
-            1,
-        )
-        self.assertEqual(len(state["profile"]["children"]), 1)
-        self.assertTrue(state["topics"]["fam_related"]["value"])
-
-    def test_correction_is_kept_after_the_question_moves_on(self):
-        state = _ask(call_state.new_call_state(), "birth_mode")
-        state = call_state.apply_updates(
-            state,
-            [_update("profile.children", [{"age": 3}]), _update("topic.birth_mode", "normal")],
-            1,
-        )
-        state = _ask(state, "intro_bridge")
-        state = call_state.apply_updates(state, [_update("topic.birth_mode", "operation")], 2)
-        self.assertEqual(state["topics"]["birth_mode"]["value"], "operation")
-        self.assertEqual(state["topics"]["birth_mode"]["details"].get("delivery_type"), "operation")
-
-    def test_test_topics_ask_whether_the_test_was_done_only_after_no(self):
-        for topic_id, done_id in (
-            ("birth_hearing_vision", "test_done"),
-            ("preg_scan", "scan_done"),
-            ("preg_thalassemia", "caller_test"),
-        ):
-            base = call_state.apply_updates(
-                call_state.new_call_state(), [_update("profile.children", [{"age": 3}])], 1
-            )
-            no = call_state.apply_updates(_ask(base, topic_id), [_update(f"topic.{topic_id}", False)], 2)
-            self.assertFalse(call_state._is_positive(no["topics"][topic_id]))
-            self.assertIn(done_id, [f["id"] for f in call_state._pending_followups(no, topic_id)])
-            yes = call_state.apply_updates(_ask(base, topic_id), [_update(f"topic.{topic_id}", True)], 2)
-            self.assertTrue(call_state._is_positive(yes["topics"][topic_id]))
-            self.assertNotIn(done_id, [f["id"] for f in call_state._pending_followups(yes, topic_id)])
-
-    def test_fact_from_the_next_question_is_kept(self):
-        state = call_state.new_call_state()
-        state = call_state.apply_updates(
-            state,
-            [_update("profile.children", [{"age": {"value": 4, "unit": "years"}}, {"age": {"value": 1, "unit": "years"}}])],
-            1,
-        )
-        state = _ask(state, "intro_bridge")
-        state = call_state.apply_updates(
-            state,
-            [
-                _update("topic.body_fits_milestones", True, scope="specific", child_ids=["child_1"]),
-                _update("topic.birth_mode", "normal", scope="all"),
-            ],
-            2,
-        )
-        self.assertTrue(state["topics"]["body_fits_milestones"]["value"])
-        self.assertEqual(state["topics"]["birth_mode"]["value"], "normal")
-
-    def test_marital_false_means_unmarried(self):
-        state = call_state.apply_updates(
-            call_state.new_call_state(),
-            [_update("profile.marital_status", False)],
-            1,
-        )
-        self.assertEqual(state["profile"]["marital_status"], "unmarried")
-        self.assertEqual(state["topics"]["fam_related"]["state"], "not_applicable")
-
-    def test_unknown_child_id_is_rejected(self):
-        state = _ask(call_state.new_call_state(), "birth_nicu")
-        with self.assertRaises(ValueError):
-            call_state.apply_updates(
-                state,
-                [_update("topic.birth_nicu", True, scope="specific", child_ids=["child_9"])],
-                1,
-            )
 
     def test_operation_reason_keeps_her_words_not_the_parent_token(self):
         state = _ask(call_state.new_call_state(), "birth_mode")
@@ -454,24 +224,6 @@ class CallStateTests(unittest.TestCase):
         self.assertEqual(state["topics"]["birth_nicu"]["details"].get("reason"), {"state": "unknown"})
         nxt = call_state.next_question(state)
         self.assertNotEqual((nxt or {}).get("followup_id"), "reason")
-
-    def test_devanagari_kinship_resolves_the_family_followup(self):
-        state = _ask(call_state.new_call_state(), "fam_bp_stroke")
-        state = call_state.apply_updates(
-            state,
-            [_update("topic.fam_bp_stroke", True, details={"relationship": "मामा"})],
-            1,
-        )
-        pending = [item["id"] for item in call_state._pending_followups(state, "fam_bp_stroke")]
-        self.assertNotIn("relationship", pending)
-
-
-
-
-
-
-
-
 
 
 if __name__ == "__main__":

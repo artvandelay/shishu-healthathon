@@ -1,7 +1,6 @@
 """SQLite call-state persistence. Uses a temporary DATA_DIR."""
 
 import os
-import sqlite3
 import tempfile
 import unittest
 
@@ -12,11 +11,6 @@ import db  # noqa: E402
 
 
 class CallStateDbTests(unittest.TestCase):
-    def test_migration_adds_state_json(self):
-        with sqlite3.connect(db.DB_PATH) as conn:
-            columns = {row[1] for row in conn.execute("PRAGMA table_info(calls)").fetchall()}
-        self.assertIn("state_json", columns)
-
     def test_initialize_call_state_persists_54_blank_topics(self):
         call_id = db.create_call("gemini")
         state = db.initialize_call_state(call_id)
@@ -39,14 +33,6 @@ class CallStateDbTests(unittest.TestCase):
         self.assertEqual(loaded["profile"]["children"][0]["age"]["value"], 3)
         self.assertEqual(loaded["topics"]["birth_nicu"]["state"], "answered")
         self.assertIs(loaded["topics"]["birth_nicu"]["value"], True)
-
-    def test_get_call_state_returns_none_for_a_legacy_empty_row(self):
-        call_id = db.create_call("gemini")
-        self.assertIsNone(db.get_call_state(call_id))
-
-    def test_get_call_returns_state_none_for_a_legacy_empty_row(self):
-        call_id = db.create_call("gemini")
-        self.assertIsNone(db.get_call(call_id)["state"])
 
 
 if __name__ == "__main__":

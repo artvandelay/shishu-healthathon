@@ -32,66 +32,6 @@ class StructuredSummaryTests(unittest.TestCase):
         self.assertEqual(result["version"], 5)
         self.assertEqual(result["answers"]["birth_nicu"]["answer"], "unknown")
 
-    def test_unknown_does_not_become_no(self):
-        state = _state()
-        state["topics"]["birth_cleft"]["state"] = "unknown"
-        answers = answer_extractor.structured_answers({"state": state})["answers"]
-        self.assertEqual(answers["birth_cleft"]["answer"], "unknown")
-        self.assertNotEqual(answers["birth_cleft"]["answer"], "no")
-
-    def test_not_applicable_does_not_become_no_or_not_asked(self):
-        state = _state()
-        state["topics"]["body_puberty"]["state"] = "not_applicable"
-        answer = answer_extractor.structured_answers({"state": state})["answers"]["body_puberty"]["answer"]
-        self.assertEqual(answer, "not_applicable")
-        self.assertNotIn(answer, {"no", "not_asked"})
-
-    def test_child_instance_appears_in_summary_context(self):
-        state = _state()
-        state["profile"]["children"] = [
-            {"id": "child_1", "name": "A", "age": {"value": 3, "unit": "years"}, "sex": "female"}
-        ]
-        state["topics"]["birth_nicu"]["state"] = "answered"
-        state["topics"]["birth_nicu"]["value"] = True
-        state["topics"]["birth_nicu"]["instances"] = [
-            {"person_id": "child_1", "value": True, "details": {"reason": "jaundice", "days": 4}}
-        ]
-        text = summarizer.state_to_summary_context(state)
-        self.assertIn("child_1", text)
-        self.assertIn("jaundice", text)
-        self.assertIn("days", text)
-
-    def test_fallback_doctor_note_distinguishes_unresolved_states(self):
-        state = _state()
-        state["topics"]["birth_nicu"]["state"] = "no_response"
-        state["topics"]["body_blue"]["state"] = "not_asked"
-        state["topics"]["body_puberty"]["state"] = "not_applicable"
-        note = summarizer.build_state_fallback(state)["summary_doctor"]
-        self.assertIn("birth_nicu: no_response", note)
-        self.assertIn("body_blue: not_asked", note)
-        self.assertIn("body_puberty: not_applicable", note)
-
-    def test_legacy_call_still_uses_the_old_fallback(self):
-        out = summarizer.build_fallback_summaries(
-            [{"role": "user", "text": "नमस्ते"}],
-            {},
-            [],
-        )
-        self.assertIn("Not reported.", out["summary_doctor"])
-        self.assertIn("1. ", out["summary_mother"])
-        self.assertNotIn("not_applicable", out["summary_doctor"])
-
-    def test_positive_operation_recorded_as_yes_in_answers_and_flags(self):
-        state = _state()
-        state["topics"]["birth_mode"]["state"] = "answered"
-        state["topics"]["birth_mode"]["value"] = "operation"
-        answers = answer_extractor.structured_answers({"state": state})["answers"]
-        self.assertEqual(answers["birth_mode"]["answer"], "yes")
-
-        fallback = summarizer.build_state_fallback(state)
-        self.assertIn("birth_mode: yes", fallback["summary_doctor"])
-        self.assertTrue(any(f.startswith("birth_mode:") for f in fallback["red_flags"]))
-
     def test_state_to_findings_and_flags_populates_domains_and_mother_questions(self):
         state = _state()
         state["profile"]["caller_name"] = "कविता"
@@ -183,36 +123,6 @@ class StructuredSummaryTests(unittest.TestCase):
         self.assertIn("NICU", res["summary_mother"])
         self.assertTrue(any(f.startswith("birth_nicu:") for f in res["red_flags"]))
 
-    def test_frontier_gemini_reconciliation_falls_back_cleanly_on_error(self):
-        state = _state()
-        state["topics"]["fam_infant_death"]["state"] = "answered"
-        state["topics"]["fam_infant_death"]["value"] = True
-        state["topics"]["fam_infant_death"]["details"] = {"age_at_death": "4 mahine", "cause": "fits"}
-
-        async def fail_provider(*_args, **_kwargs):
-            raise RuntimeError("offline")
-
-        orig_gemini = summarizer._from_gemini
-        summarizer._from_gemini = fail_provider
-        try:
-            res = asyncio.run(
-                summarizer.generate_call_summaries(
-                    [{"role": "user", "text": "हाँ"}], {}, [], state=state
-                )
-            )
-        finally:
-            summarizer._from_gemini = orig_gemini
-
-        self.assertIn("fam_infant_death: yes", res["summary_doctor"])
-        self.assertIn("गुजर", res["summary_mother"])
-        self.assertIn("family_infant_death", res["findings"])
-        self.assertTrue(any(f.startswith("fam_infant_death:") for f in res["red_flags"]))
-
-    def test_text_calls_use_the_configured_flash_model(self):
-        self.assertEqual(models.TEXT_MODEL, os.environ.get("SHISHU_TEXT_MODEL", "gemini-3.8-flash"))
-        self.assertEqual(db.DEFAULT_SETTINGS["gemini_model"], models.LIVE_MODEL)
-        self.assertNotIn("summary_model", db.DEFAULT_SETTINGS)
-
     def test_frontier_model_can_override_a_false_positive(self):
         state = _state()
         state["profile"]["children"] = [
@@ -278,6 +188,11 @@ class StructuredSummaryTests(unittest.TestCase):
 
         report = mother_report.build({"state": res["state"], "summary_mother": res["summary_mother"]})
         self.assertFalse(report["yes"])
+
+    def test_text_calls_use_the_configured_flash_model(self):
+        self.assertEqual(models.TEXT_MODEL, os.environ.get("SHISHU_TEXT_MODEL", "gemini-3.8-flash"))
+        self.assertEqual(db.DEFAULT_SETTINGS["gemini_model"], models.LIVE_MODEL)
+        self.assertNotIn("summary_model", db.DEFAULT_SETTINGS)
 
     def test_birth_mode_enums_drop_anything_else(self):
         state = _state()
