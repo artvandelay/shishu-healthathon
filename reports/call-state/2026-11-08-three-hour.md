@@ -296,6 +296,12 @@ Trio: sons at three and five with no साल (no flags), fits with दो-द�
 
 Trio: one of three and one of one (no flags), blue lips for the elder (still a yes), and 3 sent as the count (still two children, no हाँ lines). Pass.
 
+## 16:24 IST
+
+दो घंटे and बीस मिनट are not a count of children. सास के दो बच्चे are not hers; मेरे एक बेटा है तीन साल का is one boy of three. जुड़वाँ, एक लड़का एक लड़की, दोनों एक साल के is those two children, both one. `197` unit tests. 108 scenarios, 0 failed.
+
+Trio: twins, boy and girl, both one (no flags), fits for her son and not the mother-in-law's children (still a yes), and the mother-in-law's 2 sent as the count (one boy of three, no हाँ lines). Pass.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

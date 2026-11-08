@@ -605,6 +605,38 @@ def campaign() -> list[Scenario]:
             no_value=True,
         ),
         Scenario(
+            name="no_flags_twins_boy_and_girl",
+            group="no_flags",
+            caller_name="नेहा",
+            marital_text=married,
+            children_text="जुड़वाँ हैं, एक लड़का एक लड़की, दोनों एक साल के।",
+            children_value=2,
+        ),
+        Scenario(
+            name="flags_her_son_not_the_inlaws",
+            group="red_flags",
+            caller_name="पूनम",
+            marital_text=married,
+            children_text="मेरी सास के दो बच्चे हैं, मेरे एक बेटा है तीन साल का।",
+            children_value=2,
+            positives={
+                "body_fits_milestones": {
+                    "value": True,
+                    "utterance": "बेटे को झटके आते हैं।",
+                    "details": {},
+                },
+            },
+            expect_yes=("body_fits_milestones",),
+        ),
+        Scenario(
+            name="degenerate_inlaw_count",
+            group="degenerate",
+            caller_name="अर्चना",
+            marital_text=married,
+            children_text="मेरी सास के दो बच्चे हैं, मेरे एक बेटा है तीन साल का।",
+            children_value=2,
+        ),
+        Scenario(
             name="no_flags_one_of_each_age",
             group="no_flags",
             caller_name="जया",

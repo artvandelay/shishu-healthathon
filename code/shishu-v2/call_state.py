@@ -1761,7 +1761,9 @@ def _shared_age_for_group(utterance: str, count_n: int) -> dict | None:
     )
     if after and re.search(r"उम्र|मेरी|मैं", after.group(1)):
         after = None
-    if not before and not after:
+    # जुड़वाँ ... दोनों एक साल. दोनों was folded to 2 for this check only.
+    dono = re.search(rf"(?:^|\s)2\s+{num}\s*{unit}", folded, re.I) if count_n == 2 else None
+    if not before and not after and not dono:
         return None
     return age
 
@@ -2043,6 +2045,12 @@ def _numbers_before_child_words(folded: str) -> list[tuple[int, str]]:
     found = []
     # 1.5 बच्चा must not be read as five. The digit after the dot is not a count.
     for match in re.finditer(rf"(?<![\d.])(\d+)\s*({_CHILD_COUNT_WORD})", folded or "", re.I):
+        # सास के दो बच्चे are hers, not the caller's. मेरे एक बेटा stays.
+        if re.search(
+            r"(?:सास|ससुर|पति|पत्नी|भांजा|भांजी|भानजा|भानजी|भतीजा|भतीजी|मामा|भाभी|नाना|नानी|दादा|दादी)\s+के\s*$",
+            folded[:match.start()],
+        ):
+            continue
         found.append((int(match.group(1)), match.group(2)))
     if found:
         return found
@@ -2075,6 +2083,9 @@ def _count_from_child_words(folded: str) -> int | None:
         # चार साल का है is one age, not four children. A bare number is a count
         # only when she did not also say an age. 1.5 is not one child.
         if _spoken_age_records(folded or ""):
+            return None
+        # दो घंटे and बीस मिनट are not a count of children.
+        if re.search(r"(?<![\d.])\d+(?:\.\d+)?\s*(?:घंट|मिनट|minute|hour|किलो|kilo)", folded or "", re.I):
             return None
         bare = re.search(r"(?<![\d.])(\d+)(?!\.\d)", folded or "")
         if bare:
@@ -2696,6 +2707,28 @@ def apply_updates(
                             kind_c = "ignore"
                         elif recounted != int(norm) and int(norm) in age_values:
                             norm = recounted
+                        elif (
+                            recounted is not None
+                            and recounted != int(norm)
+                            and re.search(
+                                rf"(?:सास|ससुर|पति|पत्नी|भांजा|भांजी|भतीजा|भतीजी|मामा|नाना|दादा)\s+के\s+{int(norm)}\s+",
+                                _fold_spoken_numbers(utterance or ""),
+                            )
+                        ):
+                            # सास के दो बच्चे, sent as 2, is not her count.
+                            norm = recounted
+                    if (
+                        kind_c == "count"
+                        and not spoken_now
+                        and _count_from_child_words(_fold_spoken_numbers(utterance or "")) is None
+                        and re.search(
+                            r"\d+(?:\.\d+)?\s*(?:घंट|मिनट|minute|hour|किलो|kilo)",
+                            _fold_spoken_numbers(utterance or ""),
+                            re.I,
+                        )
+                    ):
+                        # दो घंटे का है sent as 2 is not two children.
+                        kind_c = "ignore"
                     if (
                         kind_c == "ignore"
                         and len(spoken_now) == 1

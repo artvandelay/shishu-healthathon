@@ -1267,6 +1267,24 @@ class CallStateTests(unittest.TestCase):
             [{"value": 8, "unit": "years"}, {"value": 3, "unit": "years"}],
         )
         self.assertEqual(call_state._children_payload("दो"), ("count", 2))
+        hours = stored("दो घंटे का है।", 2)
+        self.assertEqual(hours["profile"]["children"], [])
+        self.assertNotEqual(hours["topics"]["intro_children"]["state"], "answered")
+        minutes = stored("बीस मिनट का है।", 20)
+        self.assertEqual(minutes["profile"]["children"], [])
+        inlaw = stored("मेरी सास के दो बच्चे हैं, मेरे एक बेटा है तीन साल का।", 2)
+        self.assertEqual(
+            [(c["sex"], c["age"]) for c in inlaw["profile"]["children"]],
+            [("male", {"value": 3, "unit": "years"})],
+        )
+        twins = stored("जुड़वाँ हैं, एक लड़का एक लड़की, दोनों एक साल के।", 2)
+        self.assertEqual(
+            [(c["sex"], c["age"]) for c in twins["profile"]["children"]],
+            [
+                ("male", {"value": 1, "unit": "years"}),
+                ("female", {"value": 1, "unit": "years"}),
+            ],
+        )
         self.assertEqual(call_state._children_payload("डेढ़"), ("ignore", []))
         self.assertEqual(call_state._children_payload("1.5"), ("ignore", []))
         folded_half = call_state._fold_spoken_numbers("डेढ़ बच्चा है।")
