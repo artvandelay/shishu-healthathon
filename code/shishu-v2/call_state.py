@@ -770,6 +770,26 @@ def _month_age_numbers(utterance: str) -> set[float]:
     return found
 
 
+_CHILD_WORD = re.compile(r"बच्च|बेटा|बेटी|लड़क")
+
+
+def _child_ages_already_said(prior: list[str] | None) -> list[float]:
+    """Ages from the nearest earlier line that is about her child.
+
+    A fits answer logged on the next turn often omits the child list. The line
+    before it may already have said "एक बच्चा है, दो साल का". A nearer line that
+    states an age and is not about a child, such as a relative's age, stops the walk.
+    """
+    for text in reversed(list(prior or [])):
+        line = text or ""
+        ages = _spoken_ages(line)
+        if _CHILD_WORD.search(line) and ages:
+            return ages
+        if ages:
+            return []
+    return []
+
+
 def _ages_from_prior(count_n: int, prior: list[str] | None) -> list[float]:
     """Ages from the nearest earlier line that states exactly count_n ages.
 
@@ -998,6 +1018,20 @@ def apply_updates(
     followup_id = (state.get("current_question") or {}).get("followup_id")
     parsed = [_check_update(update, current) for update in updates]
     pairs = sorted(zip(updates, parsed), key=lambda pair: 0 if pair[1][0] == "profile" else 1)
+    has_topic = any(kind == "topic" for kind, _name in parsed)
+    has_children_update = any(kind == "profile" and name == "children" for kind, name in parsed)
+    existing_children = [
+        child for child in (state["profile"].get("children") or []) if isinstance(child, dict)
+    ]
+    if has_topic and not has_children_update and not existing_children:
+        spoken_children = _child_ages_already_said(prior_utterances)
+        if spoken_children:
+            state["profile"]["children"] = _children_from_ages(spoken_children)
+            intro_c = state["topics"]["intro_children"]
+            intro_c["state"] = "answered"
+            intro_c["value"] = True
+            intro_c["source"] = "model"
+            _remember_turn(intro_c, turn_id)
     wrote = False
     problems: list[str] = []
     for update, (kind, name) in pairs:
