@@ -180,6 +180,8 @@ One month is 1 महीना, the same singular rule a week already uses. Two 
 
 दोनों or जुड़वाँ with one age is two children of that age. जुड़वाँ हैं, दोनों एक साल के is two one-year-olds. बेटा और बेटी, दोनों दो साल के keeps both sexes. An explicit count still wins. `196` unit tests. 58 scenarios, 0 failed.
 
+A half month of pregnancy is kept. साढ़े सात महीने में is early, and the amount is साढ़े 7 महीने, not 8. ढाई महीने पहले is how long ago, not a pregnancy month. Under nine months is early. Nine is full. `196` unit tests. 58 scenarios, 0 failed.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

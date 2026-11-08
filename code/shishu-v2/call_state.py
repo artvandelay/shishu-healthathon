@@ -1165,8 +1165,32 @@ def _whole_number(raw: str) -> int:
     return int(number) if number.is_integer() else int(round(number))
 
 
-def _spoken_month_count(text: str) -> int | None:
-    """A pregnancy month. N महीने का is the child's age, not that month."""
+def _month_number(raw: str) -> int | float:
+    """Keep साढ़े सात as 7.5. Do not round a half month up to the next month."""
+    number = float(raw)
+    return int(number) if number.is_integer() else number
+
+
+def _month_phrase(month: object) -> str:
+    if isinstance(month, bool) or not isinstance(month, (int, float)):
+        return str(month or "")
+    number = float(month)
+    if abs(number - 1.5) < 1e-6:
+        return "डेढ़ महीने"
+    if abs(number - 2.5) < 1e-6:
+        return "ढाई महीने"
+    if number > 2 and abs(number - int(number) - 0.5) < 1e-6:
+        return f"साढ़े {int(number)} महीने"
+    if abs(number - int(number) - 0.25) < 1e-6 and int(number) >= 1:
+        return f"सवा {int(number)} महीने"
+    if abs(number - int(number) - 0.75) < 1e-6:
+        return f"पौने {int(number) + 1} महीने"
+    shown = int(number) if number.is_integer() else number
+    return f"{shown} महीने"
+
+
+def _spoken_month_count(text: str) -> int | float | None:
+    """A pregnancy month. N महीने का is the child's age. N महीने पहले is how long ago."""
     folded = _fold_spoken_numbers(text or "")
     born = re.search(
         rf"(\d+(?:\.\d+)?)\s*{_MONTH_UNIT}\S*(?:\s+में|\s+का\s+पैदा)",
@@ -1174,14 +1198,16 @@ def _spoken_month_count(text: str) -> int | None:
         re.I,
     )
     if born:
-        return _whole_number(born.group(1))
+        return _month_number(born.group(1))
     for match in re.finditer(rf"(\d+(?:\.\d+)?)\s*{_MONTH_UNIT}", folded, re.I):
         rest = re.sub(r"^\S*", "", folded[match.end():])
         if re.match(r"\s*का\b", rest):
             continue
+        if re.match(r"\s*पहले", rest):
+            continue
         if _is_duration_after(folded, match.end()):
             continue
-        return _whole_number(match.group(1))
+        return _month_number(match.group(1))
     return None
 
 
@@ -1970,6 +1996,13 @@ def _term_label(text: str) -> str | None:
         rf"पूरे\s*9|full term|समय पर|9\s+महीन\S*{born}|nine month",
         folded,
     )
+    # साढ़े सात महीने में is 7.5, which the integer list misses. Under 9 is early.
+    gestation = re.search(rf"(\d+(?:\.\d+)?)\s*महीन\S*{born}", folded)
+    if gestation:
+        month = float(gestation.group(1))
+        early = early or month < 9
+        late = late or month > 9
+        full = full or month == 9
     if early and not late:
         return "early"
     if late and not early:
@@ -2115,7 +2148,7 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
     if "amount" in follow_ids and not details.get("amount"):
         month = _spoken_month_count(utterance or "")
         if month is not None:
-            details["amount"] = f"{month} महीने"
+            details["amount"] = _month_phrase(month)
     ages = _spoken_age_records(utterance or "")
     if len(ages) == 1:
         phrase = _age_phrase(ages[0])

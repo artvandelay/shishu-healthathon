@@ -579,7 +579,7 @@ def _detail_values(details: dict, skip_label: str = "") -> str:
         elif key == "count" and re.fullmatch(r"\d+(?:\.\d+)?", shown):
             shown = f"{shown} बार"
         elif key == "month" and re.fullmatch(r"\d+(?:\.\d+)?", shown):
-            shown = f"{shown} महीने"
+            shown = call_state._month_phrase(float(shown))
         if not shown or shown == skip_norm:
             continue
         if shown not in out:

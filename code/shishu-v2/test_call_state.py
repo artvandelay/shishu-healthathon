@@ -1421,6 +1421,17 @@ class CallStateTests(unittest.TestCase):
             utterance="सात महीने में पैदा हुई।",
         )
         self.assertEqual(early["topics"]["birth_term"]["details"].get("amount"), "7 महीने")
+        half = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "birth_term"),
+            [_update("topic.birth_term", False)],
+            1,
+            utterance="साढ़े सात महीने में पैदा हुआ।",
+        )
+        self.assertEqual(half["topics"]["birth_term"]["details"].get("term"), "early")
+        self.assertEqual(half["topics"]["birth_term"]["details"].get("amount"), "साढ़े 7 महीने")
+        self.assertEqual(call_state.topic_answer_kind(half["topics"]["birth_term"], "birth_term"), "yes")
+        self.assertIsNone(call_state._spoken_month_count("ढाई महीने पहले पैदा हुआ।"))
+        self.assertEqual(call_state._month_phrase(7.5), "साढ़े 7 महीने")
 
     def test_the_number_next_to_the_event_is_the_one_stored(self):
         nicu = call_state.apply_updates(
