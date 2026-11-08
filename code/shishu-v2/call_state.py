@@ -1748,8 +1748,11 @@ def _shared_age_for_group(utterance: str, count_n: int) -> dict | None:
         return None
     folded = _fold_spoken_numbers(utterance or "")
     # दोनों is the count two, and it is not folded to a digit (दो must not eat it).
-    if count_n == 2:
-        folded = re.sub(r"दोनों", "2", folded, count=1)
+    # तीनों and चारों are the same kind of word for three and four.
+    for word, digit in (("पाँचों", "5"), ("पांचों", "5"), ("चारों", "4"), ("तीनों", "3"), ("दोनों", "2")):
+        if count_n == int(digit):
+            folded = re.sub(word, digit, folded, count=1)
+            break
     age = records[0]
     unit = {
         "years": _YEAR_UNIT,
@@ -1775,7 +1778,7 @@ def _shared_age_for_group(utterance: str, count_n: int) -> dict | None:
     if after and re.search(r"उम्र|मेरी|मैं", after.group(1)):
         after = None
     # जुड़वाँ ... दोनों एक साल. दोनों was folded to 2 for this check only.
-    dono = re.search(rf"(?:^|\s)2\s+{num}\s*{unit}", folded, re.I) if count_n == 2 else None
+    dono = re.search(rf"(?:^|\s){count_n}\s+{num}\s*{unit}", folded, re.I)
     if not before and not after and not dono:
         return None
     return age

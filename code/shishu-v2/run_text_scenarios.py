@@ -637,6 +637,38 @@ def campaign() -> list[Scenario]:
             children_value=3,
         ),
         Scenario(
+            name="no_flags_all_three_four",
+            group="no_flags",
+            caller_name="कमल",
+            marital_text=married,
+            children_text="तीनों बच्चे चार साल के हैं।",
+            children_value=3,
+        ),
+        Scenario(
+            name="flags_all_three_fits",
+            group="red_flags",
+            caller_name="विमला",
+            marital_text=married,
+            children_text="तीनों बच्चे चार साल के हैं।",
+            children_value=3,
+            positives={
+                "body_fits_milestones": {
+                    "value": True,
+                    "utterance": "तीनों को झटके आते हैं।",
+                    "details": {},
+                },
+            },
+            expect_yes=("body_fits_milestones",),
+        ),
+        Scenario(
+            name="degenerate_three_age_sent_as_count",
+            group="degenerate",
+            caller_name="राधा",
+            marital_text=married,
+            children_text="तीनों बच्चे चार साल के हैं।",
+            children_value=4,
+        ),
+        Scenario(
             name="no_flags_delivery_happened",
             group="no_flags",
             caller_name="अनीता",

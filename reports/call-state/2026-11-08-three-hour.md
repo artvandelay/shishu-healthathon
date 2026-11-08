@@ -426,7 +426,13 @@ A danda was being read as part of the last word, so डिलीवरी हो
 
 Trio: the delivery happened (no flags, no हाँ lines), bleeding at delivery (still a yes), and that bleeding sent as false (still a yes). Pass.
 
-## Left at 16:53 IST
+## 16:54 IST
+
+तीनों and चारों share one age the way दोनों already did. तीनों बच्चे चार साल के हैं is three children of four. The 4 sent as the count is still those three, because 4 is the age. `197` unit tests. 171 scenarios, 0 failed.
+
+Trio: all three are four (no flags), fits for all three (still a yes), and 4 sent as the count (still three children of four, no हाँ lines). Pass.
+
+## Left at 16:54 IST
 
 फोर्सेप लगा, नॉर्मल नहीं stays a yes with no delivery type. Forceps was not added to the operation words. भाई को बचपन से नहीं दिखता stays a no on the blindness question. तलाक, विधवा, and शादी टूट stay unmapped as a status, and शादी टूट is not stored as married. Cholesterol is in the English family note, not the Hindi question, so it is not stored. सूजन या गाँठ is still not a place. एक आधा साल stays half a year.
 
