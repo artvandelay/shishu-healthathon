@@ -2697,6 +2697,42 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str, on_followup: bo
         ]
         if named:
             details["condition"] = named[0] if len(named) == 1 else named
+    if name == "ill_fasting" and "symptom" not in details:
+        named = [
+            label
+            for label, words in (
+                ("sleepiness", ("सुस्ती", "नींद")),
+                ("vomiting", ("उल्टी",)),
+                ("fits", ("झटके", "दौरे")),
+            )
+            if _named_and_not_denied(val_blob, utt_blob, words)
+        ]
+        if named:
+            details["symptom"] = named[0] if len(named) == 1 else named
+    if name == "body_fits_milestones" and "type" not in details:
+        named = [
+            label
+            for label, words in (
+                ("fits", ("झटके", "दौरे")),
+                ("sitting", ("बैठना", "बैठ")),
+                ("walking", ("चलना", "चलत")),
+                ("speech", ("बोलना", "बोलत")),
+            )
+            if _named_and_not_denied(val_blob, utt_blob, words)
+        ]
+        if named:
+            details["type"] = named[0] if len(named) == 1 else named
+    if name == "body_bleeding_bruise" and "bleeding_or_bruises" not in details:
+        named = [
+            label
+            for label, words in (
+                ("bleeding", ("खून",)),
+                ("bruises", ("नील",)),
+            )
+            if _named_and_not_denied(val_blob, utt_blob, words)
+        ]
+        if named:
+            details["bleeding_or_bruises"] = named[0] if len(named) == 1 else named
     if "relationship" in follow_ids and "relationship" not in details and _has_kinship(utterance or ""):
         details["relationship"] = (utterance or "").strip()
     _store_question_choice(name, details, follow_ids, utterance or "")

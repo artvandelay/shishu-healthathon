@@ -1709,6 +1709,27 @@ class CallStateTests(unittest.TestCase):
             utterance="मामी को खुजली वाले धब्बे हैं।",
         )
         self.assertEqual(skin["topics"]["fam_maternal_side"]["details"].get("condition"), "skin")
+        fasting = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "ill_fasting"),
+            [_update("topic.ill_fasting", True)],
+            1,
+            utterance="खाना छूटने पर झटके होते हैं।",
+        )
+        self.assertEqual(fasting["topics"]["ill_fasting"]["details"].get("symptom"), "fits")
+        late = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "body_fits_milestones"),
+            [_update("topic.body_fits_milestones", True)],
+            1,
+            utterance="बैठना देर से हुआ।",
+        )
+        self.assertEqual(late["topics"]["body_fits_milestones"]["details"].get("type"), "sitting")
+        bruise = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "body_bleeding_bruise"),
+            [_update("topic.body_bleeding_bruise", True)],
+            1,
+            utterance="आसानी से नील पड़ जाते हैं।",
+        )
+        self.assertEqual(bruise["topics"]["body_bleeding_bruise"]["details"].get("bleeding_or_bruises"), "bruises")
         self.assertNotIn(
             "condition",
             [item["id"] for item in call_state._pending_followups(skin, "fam_maternal_side")],

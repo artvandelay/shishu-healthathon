@@ -362,6 +362,12 @@ Trio: no sugar (no flags, no हाँ lines), father's stroke (still a yes), an
 
 Trio: no itch (no flags, no हाँ lines), maternal skin patches (still a yes), and infection plus bleeding (still a yes). Pass.
 
+## 16:42 IST
+
+खाना छूटने पर झटके is the fasting symptom. बैठना देर से is the milestone type. नील is the bruise, खून on that question is the bleeding. उल्टी नहीं होती stays a no. The report says झटके and बैठना. `197` unit tests. 141 scenarios, 0 failed.
+
+Trio: no vomiting (no flags, no हाँ lines), fits when a meal is missed (still a yes), and late sitting sent as false (still a yes, the line names बैठना). Pass.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

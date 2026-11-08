@@ -637,6 +637,53 @@ def campaign() -> list[Scenario]:
             children_value=3,
         ),
         Scenario(
+            name="no_flags_no_vomiting",
+            group="no_flags",
+            caller_name="शशि",
+            marital_text=married,
+            children_text="एक बेटी है, दो साल की।",
+            children_value=1,
+            positives={
+                "ill_fasting": {
+                    "value": True,
+                    "utterance": "उल्टी नहीं होती।",
+                    "details": {},
+                },
+            },
+        ),
+        Scenario(
+            name="flags_fits_when_hungry",
+            group="red_flags",
+            caller_name="पद्मा",
+            marital_text=married,
+            children_text="एक बेटा है, तीन साल का।",
+            children_value=1,
+            positives={
+                "ill_fasting": {
+                    "value": True,
+                    "utterance": "खाना छूटने पर झटके होते हैं।",
+                    "details": {},
+                },
+            },
+            expect_yes=("ill_fasting",),
+        ),
+        Scenario(
+            name="degenerate_late_sitting_sent_as_no",
+            group="degenerate",
+            caller_name="कमला",
+            marital_text=married,
+            children_text="एक बेटी है, चार साल की।",
+            children_value=1,
+            positives={
+                "body_fits_milestones": {
+                    "value": False,
+                    "utterance": "बैठना देर से हुआ।",
+                    "details": {},
+                },
+            },
+            expect_yes=("body_fits_milestones",),
+        ),
+        Scenario(
             name="no_flags_no_itch",
             group="no_flags",
             caller_name="जया",
