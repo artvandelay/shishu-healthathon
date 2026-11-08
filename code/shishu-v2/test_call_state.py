@@ -1013,6 +1013,14 @@ class CallStateTests(unittest.TestCase):
             self.assertEqual(records[0]["unit"], "years", utterance)
             self.assertAlmostEqual(records[0]["value"], years, msg=utterance)
         self.assertEqual(
+            call_state._spoken_age_records("तीन बच्चे हैं दो चार और छह साल के।"),
+            [
+                {"value": 2, "unit": "years"},
+                {"value": 4, "unit": "years"},
+                {"value": 6, "unit": "years"},
+            ],
+        )
+        self.assertEqual(
             call_state._spoken_age_records("तीन बच्चे हैं, आठ, छह और चार साल के।"),
             [
                 {"value": 8, "unit": "years"},
@@ -2013,6 +2021,27 @@ class CallStateTests(unittest.TestCase):
         )
         self.assertEqual(
             call_state.topic_answer_kind(mixed["topics"]["body_fits_milestones"], "body_fits_milestones"),
+            "yes",
+        )
+        # A denial clause does not erase a different clause that names a problem.
+        complaint = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "close_anything_else"),
+            [_update("topic.close_anything_else", True)],
+            1,
+            utterance="और कुछ नहीं, पेट में दर्द रहता है।",
+        )
+        self.assertEqual(
+            call_state.topic_answer_kind(complaint["topics"]["close_anything_else"], "close_anything_else"),
+            "yes",
+        )
+        nothing_else = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "close_anything_else"),
+            [_update("topic.close_anything_else", "नहीं, बस इतना ही।")],
+            1,
+            utterance="नहीं, बस इतना ही।",
+        )
+        self.assertNotEqual(
+            call_state.topic_answer_kind(nothing_else["topics"]["close_anything_else"], "close_anything_else"),
             "yes",
         )
         only_fine = call_state.apply_updates(

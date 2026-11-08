@@ -552,6 +552,40 @@ def _clause_is_reassurance(clause: str) -> bool:
     return _REASSURE_RE.search(clause) is not None
 
 
+_BARE_CLOSER_RE = re.compile(
+    r"(?:(?:जी\s+)?(?:और\s*कुछ\s*नहीं|इतना\s*ही|नहीं|नही|बस)[।,!\s]*)+",
+    re.I,
+)
+
+
+def _only_denial(text: str) -> bool:
+    """A bare नहीं does not erase a different clause. A नहीं that names who or what does.
+
+    और कुछ नहीं, पेट में दर्द रहता है keeps the pain. मेरे बच्चे को नहीं is the
+    answer even when another clause says the problem exists for someone else.
+    झटके नहीं आते is one clause, so it stays a no.
+    """
+    bits = _clauses(text)
+    if not bits:
+        return False
+    content_denial = False
+    bare_denial = False
+    fact = False
+    for bit in bits:
+        if _DENY_RE.search(bit) and not _AFFIRM_RE.search(bit):
+            if _BARE_CLOSER_RE.fullmatch(bit):
+                bare_denial = True
+            else:
+                content_denial = True
+            continue
+        if _BARE_CLOSER_RE.fullmatch(bit):
+            continue
+        fact = True
+    if content_denial or not bare_denial:
+        return content_denial
+    return not fact
+
+
 def _only_reassurance(text: str) -> bool:
     """Every clause says it is fine. A different clause that names a problem does not.
 
@@ -582,7 +616,7 @@ def _stated_polarity(value: object) -> str | None:
     if affirmed and not denied:
         return "yes"
     if denied and not affirmed:
-        return "no"
+        return "no" if _only_denial(text) else None
     if _only_reassurance(text):
         return "no"
     return None
@@ -1427,16 +1461,18 @@ def _ages_with_unit(
 ) -> list[tuple]:
     """Numbers that share one unit, plus a number written next to the unit.
 
-    आठ, छह और चार साल is three ages. एक आधा साल is one age: the एक is not
-    separated by a comma or और, so it stays out of the list.
+    आठ, छह और चार साल is three ages. दो चार और छह साल is the same list:
+    और sits only before the last number. एक आधा साल has no और, so it is not a list.
     """
     found = []
     covered: list[tuple[int, int]] = []
     listed = re.compile(
-        rf"(\d+(?:\.\d+)?(?:\s*(?:,|और|and)\s*\d+(?:\.\d+)?)+)\s*{unit_pattern}",
+        rf"(\d+(?:\.\d+)?(?:(?:\s*(?:,|और|and)\s*|\s+)\d+(?:\.\d+)?)+)\s*{unit_pattern}",
         re.I,
     )
     for match in listed.finditer(folded):
+        if not re.search(r",|और|and", match.group(1), re.I):
+            continue
         if not _span_is_age(folded, match.end(), require_copula):
             continue
         if skip_event_month and _is_event_month_after(folded, match.end()):

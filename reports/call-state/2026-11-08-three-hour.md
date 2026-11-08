@@ -226,6 +226,12 @@ Pulled `origin/refactor/deterministic-call-state` at 16:00 IST. HEAD was `19cc09
 
 Trio: एक साल दो हफ्ते (no flags), झटके now ठीक (still a yes), and सब ठीक है sent as true on every clinical answer (no हाँ lines). Pass.
 
+## 16:10 IST
+
+A bare नहीं does not erase a different clause. और कुछ नहीं, पेट में दर्द रहता है stays a complaint. मेरे बच्चे को नहीं stays a no even when the other clause says the problem exists for someone else, and झटके नहीं आते stays a no. दो चार और छह साल is three ages: और before only the last number still joins the list. एक आधा साल stays half a year, the existing test. `196` unit tests. 75 scenarios, 0 failed.
+
+Trio: ages with और only before the last (no flags, three children), pain after और कुछ नहीं (still a yes), and नहीं, बस इतना ही sent as true (no हाँ lines). Pass.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.
