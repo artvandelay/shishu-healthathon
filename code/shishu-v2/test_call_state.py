@@ -760,6 +760,18 @@ class CallStateTests(unittest.TestCase):
         self.assertEqual(call_state._find_child_id(three, "तीसरे वाले"), "child_3")
         self.assertEqual(call_state._find_child_id(three, "बड़े वाले"), "child_1")
         self.assertEqual(call_state._find_child_id(three, "छोटे वाले"), "child_3")
+        four = call_state.apply_updates(
+            call_state.new_call_state(),
+            [_update("profile.children", [
+                {"age": {"value": 8, "unit": "years"}},
+                {"age": {"value": 6, "unit": "years"}},
+                {"age": {"value": 4, "unit": "years"}},
+                {"age": {"value": 2, "unit": "years"}},
+            ])],
+            1,
+        )
+        self.assertEqual(call_state._find_child_id(four, "चौथे वाले"), "child_4")
+        self.assertEqual(call_state._find_child_id(four, "तीसरे वाले"), "child_3")
 
     def test_child_name_with_case_markers(self):
         state = call_state.new_call_state()

@@ -112,7 +112,9 @@ shaadi nahi hui is unmarried, the same denial as शादी नहीं ह�
 
 छह महीने stored with a year unit becomes 6 months. दो हफ़्ते and पंद्रह दिन stored as years become weeks and days. दो साल stays years. A number she used for two units is left as sent.
 
-A stored day count prints as 4 दिन and a stored time count as 3 बार. `187` unit tests. 39 scenarios, 0 failed.
+A stored day count prints as 4 दिन and a stored time count as 3 बार.
+
+चौथे वाले is the fourth child by age, the same rule as दूसरा and तीसरा. `187` unit tests. 40 scenarios, 0 failed.
 
 ## Not hardcoded
 

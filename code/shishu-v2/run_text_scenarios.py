@@ -553,6 +553,25 @@ def campaign() -> list[Scenario]:
             children_value=1,
         ),
         Scenario(
+            name="flags_fourth_child",
+            group="red_flags",
+            caller_name="सुषमा",
+            marital_text=married,
+            children_text="चार बच्चे हैं, आठ, छह, चार और दो साल के।",
+            children_value=4,
+            positives={
+                "body_fits_milestones": {
+                    "value": True,
+                    "utterance": "चौथे वाले को झटके आते हैं।",
+                    "details": {"affected_child": "चौथे वाले"},
+                    "followups": {
+                        "affected_child": ("चौथे वाले को।", "चौथे वाले"),
+                    },
+                },
+            },
+            expect_yes=("body_fits_milestones",),
+        ),
+        Scenario(
             name="flags_pregnancy_bp_and_sugar",
             group="red_flags",
             caller_name="ज्योति",

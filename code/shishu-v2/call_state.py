@@ -695,6 +695,10 @@ def _find_child_id(state: dict, raw: object) -> str | None:
                 return ranked[1]
             if len(ranked) >= 3 and any(w in cleaned for w in ("tisra", "tesra", "तीसरा", "तीसरे", "तीसरी", "third")):
                 return ranked[2]
+            if len(ranked) >= 4 and any(w in cleaned for w in ("chautha", "chauthe", "chauthi", "चौथा", "चौथे", "चौथी", "fourth")):
+                return ranked[3]
+            if len(ranked) >= 5 and any(w in cleaned for w in ("panchva", "paanchva", "पाँचवाँ", "पाँचवें", "पाँचवीं", "पांचवां", "fifth")):
+                return ranked[4]
             if len(ranked) >= 3 and any(w in cleaned for w in ("beech", "बीच", "middle")):
                 return ranked[len(ranked) // 2]
     females = [c["id"] for c in children if isinstance(c, dict) and _is_female(c) and c.get("id")]
