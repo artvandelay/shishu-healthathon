@@ -863,6 +863,15 @@ class CallStateTests(unittest.TestCase):
         )
         self.assertEqual(named_child["profile"]["children"][0]["name"], "आरव")
         self.assertEqual(named_child["profile"]["children"][0]["sex"], "male")
+        counted = _ask(call_state.new_call_state(), "intro_children")
+        counted = call_state.apply_updates(
+            counted,
+            [_update("profile.children", "आठ साल का एक बच्चा है।")],
+            1,
+            utterance="आठ साल का एक बच्चा है।",
+        )
+        self.assertEqual(len(counted["profile"]["children"]), 1)
+        self.assertEqual(counted["profile"]["children"][0]["age"], {"value": 8, "unit": "years"})
         self.assertEqual(call_state._spoken_given_names("मेरा नाम मीरा है।"), [])
         self.assertEqual(call_state.spoken_person_name("जिगर"), "जिगर")
         self.assertEqual(call_state.spoken_person_name("my name is Seema"), "Seema")

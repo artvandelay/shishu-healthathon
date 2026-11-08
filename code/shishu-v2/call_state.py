@@ -1352,12 +1352,15 @@ def _children_payload(value: object) -> tuple[str, object]:
         val_clean = str(value).strip().lower()
         if val_clean in {"none", "no", "nahi", "nahin", "zero", "0", "false", "कोई नहीं", "एक भी नहीं"} or _is_no_children_phrase(value):
             return "none", []
-        val_folded = val_clean
-        for word, number in _NUM_WORDS:
-            val_folded = val_folded.replace(word, number)
-        m = re.search(r"\b(\d+)\b", val_folded)
-        if m:
-            number = int(m.group(1))
+        val_folded = _fold_spoken_numbers(val_clean)
+        # The number beside बच्चा is the count. आठ साल का एक बच्चा is one child, not eight.
+        beside = re.search(r"(\d+)\s*(?:बच्च|बेटा|बेटी|लड़क)", val_folded)
+        if not beside:
+            beside = re.search(r"(?:बच्च\S*)\s+(\d+)", val_folded)
+        if not beside and not re.search(r"बच्च|बेटा|बेटी|लड़क", val_folded):
+            beside = re.search(r"\b(\d+)\b", val_folded)
+        if beside:
+            number = int(beside.group(1))
             return ("none", []) if number <= 0 else ("count", number)
     if isinstance(value, (list, dict)):
         return "list", _normalize_children(value)
