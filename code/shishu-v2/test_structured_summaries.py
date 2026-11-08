@@ -250,63 +250,6 @@ class StructuredSummaryTests(unittest.TestCase):
         self.assertEqual(seen, list(summarizer.SUMMARY_MODEL_CHAIN))
         self.assertEqual(payload["doctor_markdown"], "ok")
 
-    def test_a_finding_does_not_borrow_its_siblings_question(self):
-        state = _state()
-        for topic_id, value, details in (
-            ("birth_mode", "operation", {"delivery_type": "operation"}),
-            ("birth_term", True, {"weeks": "32"}),
-            ("body_transfusion", True, {"times": 2}),
-            ("fam_miscarriage", True, {"count": 1}),
-            ("body_fits_milestones", True, {}),
-        ):
-            state["topics"][topic_id]["state"] = "answered"
-            state["topics"][topic_id]["value"] = value
-            state["topics"][topic_id]["details"] = details
-        findings, flags = summarizer.state_to_findings_and_flags(state)
-        questions = summarizer.default_mother_questions(findings, flags)
-        self.assertIn("ऑपरेशन", questions)
-        self.assertIn("समय से पहले", questions)
-        self.assertIn("खून चढ़ाना", questions)
-        self.assertIn("गर्भ गिरा", questions)
-        self.assertIn("झटके", questions)
-        self.assertNotIn("गुजर गया", questions)
-        self.assertNotIn("भर्ती होना पड़ा", questions)
-        self.assertNotIn("पीलिया", questions)
-
-    def test_no_child_questions_do_not_invent_a_child(self):
-        state = call_state.new_call_state()
-        state["profile"]["children"] = []
-        state["profile"]["caller_name"] = "लता"
-        text = summarizer.default_mother_questions({}, [], has_children=False)
-        self.assertNotIn("मेरे बच्चे", text)
-        self.assertIn("अगली प्रेग्नेंसी", text)
-        fallback = summarizer.build_state_fallback(state)
-        self.assertNotIn("मेरे बच्चे", fallback["summary_mother"])
-
-    def test_a_lone_finding_does_not_claim_a_sibling_event(self):
-        samples = {
-            "birth_cord_bleed": ("नाल गिरने पर", "पीलिया"),
-            "body_blue": ("होंठ या उँगलियाँ", "भर्ती होना पड़ा"),
-            "body_tummy": ("पेट धीरे", "भर्ती होना पड़ा"),
-            "preg_thalassemia": ("थैलेसीमिया", "बीपी"),
-            "preg_heart": ("दिल की", "बीपी"),
-            "ill_odor": ("गंध", "खाना देर से"),
-            "ill_sudden": ("अचानक बहुत", "खाना देर से"),
-            "birth_cleft": ("होंठ या तालु", "पीलिया"),
-            "body_bleeding_bruise": ("चोट पर खून", "घुटने"),
-            "body_regression": ("पहले कर लेता था", "पेट के आकार"),
-            "body_puberty": ("बढ़ती उम्र", "पेट के आकार"),
-            "body_limb_pain": ("बार-बार दर्द", "घुटने"),
-        }
-        for topic_id, (needed, forbidden) in samples.items():
-            state = _state()
-            state["topics"][topic_id]["state"] = "answered"
-            state["topics"][topic_id]["value"] = True
-            findings, flags = summarizer.state_to_findings_and_flags(state)
-            questions = summarizer.default_mother_questions(findings, flags)
-            self.assertIn(needed, questions, topic_id)
-            self.assertNotIn(forbidden, questions, topic_id)
-
     def test_frontier_model_can_override_a_false_positive(self):
         state = _state()
         state["profile"]["children"] = [

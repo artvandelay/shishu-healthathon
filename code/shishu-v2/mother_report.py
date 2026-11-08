@@ -234,14 +234,9 @@ _TOKEN_HI = {
     "abnormal": "असामान्य",
     "low": "कम",
     "high": "ज़्यादा",
-    "heavy": "ज़्यादा",
-    "prolonged": "देर तक",
     "both": "दोनों",
     "dono": "दोनों",
     "fits": "झटके",
-    "sitting": "बैठना",
-    "walking": "चलना",
-    "speech": "बोलना",
     "seizures": "झटके",
     "seizure": "झटके",
     "jhatke": "झटके",
@@ -270,11 +265,9 @@ _TOKEN_HI = {
     "vomiting": "उल्टी",
     "ulti": "उल्टी",
     "sugar": "शुगर",
-    "bp": "बीपी",
     "diabetes": "शुगर",
     "thyroid": "थायरॉइड",
     "stroke": "लकवा",
-    "skin": "खुजली",
     "cancer": "कैंसर",
     "cousin": "कज़िन",
     "uncle": "चाचा/मामा",
@@ -346,11 +339,7 @@ def hindi_text(text: str) -> str:
             return _TOKEN_HI[lower]
         if lower in _KEEP_LATIN:
             return word
-        # A capitalized name can be written in Hindi. An unknown lowercase
-        # clinical word stays as it is, instead of becoming fake Devanagari.
-        if word[:1].isupper() and (len(word) == 1 or word[1:].islower()):
-            return transliterate(word)
-        return word
+        return transliterate(word)
 
     return re.sub(r"[A-Za-z]+", one, raw)
 
@@ -359,7 +348,7 @@ def _name(call: dict) -> str:
     state = call.get("state")
     if isinstance(state, dict):
         prof = state.get("profile") or {}
-        caller_name = call_state.spoken_person_name(prof.get("caller_name"))
+        caller_name = str(prof.get("caller_name") or "").strip()
         if caller_name and "not reported" not in caller_name.lower():
             return hindi_text(caller_name)
         intro_val = str(((state.get("topics") or {}).get("intro_name") or {}).get("value") or "").strip()
@@ -471,7 +460,7 @@ def _saved_state(call: dict) -> dict | None:
 
 def _structured_kind(state: dict, topic_id: str) -> str:
     topic = (state.get("topics") or {}).get(topic_id) or {}
-    return call_state.topic_answer_kind(topic, topic_id)
+    return call_state.topic_answer_kind(topic)
 
 
 def _thalassemia_from_state(state: dict) -> bool:
@@ -493,19 +482,7 @@ def _thalassemia_from_state(state: dict) -> bool:
 
 _HIDDEN_DETAIL_VALUES = {
     "noted", "skip", "unknown", "no_response", "none", "true", "false", "yes", "no", "null", "n/a",
-    "नहीं", "नही", "nahi", "nahin",
 }
-
-
-def _sex_word(child: dict | None) -> str:
-    if not isinstance(child, dict):
-        return ""
-    if call_state._is_female(child):
-        return "बेटी"
-    sex = str(child.get("sex") or "").strip().lower()
-    if sex in {"male", "boy", "m", "beta", "bete", "son", "बेटा", "बेटे", "लड़का", "लड़के"}:
-        return "बेटा"
-    return ""
 
 
 def _child_label(state: dict, child_id: object) -> str:
@@ -517,9 +494,8 @@ def _child_label(state: dict, child_id: object) -> str:
     child = next((item for item in children if item.get("id") == child_id), None)
     if child and str(child.get("name") or "").strip():
         return str(child["name"]).strip()
-    sex_word = _sex_word(child) if child else ""
     if len(children) <= 1:
-        return sex_word
+        return ""
     ranked = sorted(
         children,
         key=lambda item: (
@@ -532,26 +508,18 @@ def _child_label(state: dict, child_id: object) -> str:
     index = next((i for i, item in enumerate(ranked) if item.get("id") == child_id), None)
     if index is None:
         return ""
-    ages_differ = (
+    if (
         len(ranked) >= 2
         and call_state._child_age_years(ranked[0].get("age"))
         != call_state._child_age_years(ranked[-1].get("age"))
-    )
-    if ages_differ and index == 0:
-        return {"बेटी": "बड़ी बेटी", "बेटा": "बड़ा बेटा"}.get(sex_word, "बड़ा बच्चा")
-    if ages_differ and index == len(ranked) - 1:
-        return {"बेटी": "छोटी बेटी", "बेटा": "छोटा बेटा"}.get(sex_word, "छोटा बच्चा")
-    if sex_word == "बेटी":
-        ordinals = ("पहली", "दूसरी", "तीसरी", "चौथी", "पाँचवीं")
-        noun = "बेटी"
-    elif sex_word == "बेटा":
-        ordinals = ("पहला", "दूसरा", "तीसरा", "चौथा", "पाँचवाँ")
-        noun = "बेटा"
-    else:
-        ordinals = ("पहला", "दूसरा", "तीसरा", "चौथा", "पाँचवाँ")
-        noun = "बच्चा"
+    ):
+        if index == 0:
+            return "बड़ा बच्चा"
+        if index == len(ranked) - 1:
+            return "छोटा बच्चा"
+    ordinals = ("पहला", "दूसरा", "तीसरा", "चौथा", "पाँचवाँ")
     word = ordinals[index] if index < len(ordinals) else f"{index + 1}"
-    return f"{word} {noun}"
+    return f"{word} बच्चा"
 
 
 def _shown_value(value: object) -> str:
@@ -560,9 +528,9 @@ def _shown_value(value: object) -> str:
         return ", ".join(part for part in parts if part)
     if value is None or isinstance(value, (dict, bool)):
         return ""
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
     text = str(value).strip().strip("।.! ")
-    if re.fullmatch(r"\d+\.0+", text):
-        text = str(int(float(text)))
     if not text or text.startswith("child_") or text.lower() in _HIDDEN_DETAIL_VALUES:
         return ""
     mapped = _TOKEN_HI.get(text.lower(), text)
@@ -578,103 +546,11 @@ def _detail_values(details: dict, skip_label: str = "") -> str:
         if key == "affected_child" and skip_norm:
             continue
         shown = _shown_value(value)
-        if key == "days" and re.fullmatch(r"\d+(?:\.\d+)?", shown):
-            shown = call_state._day_phrase(float(shown))
-        elif key == "count" and re.fullmatch(r"\d+(?:\.\d+)?", shown):
-            shown = f"{shown} बार"
-        elif key == "month" and re.fullmatch(r"\d+(?:\.\d+)?", shown):
-            shown = call_state._month_phrase(float(shown))
-        elif key in {"pregnancy", "pregnancy_number"} and re.fullmatch(r"\d+", shown):
-            shown = _pregnancy_phrase(int(shown))
         if not shown or shown == skip_norm:
             continue
         if shown not in out:
             out.append(shown)
-    kept = [
-        part for part in out
-        if not any(part != other and part in other for other in out)
-    ]
-    return ", ".join(kept)
-
-
-def _pregnancy_phrase(index: int) -> str:
-    """2 is दूसरी प्रेग्नेंसी, not a bare 2 beside the sentence that already said it."""
-    words = {1: "पहली", 2: "दूसरी", 3: "तीसरी", 4: "चौथी", 5: "पाँचवीं"}
-    word = words.get(index) or str(index)
-    return f"{word} प्रेग्नेंसी"
-
-
-def _number_text(value: object) -> str:
-    if isinstance(value, float) and value.is_integer():
-        return str(int(value))
-    return str(value)
-
-
-def _quarter_age(value: object, unit_word: str) -> str:
-    """The Hindi fraction she would have said, for years or months."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return ""
-    number = float(value)
-    if unit_word == "साल" and abs(number - 0.25) < 1e-6:
-        return "3 महीने"
-    if abs(number - 0.5) < 1e-6:
-        return {"साल": "आधा साल", "हफ़्ते": "आधा हफ़्ता"}.get(unit_word, "आधा महीना")
-    if abs(number - 1.25) < 1e-6:
-        return {"साल": "सवा साल", "हफ़्ते": "सवा हफ़्ता"}.get(unit_word, "सवा महीना")
-    if abs(number - 1.5) < 1e-6:
-        return {"साल": "डेढ़ साल", "हफ़्ते": "डेढ़ हफ़्ते"}.get(unit_word, "डेढ़ महीने")
-    if abs(number - 2.5) < 1e-6:
-        return {"साल": "ढाई साल", "हफ़्ते": "ढाई हफ़्ते"}.get(unit_word, "ढाई महीने")
-    if number > 2 and abs(number * 2 - round(number * 2)) < 1e-6 and abs(number - round(number)) == 0.5:
-        return f"साढ़े {int(number)} {unit_word}"
-    if (
-        abs(number * 4 - round(number * 4)) < 1e-6
-        and abs(number - int(number) - 0.25) < 1e-6
-        and int(number) >= 2
-    ):
-        return f"सवा {int(number)} {unit_word}"
-    if abs(number * 4 - round(number * 4)) < 1e-6 and abs(number - int(number) - 0.75) < 1e-6:
-        return f"पौने {int(number) + 1} {unit_word}"
-    return ""
-
-
-def _format_age(age: object) -> str:
-    """Hindi for a stored age. 0.5 years is आधा साल, not the same text as 6 months."""
-    text = _format_age_unit(age)
-    if not isinstance(age, dict) or not text:
-        return text
-    extra = age.get("plus_days")
-    if isinstance(extra, bool) or not isinstance(extra, (int, float)):
-        return text
-    shown = int(extra) if float(extra).is_integer() else extra
-    return f"{text} {shown} दिन"
-
-
-def _format_age_unit(age: object) -> str:
-    if not isinstance(age, dict) or age.get("value") is None:
-        return "" if age in (None, "") else str(age)
-    value = age.get("value")
-    unit = str(age.get("unit") or "years").lower()
-    if unit in {"month", "months", "mahine"}:
-        spoken = _quarter_age(value, "महीने")
-        if spoken:
-            return spoken
-        if isinstance(value, (int, float)) and not isinstance(value, bool) and float(value) == 1:
-            return "1 महीना"
-        return f"{_number_text(value)} महीने"
-    if unit in {"week", "weeks", "hafte", "hafta"} and isinstance(value, (int, float)) and not isinstance(value, bool):
-        spoken = _quarter_age(value, "हफ़्ते")
-        if spoken:
-            return spoken
-        shown = _number_text(value)
-        return f"{shown} {'हफ़्ता' if float(value) == 1 else 'हफ़्ते'}"
-    if unit in {"day", "days", "din"} and isinstance(value, (int, float)) and not isinstance(value, bool):
-        return f"{_number_text(value)} दिन"
-    if unit in {"year", "years", "saal"}:
-        spoken = _quarter_age(value, "साल")
-        if spoken:
-            return spoken
-    return f"{_number_text(value)} {age.get('unit') or ''}".strip()
+    return ", ".join(out)
 
 
 def _children_label(state: dict) -> str:
@@ -683,7 +559,13 @@ def _children_label(state: dict) -> str:
         if not isinstance(child, dict):
             continue
         label = _child_label(state, child.get("id"))
-        age_text = _format_age(child.get("age"))
+        age = child.get("age")
+        if isinstance(age, dict) and age.get("value") is not None:
+            age_text = f"{age.get('value')} {age.get('unit') or ''}".strip()
+        elif age not in (None, ""):
+            age_text = str(age)
+        else:
+            age_text = ""
         bit = " ".join(part for part in (label, age_text) if part)
         if bit:
             parts.append(hindi_text(bit))
@@ -774,16 +656,10 @@ def build(call: dict, extracted: dict | None = None) -> dict:
                 continue
             line = checklist.question_hi(topic["id"]).rstrip("?").strip()
             if line.startswith("क्या "):
-                line = line[len("क्या "):]
-            line = line.strip()
+                line = line[len("क्या "):].strip()
             note = _instance_note(state, topic["id"])
             if note:
                 line = f"{line} ({note})"
-            said = (state.get("topics") or {}).get(topic["id"], {}).get("value")
-            if isinstance(said, str) and said.strip():
-                spoken = hindi_text(said.strip().strip("।.! "))
-                if spoken and not (call_state._content_stems(spoken) & call_state._content_stems(line)):
-                    line = f"{line} ({spoken})"
             if line:
                 yes.append(hindi_text(line))
     else:
@@ -808,8 +684,7 @@ def build(call: dict, extracted: dict | None = None) -> dict:
                     continue
                 line = checklist.question_hi(topic["id"]).rstrip("?").strip()
                 if line.startswith("क्या "):
-                    line = line[len("क्या "):]
-                line = line.strip()
+                    line = line[4:]
                 if line:
                     yes.append(line)
     groups = []

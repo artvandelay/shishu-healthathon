@@ -872,8 +872,8 @@ Return one JSON object and nothing else. Keys must be:
 """.strip()
 
 
-def _answer_label(topic: dict, topic_id: str | None = None) -> str:
-    return call_state.topic_answer_kind(topic, topic_id)
+def _answer_label(topic: dict) -> str:
+    return call_state.topic_answer_kind(topic)
 
 
 def _format_topic_detail(topic_id: str, saved: dict) -> str:
@@ -964,7 +964,7 @@ def state_to_findings_and_flags(
         if tid.startswith("intro_") or tid == "close_anything_else":
             continue
         saved = topics.get(tid) if isinstance(topics.get(tid), dict) else {"state": "not_asked"}
-        label = _answer_label(saved, tid)
+        label = _answer_label(saved)
         if label != "yes":
             continue
         detail = _format_topic_detail(tid, saved)
@@ -1140,7 +1140,7 @@ def state_to_summary_context(state: dict, transcript: list[dict] | None = None) 
     for topic in checklist.TOPICS:
         saved = topics.get(topic["id"]) if isinstance(topics.get(topic["id"]), dict) else {}
         lines.append(
-            f"{topic['id']}: state={_answer_label(saved, topic['id'])} "
+            f"{topic['id']}: state={_answer_label(saved)} "
             f"value={json.dumps(saved.get('value'), ensure_ascii=False)} "
             f"details={json.dumps(saved.get('details') or {}, ensure_ascii=False)} "
             f"instances={json.dumps(saved.get('instances') or [], ensure_ascii=False)}"
@@ -1181,10 +1181,7 @@ def build_state_fallback(
         topic["id"]
         for topic in checklist.TOPICS
         if not topic["id"].startswith("intro_")
-        and _answer_label(
-            topics.get(topic["id"]) if isinstance(topics.get(topic["id"]), dict) else {},
-            topic["id"],
-        ) == "no"
+        and _answer_label(topics.get(topic["id"]) if isinstance(topics.get(topic["id"]), dict) else {}) == "no"
     ]
     if negatives:
         shell = shell.replace(
@@ -1202,7 +1199,7 @@ def build_state_fallback(
     ]
     for topic in checklist.TOPICS:
         saved = topics.get(topic["id"]) if isinstance(topics.get(topic["id"]), dict) else {"state": "not_asked"}
-        label = _answer_label(saved, topic["id"])
+        label = _answer_label(saved)
         lines.append(f"- {topic['id']}: {label}")
 
     return {

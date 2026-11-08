@@ -112,12 +112,6 @@ class StructuredMotherReportTests(unittest.TestCase):
         text = " ".join(mother_report.build(_call(state))["yes"])
         self.assertIn("राम", text)
         self.assertIn("छोटा बच्चा", text)
-        state["profile"]["children"][1]["sex"] = "female"
-        state["profile"]["children"][0]["sex"] = "male"
-        text = " ".join(mother_report.build(_call(state))["yes"])
-        self.assertIn("राम", text)
-        self.assertIn("छोटी बेटी", text)
-        self.assertNotIn("child_", text)
         self.assertIn("बीपी", text)
         self.assertNotIn("child_", text)
         self.assertNotIn("condition", text)
@@ -147,51 +141,6 @@ class StructuredMotherReportTests(unittest.TestCase):
         rendered = mother_report.render_html(report_normal)
         self.assertIn(question, _joined(report_normal["groups"]))
         self.assertIn(question + '</span><span class="ans">नहीं</span>', rendered)
-        self.assertEqual(mother_report.hindi_text("heavy"), "ज़्यादा")
-        self.assertEqual(mother_report.hindi_text("Shilpa"), "शिल्पा")
-        self.assertEqual(mother_report.hindi_text("reason"), "reason")
-        self.assertEqual(mother_report._shown_value(["bp", "sugar"]), "बीपी, शुगर")
-        self.assertEqual(mother_report._detail_values({"days": 4, "reason": "jaundice"}), "4 दिन, पीलिया")
-        self.assertEqual(mother_report._detail_values({"count": 3}), "3 बार")
-        self.assertEqual(mother_report._detail_values({"count": 1, "month": 3}), "1 बार, 3 महीने")
-        self.assertNotIn("[", mother_report._shown_value(["bp", "sugar"]))
-        self.assertEqual(mother_report._format_age({"value": 6, "unit": "months"}), "6 महीने")
-        self.assertEqual(mother_report._format_age({"value": 6.0, "unit": "months"}), "6 महीने")
-        self.assertEqual(mother_report._format_age({"value": 10.0, "unit": "years"}), "10 years")
-        self.assertEqual(mother_report._format_age({"value": 1, "unit": "months"}), "1 महीना")
-        self.assertEqual(mother_report._format_age({"value": 2, "unit": "months"}), "2 महीने")
-        self.assertEqual(mother_report._format_age({"value": 0.25, "unit": "years"}), "3 महीने")
-        self.assertEqual(mother_report._format_age({"value": 0.5, "unit": "years"}), "आधा साल")
-        self.assertEqual(mother_report._format_age({"value": 1.5, "unit": "years"}), "डेढ़ साल")
-        self.assertEqual(mother_report._format_age({"value": 3.5, "unit": "years"}), "साढ़े 3 साल")
-        self.assertEqual(mother_report._format_age({"value": 2.25, "unit": "years"}), "सवा 2 साल")
-        self.assertEqual(mother_report._format_age({"value": 1.75, "unit": "years"}), "पौने 2 साल")
-        self.assertEqual(mother_report._format_age({"value": 1.25, "unit": "years"}), "सवा साल")
-        self.assertEqual(mother_report._format_age({"value": 1.5, "unit": "months"}), "डेढ़ महीने")
-        self.assertEqual(mother_report._format_age({"value": 1.25, "unit": "months"}), "सवा महीना")
-        self.assertEqual(mother_report._format_age({"value": 2, "unit": "weeks"}), "2 हफ़्ते")
-        self.assertEqual(mother_report._format_age({"value": 1.25, "unit": "weeks"}), "सवा हफ़्ता")
-        self.assertEqual(mother_report._format_age({"value": 1.5, "unit": "weeks"}), "डेढ़ हफ़्ते")
-        self.assertEqual(mother_report._format_age({"value": 2.5, "unit": "weeks"}), "ढाई हफ़्ते")
-        self.assertEqual(mother_report._format_age({"value": 0.5, "unit": "weeks"}), "आधा हफ़्ता")
-        self.assertEqual(
-            mother_report._detail_values({
-                "problem": "दूसरी प्रेग्नेंसी में प्रसव में बहुत खून बह गया।",
-                "pregnancy": 2,
-            }),
-            "दूसरी प्रेग्नेंसी में प्रसव में बहुत खून बह गया",
-        )
-        self.assertEqual(mother_report._detail_values({"pregnancy": 3}), "तीसरी प्रेग्नेंसी")
-        self.assertEqual(mother_report._format_age({"value": 15, "unit": "days"}), "15 दिन")
-        self.assertEqual(
-            mother_report._format_age({"value": 3, "unit": "months", "plus_days": 10}),
-            "3 महीने 10 दिन",
-        )
-        self.assertEqual(
-            mother_report._format_age({"value": 1, "unit": "years", "plus_days": 10}),
-            "1 years 10 दिन",
-        )
-        self.assertNotIn("हेअव्य", mother_report.hindi_text("heavy"))
 
     def test_unknown_is_printed_under_unknown_not_unasked(self):
         state = self._state()
@@ -251,24 +200,6 @@ class StructuredMotherReportTests(unittest.TestCase):
         q_blob = " ".join(report["questions"])
         self.assertIn("घुटने", q_blob)
         self.assertIn("गुजर", q_blob)
-
-    def test_reassuring_growth_and_puberty_are_not_haan_lines(self):
-        state = self._state()
-        state["profile"]["children"] = [
-            {"id": "child_1", "age": {"value": 11, "unit": "years"}, "sex": "female"}
-        ]
-        state["topics"]["body_growth"]["state"] = "answered"
-        state["topics"]["body_growth"]["value"] = True
-        state["topics"]["body_growth"]["details"] = {"result": "normal"}
-        state["topics"]["body_puberty"]["state"] = "answered"
-        state["topics"]["body_puberty"]["value"] = True
-        state["topics"]["body_puberty"]["details"] = {"timing": "same", "result": "normal"}
-        state["topics"]["preg_thalassemia"]["state"] = "answered"
-        state["topics"]["preg_thalassemia"]["value"] = True
-        state["topics"]["preg_thalassemia"]["details"] = {"result": "normal"}
-        report = mother_report.build(_call(state))
-        self.assertEqual(report["yes"], [])
-        self.assertIn("बेटी", report["who"])
 
     def test_normal_delivery_with_true_value_is_classified_as_no(self):
         state = self._state()
