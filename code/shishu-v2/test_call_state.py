@@ -2481,6 +2481,17 @@ class CallStateTests(unittest.TestCase):
             utterance="उंगलियाँ नीली पड़ती हैं।",
         )
         self.assertEqual(blue["topics"]["body_blue"]["details"].get("location"), "उंगलियाँ")
+        leg = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "body_limb_pain"),
+            [_update("topic.body_limb_pain", True)],
+            1,
+            utterance="पैर में दर्द होता है, अस्पताल गए थे।",
+        )
+        self.assertEqual(leg["topics"]["body_limb_pain"]["details"].get("location"), "पैर")
+        self.assertEqual(
+            call_state.topic_answer_kind(leg["topics"]["body_limb_pain"], "body_limb_pain"),
+            "yes",
+        )
         fine = call_state.apply_updates(
             _ask(call_state.new_call_state(), "ill_odor"),
             [_update("topic.ill_odor", True)],

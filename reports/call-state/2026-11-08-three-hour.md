@@ -380,6 +380,12 @@ Trio: he does not walk, with no earlier skill (no flags, no हाँ lines), st
 
 Trio: not blue (no flags, no हाँ lines), blue fingers (still a yes, the line names उंगलियाँ), and blue lips sent as false (still a yes, the line names होंठ). Pass.
 
+## 16:45 IST
+
+हाथ-पैर is the place, the same way होंठ या उंगलियाँ is. बार-बार is not a place. दर्द होता है लेकिन अस्पताल नहीं गए stays a no, because the question is the pain that needed a hospital. `197` unit tests. 150 scenarios, 0 failed.
+
+Trio: pain without a hospital visit (no flags, no हाँ lines), leg pain that needed hospital (still a yes, the line names पैर), and hand pain sent as false (still a yes, the line names हाथ). Pass.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

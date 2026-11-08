@@ -2413,7 +2413,12 @@ def _store_question_choice(name: str, details: dict, follow_ids: set, utterance:
         # सूजन या गाँठ is what it is, not where it is.
         "सूजन", "गाँठ", "गाँठें", "गाँठे",
     }
-    for match in re.finditer(r"([\u0900-\u097F]{2,})\s+या\s+([\u0900-\u097F]{2,})", question):
+    for match in re.finditer(
+        r"([\u0900-\u097F]{2,})(?:\s+या\s+|\s*-\s*)([\u0900-\u097F]{2,})",
+        question,
+    ):
+        if match.group(1) == match.group(2):
+            continue
         for word in (match.group(1), match.group(2)):
             if word in skip:
                 continue
