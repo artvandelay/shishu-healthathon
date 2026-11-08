@@ -106,7 +106,9 @@ A later hearing, scan, thalassemia, growth, or puberty utterance replaces the st
 
 मेरा नाम मीरा है is stored as मीरा. A bare name is left as it is.
 
-A list stored on a finding is printed as its items. Pregnancy BP and sugar are बीपी, शुगर, not a Python list. `187` unit tests. 38 scenarios, 0 failed.
+A list stored on a finding is printed as its items. Pregnancy BP and sugar are बीपी, शुगर, not a Python list.
+
+shaadi nahi hui is unmarried, the same denial as शादी नहीं हुई. shaadi hui hai is married. `187` unit tests. 39 scenarios, 0 failed.
 
 ## Not hardcoded
 

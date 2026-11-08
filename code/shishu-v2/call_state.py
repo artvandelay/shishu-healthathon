@@ -1337,6 +1337,7 @@ def _canonical_marital(value: object) -> str | None:
     denial = (
         text in {"false", "no", "nahi", "nahin", "unmarried", "single", "not married"}
         or "not married" in text
+        or re.search(r"\b(?:nahi|nahin|no)\b", text) is not None
         or any(word in raw for word in ("नहीं", "नही", "अविवाहित", "कुंवारी"))
     )
     about = (
@@ -1351,7 +1352,7 @@ def _canonical_marital(value: object) -> str | None:
         or "ho gayi" in text
         or "shaadi ho" in text
         or any(word in raw for word in ("विवाहित", "शादीशुदा", "हुई", "हो चुकी", "हो चुका", "ब्याही"))
-        or any(word in text for word in ("shadishuda", "shaadi shuda", "ho chuki", "ho chuka"))
+        or any(word in text for word in ("shadishuda", "shaadi shuda", "ho chuki", "ho chuka", "hui", "huyi"))
     )
     # A denial beats a marriage word: शादी नहीं हुई, शादीशुदा नहीं.
     if about and not denial:
