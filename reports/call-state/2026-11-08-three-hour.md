@@ -202,6 +202,8 @@ A fraction of a week is said the same way as a fraction of a year. सवा ह
 
 डेढ़ दिन रखा is a day and a half, not one day and not two. साढ़े सात दिन stays 7.5 and is shown as साढ़े 7 दिन. A whole number of days stays N दिन. `196` unit tests. 59 scenarios, 0 failed.
 
+Trio: पौने साल का बेटा (no flags), आठवें महीने में पैदा हुई (early, tool had said no), डेढ़ दिन का NICU with पीलिया, and दूसरी प्रेग्नेंसी में प्रसव में खून. Pass. 63 scenarios, 0 failed. `196` unit tests.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

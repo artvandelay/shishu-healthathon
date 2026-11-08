@@ -547,6 +547,62 @@ def campaign() -> list[Scenario]:
             children_value=2,
         ),
         Scenario(
+            name="no_flags_paune_year",
+            group="no_flags",
+            caller_name="वंदना",
+            marital_text=married,
+            children_text="पौने साल का बेटा है।",
+            children_value=1,
+        ),
+        Scenario(
+            name="flags_eighth_month",
+            group="red_flags",
+            caller_name="सरिता",
+            marital_text=married,
+            children_text="एक बेटी है, एक साल की।",
+            children_value=1,
+            positives={
+                "birth_term": {
+                    "value": False,
+                    "utterance": "आठवें महीने में पैदा हुई।",
+                    "details": {},
+                },
+            },
+            expect_yes=("birth_term",),
+        ),
+        Scenario(
+            name="flags_half_day_nicu",
+            group="red_flags",
+            caller_name="रेखा",
+            marital_text=married,
+            children_text="एक बेटा है, दो महीने का।",
+            children_value=1,
+            positives={
+                "birth_nicu": {
+                    "value": True,
+                    "utterance": "पीलिया की वजह से डेढ़ दिन रखा।",
+                    "details": {},
+                },
+            },
+            expect_yes=("birth_nicu",),
+        ),
+        Scenario(
+            name="flags_second_pregnancy_bleed",
+            group="red_flags",
+            caller_name="अंजलि",
+            marital_text=married,
+            children_text="एक बेटी है, चार साल की।",
+            children_value=1,
+            positives={
+                "preg_delivery": {
+                    "value": True,
+                    "utterance": "दूसरी प्रेग्नेंसी में प्रसव में बहुत खून बह गया।",
+                    "details": {},
+                },
+            },
+            expect_yes=("preg_delivery",),
+        ),
+        Scenario(
             name="no_flags_six_months_sent_as_six",
             group="no_flags",
             caller_name="सीमा",
