@@ -136,7 +136,9 @@ abnormal is not a normal delivery, and घरेलू is not a home birth. not 
 
 A pregnancy month stored as 3 prints as 3 महीने, the same way a day count prints as दिन and a time count prints as बार.
 
-The only child is stored on a finding that asks which child, so the report says her name or बेटी/बेटा. A family finding such as a miscarriage is not pinned to that child. A no drops the binding. `192` unit tests. 48 scenarios, 0 failed.
+The only child is stored on a finding that asks which child, so the report says her name or बेटी/बेटा. A family finding such as a miscarriage is not pinned to that child. A no drops the binding.
+
+सबसे बड़े is the oldest child. सब is not found inside सबसे, so the younger child is not included. दोनों and सबको still mean every child. `193` unit tests. 49 scenarios, 0 failed.
 
 ## Not hardcoded
 

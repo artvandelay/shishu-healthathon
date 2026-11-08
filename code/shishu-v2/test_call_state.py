@@ -1141,6 +1141,36 @@ class CallStateTests(unittest.TestCase):
         )
         self.assertEqual(cleared["topics"]["body_fits_milestones"].get("instances") or [], [])
 
+    def test_sabse_bade_is_the_oldest_not_every_child(self):
+        state = call_state.apply_updates(
+            call_state.new_call_state(),
+            [_update("profile.children", [
+                {"age": {"value": 6, "unit": "years"}, "sex": "male"},
+                {"age": {"value": 2, "unit": "years"}, "sex": "female"},
+            ])],
+            1,
+            utterance="दो बच्चे हैं। बड़ा छह साल का लड़का है और छोटी दो साल की बेटी है।",
+        )
+        state = call_state.apply_updates(
+            _ask(state, "body_fits_milestones"),
+            [_update("topic.body_fits_milestones", True, details={"affected_child": "सबसे बड़े वाले"})],
+            2,
+            utterance="सबसे बड़े वाले को झटके आते हैं।",
+        )
+        call_state.next_question(state)
+        bound = [item["person_id"] for item in state["topics"]["body_fits_milestones"]["instances"]]
+        self.assertEqual(bound, [call_state._find_child_id(state, "बड़े वाले")])
+
+        both = call_state.apply_updates(
+            _ask(state, "body_blue"),
+            [_update("topic.body_blue", True, details={"affected_child": "दोनों"})],
+            3,
+            utterance="दोनों के होंठ नीले पड़ते हैं।",
+        )
+        call_state.next_question(both)
+        blue = [item["person_id"] for item in both["topics"]["body_blue"]["instances"]]
+        self.assertEqual(sorted(blue), ["child_1", "child_2"])
+
     def test_a_full_term_answer_is_not_a_finding(self):
         full = _ask(call_state.new_call_state(), "birth_term")
         full = call_state.apply_updates(

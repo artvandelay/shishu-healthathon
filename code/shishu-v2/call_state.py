@@ -735,7 +735,7 @@ def _followup_resolved(state: dict, topic: dict, followup_id: str) -> bool:
             if isinstance(val, dict) and val.get("state") in ("unknown", "no_response"):
                 return True
             sval = str(val).strip().lower()
-            if any(w in sval for w in ("all", "both", "dono", "sabhi", "sabko", "everyone", "sab", "दोनों", "सभी", "सबको", "सब", "हर एक")):
+            if _means_every_child(sval):
                 for c in children:
                     cid = c.get("id")
                     if cid and not any(inst.get("person_id") == cid for inst in topic.get("instances") or []):
@@ -1614,6 +1614,17 @@ def is_clarification(text: str) -> bool:
 
 
 _is_clarification = is_clarification
+
+
+_EVERY_CHILD_WORDS = (
+    "all", "both", "dono", "sabhi", "sabko", "everyone", "sab",
+    "दोनों", "सभी", "सबको", "सब", "हर एक",
+)
+
+
+def _means_every_child(text: str) -> bool:
+    """सबको means every child. सबसे means the most, so it is not सब."""
+    return any(_contains_word(text or "", word) for word in _EVERY_CHILD_WORDS)
 
 
 def _contains_word(text: str, word: str) -> bool:

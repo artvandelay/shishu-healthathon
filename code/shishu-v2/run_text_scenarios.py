@@ -311,6 +311,13 @@ def _issues(scenario, state, errors, report, fallback, said) -> list[str]:
         children = (state.get("profile") or {}).get("children") or []
         if expected and len(children) > 1 and expected not in bound:
             issues.append(f"{tid} did not bind {said_child} to {expected}")
+        elif (
+            expected
+            and len(children) > 1
+            and not call_state._means_every_child(str(said_child))
+            and any(person_id != expected for person_id in bound)
+        ):
+            issues.append(f"{tid} bound {said_child} to more than {expected}")
         for fid, pair in (spec.get("followups") or {}).items():
             utterance = pair[0] if isinstance(pair, (tuple, list)) and pair else ""
             days = call_state._spoken_day_count(utterance)
@@ -574,6 +581,27 @@ def campaign() -> list[Scenario]:
             marital_text=married,
             children_text="लड़का छह महीने का और लड़की दो साल की।",
             children_value="लड़का छह महीने का और लड़की दो साल की।",
+        ),
+        Scenario(
+            name="flags_oldest_not_everyone",
+            group="red_flags",
+            caller_name="वंदना",
+            marital_text=married,
+            children_text="दो बच्चे हैं। बड़ा छह साल का लड़का है और छोटी दो साल की बेटी है।",
+            children_value=2,
+            positives={
+                "body_fits_milestones": {
+                    "value": True,
+                    "utterance": "सबसे बड़े वाले को झटके आते हैं, एक साल से।",
+                    "details": {"type": "fits", "onset": "एक साल", "affected_child": "सबसे बड़े वाले"},
+                    "followups": {
+                        "type": ("झटके आते हैं।", "fits"),
+                        "onset": ("एक साल से।", "एक साल"),
+                        "affected_child": ("सबसे बड़े वाले को।", "सबसे बड़े वाले"),
+                    },
+                },
+            },
+            expect_yes=("body_fits_milestones",),
         ),
         Scenario(
             name="flags_counted_sex_groups",
