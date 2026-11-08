@@ -90,6 +90,7 @@ class _TurnState:
         self.resume_handle = ""
         self.reconnect_requested = False
         self.last_user_text = ""
+        self.user_lines: list[str] = []
         self.last_bot_text = ""
         self.bot_text_since_user = ""
         self.time_cue_sent = False
@@ -619,6 +620,31 @@ async def _forward_transcript(
     return text
 
 
+def _remember_user_line(state: _TurnState, text: str) -> None:
+    """Keep each finished user line. A later count can still see the ages."""
+    text = (text or "").strip()
+    if not text:
+        return
+    state.last_user_text = text
+    lines = state.user_lines
+    if lines:
+        prev = lines[-1]
+        if text == prev or text.startswith(prev) or prev.startswith(text):
+            if len(text) >= len(prev):
+                lines[-1] = text
+            return
+    lines.append(text)
+
+
+def _prior_user_lines(state: _TurnState | None, current: str) -> list[str]:
+    if state is None:
+        return []
+    lines = list(state.user_lines)
+    if lines and lines[-1] == (current or "").strip():
+        return lines[:-1]
+    return lines
+
+
 def _transcript_turn_id(call_id: int) -> int:
     call = db.get_call(call_id) or {}
     transcript = call.get("transcript") or []
@@ -735,6 +761,7 @@ async def _answer_function_calls(
                     list(updates),
                     _transcript_turn_id(call_id),
                     utterance=last_user_text or "",
+                    prior_utterances=_prior_user_lines(turn_state, last_user_text or ""),
                 )
             except ValueError as exc:
                 recovery_context = answer_tool.build_turn_context(
@@ -883,7 +910,7 @@ async def _handle_server_message(
             if state.bot_text_since_user:
                 state.last_bot_text = state.bot_text_since_user
                 state.bot_text_since_user = ""
-            state.last_user_text = user_text
+            _remember_user_line(state, user_text)
             if question_flow.is_emergency_text(user_text):
                 telemetry["emergency_seen"] = True
                 telemetry["emergency_detail"] = user_text[:300]
@@ -1318,7 +1345,7 @@ async def _browser_loop(
                     ws_lock,
                     {"type": "transcript", "role": "user", "text": text},
                 )
-                state.last_user_text = text
+                _remember_user_line(state, text)
                 _arm_user_turn(state, telemetry)
                 try:
                     async with send_lock:

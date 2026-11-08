@@ -740,6 +740,22 @@ def _spoken_ages(utterance: str) -> list[float]:
     return [age for _, age in found]
 
 
+def _ages_from_prior(count_n: int, prior: list[str] | None) -> list[float]:
+    """Ages from the nearest earlier line that states exactly count_n ages.
+
+    A later "ठीक है" has no ages. The line before it often does. A nearer line
+    that states a different number of ages is left alone.
+    """
+    if count_n <= 0:
+        return []
+    for text in reversed(list(prior or [])):
+        ages = _spoken_ages(text or "")
+        if not ages:
+            continue
+        return ages if len(ages) == count_n else []
+    return []
+
+
 def _retag_month_only(children: list[dict], utterance: str) -> list[dict]:
     text = utterance or ""
     if not re.search(_MONTH_UNIT, text, re.I) or re.search(_YEAR_UNIT, text, re.I):
@@ -906,7 +922,13 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
     topic["details"] = details
 
 
-def apply_updates(state: dict, updates: list[dict], turn_id: int, utterance: str = "") -> dict:
+def apply_updates(
+    state: dict,
+    updates: list[dict],
+    turn_id: int,
+    utterance: str = "",
+    prior_utterances: list[str] | None = None,
+) -> dict:
     state = copy.deepcopy(state)
     if not isinstance(updates, list):
         raise ValueError("updates must be a list")
@@ -933,6 +955,8 @@ def apply_updates(state: dict, updates: list[dict], turn_id: int, utterance: str
                     aged = [child for child in existing if _child_age_years(child.get("age")) is not None]
                     spoken = _spoken_ages(utterance)
                     count_n = int(norm) if kind_c == "count" else 0
+                    if kind_c == "count" and not spoken:
+                        spoken = _ages_from_prior(count_n, prior_utterances)
                     if kind_c == "count" and aged and len(existing) == len(aged) == count_n:
                         wrote = True
                         continue
@@ -956,6 +980,11 @@ def apply_updates(state: dict, updates: list[dict], turn_id: int, utterance: str
                     intro_c["source"] = "model"
                     _remember_turn(intro_c, turn_id)
                 else:
+                    if norm and all(_child_age_years(child.get("age")) is None for child in norm):
+                        spoken_list = _spoken_ages(utterance) or _ages_from_prior(len(norm), prior_utterances)
+                        if len(spoken_list) == len(norm):
+                            for child, age in zip(norm, spoken_list):
+                                child["age"] = age
                     norm = _retag_month_only(norm, utterance)
                     state["profile"]["children"] = norm
                     if norm and all(_child_age_years(c.get("age")) is not None for c in norm):

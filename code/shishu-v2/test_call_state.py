@@ -254,6 +254,57 @@ class CallStateTests(unittest.TestCase):
         state = call_state.apply_updates(state, [_update("topic.birth_mode", "normal")], 2)
         self.assertEqual(state["topics"]["birth_mode"]["value"], "normal")
 
+    def test_late_count_keeps_ages_already_said(self):
+        state = _ask(call_state.new_call_state(), "intro_children")
+        state = call_state.apply_updates(
+            state,
+            [_update("profile.children", 1)],
+            2,
+            utterance="ठीक है।",
+            prior_utterances=["एक बच्चा है, तीन साल का।"],
+        )
+        self.assertEqual(len(state["profile"]["children"]), 1)
+        self.assertAlmostEqual(call_state._child_age_years(state["profile"]["children"][0]["age"]), 3)
+        self.assertEqual(state["topics"]["intro_children"]["state"], "answered")
+
+    def test_late_count_keeps_two_ages_and_ignores_a_nearer_different_count(self):
+        state = _ask(call_state.new_call_state(), "intro_children")
+        state = call_state.apply_updates(
+            state,
+            [_update("profile.children", 2)],
+            2,
+            utterance="ठीक है।",
+            prior_utterances=["दो बच्चे हैं। एक चार साल का है और एक एक साल का है।"],
+        )
+        ages = [call_state._child_age_years(child["age"]) for child in state["profile"]["children"]]
+        self.assertEqual(ages, [4, 1])
+
+        state = _ask(call_state.new_call_state(), "intro_children")
+        state = call_state.apply_updates(
+            state,
+            [_update("profile.children", 2)],
+            3,
+            utterance="ठीक है।",
+            prior_utterances=[
+                "दो बच्चे हैं। एक चार साल का है और एक एक साल का है।",
+                "मेरे मामा की उम्र 35 साल है।",
+            ],
+        )
+        self.assertTrue(all(child.get("age") is None for child in state["profile"]["children"]))
+        self.assertNotEqual(state["topics"]["intro_children"]["state"], "answered")
+
+    def test_empty_child_list_takes_ages_from_the_same_words(self):
+        state = _ask(call_state.new_call_state(), "intro_children")
+        state = call_state.apply_updates(
+            state,
+            [_update("profile.children", [{"name": None}])],
+            2,
+            utterance="ठीक है।",
+            prior_utterances=["एक बच्चा है, छह महीने का।"],
+        )
+        self.assertAlmostEqual(call_state._child_age_years(state["profile"]["children"][0]["age"]), 0.5)
+        self.assertEqual(state["topics"]["intro_children"]["state"], "answered")
+
     def test_spoken_months_fill_a_bare_count(self):
         state = _ask(call_state.new_call_state(), "intro_children")
         state = call_state.apply_updates(
