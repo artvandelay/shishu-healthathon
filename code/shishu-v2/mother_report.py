@@ -636,6 +636,17 @@ def _quarter_age(value: object, unit_word: str) -> str:
 
 def _format_age(age: object) -> str:
     """Hindi for a stored age. 0.5 years is आधा साल, not the same text as 6 months."""
+    text = _format_age_unit(age)
+    if not isinstance(age, dict) or not text:
+        return text
+    extra = age.get("plus_days")
+    if isinstance(extra, bool) or not isinstance(extra, (int, float)):
+        return text
+    shown = int(extra) if float(extra).is_integer() else extra
+    return f"{text} {shown} दिन"
+
+
+def _format_age_unit(age: object) -> str:
     if not isinstance(age, dict) or age.get("value") is None:
         return "" if age in (None, "") else str(age)
     value = age.get("value")

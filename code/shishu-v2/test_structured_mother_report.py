@@ -183,6 +183,14 @@ class StructuredMotherReportTests(unittest.TestCase):
         )
         self.assertEqual(mother_report._detail_values({"pregnancy": 3}), "तीसरी प्रेग्नेंसी")
         self.assertEqual(mother_report._format_age({"value": 15, "unit": "days"}), "15 दिन")
+        self.assertEqual(
+            mother_report._format_age({"value": 3, "unit": "months", "plus_days": 10}),
+            "3 महीने 10 दिन",
+        )
+        self.assertEqual(
+            mother_report._format_age({"value": 1, "unit": "years", "plus_days": 10}),
+            "1 years 10 दिन",
+        )
         self.assertNotIn("हेअव्य", mother_report.hindi_text("heavy"))
 
     def test_unknown_is_printed_under_unknown_not_unasked(self):

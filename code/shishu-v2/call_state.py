@@ -116,12 +116,17 @@ def _child_age_years(age: object) -> float | None:
             return None
         unit = str(age.get("unit") or "years").lower()
         if unit in {"month", "months", "mahine"}:
-            return float(value) / 12.0
-        if unit in {"week", "weeks", "hafte", "hafta"}:
-            return float(value) / 52.0
-        if unit in {"day", "days", "din"}:
-            return float(value) / 365.0
-        return float(value)
+            years = float(value) / 12.0
+        elif unit in {"week", "weeks", "hafte", "hafta"}:
+            years = float(value) / 52.0
+        elif unit in {"day", "days", "din"}:
+            years = float(value) / 365.0
+        else:
+            years = float(value)
+        plus = age.get("plus_days")
+        if isinstance(plus, (int, float)) and not isinstance(plus, bool):
+            years += float(plus) / 365.0
+        return years
     if isinstance(age, str):
         cleaned = _fold_spoken_numbers(age.strip().lower())
         m = re.search(rf"(\d+(?:\.\d+)?)\s*{_MONTH_UNIT}", cleaned, re.I)
@@ -1455,24 +1460,33 @@ def _merge_weeks_and_days(folded: str, found: list) -> list:
     while index < len(found):
         start, record = found[index]
         nxt = found[index + 1] if index + 1 < len(found) else None
-        if nxt and record.get("unit") == "weeks" and nxt[1].get("unit") == "days":
+        if nxt and record.get("unit") in {"weeks", "months", "years"} and nxt[1].get("unit") == "days":
             between = folded[start:nxt[0]]
-            after_week = re.sub(
-                rf"^\d+(?:\.\d+)?\s*{_WEEK_UNIT}",
+            unit_re = {"weeks": _WEEK_UNIT, "months": _MONTH_UNIT, "years": _YEAR_UNIT}[record["unit"]]
+            after_larger = re.sub(
+                rf"^\d+(?:\.\d+)?\s*{unit_re}",
                 "",
                 between,
                 count=1,
                 flags=re.I,
             )
+            # महीने leaves the े. That matra is still the unit, not a new word.
+            after_larger = re.sub(r"^[\u093e-\u094d]+", "", after_larger or "")
             days = nxt[1].get("value")
             if (
-                re.fullmatch(r"\s*", after_week or "")
+                re.fullmatch(r"\s*", after_larger or "")
                 and isinstance(days, (int, float))
                 and not isinstance(days, bool)
             ):
-                total = float(record["value"]) * 7 + float(days)
-                shown = int(total) if total.is_integer() else total
-                merged.append((start, {"value": shown, "unit": "days"}))
+                if record["unit"] == "weeks":
+                    total = float(record["value"]) * 7 + float(days)
+                    shown = int(total) if total.is_integer() else total
+                    merged.append((start, {"value": shown, "unit": "days"}))
+                else:
+                    kept = dict(record)
+                    plus = int(days) if float(days).is_integer() else days
+                    kept["plus_days"] = plus
+                    merged.append((start, kept))
                 index += 2
                 continue
         merged.append(found[index])

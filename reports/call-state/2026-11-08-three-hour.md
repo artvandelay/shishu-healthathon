@@ -212,7 +212,7 @@ A bare डेढ़ or 1.5 is not one child. The same decimal rule covers a numb
 
 Trio: चारों बच्चे with ages 2, 4, 6 and 8 (no flags), दसवें महीने में is late, and झटके on the पौने साल child bind to the younger child only. Pass. 66 scenarios, 0 failed. `196` unit tests.
 
-दो हफ्ते तीन दिन का is one child of 17 days. दो हफ्ते और तीन दिन stays two ages. दो हफ्ते तीन दिन रखा is a stay, not an age. `196` unit tests. 67 scenarios, 0 failed.
+दो हफ्ते तीन दिन का is one child of 17 days. दो हफ्ते और तीन दिन stays two ages. दो हफ्ते तीन दिन रखा is a stay, not an age. तीन महीने दस दिन का is one child, shown as 3 महीने 10 दिन. एक साल दस दिन का keeps the ten days on the year. `196` unit tests. 68 scenarios, 0 failed.
 
 ## Not hardcoded
 
