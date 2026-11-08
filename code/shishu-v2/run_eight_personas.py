@@ -75,9 +75,7 @@ PERSONAS = {
             ("body_blood_count", "timing"): "अभी पिछले महीने जाँच में पता चला।",
             ("body_blood_count", "affected_child"): "तीन महीने वाली छोटी बेटी को।",
             ("preg_thalassemia", None): "हाँ, मेरी जाँच में थैलेसीमिया माइनर आया था, और पति की रिपोर्ट नॉर्मल थी।",
-            ("preg_thalassemia", "caller_test"): "हाँ, मेरी जाँच हुई थी।",
             ("preg_thalassemia", "caller_result"): "मुझे थैलेसीमिया माइनर बताया था।",
-            ("preg_thalassemia", "partner_test"): "हाँ, पति की भी जाँच हुई थी।",
             ("preg_thalassemia", "partner_result"): "पति की रिपोर्ट नॉर्मल थी।",
             ("preg_transfusion", None): "हाँ, पहली प्रेग्नेंसी के सातवें महीने में मुझे खून चढ़ा था।",
             ("preg_transfusion", "pregnancy_number"): "पहली प्रेग्नेंसी में।",
@@ -118,8 +116,6 @@ PERSONAS = {
             **_intro("मीना", "शादी हो गई है।", "एक बच्चा है, आठ महीने का।"),
             ("birth_mode", None): "नॉर्मल डिलीवरी हुई, अस्पताल में।",
             ("birth_hearing_vision", None): "हाँ, मुझे लगता है बच्चे को दिखाई नहीं देता, आँख से कुछ देखता नहीं है।",
-            ("birth_hearing_vision", "test_done"): "हाँ, डॉक्टर को दिखाया था।",
-            ("birth_hearing_vision", "result"): "असामान्य बताया, ठीक से दिखाई नहीं देता।",
             ("birth_hearing_vision", "hearing_or_vision"): "देखने में दिक्कत है।",
             ("body_fits_milestones", None): "हाँ, आठ महीने का हो गया है पर अभी तक बैठ नहीं पाता और सिर्फ़ रोता रहता है।",
             ("body_fits_milestones", "type"): "बैठना अभी तक शुरू नहीं किया।",
@@ -251,7 +247,7 @@ async def evaluate_call(row: dict) -> dict:
     spec = PERSONAS[name]
     call_id = row.get("call_id")
     # Wait briefly for async _write_doctor_note (frontier Gemini reconciler) to finish
-    for _ in range(15):
+    for _ in range(90):
         call = db.get_call(call_id) if call_id else None
         if call and (call.get("summary_doctor") or "").strip():
             break
