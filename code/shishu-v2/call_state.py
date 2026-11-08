@@ -868,6 +868,13 @@ def _store_instances(topic: dict, update: dict) -> None:
     topic["instances"] = list(existing.values())
 
 
+def _derive_birth_mode_value(topic: dict) -> None:
+    """value follows delivery_type: a normal delivery is never a yes, an operation always is."""
+    delivery_type = (topic.get("details") or {}).get("delivery_type")
+    if delivery_type in contract.DELIVERY_TYPES:
+        topic["value"] = delivery_type == "operation"
+
+
 def _absorb_stated_value(name: str, topic: dict, utterance: str = "") -> None:
     """Keep birth_mode's typed fields. Anything else is left as the tool sent it."""
     if name != "birth_mode":
@@ -881,6 +888,7 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str = "") -> None:
     if details.get("place") not in contract.BIRTH_PLACES:
         details.pop("place", None)
     topic["details"] = details
+    _derive_birth_mode_value(topic)
 
 
 def apply_updates(

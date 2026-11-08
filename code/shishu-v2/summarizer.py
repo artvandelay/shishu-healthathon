@@ -850,6 +850,7 @@ def _clean_correction_details(details: dict) -> dict:
 
 
 def _apply_topic_correction(
+    name: str,
     topic: dict,
     new_state: str,
     new_val: object,
@@ -873,6 +874,8 @@ def _apply_topic_correction(
             merged = dict(prior_details)
             merged.update(new_details)
             topic["details"] = merged
+        if name == "birth_mode":
+            call_state._derive_birth_mode_value(topic)
         if new_instances:
             topic["instances"] = [item for item in new_instances if isinstance(item, dict)]
         elif replace and not call_state._is_positive(topic):
@@ -954,17 +957,17 @@ def reconcile_state_with_llm_payload(
             if prior == "answered":
                 if new_state in _CORRECTION_STATES:
                     _apply_topic_correction(
-                        cur, new_state, new_val, new_details, new_instances, replace=True
+                        tid, cur, new_state, new_val, new_details, new_instances, replace=True
                     )
                 elif new_details or (new_instances and not cur.get("instances")):
                     _apply_topic_correction(
-                        cur, "answered", cur.get("value"), new_details, new_instances, replace=False
+                        tid, cur, "answered", cur.get("value"), new_details, new_instances, replace=False
                     )
                 continue
             if prior == "not_applicable":
                 if new_state in {"answered", "unknown"}:
                     _apply_topic_correction(
-                        cur, new_state, new_val, new_details, new_instances, replace=True
+                        tid, cur, new_state, new_val, new_details, new_instances, replace=True
                     )
                 continue
             if new_state not in _CORRECTION_STATES:
@@ -972,17 +975,17 @@ def reconcile_state_with_llm_payload(
             candidate = {"state": new_state, "value": new_val, "details": new_details}
             if new_state == "answered" and call_state._is_positive(candidate):
                 _apply_topic_correction(
-                    cur, new_state, new_val, new_details, new_instances, replace=False
+                    tid, cur, new_state, new_val, new_details, new_instances, replace=False
                 )
             elif new_state == "unknown" and prior in {"not_asked", "no_response"}:
                 _apply_topic_correction(
-                    cur, new_state, None, new_details, new_instances, replace=True
+                    tid, cur, new_state, None, new_details, new_instances, replace=True
                 )
             elif new_state == "answered" and new_val is False and prior in {"not_asked", "no_response"}:
                 evidence = str(patch.get("evidence") or "").strip().lower()
                 if len(evidence) >= 6 and evidence in user_blob:
                     _apply_topic_correction(
-                        cur, new_state, False, new_details, new_instances, replace=True
+                        tid, cur, new_state, False, new_details, new_instances, replace=True
                     )
     call_state._apply_rules(reconciled)
     return reconciled

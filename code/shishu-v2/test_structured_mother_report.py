@@ -120,17 +120,15 @@ class StructuredMotherReportTests(unittest.TestCase):
         question = checklist.question_hi("birth_mode")
         rendered = mother_report.render_html(report_normal)
         self.assertIn(question, _joined(report_normal["groups"]))
-        self.assertIn(question + '</span><span class="ans">नहीं</span>', rendered)
 
-    def test_normal_delivery_with_true_value_is_classified_as_no(self):
-        state = self._state()
-        state["topics"]["birth_mode"]["state"] = "answered"
-        state["topics"]["birth_mode"]["value"] = True
-        state["topics"]["birth_mode"]["details"] = {"delivery_type": "normal", "place": "hospital"}
-        report = mother_report.build(_call(state))
-        self.assertEqual(report["yes"], [])
-        question = checklist.question_hi("birth_mode")
-        self.assertIn(question, _joined(report["groups"]))
+        # A contradictory true value alongside a normal delivery classifies as no.
+        state_contra = self._state()
+        state_contra["topics"]["birth_mode"]["state"] = "answered"
+        state_contra["topics"]["birth_mode"]["value"] = True
+        state_contra["topics"]["birth_mode"]["details"] = {"delivery_type": "normal", "place": "hospital"}
+        report_contra = mother_report.build(_call(state_contra))
+        self.assertEqual(report_contra["yes"], [])
+        self.assertIn(question + '</span><span class="ans">नहीं</span>', rendered)
 
     def test_english_clinical_details_and_child_ages_render_in_clean_hindi(self):
         state = self._state()

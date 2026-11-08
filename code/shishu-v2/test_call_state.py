@@ -155,6 +155,21 @@ class CallStateTests(unittest.TestCase):
             "डॉक्टर ने पानी कम बताया था।",
         )
 
+    def test_birth_mode_value_follows_delivery_type(self):
+        state = _ask(call_state.new_call_state(), "birth_mode")
+        state = call_state.apply_updates(
+            state,
+            [_update("topic.birth_mode", True, details={"delivery_type": "normal"})],
+            1,
+        )
+        self.assertIs(state["topics"]["birth_mode"]["value"], False)
+        state = call_state.apply_updates(
+            state,
+            [_update("topic.birth_mode", False, details={"delivery_type": "operation"})],
+            2,
+        )
+        self.assertIs(state["topics"]["birth_mode"]["value"], True)
+
     def test_clarification_does_not_close_the_followup(self):
         state = _ask(call_state.new_call_state(), "birth_nicu")
         state = call_state.apply_updates(state, [_update("topic.birth_nicu", True)], 1)

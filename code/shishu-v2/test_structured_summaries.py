@@ -226,6 +226,19 @@ class StructuredSummaryTests(unittest.TestCase):
             transcript,
         )
         self.assertEqual(unchanged["topics"]["birth_mode"]["value"], "operation")
+        # A judge payload cannot reintroduce value=True alongside a normal delivery.
+        repaired = summarizer.reconcile_state_with_llm_payload(
+            state,
+            {"topic_corrections": [{
+                "topic_id": "birth_mode",
+                "state": "answered",
+                "value": True,
+                "details": {"delivery_type": "normal"},
+                "evidence": quote,
+            }]},
+            transcript,
+        )
+        self.assertIs(repaired["topics"]["birth_mode"]["value"], False)
 
 
 if __name__ == "__main__":
