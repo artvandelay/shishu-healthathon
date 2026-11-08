@@ -244,6 +244,12 @@ Trio: एक बेटा है। दो साल का है। (no flags)
 
 Trio: son and daughter both four (no flags), fits at four and now six (still a yes, one child of six), and the husband's 30 sent as the child count (one boy of one year, no हाँ lines). Pass.
 
+## 16:25 IST
+
+दोनों बेटियाँ चार साल की हैं is two girls of four. दोनों is already the count two, and it is not folded to a digit, so the shared-age check now treats that word as two. पाँच साल का था, अब सात साल का है is one child, now seven. दो साल का था, with no later अब, stays two. `196` unit tests. 84 scenarios, 0 failed.
+
+Trio: both daughters four (no flags), was five and now seven with fits (one child of seven, still a yes), and the old age 5 sent as the count (one child of seven, no हाँ lines). Pass.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

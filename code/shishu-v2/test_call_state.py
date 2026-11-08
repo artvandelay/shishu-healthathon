@@ -1234,6 +1234,23 @@ class CallStateTests(unittest.TestCase):
             [(c["sex"], c["age"]) for c in husband["profile"]["children"]],
             [("male", {"value": 1, "unit": "years"})],
         )
+        daughters = stored("दोनों बेटियाँ चार साल की हैं।", 2)
+        self.assertEqual(
+            [(c["sex"], c["age"]) for c in daughters["profile"]["children"]],
+            [
+                ("female", {"value": 4, "unit": "years"}),
+                ("female", {"value": 4, "unit": "years"}),
+            ],
+        )
+        now = stored("पाँच साल का था, अब सात साल का है।", 5)
+        self.assertEqual(
+            [c["age"] for c in now["profile"]["children"]],
+            [{"value": 7, "unit": "years"}],
+        )
+        self.assertEqual(
+            stored("दो साल का था।", 2)["profile"]["children"][0]["age"],
+            {"value": 2, "unit": "years"},
+        )
         then = stored("चार साल का था जब झटके हुए, अब छह साल का है।", 6)
         self.assertEqual(
             [c["age"] for c in then["profile"]["children"]],

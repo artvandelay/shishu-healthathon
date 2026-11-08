@@ -1646,6 +1646,13 @@ def _child_ages_in(utterance: str) -> list[dict]:
             folded[start:],
         ):
             continue
+        # पाँच साल का था, अब सात साल का है is one child, now seven.
+        # दो साल का था, with no later अब, stays that age.
+        if re.match(
+            rf"{re.escape(str(number))}\s*{unit}\s+(?:का|की|के)\s+(?:था|थी|थे)(?=\s|,|।|$)",
+            folded[start:],
+        ) and re.search(r"अब", folded[cursor:]):
+            continue
         kept.append(record)
     return kept
 
@@ -1664,6 +1671,9 @@ def _shared_age_for_group(utterance: str, count_n: int) -> dict | None:
     if count_n < 2 or len(records) != 1:
         return None
     folded = _fold_spoken_numbers(utterance or "")
+    # दोनों is the count two, and it is not folded to a digit (दो must not eat it).
+    if count_n == 2:
+        folded = re.sub(r"दोनों", "2", folded, count=1)
     age = records[0]
     unit = {
         "years": _YEAR_UNIT,
