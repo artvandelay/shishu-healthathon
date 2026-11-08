@@ -1648,6 +1648,10 @@ def _children_payload(value: object) -> tuple[str, object]:
     if isinstance(value, bool) or value in (0, None, []) or value == "0":
         return "none", []
     if isinstance(value, (int, float)) and not isinstance(value, bool):
+        # 0.5 is half a year, not zero children. A whole number is a count
+        # until the utterance shows it is the age.
+        if isinstance(value, float) and not float(value).is_integer():
+            return "ignore", []
         return ("none", []) if int(value) <= 0 else ("count", int(value))
     if isinstance(value, str):
         val_clean = str(value).strip().lower()
@@ -2129,6 +2133,23 @@ def apply_updates(
                     ]
                     aged = [child for child in existing if _child_age_years(child.get("age")) is not None]
                     spoken_now = _spoken_age_records(utterance)
+                    # The tool's integer is an age when the sentence states ages
+                    # and does not state that many children. आठ साल का एक बच्चा
+                    # sent as 8 is one child. छह महीने sent as 6 is one child.
+                    if kind_c == "count" and spoken_now:
+                        recounted = _count_from_child_words(_fold_spoken_numbers(utterance or ""))
+                        age_values = {
+                            int(record["value"]) if isinstance(record.get("value"), float) and record["value"].is_integer()
+                            else record.get("value")
+                            for record in spoken_now
+                        }
+                        # No child-count phrase: the integer is the age (छह महीने sent as 6).
+                        # A different count whose integer is one of those ages: आठ साल का एक
+                        # बच्चा sent as 8, or the mother's 30 beside दो बच्चे.
+                        if recounted is None:
+                            kind_c = "ignore"
+                        elif recounted != int(norm) and int(norm) in age_values:
+                            norm = recounted
                     count_n = int(norm) if kind_c == "count" else 0
                     shared = _shared_age_for_group(utterance, count_n)
                     if shared:

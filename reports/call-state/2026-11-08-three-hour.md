@@ -162,6 +162,8 @@ One age tied to a counted group is every child's age. तीन साल की
 
 ठीक से and ठीक रहा are reassurance, the same as ठीक है. निशान ठीक से भरा है is a no even when the tool sent true. A question that itself asks about ठीक, such as joint swelling that settles, is unchanged. ठीक है। alone does not erase a finding logged on that turn. `196` unit tests. 54 scenarios, 0 failed.
 
+A bare integer is the age when the sentence states ages and does not state that many children. छह महीने sent as 6 is one child of six months, not six children. आधा साल sent as 0.5 is one child, not zero. आठ साल का एक बच्चा sent as 8 is one child. दो बच्चे हैं, चार और छह साल के दो बेटे sent as 2 stays two children. `196` unit tests. 55 scenarios, 0 failed.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.
