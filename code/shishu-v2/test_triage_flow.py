@@ -33,13 +33,14 @@ class PromptTests(unittest.TestCase):
         ):
             self.assertNotIn("set_progress", other)
 
-    def test_turn_context_is_marked_internal_and_the_prompt_forbids_speaking_it(self):
+    def test_turn_context_is_speakable_safe_and_the_prompt_forbids_internal_speech(self):
         text = build_turn_context(
             {"profile": {}},
             {"topic_id": "birth_term", "followup_id": None, "question_kind": "topic",
              "prompt_note": "Ask it."},
         )
-        self.assertTrue(text.startswith(INTERNAL_NOTE_TAG))
+        for marker in ("record_answers", "Next tool", "topic.<", INTERNAL_NOTE_TAG):
+            self.assertNotIn(marker, text)
         prompt = prompts.GEMINI_LIVE_SYSTEM_PROMPT
         self.assertIn(INTERNAL_NOTE_TAG, prompt)
         self.assertIn("NEVER speak it", prompt)

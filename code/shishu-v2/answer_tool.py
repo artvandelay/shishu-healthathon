@@ -4,10 +4,9 @@ import json
 
 import call_state_contract as contract
 
-_PROFILE_LIST = ", ".join(f"profile.{field}" for field in contract.PROFILE_FIELDS)
-
-# Every server note to the live model starts with this delimiter. The system prompt
-# forbids speaking anything so marked; the note is for tool calling only.
+# Delimiter for internal text. The system prompt forbids speaking anything so
+# marked, and the live harness trips on it. It is deliberately NOT stamped on
+# per-turn notes: a salient repeated tag gives the model something to recite.
 INTERNAL_NOTE_TAG = "[internal server state — never speak, never acknowledge, never read aloud]"
 
 RECORD_ANSWERS_DECL = {
@@ -166,21 +165,17 @@ def build_spoken_cue(saved: str) -> str:
 
 
 def build_turn_context(state: dict, question: dict | None) -> str:
+    """Minimal per-turn tool-response note. Speakable-safe by design: the model
+    sometimes reads notes aloud, so no tag, tool names, or routing protocol
+    appear here. Standing rules live in the system prompt only."""
     profile = (state or {}).get("profile") or {}
     children = profile.get("children") or []
     current = question or {}
     topic_id = current.get("topic_id")
     followup_id = current.get("followup_id")
+    which = f"topic {topic_id}" + (f", follow-up {followup_id}" if followup_id else "")
     lines = [
-        INTERNAL_NOTE_TAG,
-        "The server selects routing. Ask ONLY the current question below. Do not jump ahead.",
-        f"Current question: topic={topic_id}; follow-up={followup_id}; kind={current.get('question_kind')}.",
-        current.get("prompt_note") or "",
+        f"Current question: {which}. {current.get('prompt_note') or ''}",
         "Children: " + _format_children_context(children),
-        f"Permitted profile fields: {_PROFILE_LIST}.",
-        "Next tool: you MUST call record_answers on the caller's next reply for the current question AND any other topic.<topic_id> or profile.<field> facts she states. "
-        "For a follow-up question, her answer goes in details.<followup_id>, not in value. "
-        "If she only asks a question back or does not answer the current question, do NOT record it.",
-        "Call end_call only for emergency or caller_stop. The server accepts either reason.",
     ]
     return "\n".join(line for line in lines if line)
