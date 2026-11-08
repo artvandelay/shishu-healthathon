@@ -568,6 +568,10 @@ def _detail_values(details: dict, skip_label: str = "") -> str:
         if key == "affected_child" and skip_norm:
             continue
         shown = _shown_value(value)
+        if key == "days" and re.fullmatch(r"\d+(?:\.\d+)?", shown):
+            shown = f"{shown} दिन"
+        elif key == "count" and re.fullmatch(r"\d+(?:\.\d+)?", shown):
+            shown = f"{shown} बार"
         if not shown or shown == skip_norm:
             continue
         if shown not in out:
