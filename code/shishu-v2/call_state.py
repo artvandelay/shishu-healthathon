@@ -1379,7 +1379,11 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
                 details["operation_reason"] = (utterance or "").strip()
     if name == "birth_term":
         blob = f"{val_blob} {utt_blob}"
-        early = re.search(r"समय से पहले|जल्दी|preterm|early|सात महीने|आठ महीने|छह महीने|seven month|eight month|six month", blob)
+        # "छह महीने का है" is the child's age now. "छह महीने में" or "का पैदा" is the pregnancy.
+        early = re.search(
+            r"समय से पहले|जल्दी|preterm|early|(?:छह|सात|आठ|six|seven|eight)\s+महीन\S*(?:\s+में|\s+का\s+पैदा)",
+            blob,
+        )
         late = re.search(r"समय के बाद|देर से|postterm|late|दस महीने|ग्यारह महीने|ten month|eleven month", blob)
         full = re.search(r"पूरे नौ|नौ महीने|nine month|full term|समय पर", blob)
         if "term" not in details and "result" not in details:

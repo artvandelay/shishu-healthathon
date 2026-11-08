@@ -866,6 +866,14 @@ class CallStateTests(unittest.TestCase):
             utterance="दस महीने में हुआ, देर से।",
         )
         self.assertEqual(call_state.topic_answer_kind(late["topics"]["birth_term"], "birth_term"), "yes")
+        aged = _ask(call_state.new_call_state(), "birth_term")
+        aged = call_state.apply_updates(
+            aged,
+            [_update("topic.birth_term", True)],
+            1,
+            utterance="बच्चा अभी छह महीने का है, जन्म पूरे नौ महीने में हुआ।",
+        )
+        self.assertEqual(call_state.topic_answer_kind(aged["topics"]["birth_term"], "birth_term"), "no")
 
     def test_a_count_of_times_stated_with_the_answer_is_not_asked_again(self):
         state = _ask(call_state.new_call_state(), "body_transfusion")
