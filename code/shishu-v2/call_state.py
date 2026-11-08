@@ -1597,15 +1597,23 @@ def _lab_result(text: str) -> str | None:
 
 
 def _term_label(text: str) -> str | None:
-    """early, late, or full. A child's present age (छह महीने का है) is not a term."""
+    """early, late, or full. A child's present age (6 महीने का है) is not a term."""
     if not text:
         return None
+    folded = _fold_spoken_numbers(text)
+    born = r"(?:\s+में|\s+का\s+पैदा)"
     early = re.search(
-        r"समय से पहले|जल्दी|preterm|early|(?:छह|सात|आठ|six|seven|eight)\s+महीन\S*(?:\s+में|\s+का\s+पैदा)",
-        text,
+        rf"समय से पहले|जल्दी|preterm|early|(?:6|7|8)\s+महीन\S*{born}",
+        folded,
     )
-    late = re.search(r"समय के बाद|देर से|postterm|late|दस महीने|ग्यारह महीने|ten month|eleven month", text)
-    full = re.search(r"पूरे नौ|नौ महीने|nine month|full term|समय पर", text)
+    late = re.search(
+        rf"समय के बाद|देर से|postterm|late|(?:10|11|12)\s+महीन\S*{born}|ten month|eleven month",
+        folded,
+    )
+    full = re.search(
+        rf"पूरे\s*9|full term|समय पर|9\s+महीन\S*{born}|nine month",
+        folded,
+    )
     if early and not late:
         return "early"
     if late and not early:

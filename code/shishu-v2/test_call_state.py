@@ -1077,6 +1077,22 @@ class CallStateTests(unittest.TestCase):
             utterance="बच्चा अभी छह महीने का है, जन्म पूरे नौ महीने में हुआ।",
         )
         self.assertEqual(call_state.topic_answer_kind(aged["topics"]["birth_term"], "birth_term"), "no")
+        digit = _ask(call_state.new_call_state(), "birth_term")
+        digit = call_state.apply_updates(
+            digit,
+            [_update("topic.birth_term", True)],
+            1,
+            utterance="7 महीने में पैदा हुई।",
+        )
+        self.assertEqual(digit["topics"]["birth_term"]["details"].get("term"), "early")
+        nine = _ask(call_state.new_call_state(), "birth_term")
+        nine = call_state.apply_updates(
+            nine,
+            [_update("topic.birth_term", True)],
+            1,
+            utterance="9 महीने में पैदा हुई।",
+        )
+        self.assertEqual(call_state.topic_answer_kind(nine["topics"]["birth_term"], "birth_term"), "no")
         corrected_term = call_state.apply_updates(
             early,
             [_update("topic.birth_term", True)],

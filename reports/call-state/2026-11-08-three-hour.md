@@ -122,7 +122,9 @@ A stored day count prints as 4 दिन and a stored time count as 3 बार.
 
 दो बेटे and दो बेटियाँ are both boys or both girls. One बेटी among several ages still does not label every child.
 
-दो बार गर्भ गिरा, तीन महीने में stores the count and the month, and does not ask them again. An age said with blindness or a preterm birth fills that age follow-up (30 साल, 7 महीने). `188` unit tests. 43 scenarios, 0 failed.
+दो बार गर्भ गिरा, तीन महीने में stores the count and the month, and does not ask them again. An age said with blindness or a preterm birth fills that age follow-up (30 साल, 7 महीने).
+
+7, 8, or 9 महीने use the same early, late, and full-term rule as the Hindi words. 9 महीने में is full term. 6 महीने का है is still the child's age now. `188` unit tests. 43 scenarios, 0 failed.
 
 ## Not hardcoded
 
