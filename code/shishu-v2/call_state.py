@@ -1,7 +1,6 @@
 """Server-owned call state, applicability rules, and question selection."""
 
 import copy
-import json
 import re
 
 import checklist
@@ -464,6 +463,27 @@ def _is_positive(topic: dict) -> bool:
     }:
         return True
     return False
+
+
+def topic_answer_kind(topic: dict) -> str:
+    if not isinstance(topic, dict):
+        return "not_asked"
+    if _is_positive(topic):
+        return "yes"
+    status = str(topic.get("state") or "not_asked")
+    value = topic.get("value")
+    details = topic.get("details") or {}
+    if status == "answered" and (
+        value is False
+        or str(details.get("result") or "").strip().lower() in {"normal", "negative"}
+        or str(value or "").strip().lower() in {"no", "nahi", "normal", "negative"}
+    ):
+        return "no"
+    if status in {"unknown", "no_response", "not_asked", "not_applicable"}:
+        return status
+    if status == "answered":
+        return "answered"
+    return "not_asked"
 
 
 _KINSHIP_WORDS = {
@@ -969,29 +989,15 @@ def _check_update(update: dict, current_topic: str | None) -> tuple[str, str]:
     kind, name = _parse_field(update.get("field"))
     if kind == "error":
         return kind, name
-    status = str(update.get("state") or "").strip().lower()
-    update["state"] = status
+    status = update.get("state")
     if status not in MODEL_TOPIC_STATES:
         return "error", f"invalid state: {status}"
-    scope = str(update.get("scope") or "none").strip().lower()
-    update["scope"] = scope
+    scope = update.get("scope") or "none"
     if scope not in _SCOPES:
         return "error", f"invalid scope: {scope}"
-    child_ids = update.get("child_ids")
-    if isinstance(child_ids, str):
-        child_ids = [cid.strip() for cid in child_ids.split(",") if cid.strip()]
-        update["child_ids"] = child_ids
-    elif child_ids is None:
-        child_ids = []
-        update["child_ids"] = child_ids
+    child_ids = update.get("child_ids") or []
     if not isinstance(child_ids, list):
         return "error", "child_ids must be a list"
-    details = update.get("details")
-    if isinstance(details, str):
-        try:
-            update["details"] = json.loads(details)
-        except Exception:
-            pass
     return kind, name
 
 
@@ -1069,17 +1075,15 @@ def _remember_turn(topic: dict, turn_id: int) -> None:
         turns.append(turn_id)
 
 
-def _store_instances(topic: dict, update: dict, children: list[dict] | None = None) -> None:
-    scope = str(update.get("scope") or "none").strip().lower()
+def _store_instances(topic: dict, update: dict) -> None:
+    scope = update.get("scope") or "none"
     value = update.get("value")
     details = update.get("details") if isinstance(update.get("details"), dict) else {}
     child_ids = [str(child_id) for child_id in (update.get("child_ids") or [])]
     if scope == "all" and value is False:
         topic["instances"] = []
         return
-    if scope == "all" and _is_positive(topic) and children:
-        child_ids = [c["id"] for c in children if isinstance(c, dict) and c.get("id")]
-    elif scope != "specific":
+    if scope != "specific":
         return
     existing = {
         item.get("person_id"): item
@@ -1102,7 +1106,7 @@ _PARENT_ECHO = {
     "true", "false", "yes", "no", "haan", "nahi", "nahin", "हाँ", "नहीं", "नही",
 }
 _CLARIFY_RE = re.compile(
-    r"^\s*(?:क्या(?:\s+मतलब)?|समझ\s+नहीं\s+आया|matlab|kya(?:\s+matlab)?|samajh\s+nahi(?:\s+aaya)?)[।.!?]*\s*$",
+    r"^\s*(?:(?:ये|यह|इसका|yeh|ye|iska)\s+)?(?:क्या(?:\s+मतलब(?:\s+है)?|\s+होता\s+है)?|मतलब(?:\s+क्या\s+है)?|यानी|समझ(?:\s+में)?\s+नहीं\s+आया|matlab|yaani|yani|kya(?:\s+matlab(?:\s+hai)?|\s+hota\s+hai)?|samajh(?:\s+mein)?\s+nahi(?:\s+aaya)?)[।.!?]*\s*$",
     re.I,
 )
 _UNKNOWN_UTT_RE = re.compile(
@@ -1121,8 +1125,11 @@ def _is_parent_echo(value: object, topic_value: object) -> bool:
     return topic_value is not None and text == str(topic_value).strip().lower()
 
 
-def _is_clarification(text: str) -> bool:
+def is_clarification(text: str) -> bool:
     return _CLARIFY_RE.match((text or "").strip()) is not None
+
+
+_is_clarification = is_clarification
 
 
 def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
@@ -1150,12 +1157,6 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
                 details["place"] = "hospital"
             elif any(word in utt_blob for word in ("home", "ghar", "घर")):
                 details["place"] = "home"
-    if name == "birth_term":
-        if "early_or_late" not in details:
-            if any(word in val_blob or word in utt_blob for word in ("early", "pehle", "preterm", "पहले", "प्रीटर्म")):
-                details["early_or_late"] = "early"
-            elif any(word in val_blob or word in utt_blob for word in ("late", "baad", "बाद")):
-                details["early_or_late"] = "late"
     if name == "birth_hearing_vision":
         text = utterance or ""
         if "result" not in details and re.search(r"नॉर्मल|normal", text, re.I) and not re.search(r"अबनॉर्मल|abnormal|दिक्कत", text, re.I):
@@ -1170,18 +1171,6 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
             details.setdefault("scan_done", True)
         if "scan_done" not in details and isinstance(value, bool):
             details["scan_done"] = value
-    if name == "fam_related" and "relationship" not in details:
-        if _has_kinship(utt_blob):
-            for word in _KINSHIP_WORDS:
-                if re.search(rf"(?:^|\s){re.escape(word)}(?:\s|$)", utt_blob):
-                    details["relationship"] = word
-                    break
-    if name.startswith("fam_") and ("relationship" not in details and "who" not in details):
-        if _has_kinship(utt_blob):
-            for word in _KINSHIP_WORDS:
-                if re.search(rf"(?:^|\s){re.escape(word)}(?:\s|$)", utt_blob):
-                    details["relationship"] = word
-                    break
     topic["details"] = details
 
 
@@ -1336,21 +1325,23 @@ def apply_updates(
         details = dict(topic.get("details") or {})
         incoming = update.get("details") if isinstance(update.get("details"), dict) else {}
         if followup_id and name == current:
-            if status == "no_response":
+            clean_utt = (utterance or "").strip()
+            if _is_clarification(clean_utt):
+                incoming = {k: v for k, v in incoming.items() if k != followup_id}
+                details.update(incoming)
+                details.pop(followup_id, None)
+            elif status == "no_response":
                 details[followup_id] = {"state": "no_response"}
             elif status == "unknown":
                 details[followup_id] = {"state": "unknown"}
             else:
                 details.update(incoming)
-                clean_utt = (utterance or "").strip()
                 explicit = followup_id in incoming and not _is_parent_echo(
                     incoming.get(followup_id), previous_value
                 )
                 if not explicit:
                     raw_val = update.get("value")
-                    if _is_clarification(clean_utt):
-                        details.pop(followup_id, None)
-                    elif _UNKNOWN_UTT_RE.match(clean_utt):
+                    if _UNKNOWN_UTT_RE.match(clean_utt):
                         details[followup_id] = {"state": "unknown"}
                     elif raw_val is not None and not isinstance(raw_val, bool) and not _is_parent_echo(raw_val, previous_value):
                         details[followup_id] = raw_val
@@ -1373,7 +1364,7 @@ def apply_updates(
             topic["source"] = "model"
             _absorb_stated_value(name, topic, utterance)
             _remember_turn(topic, turn_id)
-            _store_instances(topic, update, state["profile"].get("children"))
+            _store_instances(topic, update)
             continue
         if previous_state in MODEL_TOPIC_STATES and (
             previous_value != update.get("value") or previous_state != status
@@ -1406,7 +1397,7 @@ def apply_updates(
         topic["reason"] = None
         _absorb_stated_value(name, topic, utterance)
         _remember_turn(topic, turn_id)
-        _store_instances(topic, update, state["profile"].get("children"))
+        _store_instances(topic, update)
     if not wrote:
         raise ValueError(problems[0] if problems else "no applicable update")
     _apply_rules(state)

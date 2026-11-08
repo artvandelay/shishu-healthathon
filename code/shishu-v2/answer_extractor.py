@@ -255,26 +255,9 @@ def structured_answers(call: dict) -> dict:
     for topic in checklist.TOPICS:
         topic_id = topic["id"]
         saved = topics.get(topic_id) if isinstance(topics.get(topic_id), dict) else {}
-        status = str(saved.get("state") or "not_asked")
-        value = saved.get("value")
-        details = saved.get("details") or {}
-        if call_state._is_positive(saved):
-            kind = "yes"
-        elif status == "answered" and (
-            value is False
-            or str(details.get("result") or "").strip().lower() in {"normal", "negative"}
-            or str(value or "").strip().lower() in {"no", "nahi", "normal", "negative"}
-        ):
-            kind = "no"
-        elif status == "answered":
-            kind = "answered"
-        elif status in {"unknown", "no_response", "not_asked", "not_applicable"}:
-            kind = status
-        else:
-            kind = "not_asked"
         answers[topic_id] = {
-            "answer": kind,
-            "details": details,
+            "answer": call_state.topic_answer_kind(saved),
+            "details": saved.get("details") or {},
             "instances": saved.get("instances") or [],
             "source_turn_ids": saved.get("source_turn_ids") or [],
             "reason": saved.get("reason"),

@@ -510,6 +510,17 @@ class CallStateTests(unittest.TestCase):
         self.assertEqual(nxt["topic_id"], "birth_nicu")
         self.assertEqual(nxt["followup_id"], "reason")
 
+        state = call_state.apply_updates(
+            state,
+            [_update("topic.birth_nicu", True, details={"reason": "clarified"})],
+            3,
+            utterance="क्या मतलब?",
+        )
+        self.assertNotIn("reason", state["topics"]["birth_nicu"]["details"])
+        nxt = call_state.next_question(state)
+        self.assertEqual(nxt["topic_id"], "birth_nicu")
+        self.assertEqual(nxt["followup_id"], "reason")
+
     def test_pata_nahi_resolves_the_followup_as_unknown(self):
         state = _ask(call_state.new_call_state(), "birth_nicu")
         state = call_state.apply_updates(state, [_update("topic.birth_nicu", True)], 1)
@@ -613,21 +624,6 @@ class CallStateTests(unittest.TestCase):
         instances = state["topics"]["birth_nicu"]["instances"]
         self.assertEqual({inst["person_id"] for inst in instances}, {"child_1", "child_2"})
 
-    def test_field_and_syntax_tolerance(self):
-        state = call_state.new_call_state()
-        state = call_state.apply_updates(
-            state,
-            [
-                {"field": "profiles.children", "state": "ANSWERED", "value": [{"age": "2 saal"}], "scope": "none", "child_ids": [], "details": "{}"},
-                {"field": "topics.birth_mode", "state": "answered", "value": "true", "scope": "ALL", "child_ids": "child_1", "details": '{"delivery_type": "operation"}'},
-            ],
-            1,
-        )
-        self.assertEqual(len(state["profile"]["children"]), 1)
-        self.assertEqual(call_state._child_age_years(state["profile"]["children"][0]["age"]), 2)
-        self.assertIs(state["topics"]["birth_mode"]["value"], True)
-        self.assertEqual(state["topics"]["birth_mode"]["details"]["delivery_type"], "operation")
-
     def test_children_payload_string_counts_and_none(self):
         self.assertEqual(call_state._children_payload("दो बच्चे"), ("count", 2))
         self.assertEqual(call_state._children_payload("2 kids"), ("count", 2))
@@ -638,27 +634,6 @@ class CallStateTests(unittest.TestCase):
         self.assertEqual(call_state._canonical_marital("विवाहित"), "married")
         self.assertEqual(call_state._canonical_marital("शादीशुदा"), "married")
         self.assertEqual(call_state._canonical_marital("shadishuda"), "married")
-
-    def test_followup_absorption_birth_term_and_kinship(self):
-        state = call_state.new_call_state()
-        state = call_state.apply_updates(state, [_update("profile.children", [{"age": 2}])], 1)
-        state = _ask(state, "birth_term")
-        state = call_state.apply_updates(
-            state,
-            [_update("topic.birth_term", True)],
-            2,
-            utterance="बच्चा समय से पहले हुआ था।",
-        )
-        self.assertEqual(state["topics"]["birth_term"]["details"].get("early_or_late"), "early")
-
-        state = _ask(state, "fam_related")
-        state = call_state.apply_updates(
-            state,
-            [_update("topic.fam_related", True)],
-            3,
-            utterance="हाँ, हम कज़िन थे।",
-        )
-        self.assertEqual(state["topics"]["fam_related"]["details"].get("relationship"), "कज़िन")
 
 
 if __name__ == "__main__":

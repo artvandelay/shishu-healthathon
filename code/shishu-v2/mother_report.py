@@ -325,22 +325,7 @@ def _saved_state(call: dict) -> dict | None:
 
 def _structured_kind(state: dict, topic_id: str) -> str:
     topic = (state.get("topics") or {}).get(topic_id) or {}
-    status = topic.get("state")
-    if call_state._is_positive(topic):
-        return "yes"
-    value = topic.get("value")
-    details = topic.get("details") or {}
-    if status == "answered" and (
-        value is False
-        or str(details.get("result") or "").strip().lower() in {"normal", "negative"}
-        or str(value or "").strip().lower() in {"no", "nahi", "normal", "negative"}
-    ):
-        return "no"
-    if status in {"unknown", "no_response", "not_asked", "not_applicable"}:
-        return status
-    if status == "answered":
-        return "answered"
-    return "not_asked"
+    return call_state.topic_answer_kind(topic)
 
 
 def _thalassemia_from_state(state: dict) -> bool:
@@ -370,22 +355,6 @@ _TOKEN_HI = {
 }
 
 
-def _age_years(age: object) -> float | None:
-    if isinstance(age, bool) or age is None:
-        return None
-    if isinstance(age, (int, float)):
-        return float(age)
-    if isinstance(age, dict):
-        value = age.get("value")
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            return None
-        unit = str(age.get("unit") or "years").lower()
-        if "month" in unit:
-            return float(value) / 12.0
-        return float(value)
-    return None
-
-
 def _child_label(state: dict, child_id: object) -> str:
     children = [
         child
@@ -395,15 +364,25 @@ def _child_label(state: dict, child_id: object) -> str:
     child = next((item for item in children if item.get("id") == child_id), None)
     if child and str(child.get("name") or "").strip():
         return str(child["name"]).strip()
+    if len(children) <= 1:
+        return ""
     ranked = sorted(
         children,
-        key=lambda item: _age_years(item.get("age")) if _age_years(item.get("age")) is not None else -1,
+        key=lambda item: (
+            call_state._child_age_years(item.get("age"))
+            if call_state._child_age_years(item.get("age")) is not None
+            else -1
+        ),
         reverse=True,
     )
     index = next((i for i, item in enumerate(ranked) if item.get("id") == child_id), None)
     if index is None:
         return ""
-    if len(ranked) >= 2 and _age_years(ranked[0].get("age")) != _age_years(ranked[-1].get("age")):
+    if (
+        len(ranked) >= 2
+        and call_state._child_age_years(ranked[0].get("age"))
+        != call_state._child_age_years(ranked[-1].get("age"))
+    ):
         if index == 0:
             return "बड़ा बच्चा"
         if index == len(ranked) - 1:

@@ -598,20 +598,7 @@ Do not turn unknown, no_response, not_asked, or not_applicable into no.
 
 
 def _answer_label(topic: dict) -> str:
-    status = str(topic.get("state") or "not_asked")
-    if call_state._is_positive(topic):
-        return "yes"
-    value = topic.get("value")
-    details = topic.get("details") or {}
-    if status == "answered" and (
-        value is False
-        or str(details.get("result") or "").strip().lower() in {"normal", "negative"}
-        or str(value or "").strip().lower() in {"no", "nahi", "normal", "negative"}
-    ):
-        return "no"
-    if status == "answered":
-        return "answered"
-    return status
+    return call_state.topic_answer_kind(topic)
 
 
 def state_to_summary_context(state: dict) -> str:

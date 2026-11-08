@@ -994,6 +994,7 @@ async def _handle_server_message(
             and live_state.get("phase") == "asking"
             and not state.tool_called_since_user
             and state.last_user_text
+            and not call_state.is_clarification(state.last_user_text)
             and state.missing_tool_cues < 1
             and not telemetry.get("end_requested")
         ):
