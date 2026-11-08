@@ -212,6 +212,8 @@ A bare डेढ़ or 1.5 is not one child. The same decimal rule covers a numb
 
 Trio: चारों बच्चे with ages 2, 4, 6 and 8 (no flags), दसवें महीने में is late, and झटके on the पौने साल child bind to the younger child only. Pass. 66 scenarios, 0 failed. `196` unit tests.
 
+दो हफ्ते तीन दिन का is one child of 17 days. दो हफ्ते और तीन दिन stays two ages. दो हफ्ते तीन दिन रखा is a stay, not an age. `196` unit tests. 67 scenarios, 0 failed.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

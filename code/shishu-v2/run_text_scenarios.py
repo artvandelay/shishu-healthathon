@@ -587,6 +587,14 @@ def campaign() -> list[Scenario]:
             expect_yes=("birth_nicu",),
         ),
         Scenario(
+            name="no_flags_seventeen_days",
+            group="no_flags",
+            caller_name="भावना",
+            marital_text=married,
+            children_text="दो हफ्ते तीन दिन का बेटा है।",
+            children_value=2,
+        ),
+        Scenario(
             name="no_flags_four_together",
             group="no_flags",
             caller_name="लता",

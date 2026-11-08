@@ -1350,7 +1350,7 @@ def _followed_by_age_copula(text: str, end: int) -> bool:
     """दो हफ़्ते का है is an age. दो दिन रहा and दो दिन का बुखार are not."""
     rest = re.sub(r"^\S*", "", text[end:])
     return re.match(
-        r"\s*(?:का|की|के)\s*(?:है|हैं|था|थी|थे|बच्च|बेटा|बेटी|लड़क)",
+        r"\s*(?:का|की|के)(?:\s*(?:है|हैं|था|थी|थे|बच्च|बेटा|बेटी|लड़क)|[।.!\s]*$)",
         rest,
     ) is not None
 
@@ -1371,10 +1371,17 @@ def _span_is_age(text: str, end: int, require_copula: bool) -> bool:
         return True
     rest = re.sub(r"^\S*", "", text[end:])
     if re.match(r"\s*(?:,|और|and)\b", rest, re.I) and re.search(
-        r"(?:का|की|के)\s*(?:है|हैं|था|थी|थे|बच्च|बेटा|बेटी|लड़क)",
+        r"(?:का|की|के)(?:\s*(?:है|हैं|था|थी|थे|बच्च|बेटा|बेटी|लड़क)|[।.!\s]*$)",
         text[end:],
     ):
         return True
+    # दो हफ्ते तीन दिन का है. The weeks are part of that age, not a stay.
+    if require_copula and re.match(r"\s*\d+(?:\.\d+)?\s*(?:दिन|days|day)\b", text[end:], re.I):
+        if re.search(
+            r"(?:का|की|के)(?:\s*(?:है|हैं|था|थी|थे|बच्च|बेटा|बेटी|लड़क)|[।.!\s]*$)",
+            text[end:],
+        ):
+            return True
     return False
 
 
@@ -1438,7 +1445,39 @@ def _spoken_age_records(utterance: str) -> list[dict]:
     found.extend(_ages_with_unit(folded, _WEEK_UNIT, "weeks", require_copula=True))
     found.extend(_ages_with_unit(folded, _DAY_UNIT, "days", require_copula=True))
     found.sort()
-    return _merge_year_and_months(folded, found)
+    return _merge_year_and_months(folded, _merge_weeks_and_days(folded, found))
+
+
+def _merge_weeks_and_days(folded: str, found: list) -> list:
+    """दो हफ्ते तीन दिन का is 17 days. दो हफ्ते और एक हफ्ता stays two ages."""
+    merged = []
+    index = 0
+    while index < len(found):
+        start, record = found[index]
+        nxt = found[index + 1] if index + 1 < len(found) else None
+        if nxt and record.get("unit") == "weeks" and nxt[1].get("unit") == "days":
+            between = folded[start:nxt[0]]
+            after_week = re.sub(
+                rf"^\d+(?:\.\d+)?\s*{_WEEK_UNIT}",
+                "",
+                between,
+                count=1,
+                flags=re.I,
+            )
+            days = nxt[1].get("value")
+            if (
+                re.fullmatch(r"\s*", after_week or "")
+                and isinstance(days, (int, float))
+                and not isinstance(days, bool)
+            ):
+                total = float(record["value"]) * 7 + float(days)
+                shown = int(total) if total.is_integer() else total
+                merged.append((start, {"value": shown, "unit": "days"}))
+                index += 2
+                continue
+        merged.append(found[index])
+        index += 1
+    return merged
 
 
 def _merge_year_and_months(folded: str, found: list) -> list[dict]:

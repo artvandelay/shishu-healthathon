@@ -1084,6 +1084,15 @@ class CallStateTests(unittest.TestCase):
             [{"value": 3, "unit": "years"}],
         )
         self.assertEqual(
+            call_state._spoken_age_records("दो हफ्ते तीन दिन का है।"),
+            [{"value": 17, "unit": "days"}],
+        )
+        self.assertEqual(
+            call_state._spoken_age_records("दो हफ्ते और तीन दिन का है।"),
+            [{"value": 2, "unit": "weeks"}, {"value": 3, "unit": "days"}],
+        )
+        self.assertEqual(call_state._spoken_age_records("दो हफ्ते तीन दिन रखा।"), [])
+        self.assertEqual(
             call_state._spoken_age_records("सवा हफ्ता का है।"),
             [{"value": 1.25, "unit": "weeks"}],
         )
