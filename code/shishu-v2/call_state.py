@@ -1750,7 +1750,8 @@ def _shared_age_for_group(utterance: str, count_n: int) -> dict | None:
     # दोनों is the count two, and it is not folded to a digit (दो must not eat it).
     # तीनों and चारों are the same kind of word for three and four.
     for word, digit in (
-        ("छहों", "6"), ("पाँचों", "5"), ("पांचों", "5"), ("चारों", "4"), ("तीनों", "3"), ("दोनों", "2"),
+        ("आठों", "8"), ("सातों", "7"), ("छहों", "6"),
+        ("पाँचों", "5"), ("पांचों", "5"), ("चारों", "4"), ("तीनों", "3"), ("दोनों", "2"),
     ):
         if count_n == int(digit):
             folded = re.sub(word, digit, folded, count=1)
@@ -2076,6 +2077,7 @@ def _numbers_before_child_words(folded: str) -> list[tuple[int, str]]:
     for word, number in (
         ("दोनों", 2), ("तीनों", 3), ("चारों", 4),
         ("पाँचों", 5), ("पांचों", 5), ("छहों", 6),
+        ("सातों", 7), ("आठों", 8),
     ):
         if re.search(rf"{word}\s*(?:{_CHILD_COUNT_WORD}|को)", folded or ""):
             found.append((number, word))
@@ -2355,7 +2357,7 @@ _is_clarification = is_clarification
 
 _EVERY_CHILD_WORDS = (
     "all", "both", "dono", "sabhi", "sabko", "everyone", "sab",
-    "दोनों", "तीनों", "चारों", "पाँचों", "पांचों", "छहों",
+    "दोनों", "तीनों", "चारों", "पाँचों", "पांचों", "छहों", "सातों", "आठों",
     "सभी", "सबको", "सब", "हर एक",
 )
 

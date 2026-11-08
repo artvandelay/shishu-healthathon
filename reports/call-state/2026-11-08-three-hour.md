@@ -438,7 +438,13 @@ Trio: all three are four (no flags), fits for all three (still a yes), and 4 sen
 
 Trio: all six are two (no flags), blue lips for all six (still a yes, the line names होंठ), and 2 sent as the count (still six children of two, no हाँ lines). Pass.
 
-## Left at 16:55 IST
+## 16:57 IST
+
+सातों and आठों are the same count words as छहों. सातों बच्चे एक साल के हैं is seven children of one, even when the tool says 1, because 1 is the age. आठों is eight. `197` unit tests. 177 scenarios, 0 failed.
+
+Trio: all seven are one (no flags), fits for all seven (still a yes), and all eight are one (no हाँ lines). Pass.
+
+## Left at 16:57 IST
 
 फोर्सेप लगा, नॉर्मल नहीं stays a yes with no delivery type. Forceps was not added to the operation words. भाई को बचपन से नहीं दिखता stays a no on the blindness question. तलाक, विधवा, and शादी टूट stay unmapped as a status, and शादी टूट is not stored as married. Cholesterol is in the English family note, not the Hindi question, so it is not stored. सूजन या गाँठ is still not a place. एक आधा साल stays half a year.
 
