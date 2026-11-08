@@ -41,6 +41,7 @@ class Scenario:
     children_value: object
     ever_pregnant: bool | None = None
     positives: dict = field(default_factory=dict)
+    after_no_findings: dict = field(default_factory=dict)
     emergency_at: str | None = None
     stop_at: str | None = None
     stop_after_clinical: int | None = None
@@ -116,6 +117,9 @@ def _reply(scenario: Scenario, question: dict, memory: dict) -> tuple[str, list[
     if fid and tid in scenario.unknown_followups:
         parent = positive.get("value", True)
         return "मुझे पता नहीं है।", [_update(f"topic.{tid}", parent)], None
+    if fid and fid in ((scenario.after_no_findings or {}).get(tid) or {}):
+        utterance, detail = scenario.after_no_findings[tid][fid]
+        return utterance, [_update(f"topic.{tid}", False, details={fid: detail})], None
     if fid and fid in (positive.get("followups") or {}):
         utterance, detail = positive["followups"][fid]
         return utterance, [_update(f"topic.{tid}", positive.get("value", True), details={fid: detail})], None
@@ -481,6 +485,20 @@ def campaign() -> list[Scenario]:
             marital_text=married,
             children_text="एक बच्चा है, ग्यारह साल का लड़का।",
             children_value=1,
+        ),
+        Scenario(
+            name="flags_periods_after_a_no",
+            group="red_flags",
+            caller_name="किरण",
+            marital_text=married,
+            children_text="एक बच्चा है, ग्यारह साल की बेटी।",
+            children_value=1,
+            after_no_findings={
+                "body_bleeding_bruise": {
+                    "periods": ("माहवारी में बहुत ज़्यादा खून आता है।", "बहुत ज़्यादा"),
+                },
+            },
+            expect_yes=("body_bleeding_bruise",),
         ),
         Scenario(
             name="flags_kinship_as_the_value",

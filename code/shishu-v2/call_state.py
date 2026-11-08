@@ -521,6 +521,18 @@ def _affirmative_value(value: object) -> bool:
     return _stated_polarity(value) == "yes"
 
 
+def _followup_is_finding(value: object) -> bool:
+    """A follow-up that describes a problem, not a no, an unknown, or a normal result."""
+    if value is True:
+        return True
+    if value is False or value is None or isinstance(value, dict):
+        return False
+    if _stated_polarity(value) == "no" or _is_unknown_utterance(str(value)):
+        return False
+    text = str(value).strip().lower().strip("।.!")
+    return text not in {"", "no", "nahi", "nahin", "normal", "negative", "नहीं", "नही", "नॉर्मल", "unknown"}
+
+
 def _is_positive(topic: dict, _topic_id: str | None = None) -> bool:
     if topic.get("state") != "answered":
         return False
@@ -1634,10 +1646,7 @@ def apply_updates(
             if (
                 name == "body_bleeding_bruise"
                 and followup_id in {"teeth", "periods"}
-                and _is_positive({
-                    "state": status,
-                    "value": incoming.get(followup_id, update.get("value")),
-                })
+                and _followup_is_finding(details.get(followup_id))
             ):
                 topic["value"] = True
             topic["source"] = "model"

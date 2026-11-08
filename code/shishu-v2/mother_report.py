@@ -234,6 +234,8 @@ _TOKEN_HI = {
     "abnormal": "असामान्य",
     "low": "कम",
     "high": "ज़्यादा",
+    "heavy": "ज़्यादा",
+    "prolonged": "देर तक",
     "both": "दोनों",
     "dono": "दोनों",
     "fits": "झटके",
@@ -482,6 +484,7 @@ def _thalassemia_from_state(state: dict) -> bool:
 
 _HIDDEN_DETAIL_VALUES = {
     "noted", "skip", "unknown", "no_response", "none", "true", "false", "yes", "no", "null", "n/a",
+    "नहीं", "नही", "nahi", "nahin",
 }
 
 
@@ -545,7 +548,7 @@ def _child_label(state: dict, child_id: object) -> str:
 def _shown_value(value: object) -> str:
     if value is None or isinstance(value, (dict, bool)):
         return ""
-    text = str(value).strip()
+    text = str(value).strip().strip("।.! ")
     if not text or text.startswith("child_") or text.lower() in _HIDDEN_DETAIL_VALUES:
         return ""
     mapped = _TOKEN_HI.get(text.lower(), text)

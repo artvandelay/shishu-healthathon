@@ -80,7 +80,9 @@ Pregnancy BP and sugar, and whether they continued after delivery, are stored wh
 
 When a child's sex is known, the report says बड़ी बेटी, बड़ा बेटा, छोटी बेटी, or दूसरी बेटी. Without a sex it still says बड़ा बच्चा or छोटा बच्चा. One PDF of a per-child NICU finding rendered (about 40 KB).
 
-A family answer whose value is the relationship (कज़िन, मामा) is a yes. “नहीं, मामा को नहीं” stays a no. `183` unit tests.
+A family answer whose value is the relationship (कज़िन, मामा) is a yes. “नहीं, मामा को नहीं” stays a no.
+
+Heavy periods said after a no on the general bleeding question are still a हाँ. A periods answer of नहीं leaves the topic a no. `184` unit tests. 26 scenarios, 0 failed.
 
 ## Not hardcoded
 

@@ -882,6 +882,59 @@ class CallStateTests(unittest.TestCase):
         pending = [item["id"] for item in call_state._pending_followups(state, "body_bleeding_bruise")]
         self.assertNotIn("periods", pending)
 
+    def test_a_described_period_problem_is_a_finding_after_a_no(self):
+        state = call_state.apply_updates(
+            call_state.new_call_state(),
+            [_update("profile.children", [{"age": {"value": 11, "unit": "years"}, "sex": "लड़की"}])],
+            1,
+        )
+        state = _ask(state, "body_bleeding_bruise")
+        state = call_state.apply_updates(
+            state,
+            [_update("topic.body_bleeding_bruise", False)],
+            2,
+            utterance="नहीं।",
+        )
+        state = _ask(state, "body_bleeding_bruise", "periods")
+        state = call_state.apply_updates(
+            state,
+            [_update("topic.body_bleeding_bruise", False, details={"periods": "बहुत ज़्यादा"})],
+            3,
+            utterance="माहवारी में बहुत ज़्यादा खून आता है।",
+        )
+        saved = state["topics"]["body_bleeding_bruise"]
+        self.assertEqual(saved["details"].get("periods"), "बहुत ज़्यादा")
+        self.assertEqual(call_state.topic_answer_kind(saved, "body_bleeding_bruise"), "yes")
+        import mother_report
+        state["close_reason"] = "complete"
+        yes = " ".join(mother_report.build({"state": state, "started_at": "2026-11-08 14:10:00"})["yes"])
+        self.assertIn("बहुत ज़्यादा", yes)
+        self.assertNotIn("नहीं", yes)
+
+        quiet = call_state.apply_updates(
+            call_state.new_call_state(),
+            [_update("profile.children", [{"age": {"value": 11, "unit": "years"}, "sex": "लड़की"}])],
+            1,
+        )
+        quiet = _ask(quiet, "body_bleeding_bruise")
+        quiet = call_state.apply_updates(
+            quiet,
+            [_update("topic.body_bleeding_bruise", False)],
+            2,
+            utterance="नहीं।",
+        )
+        quiet = _ask(quiet, "body_bleeding_bruise", "periods")
+        quiet = call_state.apply_updates(
+            quiet,
+            [_update("topic.body_bleeding_bruise", False)],
+            3,
+            utterance="नहीं।",
+        )
+        self.assertEqual(
+            call_state.topic_answer_kind(quiet["topics"]["body_bleeding_bruise"], "body_bleeding_bruise"),
+            "no",
+        )
+
     def test_yes_and_no_phrases_keep_their_polarity(self):
         for value in ("जी हाँ", "हाँ जी", "haan ji", "yes"):
             topic = {"state": "answered", "value": value, "details": {}}

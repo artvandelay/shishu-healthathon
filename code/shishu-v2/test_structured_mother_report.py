@@ -147,6 +147,8 @@ class StructuredMotherReportTests(unittest.TestCase):
         rendered = mother_report.render_html(report_normal)
         self.assertIn(question, _joined(report_normal["groups"]))
         self.assertIn(question + '</span><span class="ans">नहीं</span>', rendered)
+        self.assertEqual(mother_report.hindi_text("heavy"), "ज़्यादा")
+        self.assertNotIn("हेअव्य", mother_report.hindi_text("heavy"))
 
     def test_unknown_is_printed_under_unknown_not_unasked(self):
         state = self._state()
