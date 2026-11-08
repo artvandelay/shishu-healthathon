@@ -2356,6 +2356,36 @@ class CallStateTests(unittest.TestCase):
             utterance="अंगूठा नहीं है।",
         )
         self.assertEqual(thumb["topics"]["body_thumb"]["details"].get("finger_or_thumb"), "अंगूठा")
+        normal_count = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "body_blood_count"),
+            [_update("topic.body_blood_count", True)],
+            1,
+            utterance="डॉक्टर ने कहा नॉर्मल है।",
+        )
+        self.assertEqual(
+            call_state.topic_answer_kind(normal_count["topics"]["body_blood_count"], "body_blood_count"),
+            "no",
+        )
+        low_too = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "body_blood_count"),
+            [_update("topic.body_blood_count", True)],
+            1,
+            utterance="खून कम है, बाकी नॉर्मल है।",
+        )
+        self.assertEqual(
+            call_state.topic_answer_kind(low_too["topics"]["body_blood_count"], "body_blood_count"),
+            "yes",
+        )
+        fits_too = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "body_fits_milestones"),
+            [_update("topic.body_fits_milestones", True)],
+            1,
+            utterance="झटके आते हैं, बाकी नॉर्मल है।",
+        )
+        self.assertEqual(
+            call_state.topic_answer_kind(fits_too["topics"]["body_fits_milestones"], "body_fits_milestones"),
+            "yes",
+        )
         lump = call_state.apply_updates(
             _ask(call_state.new_call_state(), "body_lumps_birth"),
             [_update("topic.body_lumps_birth", True)],

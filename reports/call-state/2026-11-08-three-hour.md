@@ -338,6 +338,12 @@ The same choice is stored for the other questions that offer it. खून क�
 
 Trio: the knee denied (no flags, no हाँ lines), blood count low (still a yes, the line names कम), and a missing thumb sent as false (still a yes, the line names अंगूठा). Pass.
 
+## 16:37 IST
+
+डॉक्टर ने कहा नॉर्मल है is the result, not a finding. खून कम है, बाकी नॉर्मल है stays a yes, and so does झटके आते हैं, बाकी नॉर्मल है. सात महीने में पैदा हुआ, नॉर्मल है stays an early birth. `197` unit tests. 129 scenarios, 0 failed.
+
+Trio: a normal blood count (no flags, no हाँ lines), low count plus normal otherwise (still a yes), and an early birth that she also called normal (still a yes, 7 महीने). Pass.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

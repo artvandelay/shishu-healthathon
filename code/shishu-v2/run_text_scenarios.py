@@ -637,6 +637,53 @@ def campaign() -> list[Scenario]:
             children_value=3,
         ),
         Scenario(
+            name="no_flags_count_normal",
+            group="no_flags",
+            caller_name="गीता",
+            marital_text=married,
+            children_text="एक बेटी है, छह साल की।",
+            children_value=1,
+            positives={
+                "body_blood_count": {
+                    "value": True,
+                    "utterance": "डॉक्टर ने कहा नॉर्मल है।",
+                    "details": {},
+                },
+            },
+        ),
+        Scenario(
+            name="flags_count_low_and_normal",
+            group="red_flags",
+            caller_name="उषा",
+            marital_text=married,
+            children_text="एक बेटा है, चार साल का।",
+            children_value=1,
+            positives={
+                "body_blood_count": {
+                    "value": True,
+                    "utterance": "खून कम है, बाकी नॉर्मल है।",
+                    "details": {},
+                },
+            },
+            expect_yes=("body_blood_count",),
+        ),
+        Scenario(
+            name="degenerate_early_and_normal",
+            group="degenerate",
+            caller_name="कविता",
+            marital_text=married,
+            children_text="एक बेटी है, एक साल की।",
+            children_value=1,
+            positives={
+                "birth_term": {
+                    "value": True,
+                    "utterance": "सात महीने में पैदा हुआ, नॉर्मल है।",
+                    "details": {},
+                },
+            },
+            expect_yes=("birth_term",),
+        ),
+        Scenario(
             name="no_flags_knee_denied",
             group="no_flags",
             caller_name="मीना",

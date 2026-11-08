@@ -2478,6 +2478,34 @@ def _named_and_not_denied(value_text: str, utterance: str, words: tuple[str, ...
     )
 
 
+_RESULT_FRAME_STEMS = frozenset({"डॉक", "कहा", "रिप", "जाँ", "जाच", "बता", "हुई", "हुआ", "हुए"})
+
+
+def _normal_is_the_whole_answer(topic_id: str, utterance: str) -> bool:
+    """नॉर्मल है is the result. खून कम है, नॉर्मल है still names the low count.
+
+    डॉक्टर ने कहा and the report are how she says it, not a second finding.
+    """
+    if not _names_reassuring_normal(utterance):
+        return False
+    if any(_contains_word(utterance, word) for word in _OPERATION_WORDS):
+        return False
+    if _term_label(utterance) in {"early", "late"}:
+        return False
+    question = checklist.question_hi(topic_id)
+    skip = {"नहीं", "नही", "क्या", "है", "हैं", "था", "थी", "थे", "हुआ", "हुई", "हुए"}
+    for match in re.finditer(r"([\u0900-\u097F]{2,})\s+या\s+([\u0900-\u097F]{2,})", question):
+        for word in (match.group(1), match.group(2)):
+            if word not in skip and word in utterance:
+                return False
+    stripped = utterance
+    for word in ("normal", "नॉर्मल", "सामान्य"):
+        stripped = re.sub(re.escape(word), " ", stripped, flags=re.I)
+    stems = _content_stems(stripped) - _RESULT_FRAME_STEMS
+    asked = _content_stems(question) - _RESULT_FRAME_STEMS
+    return not (stems & asked)
+
+
 def _absorb_stated_value(name: str, topic: dict, utterance: str, on_followup: bool = False) -> None:
     details = dict(topic.get("details") or {})
     value = topic.get("value")
@@ -2670,6 +2698,16 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str, on_followup: bo
     )
     if reassured:
         topic["value"] = False
+    # डॉक्टर ने कहा नॉर्मल है is the result, not a finding. A sentence that
+    # also names the problem (खून कम, झटके) stays a yes.
+    if (
+        not on_followup
+        and not keep_positive
+        and topic.get("value") is True
+        and _normal_is_the_whole_answer(name, utterance or "")
+    ):
+        topic["value"] = False
+        details.setdefault("result", "normal")
     # A tool "yes" does not outvote a sentence that says no. ठीक है। by itself
     # is only an acknowledgement. A follow-up denial is about that detail.
     # A sentence that still names the problem (झटके थे, शुगर था) stays a yes.
