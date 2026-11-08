@@ -574,22 +574,29 @@ def _only_denial(text: str) -> bool:
     if not bits:
         return False
     content_denial = False
+    other_denial = False
     bare_denial = False
-    fact = False
+    facts: list[str] = []
     for bit in bits:
         if _DENY_RE.search(bit) and not _AFFIRM_RE.search(bit):
             # याद नहीं is not knowing the number. It does not deny the other clause.
+            # मेरे बच्चे को नहीं does: the denial names her child.
+            # दूसरी बार नहीं does not erase एक बार खून चढ़ा.
             if _BARE_CLOSER_RE.fullmatch(bit) or _is_unknown_utterance(bit):
                 bare_denial = True
-            else:
+            elif re.search(r"बच्च", bit):
                 content_denial = True
+            else:
+                other_denial = True
             continue
         if _BARE_CLOSER_RE.fullmatch(bit):
             continue
-        fact = True
-    if content_denial or not bare_denial:
-        return content_denial
-    return not fact
+        facts.append(bit)
+    if content_denial:
+        return True
+    if facts:
+        return all(_clause_is_reassurance(bit) for bit in facts)
+    return bare_denial or other_denial
 
 
 def _only_reassurance(text: str) -> bool:

@@ -262,6 +262,12 @@ Trio: one boy of eight months (no flags), maybe-fits that names झटके (st
 
 Trio: three children at two, four, and six with the unit only on the first (no flags), NICU with the days unknown (still a yes), and cough after कुछ नहीं (still a yes). Pass.
 
+## 16:25 IST
+
+एक बार खून चढ़ा, दूसरी बार नहीं stays a transfusion, once. A denial names her child only when the clause says बच्चा, so मेरे बच्चे को नहीं is still a no. नहीं होता, सब ठीक है stays a no, because the other clause is reassurance. `196` unit tests. 93 scenarios, 0 failed.
+
+Trio: नहीं होता, सब ठीक है sent as true (no flags, no हाँ lines), transfusion once (still a yes, count 1), and the neighbor's child (still a no). Pass.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

@@ -2134,6 +2134,24 @@ class CallStateTests(unittest.TestCase):
             utterance="NICU में रहा, कितने दिन याद नहीं।",
         )
         self.assertEqual(call_state.topic_answer_kind(stayed["topics"]["birth_nicu"], "birth_nicu"), "yes")
+        once = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "body_transfusion"),
+            [_update("topic.body_transfusion", True)],
+            1,
+            utterance="एक बार खून चढ़ा, दूसरी बार नहीं।",
+        )
+        self.assertEqual(
+            call_state.topic_answer_kind(once["topics"]["body_transfusion"], "body_transfusion"),
+            "yes",
+        )
+        self.assertEqual(once["topics"]["body_transfusion"]["details"].get("count"), 1)
+        fine = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "ill_odor"),
+            [_update("topic.ill_odor", True)],
+            1,
+            utterance="नहीं होता, सब ठीक है।",
+        )
+        self.assertEqual(call_state.topic_answer_kind(fine["topics"]["ill_odor"], "ill_odor"), "no")
         nothing_else = call_state.apply_updates(
             _ask(call_state.new_call_state(), "close_anything_else"),
             [_update("topic.close_anything_else", "नहीं, बस इतना ही।")],
