@@ -2505,6 +2505,28 @@ class CallStateTests(unittest.TestCase):
             utterance="पैर में दर्द होता है, अस्पताल गए थे।",
         )
         self.assertEqual(leg["topics"]["body_limb_pain"]["details"].get("location"), "पैर")
+        self.assertIs(leg["topics"]["body_limb_pain"]["details"].get("hospital_visits"), True)
+        often = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "body_limb_pain"),
+            [_update("topic.body_limb_pain", True)],
+            1,
+            utterance="पैर में बार-बार दर्द होता है और अस्पताल गए।",
+        )
+        self.assertEqual(often["topics"]["body_limb_pain"]["details"].get("frequency"), "बार-बार")
+        rare = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "body_limb_pain"),
+            [_update("topic.body_limb_pain", True)],
+            1,
+            utterance="कभी-कभी दर्द होता है, अस्पताल नहीं गए।",
+        )
+        self.assertEqual(
+            call_state.topic_answer_kind(rare["topics"]["body_limb_pain"], "body_limb_pain"),
+            "no",
+        )
+        self.assertNotIn(
+            "hospital_visits",
+            [item["id"] for item in call_state._pending_followups(often, "body_limb_pain")],
+        )
         short = call_state.apply_updates(
             _ask(call_state.new_call_state(), "body_proportion"),
             [_update("topic.body_proportion", True)],

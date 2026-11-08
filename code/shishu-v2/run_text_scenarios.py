@@ -637,6 +637,53 @@ def campaign() -> list[Scenario]:
             children_value=3,
         ),
         Scenario(
+            name="no_flags_pain_sometimes",
+            group="no_flags",
+            caller_name="आभा",
+            marital_text=married,
+            children_text="एक बेटी है, पाँच साल की।",
+            children_value=1,
+            positives={
+                "body_limb_pain": {
+                    "value": True,
+                    "utterance": "कभी-कभी दर्द होता है, अस्पताल नहीं गए।",
+                    "details": {},
+                },
+            },
+        ),
+        Scenario(
+            name="flags_pain_often",
+            group="red_flags",
+            caller_name="स्मिता",
+            marital_text=married,
+            children_text="एक बेटा है, छह साल का।",
+            children_value=1,
+            positives={
+                "body_limb_pain": {
+                    "value": True,
+                    "utterance": "पैर में बार-बार दर्द होता है और अस्पताल गए।",
+                    "details": {},
+                },
+            },
+            expect_yes=("body_limb_pain",),
+        ),
+        Scenario(
+            name="degenerate_often_sent_as_no",
+            group="degenerate",
+            caller_name="ज्योति",
+            marital_text=married,
+            children_text="एक बेटी है, सात साल की।",
+            children_value=1,
+            positives={
+                "body_limb_pain": {
+                    "value": False,
+                    "utterance": "पैर में बार-बार दर्द होता है और अस्पताल गए।",
+                    "details": {},
+                },
+            },
+            expect_yes=("body_limb_pain",),
+        ),
+        Scenario(
             name="no_flags_arms_not_short",
             group="no_flags",
             caller_name="किरण",

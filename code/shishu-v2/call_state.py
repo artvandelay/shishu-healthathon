@@ -2680,6 +2680,12 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str, on_followup: bo
             details["continued_after_delivery"] = False
         elif re.search(r"बाद भी|अब भी|continued|still", utt_blob):
             details["continued_after_delivery"] = True
+    if name == "body_limb_pain":
+        text = utterance or ""
+        if "hospital_visits" not in details and _contains_word(text, "अस्पताल") and not _word_denied(text, "अस्पताल"):
+            details["hospital_visits"] = True
+        if "frequency" not in details and re.search(r"बार-बार|बार\s+बार", text):
+            details["frequency"] = "बार-बार"
     follow_ids = {spec["id"] for spec in TOPIC_RULES.get(name, {}).get("followups") or []}
     if "count" in follow_ids:
         _store_spoken_number(details, "count", _spoken_times, utterance)
@@ -2845,6 +2851,10 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str, on_followup: bo
     ):
         topic["value"] = False
     if name == "birth_cord_3weeks" and _cord_within_three_weeks(utterance or ""):
+        topic["value"] = False
+    # The question's yes is pain that needed a hospital. Denying the visit is a no
+    # even when the pain is a separate clause.
+    if name == "body_limb_pain" and _word_denied(utterance or "", "अस्पताल"):
         topic["value"] = False
     topic["details"] = details
 
