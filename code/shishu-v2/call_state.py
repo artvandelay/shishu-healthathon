@@ -786,8 +786,29 @@ def _ages_from_prior(count_n: int, prior: list[str] | None) -> list[float]:
     return []
 
 
-def _retag_month_only(children: list[dict], utterance: str) -> list[dict]:
+def _has_year_phrase(text: str) -> bool:
+    folded = text or ""
+    for word, number in _NUM_WORDS:
+        folded = folded.replace(word, number)
+    return re.search(_YEAR_UNIT, folded, re.I) is not None
+
+
+def _retag_month_only(
+    children: list[dict],
+    utterance: str,
+    prior: list[str] | None = None,
+) -> list[dict]:
+    if _has_year_phrase(utterance):
+        return children
     month_ages = _month_age_numbers(utterance)
+    if not month_ages:
+        for text in reversed(list(prior or [])):
+            if _has_year_phrase(text):
+                break
+            found = _month_age_numbers(text)
+            if found:
+                month_ages = found
+                break
     if not month_ages:
         return children
     tagged = []
@@ -825,12 +846,17 @@ def _parse_field(field: object) -> tuple[str, str]:
     if text.startswith("topic."):
         topic_id = text.split(".", 1)[1]
         if topic_id not in contract.TOPIC_IDS:
+            topic_id = topic_id.replace(".", "_")
+        if topic_id not in contract.TOPIC_IDS:
             return "error", f"unknown field: {text}"
         return "topic", topic_id
     if text in PROFILE_FIELDS:
         return "profile", text
     if text in contract.TOPIC_IDS:
         return "topic", text
+    collapsed = text.replace(".", "_")
+    if collapsed in contract.TOPIC_IDS:
+        return "topic", collapsed
     return "error", f"unknown field: {text}"
 
 
@@ -1021,7 +1047,7 @@ def apply_updates(
                         if len(spoken_list) == len(norm):
                             for child, age in zip(norm, spoken_list):
                                 child["age"] = age
-                    norm = _retag_month_only(norm, utterance)
+                    norm = _retag_month_only(norm, utterance, prior_utterances)
                     state["profile"]["children"] = norm
                     if norm and all(_child_age_years(c.get("age")) is not None for c in norm):
                         intro_c = state["topics"]["intro_children"]
