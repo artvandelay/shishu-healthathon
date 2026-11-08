@@ -218,7 +218,7 @@ Trio: चारों बच्चे with ages 2, 4, 6 and 8 (no flags), दस
 
 झटके in the same sentence is the family-fits condition, so that follow-up is not asked again. देर is delay. भूल or नहीं कर is a lost skill. `196` unit tests. 69 scenarios, 0 failed.
 
-## Resume 16:00 IST
+## Resume 16:03 IST
 
 Pulled `origin/refactor/deterministic-call-state` at 16:00 IST. HEAD was `19cc09c`. The frontier gate was already present: `SUMMARY_MODEL_CHAIN` is `gemini-3.1-pro-preview`, then `gemini-3-pro-preview`, then `gemini-2.5-pro`, and `_finalize_structured_summary` uses the model findings and flags. Invalid JSON or no key uses `build_state_fallback`. Flash is not that chain.
 
@@ -226,47 +226,53 @@ Pulled `origin/refactor/deterministic-call-state` at 16:00 IST. HEAD was `19cc09
 
 Trio: एक साल दो हफ्ते (no flags), झटके now ठीक (still a yes), and सब ठीक है sent as true on every clinical answer (no हाँ lines). Pass.
 
-## 16:10 IST
+## 16:07 IST
 
 A bare नहीं does not erase a different clause. और कुछ नहीं, पेट में दर्द रहता है stays a complaint. मेरे बच्चे को नहीं stays a no even when the other clause says the problem exists for someone else, and झटके नहीं आते stays a no. दो चार और छह साल is three ages: और before only the last number still joins the list. एक आधा साल stays half a year, the existing test. `196` unit tests. 75 scenarios, 0 failed.
 
 Trio: ages with और only before the last (no flags, three children), pain after और कुछ नहीं (still a yes), and नहीं, बस इतना ही sent as true (no हाँ lines). Pass.
 
-## 16:15 IST
+## 16:08 IST
 
 A danda is a clause boundary, the same as a comma. और कुछ नहीं। पेट में दर्द रहता है stays a complaint. नहीं। बस इतना ही। stays a no. `196` unit tests. 78 scenarios, 0 failed.
 
 Trio: एक बेटा है। दो साल का है। (no flags), pain after a sentence break (still a yes), and नहीं। बस इतना ही। sent as true (no हाँ lines). Pass.
 
-## 16:20 IST
+## 16:10 IST
 
 बेटा और बेटी दोनों चार साल के is two children of that age. The दोनों rule now runs after a numbered tool value is set aside, because the sentence itself has no numbered count. पति की उम्र तीस साल is not a child; the बेटा एक साल का beside it is. उम्र पाँच, तीन और एक साल after the children stays theirs. चार साल का था जब is when the fits happened, so the child stored is the current छह साल. `196` unit tests. 81 scenarios, 0 failed.
 
 Trio: son and daughter both four (no flags), fits at four and now six (still a yes, one child of six), and the husband's 30 sent as the child count (one boy of one year, no हाँ lines). Pass.
 
-## 16:25 IST
+## 16:12 IST
 
 दोनों बेटियाँ चार साल की हैं is two girls of four. दोनों is already the count two, and it is not folded to a digit, so the shared-age check now treats that word as two. पाँच साल का था, अब सात साल का है is one child, now seven. दो साल का था, with no later अब, stays two. `196` unit tests. 84 scenarios, 0 failed.
 
 Trio: both daughters four (no flags), was five and now seven with fits (one child of seven, still a yes), and the old age 5 sent as the count (one child of seven, no हाँ lines). Pass.
 
-## 16:30 IST
+## 16:13 IST
 
 हो सकता है and a bare शायद are the same blank as पता नहीं. शायद झटके होते हैं still names the fits, so it stays a yes. `196` unit tests. 87 scenarios, 0 failed.
 
 Trio: one boy of eight months (no flags), maybe-fits that names झटके (still a yes), and हो सकता है sent as true on every clinical answer (no हाँ lines). Pass.
 
-## 16:20 IST
+## 16:15 IST
 
 दो साल, चार और छह shares the साल on the first number. दो साल का और छह महीने का stays two ages, because the second number has its own unit. A number word before a danda is still that number. याद नहीं in a later clause does not deny the stay: NICU में रहा, कितने दिन याद नहीं stays a yes. कुछ नहीं। खाँसी है। stays a complaint. `196` unit tests. 90 scenarios, 0 failed.
 
 Trio: three children at two, four, and six with the unit only on the first (no flags), NICU with the days unknown (still a yes), and cough after कुछ नहीं (still a yes). Pass.
 
-## 16:25 IST
+## 16:16 IST
 
 एक बार खून चढ़ा, दूसरी बार नहीं stays a transfusion, once. A denial names her child only when the clause says बच्चा, so मेरे बच्चे को नहीं is still a no. नहीं होता, सब ठीक है stays a no, because the other clause is reassurance. `196` unit tests. 93 scenarios, 0 failed.
 
 Trio: नहीं होता, सब ठीक है sent as true (no flags, no हाँ lines), transfusion once (still a yes, count 1), and the neighbor's child (still a no). Pass.
+
+## 16:17 IST
+
+भांजा दो साल का is the nephew, not a child. मेरा भांजा दो साल का है, मेरी बेटी चार साल की है stores the daughter, four, female. The nearer child word still keeps उम्र पाँच, तीन और एक after the children. `196` unit tests. 96 scenarios, 0 failed.
+
+Trio: the daughter and not the nephew (no flags), fits for that daughter (still a yes), and her age 4 sent as the count (one girl of four, no हाँ lines). Pass.
 
 ## Not hardcoded
 

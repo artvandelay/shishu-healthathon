@@ -1244,6 +1244,11 @@ class CallStateTests(unittest.TestCase):
                 ("female", {"value": 4, "unit": "years"}),
             ],
         )
+        nephew = stored("मेरा भांजा दो साल का है, मेरी बेटी चार साल की है।", 2)
+        self.assertEqual(
+            [(c["sex"], c["age"]) for c in nephew["profile"]["children"]],
+            [("female", {"value": 4, "unit": "years"})],
+        )
         husband = stored("मेरे पति की उम्र तीस साल है और बेटा एक साल का है।", 1)
         self.assertEqual(
             [(c["sex"], c["age"]) for c in husband["profile"]["children"]],

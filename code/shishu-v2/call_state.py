@@ -1627,15 +1627,17 @@ def _merge_year_and_months(folded: str, found: list) -> list[dict]:
 
 _OTHER_PERSON_RE = re.compile(
     r"मेरी|मेरा|मेरे|मैं|पति|पत्नी|माता|पिता|मम्मी|पापा|भाई|भैया|भइया|बहन|दीदी|"
-    r"दादा|दादी|चाचा|चाची|नाना|नानी|मामा|मामी|मौसी|मासी|ससुर|सास|देवर|जेठ|ननद"
+    r"दादा|दादी|चाचा|चाची|नाना|नानी|मामा|मामी|मौसी|मासी|ससुर|सास|देवर|जेठ|ननद|"
+    r"भांजा|भांजी|भानजा|भानजी|भतीजा|भतीजी"
 )
 
 
 def _child_ages_in(utterance: str) -> list[dict]:
     """Ages of her children. Someone else's उम्र, and an age at a past event, are not.
 
-    पति की उम्र तीस साल is the husband. उम्र पाँच, तीन और एक साल after the
-    children is theirs. चार साल का था जब is when something happened.
+    पति की उम्र तीस साल is the husband. भांजा दो साल का is the nephew.
+    उम्र पाँच, तीन और एक साल after the children is theirs. The child word
+    nearer the number wins. चार साल का था जब is when something happened.
     """
     records = _spoken_age_records(utterance)
     folded = _fold_spoken_numbers(utterance or "")
@@ -1663,11 +1665,10 @@ def _child_ages_in(utterance: str) -> list[dict]:
         start = cursor + match.start()
         cursor = cursor + match.end()
         window = folded[max(0, start - 32):start]
-        if "उम्र" in window:
-            last_other = max((item.end() for item in _OTHER_PERSON_RE.finditer(window)), default=-1)
-            last_child = max((item.end() for item in _CHILD_WORD.finditer(window)), default=-1)
-            if last_other >= 0 and last_other > last_child:
-                continue
+        last_other = max((item.end() for item in _OTHER_PERSON_RE.finditer(window)), default=-1)
+        last_child = max((item.end() for item in _CHILD_WORD.finditer(window)), default=-1)
+        if last_other >= 0 and last_other > last_child:
+            continue
         if re.match(
             rf"{re.escape(str(number))}\s*{unit}\s+(?:का|की|के)\s+(?:था|थी|थे)\s+जब",
             folded[start:],
