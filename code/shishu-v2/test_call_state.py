@@ -2459,6 +2459,7 @@ class CallStateTests(unittest.TestCase):
             utterance="गिरने पर घुटने में सूजन आती है, दो दिन में ठीक हो जाती है।",
         )
         self.assertEqual(brief["topics"]["body_joint_swelling"]["details"].get("duration"), "2 दिन")
+        self.assertEqual(brief["topics"]["body_joint_swelling"]["details"].get("trigger"), "गिरने")
         self.assertEqual(
             call_state.topic_answer_kind(brief["topics"]["body_joint_swelling"], "body_joint_swelling"),
             "yes",

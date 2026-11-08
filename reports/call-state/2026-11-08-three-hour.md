@@ -410,6 +410,10 @@ Trio: pain sometimes and no hospital (no flags, no हाँ lines), pain again 
 
 Trio: no swelling (no flags, no हाँ lines), swelling for two days (still a yes, the line says 2 दिन and घुटने), and that sentence sent as false (still a yes). The hearing scenarios already in the run now name सुनना and देखना. Pass.
 
+## 16:51 IST
+
+गिरने पर is the trigger the question already names. The swelling line now says 2 दिन, गिरने, and घुटने. `197` unit tests. 162 scenarios, 0 failed.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

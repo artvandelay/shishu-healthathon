@@ -2704,6 +2704,8 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str, on_followup: bo
         lasted = _spoken_day_count(utterance or "")
         if lasted is not None:
             details["duration"] = _day_phrase(lasted)
+    if "trigger" in follow_ids and "trigger" not in details and "गिरने" in (utterance or "") and not _word_denied(utterance or "", "गिरने"):
+        details["trigger"] = "गिरने"
     if "month" in follow_ids:
         _store_spoken_number(details, "month", _spoken_month_count, utterance)
     if "amount" in follow_ids and not details.get("amount"):
