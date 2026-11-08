@@ -66,10 +66,20 @@ def _fold_spoken_numbers(text: str) -> str:
     folded = re.sub(r"साढ़े\s*(\d+(?:\.\d+)?)", lambda m: _shift(m, 0.5), folded)
     folded = re.sub(r"सवा\s*(\d+(?:\.\d+)?)", lambda m: _shift(m, 0.25), folded)
     folded = re.sub(r"पौने\s*(\d+(?:\.\d+)?)", lambda m: _shift(m, -0.25), folded)
+    # आठवें महीने is the 8th month. तीसरे साल is the 3rd year. पहले stays
+    # "before" unless a month, year, or week unit follows.
+    for word, number in (
+        ("आठवें", "8"), ("सातवें", "7"), ("नौवें", "9"), ("दसवें", "10"),
+        ("छठे", "6"), ("पाँचवें", "5"), ("पांचवें", "5"),
+        ("चौथे", "4"), ("तीसरे", "3"), ("दूसरे", "2"), ("पहले", "1"),
+    ):
+        folded = re.sub(rf"{word}(?=\s*(?:महीन|साल|वर्ष|year|हफ्त|हफ़्त))", number, folded)
     # सवा साल is one and a quarter. पौने साल is three quarters. आधे साल is half.
-    folded = re.sub(r"सवा(?=\s*(?:साल|वर्ष|year|महीन))", "1.25", folded)
-    folded = re.sub(r"पौने(?=\s*(?:साल|वर्ष|year|महीन))", "0.75", folded)
-    folded = re.sub(r"आधे(?=\s*(?:साल|वर्ष|year|महीन))", "0.5", folded)
+    # The same words before a week mean the same fraction of a week.
+    unit_ahead = r"(?=\s*(?:साल|वर्ष|year|महीन|हफ्त|हफ़्त))"
+    folded = re.sub(rf"सवा{unit_ahead}", "1.25", folded)
+    folded = re.sub(rf"पौने{unit_ahead}", "0.75", folded)
+    folded = re.sub(rf"आधे{unit_ahead}", "0.5", folded)
     return folded
 
 

@@ -1079,6 +1079,15 @@ class CallStateTests(unittest.TestCase):
                 {"value": 6, "unit": "months"},
             ],
         )
+        self.assertEqual(
+            call_state._spoken_age_records("तीसरे साल का है।"),
+            [{"value": 3, "unit": "years"}],
+        )
+        self.assertEqual(
+            call_state._spoken_age_records("सवा हफ्ता का है।"),
+            [{"value": 1.25, "unit": "weeks"}],
+        )
+        self.assertIsNone(call_state._count_from_child_words(call_state._fold_spoken_numbers("दूसरे बच्चे को झटके हैं।")))
 
     def test_sex_words_bind_only_when_each_child_is_named(self):
         both = _ask(call_state.new_call_state(), "intro_children")
@@ -1461,6 +1470,22 @@ class CallStateTests(unittest.TestCase):
         self.assertEqual(call_state.topic_answer_kind(half["topics"]["birth_term"], "birth_term"), "yes")
         self.assertIsNone(call_state._spoken_month_count("ढाई महीने पहले पैदा हुआ।"))
         self.assertEqual(call_state._month_phrase(7.5), "साढ़े 7 महीने")
+        eighth = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "birth_term"),
+            [_update("topic.birth_term", False)],
+            1,
+            utterance="आठवें महीने में पैदा हुई।",
+        )
+        self.assertEqual(eighth["topics"]["birth_term"]["details"].get("term"), "early")
+        self.assertEqual(eighth["topics"]["birth_term"]["details"].get("amount"), "8 महीने")
+        ninth = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "birth_term"),
+            [_update("topic.birth_term", True)],
+            1,
+            utterance="नौवें महीने में पैदा हुई।",
+        )
+        self.assertEqual(ninth["topics"]["birth_term"]["details"].get("term"), "full")
+        self.assertEqual(call_state._term_label("समय से पहले पैदा हुई।"), "early")
         self.assertEqual(call_state._spoken_times("दूसरी बार खून चढ़ा।"), 2)
         self.assertEqual(call_state._spoken_times("पहली बार।"), 1)
         self.assertEqual(call_state._spoken_times("दो बार।"), 2)

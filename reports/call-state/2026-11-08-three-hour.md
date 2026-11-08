@@ -190,6 +190,8 @@ A nukta does not make a different word. सीज़ेरियन is an operat
 
 सी-सेक्शन, सी सेक्शन, and सिजेरियन are the same operation as सीजेरियन. One word list, used for the finding, the follow-up, and the stored delivery type. `196` unit tests. 59 scenarios, 0 failed.
 
+आठवें महीने में is the eighth month, so it is early. नौवें महीने में is full term. तीसरे साल is an age of 3. सवा हफ्ता is one and a quarter weeks. पहले stays "before" unless a month, year, or week follows, so समय से पहले is unchanged. दूसरे बच्चे is not two children. `196` unit tests. 59 scenarios, 0 failed.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.
