@@ -841,6 +841,18 @@ class CallStateTests(unittest.TestCase):
         )
         self.assertEqual([c["sex"] for c in one_named["profile"]["children"]], [None, None, None])
 
+    def test_a_count_of_times_stated_with_the_answer_is_not_asked_again(self):
+        state = _ask(call_state.new_call_state(), "body_transfusion")
+        state = call_state.apply_updates(
+            state,
+            [_update("topic.body_transfusion", True)],
+            1,
+            utterance="दो बार खून चढ़ाना पड़ा, पिछली बार पिछले साल।",
+        )
+        self.assertEqual(state["topics"]["body_transfusion"]["details"].get("count"), 2)
+        pending = [item["id"] for item in call_state._pending_followups(state, "body_transfusion")]
+        self.assertNotIn("count", pending)
+
     def test_a_kinship_word_is_a_family_yes_and_a_denial_is_not(self):
         cousin = {"state": "answered", "value": "कज़िन", "details": {}}
         self.assertEqual(call_state.topic_answer_kind(cousin, "fam_related"), "yes")
