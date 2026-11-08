@@ -1247,6 +1247,10 @@ def _prefer_spoken_units(
 
 
 _SEX_WORDS = (
+    ("बेटियाँ", "female"),
+    ("बेटियां", "female"),
+    ("लड़कियाँ", "female"),
+    ("लड़कियां", "female"),
     ("बेटी", "female"),
     ("लड़की", "female"),
     ("बच्ची", "female"),
@@ -1255,21 +1259,37 @@ _SEX_WORDS = (
     ("लड़के", "male"),
     ("लड़का", "male"),
 )
+_PLURAL_SEX = {"बेटे", "बेटियाँ", "बेटियां", "लड़के", "लड़कियाँ", "लड़कियां"}
 
 
-def _spoken_sexes(utterance: str) -> list[str]:
+def _spoken_sex_words(utterance: str) -> list[tuple[str, str]]:
     """Sex words in the order she said them. Longer words win over prefixes."""
     text = utterance or ""
-    found: list[str] = []
+    found: list[tuple[str, str]] = []
     index = 0
     while index < len(text):
         match = next((item for item in _SEX_WORDS if text.startswith(item[0], index)), None)
         if match is None:
             index += 1
             continue
-        found.append(match[1])
+        found.append(match)
         index += len(match[0])
     return found
+
+
+def _spoken_sexes(utterance: str) -> list[str]:
+    return [sex for _word, sex in _spoken_sex_words(utterance)]
+
+
+def _sexes_for_count(text: str, count: int) -> list[str] | None:
+    """One plural (बेटे, बेटियाँ) covers every child. One singular does not."""
+    words = _spoken_sex_words(text)
+    sexes = [sex for _word, sex in words]
+    if len(sexes) == count:
+        return sexes
+    if count > 1 and len(words) == 1 and words[0][0] in _PLURAL_SEX:
+        return sexes * count
+    return None
 
 
 def _children_from_ages(ages: list, sexes: list[str] | None = None) -> list[dict]:
@@ -1354,10 +1374,11 @@ def _children_payload(value: object) -> tuple[str, object]:
             return "none", []
         val_folded = _fold_spoken_numbers(val_clean)
         # The number beside बच्चा is the count. आठ साल का एक बच्चा is one child, not eight.
-        beside = re.search(r"(\d+)\s*(?:बच्च|बेटा|बेटी|लड़क)", val_folded)
+        child_word = r"(?:बच्च\S*|बेटे|बेटि\S*|बेटा|बेटी|लड़क\S*)"
+        beside = re.search(rf"(\d+)\s*{child_word}", val_folded)
         if not beside:
-            beside = re.search(r"(?:बच्च\S*)\s+(\d+)", val_folded)
-        if not beside and not re.search(r"बच्च|बेटा|बेटी|लड़क", val_folded):
+            beside = re.search(rf"{child_word}\s+(\d+)", val_folded)
+        if not beside and not re.search(child_word, val_folded):
             beside = re.search(r"\b(\d+)\b", val_folded)
         if beside:
             number = int(beside.group(1))
@@ -1759,10 +1780,8 @@ def apply_updates(
                                 if len(_spoken_age_records(earlier or "")) == len(use):
                                     source_text = earlier
                                     break
-                        sexes = _spoken_sexes(source_text)
-                        state["profile"]["children"] = _children_from_ages(
-                            use, sexes if len(sexes) == len(use) else None
-                        )
+                        sexes = _sexes_for_count(source_text, len(use))
+                        state["profile"]["children"] = _children_from_ages(use, sexes)
                         intro_c = state["topics"]["intro_children"]
                         intro_c["state"] = "answered"
                         intro_c["value"] = True

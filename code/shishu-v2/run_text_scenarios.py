@@ -355,10 +355,10 @@ def _issues(scenario, state, errors, report, fallback, said) -> list[str]:
     if scenario.expect_close == "complete" and isinstance(scenario.children_value, int):
         children = (state.get("profile") or {}).get("children") or []
         records = call_state._spoken_age_records(scenario.children_text)
-        sexes = call_state._spoken_sexes(scenario.children_text)
         if len(records) == scenario.children_value and [c.get("age") for c in children] != records:
             issues.append("stored ages do not match the ages she said")
-        if len(sexes) == scenario.children_value and [c.get("sex") for c in children] != sexes:
+        sexes = call_state._sexes_for_count(scenario.children_text, scenario.children_value)
+        if sexes and [c.get("sex") for c in children] != sexes:
             issues.append("stored sex does not match the sex words she said")
         if len(children) == 1:
             only = children[0]
@@ -506,6 +506,14 @@ def campaign() -> list[Scenario]:
             marital_text=married,
             children_text="एक बच्चा है, ग्यारह साल का लड़का।",
             children_value=1,
+        ),
+        Scenario(
+            name="no_flags_two_sons",
+            group="no_flags",
+            caller_name="प्रभा",
+            marital_text=married,
+            children_text="आठ और छह साल के दो बेटे हैं।",
+            children_value=2,
         ),
         Scenario(
             name="no_flags_age_before_the_count",

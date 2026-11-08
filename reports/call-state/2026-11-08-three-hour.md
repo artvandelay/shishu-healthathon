@@ -118,7 +118,9 @@ A stored day count prints as 4 दिन and a stored time count as 3 बार.
 
 नाम आरव on the child sentence is stored as the child's name. मेरा नाम stays the caller's name and is not copied onto the child.
 
-आठ साल का एक बच्चा is one child aged eight, not eight children. The count is the number beside बच्चा. `187` unit tests. 42 scenarios, 0 failed.
+आठ साल का एक बच्चा is one child aged eight, not eight children. The count is the number beside बच्चा, including बेटे and बेटियाँ.
+
+दो बेटे and दो बेटियाँ are both boys or both girls. One बेटी among several ages still does not label every child. `187` unit tests. 43 scenarios, 0 failed.
 
 ## Not hardcoded
 
