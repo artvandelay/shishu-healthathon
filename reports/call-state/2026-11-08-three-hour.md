@@ -144,7 +144,9 @@ The only child is stored on a finding that asks which child, so the report says 
 
 शादी है is married. जाँच हुई, बात हुई, and हो गई by themselves are not. A denial still wins.
 
-लगभग चार साल, करीब छह महीने, 4.5 साल, and दो महीने are one child of that age. A bare number is a count only when she did not also say an age. बड़ा वाला आठ साल और छोटा वाला तीन साल is two children. `193` unit tests. 51 scenarios, 0 failed.
+लगभग चार साल, करीब छह महीने, 4.5 साल, and दो महीने are one child of that age. A bare number is a count only when she did not also say an age. बड़ा वाला आठ साल और छोटा वाला तीन साल is two children.
+
+A later sentence that states its own ages replaces the child list. The same ages said again keep the sex and name. A bare count still does not replace children who already have ages. `194` unit tests. 51 scenarios, 0 failed.
 
 ## Not hardcoded
 

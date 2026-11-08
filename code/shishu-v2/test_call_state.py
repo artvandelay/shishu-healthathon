@@ -1121,6 +1121,44 @@ class CallStateTests(unittest.TestCase):
         )
         self.assertEqual(call_state._children_payload("दो"), ("count", 2))
 
+    def test_a_new_sentence_with_ages_replaces_the_child_list(self):
+        state = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "intro_children"),
+            [_update("profile.children", 2)],
+            1,
+            utterance="दो बच्चे हैं, चार और छह साल के दो बेटे।",
+        )
+        self.assertEqual([c["sex"] for c in state["profile"]["children"]], ["male", "male"])
+        repeated = call_state.apply_updates(
+            state,
+            [_update("profile.children", 2)],
+            2,
+            utterance="चार और छह साल के।",
+        )
+        self.assertEqual([c["sex"] for c in repeated["profile"]["children"]], ["male", "male"])
+
+        corrected = call_state.apply_updates(
+            state,
+            [_update("profile.children", 1)],
+            3,
+            utterance="नहीं, एक बच्चा है, दो साल का।",
+        )
+        self.assertEqual(
+            [c["age"] for c in corrected["profile"]["children"]],
+            [{"value": 2, "unit": "years"}],
+        )
+        bare = call_state.apply_updates(
+            state,
+            [_update("profile.children", 1)],
+            4,
+            utterance="एक।",
+        )
+        self.assertEqual(len(bare["profile"]["children"]), 2)
+        self.assertEqual(
+            [c["age"]["value"] for c in bare["profile"]["children"]],
+            [4, 6],
+        )
+
     def test_a_word_inside_another_word_is_not_that_word(self):
         def birth(text, value=True):
             state = call_state.apply_updates(

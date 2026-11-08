@@ -1309,6 +1309,16 @@ def _sexes_for_count(text: str, count: int) -> list[str] | None:
     return None
 
 
+def _same_ages(existing: list, spoken: list) -> bool:
+    if len(existing) != len(spoken):
+        return False
+    return [
+        _child_age_years(child.get("age")) for child in existing
+    ] == [
+        _child_age_years(age) for age in spoken
+    ]
+
+
 def _children_from_ages(ages: list, sexes: list[str] | None = None) -> list[dict]:
     sexes = sexes or []
     children = []
@@ -1888,15 +1898,28 @@ def apply_updates(
                         if isinstance(child, dict)
                     ]
                     aged = [child for child in existing if _child_age_years(child.get("age")) is not None]
-                    spoken = _spoken_age_records(utterance)
+                    spoken_now = _spoken_age_records(utterance)
+                    spoken = spoken_now
                     count_n = int(norm) if kind_c == "count" else 0
                     if kind_c == "count" and not spoken:
                         spoken = _age_records_from_prior(count_n, prior_utterances)
-                    if kind_c == "count" and aged and len(existing) == len(aged) == count_n:
+                    fresh = spoken_now if kind_c == "ignore" or len(spoken_now) == count_n else []
+                    # A bare count does not replace children who already have ages.
+                    # The same ages said again keep the sex and name already stored.
+                    # A new sentence that states its own ages replaces that list.
+                    if (
+                        kind_c == "count"
+                        and aged
+                        and len(existing) == len(aged) == count_n
+                        and not fresh
+                    ):
                         wrote = True
                         continue
-                    use = spoken if kind_c == "ignore" or len(spoken) == count_n else []
-                    if use and not aged:
+                    if fresh and _same_ages(existing, fresh):
+                        wrote = True
+                        continue
+                    use = fresh or (spoken if kind_c == "ignore" or len(spoken) == count_n else [])
+                    if use and (not aged or fresh):
                         source_text = utterance if _spoken_age_records(utterance) else ""
                         if not source_text:
                             for earlier in reversed(list(prior_utterances or [])):
