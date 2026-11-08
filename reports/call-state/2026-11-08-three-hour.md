@@ -100,7 +100,9 @@ A day or time count copied into the follow-up as a sentence ("दो दिन �
 
 A later utterance replaces the delivery type. ऑपरेशन after a stored normal delivery is an operation. ऑपरेशन नहीं, नॉर्मल हुआ stays normal. दो हफ़्ते और एक हफ़्ता का है is two ages. A stay (दो दिन रहा) is still not an age.
 
-The same rule covers term, NICU reason, and a day count. पूरे नौ महीने after an early term is full term. पीलिया नहीं, झटके replaces jaundice. पंद्रह दिन replaces a stored 2. A follow-up that does not name the fact leaves it. `187` unit tests. 37 scenarios, 0 failed.
+The same rule covers term, NICU reason, and a day count. पूरे नौ महीने after an early term is full term. पीलिया नहीं, झटके replaces jaundice. पंद्रह दिन replaces a stored 2. A follow-up that does not name the fact leaves it.
+
+A later hearing, scan, thalassemia, growth, or puberty utterance replaces the stored result. बीपी नहीं, शुगर replaces the pregnancy condition. अब नहीं रहा replaces “it continued”. नहीं denies only the word beside it, not the next clause. `187` unit tests. 37 scenarios, 0 failed.
 
 ## Not hardcoded
 

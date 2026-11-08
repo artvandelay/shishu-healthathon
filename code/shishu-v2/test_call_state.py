@@ -461,6 +461,29 @@ class CallStateTests(unittest.TestCase):
         )
         self.assertEqual(state["topics"]["birth_hearing_vision"]["details"].get("result"), "normal")
         self.assertFalse(call_state._is_positive(state["topics"]["birth_hearing_vision"]))
+        state = call_state.apply_updates(
+            state,
+            [_update("topic.birth_hearing_vision", True)],
+            2,
+            utterance="गलत कहा, रिपोर्ट असामान्य थी।",
+        )
+        self.assertEqual(state["topics"]["birth_hearing_vision"]["details"].get("result"), "abnormal")
+        self.assertTrue(call_state._is_positive(state["topics"]["birth_hearing_vision"], "birth_hearing_vision"))
+        pregnant = _ask(call_state.new_call_state(), "preg_conditions")
+        pregnant = call_state.apply_updates(
+            pregnant,
+            [_update("topic.preg_conditions", True)],
+            1,
+            utterance="बीपी था, डिलीवरी के बाद भी रहा।",
+        )
+        pregnant = call_state.apply_updates(
+            pregnant,
+            [_update("topic.preg_conditions", True)],
+            2,
+            utterance="बीपी नहीं, शुगर था, अब नहीं रहा।",
+        )
+        self.assertEqual(pregnant["topics"]["preg_conditions"]["details"].get("conditions"), ["sugar"])
+        self.assertIs(pregnant["topics"]["preg_conditions"]["details"].get("continued_after_delivery"), False)
 
     def test_fact_from_the_next_question_is_kept(self):
         state = call_state.new_call_state()

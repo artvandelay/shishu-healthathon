@@ -1442,14 +1442,27 @@ _is_clarification = is_clarification
 
 
 def _word_denied(text: str, word: str) -> bool:
-    """नॉर्मल नहीं and नहीं ऑपरेशन both deny that word."""
+    """नॉर्मल नहीं and नहीं, ऑपरेशन deny that word. A later नहीं in the sentence does not."""
     denial = r"(?:नहीं|नही|\bno\b|\bnahi\b|\bnahin\b)"
-    gap = r"(?:\s+\S+){0,3}\s*"
+    bridge = r"\s+"
     token = re.escape(word)
     return (
-        re.search(rf"{denial}{gap}{token}", text, re.I) is not None
-        or re.search(rf"{token}{gap}{denial}", text, re.I) is not None
+        re.search(rf"{denial}{bridge}{token}", text, re.I) is not None
+        or re.search(rf"{token}{bridge}{denial}", text, re.I) is not None
     )
+
+
+def _lab_result(text: str) -> str | None:
+    """normal or abnormal from this utterance. normal inside abnormal does not count."""
+    if not text:
+        return None
+    abnormal = re.search(r"अबनॉर्मल|असामान्य|abnormal|पॉजिटिव|positive|carrier", text, re.I)
+    problem = re.search(r"दिक्कत", text) and not re.search(r"(?:कोई\s+)?दिक्कत\s*नहीं", text)
+    if abnormal or problem:
+        return "abnormal"
+    if re.search(r"(?<!ab)(?:नॉर्मल|normal)", text, re.I):
+        return "normal"
+    return None
 
 
 def _term_label(text: str) -> str | None:
@@ -1530,63 +1543,63 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
         if len(reasons) == 1:
             details["reason"] = reasons[0]
     if name == "birth_hearing_vision":
-        text = utterance or ""
-        if "result" not in details and re.search(r"नॉर्मल|normal", text, re.I) and not re.search(r"अबनॉर्मल|abnormal|दिक्कत", text, re.I):
-            details["result"] = "normal"
-            details.setdefault("test_done", True)
+        named = _lab_result(utterance or "")
+        if named:
+            details["result"] = named
+            if named == "normal":
+                details.setdefault("test_done", True)
         if "test_done" not in details and isinstance(value, bool):
             details["test_done"] = value
     if name == "preg_scan":
-        text = utterance or ""
-        if "result" not in details and re.search(r"नॉर्मल|normal", text, re.I) and not re.search(r"अबनॉर्मल|abnormal|दिक्कत", text, re.I):
-            details["result"] = "normal"
-            details.setdefault("scan_done", True)
+        named = _lab_result(utterance or "")
+        if named:
+            details["result"] = named
+            if named == "normal":
+                details.setdefault("scan_done", True)
         if "scan_done" not in details and isinstance(value, bool):
             details["scan_done"] = value
     if name == "preg_thalassemia":
-        text = utterance or ""
-        if "result" not in details and re.search(r"नॉर्मल|normal", text, re.I) and not re.search(
-            r"अबनॉर्मल|abnormal|दिक्कत|पॉजिटिव|positive|carrier", text, re.I
-        ):
-            details["result"] = "normal"
-            details.setdefault("caller_test", True)
+        named = _lab_result(utterance or "")
+        if named:
+            details["result"] = named
+            if named == "normal":
+                details.setdefault("caller_test", True)
     if name == "body_growth":
         text = utterance or ""
         denied = re.search(r"नहीं|नही|nahi|nahin|not growing", text, re.I)
         fine = re.search(r"जैसा|ठीक|नॉर्मल|normal", text, re.I)
-        if fine and not denied and _affirmative_value(value) and "result" not in details:
+        if denied:
+            details.pop("result", None)
+        elif fine and _affirmative_value(value):
             details["result"] = "normal"
     if name == "body_puberty":
         text = utterance or ""
-        if "timing" not in details:
-            if re.search(r"जल्दी|देर से पहले|समय से पहले|early", text, re.I):
-                details["timing"] = "early"
-            elif re.search(r"देर|बाद में|late", text, re.I) and "साथ" not in text:
-                details["timing"] = "late"
-            elif re.search(r"साथ|बाकी बच्चों|नॉर्मल|normal|same", text, re.I):
-                details["timing"] = "same"
+        if re.search(r"जल्दी|देर से पहले|समय से पहले|early", text, re.I):
+            details["timing"] = "early"
+        elif re.search(r"देर|बाद में|late", text, re.I) and "साथ" not in text:
+            details["timing"] = "late"
+        elif re.search(r"साथ|बाकी बच्चों|नॉर्मल|normal|same", text, re.I):
+            details["timing"] = "same"
         if str(details.get("timing") or "") in {"same", "normal", "नॉर्मल"}:
             details["result"] = "normal"
         elif str(details.get("timing") or "") in {"early", "late"}:
             details.pop("result", None)
     if name == "preg_conditions":
-        if "conditions" not in details:
-            found = [
-                label
-                for label, words in (
-                    ("bp", ("बीपी", "bp", "रक्तचाप", "blood pressure")),
-                    ("sugar", ("शुगर", "sugar", "मधुमेह")),
-                    ("thyroid", ("थायरॉइड", "thyroid")),
-                )
-                if any(word in combined for word in words)
-            ]
-            if found:
-                details["conditions"] = found
-        if "continued_after_delivery" not in details:
-            if re.search(r"बाद नहीं|अब नहीं|नहीं रहा", utt_blob):
-                details["continued_after_delivery"] = False
-            elif re.search(r"बाद भी|अब भी|continued|still", utt_blob):
-                details["continued_after_delivery"] = True
+        found = [
+            label
+            for label, words in (
+                ("bp", ("बीपी", "bp", "रक्तचाप", "blood pressure")),
+                ("sugar", ("शुगर", "sugar", "मधुमेह")),
+                ("thyroid", ("थायरॉइड", "thyroid")),
+            )
+            if _named_and_not_denied(val_blob, utt_blob, words)
+        ]
+        if found:
+            details["conditions"] = found
+        if re.search(r"बाद नहीं|अब नहीं|नहीं रहा", utt_blob):
+            details["continued_after_delivery"] = False
+        elif re.search(r"बाद भी|अब भी|continued|still", utt_blob):
+            details["continued_after_delivery"] = True
     follow_ids = {spec["id"] for spec in TOPIC_RULES.get(name, {}).get("followups") or []}
     if "count" in follow_ids:
         _store_spoken_number(details, "count", _spoken_times, utterance)
