@@ -247,7 +247,43 @@ async def _from_llm(call: dict) -> dict:
         return await _from_openai(user_content)
 
 
+def structured_answers(call: dict) -> dict:
+    """Version 5 answers taken from the saved call state. No model call."""
+    topics = ((call.get("state") or {}).get("topics") or {})
+    answers: dict[str, dict] = {}
+    for topic in checklist.TOPICS:
+        topic_id = topic["id"]
+        saved = topics.get(topic_id) if isinstance(topics.get(topic_id), dict) else {}
+        status = str(saved.get("state") or "not_asked")
+        value = saved.get("value")
+        if status == "answered" and value is True:
+            kind = "yes"
+        elif status == "answered" and value is False:
+            kind = "no"
+        elif status == "answered":
+            kind = "answered"
+        elif status in {"unknown", "no_response", "not_asked", "not_applicable"}:
+            kind = status
+        else:
+            kind = "not_asked"
+        answers[topic_id] = {
+            "answer": kind,
+            "details": saved.get("details") or {},
+            "instances": saved.get("instances") or [],
+            "source_turn_ids": saved.get("source_turn_ids") or [],
+            "reason": saved.get("reason"),
+        }
+    return {
+        "version": 5,
+        "answers": answers,
+        "yes_hindi": [],
+        "questions_hindi": [],
+    }
+
+
 async def cached_answers(call: dict) -> dict:
+    if isinstance(call.get("state"), dict) and isinstance(call["state"].get("topics"), dict):
+        return structured_answers(call)
     call_id = int(call["id"])
     saved = db.get_answers(call_id)
     if (

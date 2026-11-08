@@ -1404,6 +1404,7 @@
           sock.onopen = function () {
             socketOpened = true;
             connectReject = null;
+            sendClientTelemetry();
             resolve();
           };
           sock.onmessage = onSocketMessage;
@@ -1426,6 +1427,23 @@
         });
       }
 
+      function sendClientTelemetry() {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        if (phase !== "connecting" && phase !== "live" && phase !== "summarizing") return;
+        ws.send(JSON.stringify({
+          type: "client_telemetry",
+          client: {
+            user_agent: navigator.userAgent,
+            platform: navigator.platform || "",
+            language: navigator.language || "",
+            audio_context_sample_rate: audioCtx ? audioCtx.sampleRate : null,
+            microphone: micStream && micStream.getAudioTracks()[0]
+              ? micStream.getAudioTracks()[0].getSettings()
+              : {}
+          }
+        }));
+      }
+
       async function wireMic() {
         if (!audioCtx || audioCtx.state === "closed") {
           throw new Error("Microphone capture was interrupted.");
@@ -1437,6 +1455,7 @@
           }
         };
         micSource = audioCtx.createMediaStreamSource(micStream);
+        sendClientTelemetry();
         const primaryTrack = micStream.getAudioTracks()[0];
         if (primaryTrack) {
           primaryTrack.addEventListener("ended", function () {
@@ -1449,6 +1468,7 @@
               try { if (micSource) micSource.disconnect(); } catch (e) {}
               micStream = newStream;
               micSource = audioCtx.createMediaStreamSource(newStream);
+              sendClientTelemetry();
               if (workletNode) micSource.connect(workletNode);
               else if (processor) micSource.connect(processor);
             }).catch(function () {

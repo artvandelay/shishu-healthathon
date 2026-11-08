@@ -209,6 +209,15 @@ def hindi_text(text: str) -> str:
 
 
 def _name(call: dict) -> str:
+    state = call.get("state")
+    if isinstance(state, dict):
+        prof = state.get("profile") or {}
+        caller_name = str(prof.get("caller_name") or "").strip()
+        if caller_name and "not reported" not in caller_name.lower():
+            return hindi_text(caller_name)
+        intro_val = str(((state.get("topics") or {}).get("intro_name") or {}).get("value") or "").strip()
+        if intro_val and "not reported" not in intro_val.lower():
+            return hindi_text(intro_val)
     raw = str(call.get("mother_name") or "").strip()
     raw = re.sub(r"(?i)^mother'?s name is\s+", "", raw).strip(" .")
     if raw and "not reported" not in raw.lower() and "does not" not in raw.lower():
@@ -218,6 +227,9 @@ def _name(call: dict) -> str:
         detail = re.sub(r"(?i)^mother'?s name is\s+", "", str(finding.get("detail") or "")).strip(" .")
         if detail and "not reported" not in detail.lower():
             return hindi_text(detail)
+    caller = str(call.get("caller_name") or "").strip()
+    if caller and "tester" not in caller.lower() and "bot" not in caller.lower():
+        return hindi_text(caller)
     return "माँ"
 
 
@@ -303,6 +315,98 @@ def _covered(call: dict) -> set[str]:
     return {str(topic_id) for topic_id in (telemetry.get("coverage") or [])}
 
 
+def _saved_state(call: dict) -> dict | None:
+    state = call.get("state")
+    if isinstance(state, dict) and isinstance(state.get("topics"), dict):
+        return state
+    return None
+
+
+def _structured_kind(state: dict, topic_id: str) -> str:
+    topic = (state.get("topics") or {}).get(topic_id) or {}
+    status = topic.get("state")
+    value = topic.get("value")
+    if status == "answered" and value is True:
+        return "yes"
+    if status == "answered" and value is False:
+        return "no"
+    if status in {"unknown", "no_response", "not_asked", "not_applicable"}:
+        return status
+    if status == "answered":
+        return "answered"
+    return "not_asked"
+
+
+def _thalassemia_from_state(state: dict) -> bool:
+    topic = (state.get("topics") or {}).get("preg_thalassemia") or {}
+    status = topic.get("state")
+    if status in {"not_asked", "not_applicable", "no_response"}:
+        return False
+    caller = (topic.get("details") or {}).get("caller_test")
+    if isinstance(caller, dict):
+        caller = caller.get("value", caller.get("state"))
+    if caller is False or caller in {"unknown", "no"}:
+        return True
+    if caller is True:
+        return False
+    if status == "unknown":
+        return True
+    return status == "answered" and topic.get("value") is False
+
+
+def _children_label(state: dict) -> str:
+    parts = []
+    for child in (state.get("profile") or {}).get("children") or []:
+        if not isinstance(child, dict):
+            continue
+        age = child.get("age")
+        if isinstance(age, dict) and age.get("value") is not None:
+            age_text = f"{age.get('value')} {age.get('unit') or ''}".strip()
+        elif age not in (None, ""):
+            age_text = str(age)
+        else:
+            age_text = ""
+        bit = " ".join(
+            str(part)
+            for part in (child.get("name") or child.get("id") or "", age_text, child.get("sex") or "")
+            if part
+        )
+        if bit:
+            parts.append(bit)
+    return ", ".join(parts)
+
+
+def _instance_note(state: dict, topic_id: str) -> str:
+    topic = (state.get("topics") or {}).get(topic_id) or {}
+    children = {
+        child.get("id"): child
+        for child in (state.get("profile") or {}).get("children") or []
+        if isinstance(child, dict) and child.get("id")
+    }
+    bits = []
+    for instance in topic.get("instances") or []:
+        if not isinstance(instance, dict):
+            continue
+        person_id = instance.get("person_id")
+        child = children.get(person_id) or {}
+        label = child.get("name") or person_id or ""
+        details = instance.get("details") if isinstance(instance.get("details"), dict) else {}
+        extra = ", ".join(f"{key}: {value}" for key, value in details.items() if value is not None)
+        bit = " ".join(part for part in (str(label), extra) if part)
+        if bit:
+            bits.append(bit)
+    if not bits and topic.get("details"):
+        details = topic.get("details") or {}
+        extra = ", ".join(
+            f"{key}: {value}"
+            for key, value in details.items()
+            if value is not None and not isinstance(value, dict)
+        )
+        if extra:
+            bits.append(extra)
+    return "; ".join(bits)
+
+
 def ground_kind(call: dict, topic_id: str, answers: dict) -> str:
     """A yes, no, or unknown counts only if she said it, or the live call recorded it.
 
@@ -329,35 +433,62 @@ def build(call: dict, extracted: dict | None = None) -> dict:
         clock = _clock(when)
     else:
         date, clock = "", ""
+    state = _saved_state(call)
     incomplete = _incomplete(call)
+    if state:
+        close_reason = str(state.get("close_reason") or "")
+        if close_reason == "complete":
+            incomplete = False
+        elif close_reason in {"emergency", "silence", "time_limit", "caller_stop", "browser_hangup"}:
+            incomplete = True
     questions = [hindi_text(q) for q in _questions(str(call.get("summary_mother") or ""))]
-    if ground_kind(call, "preg_thalassemia", answers) in {"no", "unknown"}:
-        if not any("थैलेसीमिया" in q for q in questions):
-            questions.append(THALASSEMIA_LINE)
-    yes = [
-        str(line).strip()
-        for line in (extracted.get("yes_hindi") or [])
-        if str(line).strip() and _has_hindi(str(line))
-    ]
-    yes = [hindi_text(line) for line in yes]
-    grounded_yes = any(
-        ground_kind(call, topic["id"], answers) == "yes"
-        for topic in checklist.TOPICS
-        if not topic["id"].startswith("intro_")
+    show_thalassemia = (
+        _thalassemia_from_state(state)
+        if state
+        else ground_kind(call, "preg_thalassemia", answers) in {"no", "unknown"}
     )
-    if not grounded_yes and not _user_text(call).strip():
+    if show_thalassemia and not any("थैलेसीमिया" in q for q in questions):
+        questions.append(THALASSEMIA_LINE)
+    if state:
         yes = []
-    if not yes and _user_text(call).strip():
         for topic in checklist.TOPICS:
             if topic["id"].startswith("intro_"):
                 continue
-            if ground_kind(call, topic["id"], answers) != "yes":
+            if _structured_kind(state, topic["id"]) != "yes":
                 continue
             line = checklist.question_hi(topic["id"]).rstrip("?").strip()
             if line.startswith("क्या "):
                 line = line[4:]
+            note = _instance_note(state, topic["id"])
+            if note:
+                line = f"{line} ({note})"
             if line:
-                yes.append(line)
+                yes.append(hindi_text(line))
+    else:
+        yes = [
+            str(line).strip()
+            for line in (extracted.get("yes_hindi") or [])
+            if str(line).strip() and _has_hindi(str(line))
+        ]
+        yes = [hindi_text(line) for line in yes]
+        grounded_yes = any(
+            ground_kind(call, topic["id"], answers) == "yes"
+            for topic in checklist.TOPICS
+            if not topic["id"].startswith("intro_")
+        )
+        if not grounded_yes and not _user_text(call).strip():
+            yes = []
+        if not yes and _user_text(call).strip():
+            for topic in checklist.TOPICS:
+                if topic["id"].startswith("intro_"):
+                    continue
+                if ground_kind(call, topic["id"], answers) != "yes":
+                    continue
+                line = checklist.question_hi(topic["id"]).rstrip("?").strip()
+                if line.startswith("क्या "):
+                    line = line[4:]
+                if line:
+                    yes.append(line)
     groups = []
     unknown = []
     unasked = []
@@ -368,7 +499,12 @@ def build(call: dict, extracted: dict | None = None) -> dict:
         for topic in checklist.TOPICS:
             if topic["group"] != group:
                 continue
-            kind = ground_kind(call, topic["id"], answers)
+            kind = _structured_kind(state, topic["id"]) if state else ground_kind(call, topic["id"], answers)
+            if kind == "not_applicable":
+                continue
+            if state and kind in {"unknown", "no_response", "not_asked"}:
+                missed.append(checklist.question_hi(topic["id"]))
+                continue
             if kind == "no":
                 nos.append(checklist.question_hi(topic["id"]))
             elif kind == "unknown":
@@ -381,8 +517,12 @@ def build(call: dict, extracted: dict | None = None) -> dict:
             unasked.append({"title": checklist.GROUP_HI[group], "items": missed})
             if incomplete:
                 not_asked_groups.append(checklist.GROUP_HI[group])
-    child = _child(call)
+    child = _children_label(state) if state else _child(call)
     who = _name(call) + (f" · {child}" if child else "")
+    if state and str(state.get("close_reason") or "") == "emergency":
+        emergency = True
+    else:
+        emergency = str((call.get("telemetry") or {}).get("close_reason") or "") == "emergency"
     return {
         "who": who,
         "date": date,
@@ -390,7 +530,7 @@ def build(call: dict, extracted: dict | None = None) -> dict:
         "duration": _duration(call.get("duration_sec") or 0),
         "status": "अधूरी कॉल" if incomplete else "पूर्ण कॉल",
         "incomplete": incomplete,
-        "emergency": str((call.get("telemetry") or {}).get("close_reason") or "") == "emergency",
+        "emergency": emergency,
         "questions": questions,
         "yes": yes,
         "groups": groups,

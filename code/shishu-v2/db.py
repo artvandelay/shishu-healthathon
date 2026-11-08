@@ -36,6 +36,7 @@ _CALL_EXTRA_COLUMNS = (
     ("telemetry_json", "TEXT DEFAULT '{}'"),
     ("events_json", "TEXT DEFAULT '[]'"),
     ("answers_json", "TEXT DEFAULT ''"),
+    ("state_json", "TEXT DEFAULT ''"),
 )
 
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -636,7 +637,55 @@ def _row_to_call_dict(row: sqlite3.Row) -> dict[str, Any]:
         d["events"] = json.loads(d.get("events_json") or "[]")
     except Exception:
         d["events"] = []
+    if "state_json" in d:
+        raw_state = d.get("state_json") or ""
+        if not str(raw_state).strip():
+            d["state"] = None
+        else:
+            try:
+                parsed = json.loads(raw_state)
+                d["state"] = parsed if isinstance(parsed, dict) else None
+            except Exception:
+                d["state"] = None
     return d
+
+
+def get_call_state(call_id: int) -> dict | None:
+    with _db_lock:
+        cur = conn.cursor()
+        cur.execute("SELECT state_json FROM calls WHERE id = ?", (call_id,))
+        row = cur.fetchone()
+    if not row:
+        return None
+    raw = row["state_json"] or ""
+    if not str(raw).strip():
+        return None
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return None
+    from call_state_contract import normalize_state
+
+    return normalize_state(parsed)
+
+
+def save_call_state(call_id: int, state: dict) -> None:
+    payload = json.dumps(state, ensure_ascii=False)
+    with _db_lock:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE calls SET state_json = ? WHERE id = ?",
+            (payload, call_id),
+        )
+        conn.commit()
+
+
+def initialize_call_state(call_id: int) -> dict:
+    from call_state_contract import new_call_state
+
+    state = new_call_state()
+    save_call_state(call_id, state)
+    return state
 
 
 def get_call(call_id: int) -> dict | None:

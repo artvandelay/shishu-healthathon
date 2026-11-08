@@ -9,6 +9,7 @@ import unittest
 _TMP = tempfile.mkdtemp(prefix="shishu-triage-")
 os.environ.setdefault("DATA_DIR", _TMP)
 
+import call_state  # noqa: E402
 import checklist  # noqa: E402
 import db  # noqa: E402
 import gemini_live  # noqa: E402
@@ -66,8 +67,12 @@ class PromptTests(unittest.TestCase):
 class GeminiConfigTests(unittest.TestCase):
     def test_tool_declarations(self):
         self.assertFalse(hasattr(gemini_live, "_SET_PROGRESS_DECL"))
-        props = gemini_live._RECORD_FINDING_DECL["parameters"]["properties"]
-        self.assertIn("topic_ids", props)
+        props = gemini_live.RECORD_ANSWERS_DECL["parameters"]["properties"]
+        self.assertIn("updates", props)
+        reasons = gemini_live.END_CALL_DECL["parameters"]["properties"]["reason"]["enum"]
+        self.assertIn("emergency", reasons)
+        self.assertIn("caller_stop", reasons)
+        self.assertNotIn("complete", reasons)
 
     def test_thinking_and_vocab_only_on_gemini_3(self):
         cfg = gemini_live._live_config({})
@@ -156,9 +161,9 @@ class CallTimerTests(unittest.TestCase):
         state.checked_in = True
         telemetry = self._telemetry()
         session, _, _ = _run_watchdog(state, telemetry)
-        self.assertIn(checklist.SILENCE_CLOSE_CUE, session.texts)
-        self.assertTrue(telemetry["force_close"])
+        self.assertIn(gemini_live._SILENCE_CLOSE_INSTRUCTION, session.texts)
         self.assertEqual(telemetry["close_reason"], "silence")
+        self.assertFalse(telemetry.get("ending_sent"))
 
     def test_check_in_comes_first(self):
         state = gemini_live._TurnState()
@@ -176,14 +181,13 @@ class CallTimerTests(unittest.TestCase):
         self.assertTrue(stop.is_set())
         self.assertEqual(telemetry["close_reason"], "time_limit")
 
-    def test_force_close_allows_end_call_with_open_topics(self):
+    def test_emergency_end_is_accepted_without_an_ending_message(self):
         telemetry = self._telemetry()
-        telemetry["force_close"] = True
 
         class _Fc:
             id = "fc1"
             name = "end_call"
-            args = {}
+            args = {"reason": "emergency"}
             will_continue = False
 
         class _Sess:
@@ -192,15 +196,18 @@ class CallTimerTests(unittest.TestCase):
 
         async def run():
             sess = _Sess()
+            ws = _FakeWs()
             await gemini_live._answer_function_calls(
-                sess, asyncio.Lock(), _FakeWs(), asyncio.Lock(), db.create_call("gemini"),
+                sess, asyncio.Lock(), ws, asyncio.Lock(), db.create_call("gemini"),
                 telemetry, [_Fc()], set(), set(),
             )
-            return sess
+            return sess, ws
 
-        sess = asyncio.run(run())
-        self.assertTrue(telemetry["end_requested"])
+        sess, ws = asyncio.run(run())
         self.assertEqual(sess.responses[0].response["result"], "ok")
+        self.assertEqual(telemetry["close_reason"], "emergency")
+        self.assertFalse(telemetry.get("end_requested"))
+        self.assertFalse(any(message.get("type") == "ending" for message in ws.sent))
 
 
 class Call223RegressionTests(unittest.TestCase):
@@ -231,18 +238,27 @@ class Call223RegressionTests(unittest.TestCase):
         self.assertNotIn("Shilpa", out["summary_doctor"])
         self.assertNotIn("profile_mother_name", out["findings"])
 
-    def test_incomplete_name_fragment_keeps_intro_name_open(self):
+    def test_topic_outside_the_current_question_is_rejected(self):
         telemetry = gemini_live._new_telemetry("gemini-3.1-flash-live-preview", "Kore", 1300, 300, 0)
+        call_id = db.create_call("gemini", caller_name="PD")
+        turn = gemini_live._TurnState()
+        turn.call_state = call_state.begin_question(
+            db.initialize_call_state(call_id),
+            {"topic_id": "intro_name", "followup_id": None},
+        )
 
         class _Fc:
             id = "fc_name"
-            name = "record_finding"
+            name = "record_answers"
             args = {
-                "domain": "profile_mother_name",
-                "status": "info",
-                "detail": "Mother did not state her name.",
-                "is_red_flag": False,
-                "topic_ids": ["intro_name"],
+                "updates": [{
+                    "field": "topic.birth_nicu",
+                    "state": "answered",
+                    "value": True,
+                    "scope": "none",
+                    "child_ids": [],
+                    "details": {},
+                }]
             }
             will_continue = False
 
@@ -257,18 +273,19 @@ class Call223RegressionTests(unittest.TestCase):
                 asyncio.Lock(),
                 _FakeWs(),
                 asyncio.Lock(),
-                db.create_call("gemini", caller_name="PD"),
+                call_id,
                 telemetry,
                 [_Fc()],
                 set(),
                 set(),
                 "मेरा नाम",
+                turn_state=turn,
             )
             return sess
 
         sess = asyncio.run(run())
-        self.assertNotIn("intro_name", telemetry["coverage"])
-        self.assertIn("poora naam", sess.responses[0].response["note"])
+        self.assertEqual(sess.responses[0].response["result"], "rejected")
+        self.assertEqual(turn.call_state["topics"]["intro_name"]["state"], "not_asked")
 
     def test_user_caption_normalizes_foreign_no_and_hangul(self):
         self.assertEqual(prompts.clean_user_caption("Não."), "नहीं।")
@@ -296,18 +313,34 @@ class Call226RegressionTests(unittest.TestCase):
         self.assertEqual(telemetry["close_reason"], "")
         self.assertEqual(state.quiet_from, 0.0)
 
-    def test_a_topic_id_in_domain_still_marks_coverage(self):
+    def test_record_answers_saves_the_current_topic(self):
         telemetry = gemini_live._new_telemetry("gemini-3.1-flash-live-preview", "Kore", 1300, 300, 0)
+        call_id = db.create_call("gemini")
+        turn = gemini_live._TurnState()
+        turn.call_state = call_state.begin_question(
+            db.initialize_call_state(call_id),
+            {"topic_id": "intro_married", "followup_id": None},
+        )
 
         class _Fc:
             id = "fc_topic"
-            name = "record_finding"
+            name = "record_answers"
             args = {
-                "domain": "intro_married",
-                "status": "info",
-                "detail": "Mother is married.",
-                "is_red_flag": False,
-                "topic_ids": [],
+                "updates": [{
+                    "field": "topic.intro_married",
+                    "state": "answered",
+                    "value": True,
+                    "scope": "none",
+                    "child_ids": [],
+                    "details": {},
+                }, {
+                    "field": "profile.marital_status",
+                    "state": "answered",
+                    "value": "married",
+                    "scope": "none",
+                    "child_ids": [],
+                    "details": {},
+                }]
             }
             will_continue = False
 
@@ -318,11 +351,14 @@ class Call226RegressionTests(unittest.TestCase):
         async def run():
             await gemini_live._answer_function_calls(
                 _Sess(), asyncio.Lock(), _FakeWs(), asyncio.Lock(),
-                db.create_call("gemini"), telemetry, [_Fc()], set(), set(), "हो गई है।",
+                call_id, telemetry, [_Fc()], set(), set(), "हो गई है।",
+                turn_state=turn,
             )
 
         asyncio.run(run())
-        self.assertIn("intro_married", telemetry["coverage"])
+        saved = db.get_call_state(call_id)
+        self.assertEqual(saved["topics"]["intro_married"]["state"], "answered")
+        self.assertEqual(saved["profile"]["marital_status"], "married")
 
     def test_marriage_answer_does_not_replace_her_name(self):
         call_id = db.create_call("gemini")
@@ -442,32 +478,31 @@ class Call228RegressionTests(unittest.TestCase):
         self.assertNotIn("SYSTEM CUE", gemini_live._WATCHDOG_NUDGE)
         self.assertIn("NEVER say 'Nahi' or 'Haan'", gemini_live._WATCHDOG_NUDGE)
 
-    def test_open_capture_concern_waits_for_aur_kuch_before_closing(self):
+    def test_server_completes_without_an_end_call_tool(self):
         telemetry = gemini_live._new_telemetry("gemini-3.1-flash-live-preview", "Kore", 1300, 300, 0)
-        checklist.mark(telemetry["coverage"], [t for t in checklist.REQUIRED_IDS if t != "close_anything_else"])
         call_id = db.create_call("gemini")
+        state = call_state.new_call_state()
+        for topic_id in checklist.REQUIRED_IDS:
+            if topic_id == "close_anything_else":
+                continue
+            state["topics"][topic_id]["state"] = "answered"
+            state["topics"][topic_id]["value"] = False
+        state = call_state.begin_question(state, {"topic_id": "close_anything_else", "followup_id": None})
+        turn = gemini_live._TurnState()
+        turn.call_state = state
 
-        class _Fc1:
-            id = "fc_open_1"
-            name = "record_finding"
+        class _Fc:
+            id = "fc_close"
+            name = "record_answers"
             args = {
-                "domain": "chief_complaint",
-                "status": "positive",
-                "detail": "Mother wants to know if she can have another child at age 40.",
-                "is_red_flag": False,
-                "topic_ids": ["close_anything_else"],
-            }
-            will_continue = False
-
-        class _Fc2:
-            id = "fc_open_2"
-            name = "record_finding"
-            args = {
-                "domain": "coverage",
-                "status": "info",
-                "detail": "Nothing else to add.",
-                "is_red_flag": False,
-                "topic_ids": ["close_anything_else"],
+                "updates": [{
+                    "field": "topic.close_anything_else",
+                    "state": "answered",
+                    "value": False,
+                    "scope": "none",
+                    "child_ids": [],
+                    "details": {},
+                }]
             }
             will_continue = False
 
@@ -476,21 +511,20 @@ class Call228RegressionTests(unittest.TestCase):
                 self.responses = function_responses
 
         async def run():
-            s1, s2 = _Sess(), _Sess()
+            sess = _Sess()
+            ws = _FakeWs()
             await gemini_live._answer_function_calls(
-                s1, asyncio.Lock(), _FakeWs(), asyncio.Lock(), call_id, telemetry,
-                [_Fc1()], set(), set(), "हां, यह बताना है कि अभी मैं और एक बच्चा कर सकती हूं कि नहीं?",
+                sess, asyncio.Lock(), ws, asyncio.Lock(), call_id, telemetry,
+                [_Fc()], set(), set(), "नहीं।", turn_state=turn,
             )
-            await gemini_live._answer_function_calls(
-                s2, asyncio.Lock(), _FakeWs(), asyncio.Lock(), call_id, telemetry,
-                [_Fc2()], set(), set(), "नहीं।",
-            )
-            return s1, s2
+            return sess, ws
 
-        s1, s2 = asyncio.run(run())
-        self.assertIn("Aur kuch batana chahengi?", s1.responses[0].response["note"])
-        self.assertIn("Do NOT speak the closing yet", s1.responses[0].response["note"])
-        self.assertIn("All topics are covered", s2.responses[0].response["note"])
+        sess, ws = asyncio.run(run())
+        self.assertEqual(sess.responses[0].response["result"], "ok")
+        self.assertEqual(turn.call_state["close_reason"], "complete")
+        self.assertEqual(turn.call_state["phase"], "closing")
+        self.assertIn("server ends the call", sess.responses[0].response["note"].lower())
+        self.assertFalse(any(message.get("type") == "ending" for message in ws.sent))
 
     def test_prompt_and_checklist_rules_for_call228_feedback(self):
         prompt = prompts.GEMINI_LIVE_SYSTEM_PROMPT
@@ -509,71 +543,63 @@ class Call228RegressionTests(unittest.TestCase):
         self.assertIsNone(cfg.context_window_compression.trigger_tokens)
         self.assertIsNone(cfg.context_window_compression.sliding_window.target_tokens)
 
-    def test_call230_no_children_and_not_pregnant_skips_child_and_preg_delivery_topics(self):
-        _, topics = gemini_live._normalize_finding(
-            "profile_child_age",
-            "Mother is married but has no children.",
-            ["intro_married", "intro_children"],
-            "मेरी शादी हो गई है। बच्चे नहीं है।",
+    def test_no_children_routes_birth_body_and_illness_off(self):
+        telemetry = gemini_live._new_telemetry("gemini-3.1-flash-live-preview", "Kore", 750, 300, 0)
+        call_id = db.create_call("gemini")
+        turn = gemini_live._TurnState()
+        turn.call_state = call_state.begin_question(
+            db.initialize_call_state(call_id),
+            {"topic_id": "intro_children", "followup_id": None},
         )
-        cov = []
-        checklist.mark(cov, ["intro_name", "intro_bridge"] + topics)
-        nxt = checklist.open_topics(cov)[0]["id"]
-        self.assertEqual(nxt, "preg_thalassemia")
 
-        _, topics2 = gemini_live._normalize_finding(
-            "pregnancy",
-            "Mother clarified she has never been pregnant.",
-            ["preg_conditions"],
-            "No, I haven't been pregnant.",
-        )
-        checklist.mark(cov, topics2)
-        nxt2 = checklist.open_topics(cov)[0]["id"]
-        self.assertEqual(nxt2, "fam_related")
-        self.assertIn("fam_miscarriage", cov)
+        class _Fc:
+            id = "fc_children"
+            name = "record_answers"
+            args = {
+                "updates": [{
+                    "field": "profile.children",
+                    "state": "answered",
+                    "value": [],
+                    "scope": "none",
+                    "child_ids": [],
+                    "details": {},
+                }]
+            }
+            will_continue = False
 
-        _, topics_unmarried = gemini_live._normalize_finding(
-            "coverage",
-            "Mother is not married.",
-            ["intro_married"],
-            "नहीं।",
-            "negative",
-        )
-        cov_unmarried = []
-        checklist.mark(cov_unmarried, ["intro_name"] + topics_unmarried)
-        self.assertIn("intro_children", cov_unmarried)
-        self.assertIn("fam_related", cov_unmarried)
-        self.assertNotIn("fam_miscarriage", cov_unmarried)
-        checklist.mark(cov_unmarried, ["intro_bridge", "preg_thalassemia", "fam_miscarriage"])
-        self.assertEqual(checklist.open_topics(cov_unmarried)[0]["id"], "fam_infant_death")
+        class _Sess:
+            async def send_tool_response(self, function_responses=None):
+                self.responses = function_responses
 
+        async def run():
+            await gemini_live._answer_function_calls(
+                _Sess(), asyncio.Lock(), _FakeWs(), asyncio.Lock(), call_id, telemetry,
+                [_Fc()], set(), set(), "बच्चे नहीं है।", turn_state=turn,
+            )
+
+        asyncio.run(run())
+        saved = db.get_call_state(call_id)
+        self.assertEqual(saved["topics"]["birth_mode"]["state"], "not_applicable")
+        self.assertEqual(saved["topics"]["body_fits_milestones"]["state"], "not_applicable")
+        self.assertEqual(saved["topics"]["ill_admissions"]["state"], "not_applicable")
+        self.assertNotEqual(saved["topics"]["intro_children"]["state"], "not_applicable")
+        self.assertNotEqual(saved["topics"]["preg_thalassemia"]["state"], "not_applicable")
+
+    def test_call230_caption_still_strips_a_system_cue(self):
         leaked = (
             "SYSTEM CUE (from the app, not the mother): The user is speaking English.\n"
             "Aapka naam bataiyega please?"
         )
         self.assertEqual(prompts.clean_assistant_caption(leaked), "Aapka naam bataiyega please?")
 
-    def test_call243_end_call_succeeds_after_open_capture_hold(self):
+    def test_caller_stop_is_accepted_without_an_ending_message(self):
         telemetry = gemini_live._new_telemetry("gemini-3.1-flash-live-preview", "Kore", 750, 300, 0)
-        checklist.mark(telemetry["coverage"], [t for t in checklist.REQUIRED_IDS if t != "close_anything_else"])
         call_id = db.create_call("gemini")
-
-        class _FcConcern:
-            id = "fc_concern"
-            name = "record_finding"
-            args = {
-                "domain": "chief_complaint",
-                "status": "positive",
-                "detail": "Mother is concerned about child's cough and cold.",
-                "is_red_flag": False,
-                "topic_ids": ["close_anything_else"],
-            }
-            will_continue = False
 
         class _FcEnd:
             id = "fc_end"
             name = "end_call"
-            args = {}
+            args = {"reason": "caller_stop"}
             will_continue = False
 
         class _Sess:
@@ -581,54 +607,28 @@ class Call228RegressionTests(unittest.TestCase):
                 self.responses = function_responses
 
         async def run():
-            s1, s2 = _Sess(), _Sess()
+            sess = _Sess()
             ws = _FakeWs()
             await gemini_live._answer_function_calls(
-                s1, asyncio.Lock(), ws, asyncio.Lock(), call_id, telemetry,
-                [_FcConcern()], set(), set(), "बच्चे को कोल्ड या कफ क्यों आ रहा है?",
+                sess, asyncio.Lock(), ws, asyncio.Lock(), call_id, telemetry,
+                [_FcEnd()], set(), set(), "बंद कर दो।",
             )
-            await gemini_live._answer_function_calls(
-                s2, asyncio.Lock(), ws, asyncio.Lock(), call_id, telemetry,
-                [_FcEnd()], set(), set(), "नो थैंक्स।",
-            )
-            return s2, ws
+            return sess, ws
 
-        s2, ws = asyncio.run(run())
-        self.assertEqual(s2.responses[0].response["result"], "ok")
-        self.assertTrue(telemetry["end_requested"])
-        self.assertIn("close_anything_else", telemetry["coverage"])
-        self.assertEqual(telemetry["end_refusals"], 0)
-        self.assertTrue(any(m.get("type") == "ending" for m in ws.sent))
+        sess, ws = asyncio.run(run())
+        self.assertEqual(sess.responses[0].response["result"], "ok")
+        self.assertEqual(telemetry["close_reason"], "caller_stop")
+        self.assertFalse(telemetry.get("end_requested"))
+        self.assertFalse(any(message.get("type") == "ending" for message in ws.sent))
 
-    def test_call247_blocking_tools_and_missing_ages_and_preterm_hold(self):
-        self.assertNotIn("behavior", gemini_live._RECORD_FINDING_DECL)
-        self.assertNotIn("behavior", gemini_live._END_CALL_DECL)
+    def test_complete_end_call_is_rejected(self):
         telemetry = gemini_live._new_telemetry("gemini-3.1-flash-live-preview", "Kore", 750, 300, 0)
-        checklist.mark(telemetry["coverage"], ["intro_name", "intro_married"])
         call_id = db.create_call("gemini")
 
-        class _FcCountOnly:
-            id = "fc_count"
-            name = "record_finding"
-            args = {
-                "domain": "profile_child_age",
-                "status": "info",
-                "detail": "Mother has 6 children.",
-                "is_red_flag": False,
-                "topic_ids": ["intro_children"],
-            }
-            will_continue = False
-
-        class _FcPretermBoth:
-            id = "fc_preterm"
-            name = "record_finding"
-            args = {
-                "domain": "birth_nicu",
-                "status": "positive",
-                "detail": "Last child born preterm.",
-                "is_red_flag": True,
-                "topic_ids": ["birth_term", "birth_nicu"],
-            }
+        class _FcEnd:
+            id = "fc_end"
+            name = "end_call"
+            args = {"reason": "complete"}
             will_continue = False
 
         class _Sess:
@@ -636,25 +636,52 @@ class Call228RegressionTests(unittest.TestCase):
                 self.responses = function_responses
 
         async def run():
-            s1, s2 = _Sess(), _Sess()
+            sess = _Sess()
             ws = _FakeWs()
             await gemini_live._answer_function_calls(
-                s1, asyncio.Lock(), ws, asyncio.Lock(), call_id, telemetry,
-                [_FcCountOnly()], set(), set(), "छह",
+                sess, asyncio.Lock(), ws, asyncio.Lock(), call_id, telemetry,
+                [_FcEnd()], set(), set(),
             )
-            checklist.mark(telemetry["coverage"], ["intro_children", "intro_bridge", "birth_mode"])
-            await gemini_live._answer_function_calls(
-                s2, asyncio.Lock(), ws, asyncio.Lock(), call_id, telemetry,
-                [_FcPretermBoth()], set(), set(), "जो मेरे सबसे लास्ट वाले बच्चे हैं, वह समय से पहले हो गया था।",
-            )
-            return s1, s2
+            return sess, ws
 
-        s1, s2 = asyncio.run(run())
-        self.assertIn("umar kya-kya hai", s1.responses[0].response["note"])
-        self.assertIsNone(s1.responses[0].scheduling)
-        self.assertNotIn("birth_nicu", telemetry["coverage"])
-        self.assertIn("kaanch ka box", s2.responses[0].response["note"])
+        sess, ws = asyncio.run(run())
+        self.assertEqual(sess.responses[0].response["result"], "rejected")
+        self.assertFalse(any(message.get("type") == "ending" for message in ws.sent))
 
+    def test_browser_hangup_sets_browser_hangup_when_no_close_reason_exists(self):
+        call_id = db.create_call("gemini")
+        turn = gemini_live._TurnState()
+        turn.call_state = db.initialize_call_state(call_id)
+        telemetry = gemini_live._new_telemetry("gemini-3.1-flash-live-preview", "Kore", 750, 300, 0)
+        gemini_live._apply_browser_hangup(call_id, telemetry, turn)
+        self.assertEqual(telemetry["close_reason"], "browser_hangup")
+        self.assertEqual(db.get_call_state(call_id)["close_reason"], "browser_hangup")
+
+    def test_browser_hangup_preserves_an_existing_close_reason(self):
+        call_id = db.create_call("gemini")
+        turn = gemini_live._TurnState()
+        turn.call_state = call_state.request_close(db.initialize_call_state(call_id), "emergency")
+        db.save_call_state(call_id, turn.call_state)
+        telemetry = gemini_live._new_telemetry("gemini-3.1-flash-live-preview", "Kore", 750, 300, 0)
+        telemetry["close_reason"] = "emergency"
+        gemini_live._apply_browser_hangup(call_id, telemetry, turn)
+        self.assertEqual(telemetry["close_reason"], "emergency")
+        self.assertEqual(db.get_call_state(call_id)["close_reason"], "emergency")
+
+    def test_client_telemetry_is_stored_on_the_call(self):
+        call_id = db.create_call("gemini")
+        telemetry = gemini_live._new_telemetry("gemini-3.1-flash-live-preview", "Kore", 750, 300, 0)
+        gemini_live._apply_client_telemetry(call_id, telemetry, {
+            "client": {"platform": "test", "microphone": {"sampleRate": 48000}},
+        })
+        saved = db.get_call(call_id)
+        self.assertEqual(saved["telemetry"]["client"]["platform"], "test")
+        self.assertEqual(saved["telemetry"]["client"]["microphone"]["sampleRate"], 48000)
+        self.assertTrue(any(event.get("type") == "client_telemetry" for event in saved["events"]))
+
+    def test_declarations_have_no_behavior_field(self):
+        self.assertNotIn("behavior", gemini_live.RECORD_ANSWERS_DECL)
+        self.assertNotIn("behavior", gemini_live.END_CALL_DECL)
 
 if __name__ == "__main__":
     unittest.main()

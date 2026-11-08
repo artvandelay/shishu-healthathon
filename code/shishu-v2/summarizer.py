@@ -7,6 +7,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+import checklist
 from prompts import DOCTOR_MOTHER_SUMMARY_PROMPT
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
@@ -584,7 +585,67 @@ def _assemble(payload: dict, findings: dict, red_flags: list[str], transcript: l
     }
 
 
-async def _from_gemini(user_content: str) -> dict:
+STRUCTURED_STATE_SUMMARY_PROMPT = """
+You write the post-call record for a SHISHU screening.
+You can write language only from the structured state.
+Do not add a fact, child identity, answer, or diagnosis.
+Return one JSON object and nothing else. Keys must be exactly:
+{"doctor_markdown": "...", "mother_hindi": "...", "extracted_findings": {}, "red_flags": []}
+If a topic state is no_response, not_asked, or not_applicable, keep that label.
+Do not turn unknown, no_response, not_asked, or not_applicable into no.
+""".strip()
+
+
+def _answer_label(topic: dict) -> str:
+    status = str(topic.get("state") or "not_asked")
+    value = topic.get("value")
+    if status == "answered" and value is True:
+        return "yes"
+    if status == "answered" and value is False:
+        return "no"
+    if status == "answered":
+        return "answered"
+    return status
+
+
+def state_to_summary_context(state: dict) -> str:
+    """Facts the summary model may use. No transcript."""
+    lines = [
+        "Structured call state.",
+        "Write language only from the structured state.",
+        "Do not add a fact, child identity, answer, or diagnosis.",
+        "Profile: " + json.dumps(state.get("profile") or {}, ensure_ascii=False),
+    ]
+    topics = state.get("topics") or {}
+    for topic in checklist.TOPICS:
+        saved = topics.get(topic["id"]) if isinstance(topics.get(topic["id"]), dict) else {}
+        lines.append(
+            f"{topic['id']}: state={_answer_label(saved)} "
+            f"value={json.dumps(saved.get('value'), ensure_ascii=False)} "
+            f"details={json.dumps(saved.get('details') or {}, ensure_ascii=False)} "
+            f"instances={json.dumps(saved.get('instances') or [], ensure_ascii=False)}"
+        )
+    return "\n".join(lines)
+
+
+def build_state_fallback(state: dict) -> dict:
+    """Doctor note from structured states when both summary providers fail."""
+    lines = ["Structured screening record."]
+    profile = state.get("profile") or {}
+    lines.append("Profile: " + json.dumps(profile, ensure_ascii=False))
+    topics = state.get("topics") or {}
+    for topic in checklist.TOPICS:
+        saved = topics.get(topic["id"]) if isinstance(topics.get(topic["id"]), dict) else {"state": "not_asked"}
+        lines.append(f"- {topic['id']}: {_answer_label(saved)}")
+    return {
+        "summary_doctor": "\n".join(lines),
+        "summary_mother": default_mother_questions({}, []),
+        "findings": {},
+        "red_flags": [],
+    }
+
+
+async def _from_gemini(user_content: str, system_prompt: str = DOCTOR_MOTHER_SUMMARY_PROMPT) -> dict:
     from google import genai
 
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
@@ -593,7 +654,7 @@ async def _from_gemini(user_content: str) -> dict:
             model="gemini-2.5-flash",
             contents=user_content,
             config={
-                "system_instruction": DOCTOR_MOTHER_SUMMARY_PROMPT,
+                "system_instruction": system_prompt,
                 "response_mime_type": "application/json",
                 "temperature": 0.2,
                 "max_output_tokens": 8192,
@@ -605,7 +666,7 @@ async def _from_gemini(user_content: str) -> dict:
         client.close()
 
 
-async def _from_openai(user_content: str) -> dict:
+async def _from_openai(user_content: str, system_prompt: str = DOCTOR_MOTHER_SUMMARY_PROMPT) -> dict:
     from openai import AsyncOpenAI
 
     client = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
@@ -615,7 +676,7 @@ async def _from_openai(user_content: str) -> dict:
             temperature=0.2,
             response_format={"type": "json_object"},
             messages=[
-                {"role": "system", "content": DOCTOR_MOTHER_SUMMARY_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
             ],
         )
@@ -629,8 +690,36 @@ async def generate_call_summaries(
     transcript: list[dict],
     findings: dict,
     red_flags: list[str],
+    state: dict | None = None,
 ) -> dict:
     """Return doctor and mother summaries, with findings and red flags merged."""
+    if state:
+        user_content = state_to_summary_context(state)
+        try:
+            payload = await _from_gemini(user_content, STRUCTURED_STATE_SUMMARY_PROMPT)
+            doctor = str((payload or {}).get("doctor_markdown") or "").strip()
+            if not doctor:
+                return build_state_fallback(state)
+            return {
+                "summary_doctor": doctor,
+                "summary_mother": str((payload or {}).get("mother_hindi") or ""),
+                "findings": findings,
+                "red_flags": red_flags,
+            }
+        except Exception:
+            try:
+                payload = await _from_openai(user_content, STRUCTURED_STATE_SUMMARY_PROMPT)
+                doctor = str((payload or {}).get("doctor_markdown") or "").strip()
+                if not doctor:
+                    return build_state_fallback(state)
+                return {
+                    "summary_doctor": doctor,
+                    "summary_mother": str((payload or {}).get("mother_hindi") or ""),
+                    "findings": findings,
+                    "red_flags": red_flags,
+                }
+            except Exception:
+                return build_state_fallback(state)
     user_content = _user_content(transcript, findings, red_flags)
     try:
         payload = await _from_gemini(user_content)
