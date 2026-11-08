@@ -511,7 +511,8 @@ def _is_reassuring_result(details: dict) -> bool:
 _AFFIRM_RE = re.compile(r"हाँ|हां|\bhaan\b|\byes\b", re.I)
 _DENY_RE = re.compile(r"नहीं|नही|\bnahi\b|\bnahin\b|\bno\b", re.I)
 _REASSURE_RE = re.compile(
-    r"ठीक\s*है|theek\s*hai|thik\s*hai|कोई\s+(?:दिक्कत|परेशानी)\s+नहीं|no\s+problem|sab\s+theek|all\s+fine",
+    r"ठीक\s*है|ठीक\s*से|ठीक\s*रह|"
+    r"theek\s*hai|thik\s*hai|कोई\s+(?:दिक्कत|परेशानी)\s+नहीं|no\s+problem|sab\s+theek|all\s+fine",
     re.I,
 )
 
@@ -2059,6 +2060,24 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
             topic["value"] = True
     elif topic.get("value") is False and _restates_negative_question(name, utterance):
         topic["value"] = True
+    question = checklist.question_hi(name)
+    # ठीक है। by itself is an acknowledgement. It does not erase a finding the
+    # tool just logged from the previous sentence. A sentence that says the
+    # thing healed or is fine does.
+    acknowledgement = re.fullmatch(
+        r"\s*(?:जी\s+)?(?:ठीक\s*है|theek\s*hai|thik\s*hai)[।.!\s]*",
+        utterance or "",
+        re.I,
+    )
+    reassured = (
+        not acknowledgement
+        and _REASSURE_RE.search(utterance or "") is not None
+        and _DENY_RE.search(utterance or "") is None
+        and _AFFIRM_RE.search(utterance or "") is None
+        and not ("ठीक" in question and "ठीक" in (utterance or ""))
+    )
+    if reassured:
+        topic["value"] = False
     topic["details"] = details
 
 

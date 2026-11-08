@@ -160,6 +160,8 @@ A symptom's own duration is not the hospital stay. दो दिन से ब�
 
 One age tied to a counted group is every child's age. तीन साल की दो बेटियाँ and दो बेटे हैं, दोनों चार साल के store that age on each child. मेरी उम्र तीस साल और दो बच्चे हैं does not. `196` unit tests. 54 scenarios, 0 failed.
 
+ठीक से and ठीक रहा are reassurance, the same as ठीक है. निशान ठीक से भरा है is a no even when the tool sent true. A question that itself asks about ठीक, such as joint swelling that settles, is unchanged. ठीक है। alone does not erase a finding logged on that turn. `196` unit tests. 54 scenarios, 0 failed.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

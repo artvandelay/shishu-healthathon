@@ -1788,6 +1788,30 @@ class CallStateTests(unittest.TestCase):
             call_state.topic_answer_kind(tested["topics"]["preg_thalassemia"], "preg_thalassemia"),
             "yes",
         )
+        scar = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "birth_bcg"),
+            [_update("topic.birth_bcg", True)],
+            1,
+            utterance="निशान ठीक से भरा है।",
+        )
+        self.assertEqual(call_state.topic_answer_kind(scar["topics"]["birth_bcg"], "birth_bcg"), "no")
+        swelling = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "birth_bcg"),
+            [_update("topic.birth_bcg", "सूजन हो गई।")],
+            1,
+            utterance="सूजन हो गई।",
+        )
+        self.assertEqual(call_state.topic_answer_kind(swelling["topics"]["birth_bcg"], "birth_bcg"), "yes")
+        joint = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "body_joint_swelling"),
+            [_update("topic.body_joint_swelling", "सूजन आती है और अपने आप ठीक हो जाती है।")],
+            1,
+            utterance="सूजन आती है और अपने आप ठीक हो जाती है।",
+        )
+        self.assertEqual(
+            call_state.topic_answer_kind(joint["topics"]["body_joint_swelling"], "body_joint_swelling"),
+            "yes",
+        )
 
         # The question's own yes contains नहीं. Repeating it is a finding. A bare नहीं is not.
         for topic_id, text in (
