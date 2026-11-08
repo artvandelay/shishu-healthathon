@@ -1402,6 +1402,11 @@ class CallStateTests(unittest.TestCase):
             [{"value": 4, "unit": "years"}] * 3,
         )
         four = stored("चारों बेटियाँ दो साल की हैं।", 4)
+        six = stored("छहों बच्चे दो साल के हैं।", 6)
+        self.assertEqual(
+            [c["age"] for c in six["profile"]["children"]],
+            [{"value": 2, "unit": "years"}] * 6,
+        )
         self.assertEqual(
             [(c["sex"], c["age"]) for c in four["profile"]["children"]],
             [("female", {"value": 2, "unit": "years"})] * 4,

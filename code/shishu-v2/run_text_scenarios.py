@@ -637,6 +637,38 @@ def campaign() -> list[Scenario]:
             children_value=3,
         ),
         Scenario(
+            name="no_flags_all_six_two",
+            group="no_flags",
+            caller_name="बिंदू",
+            marital_text=married,
+            children_text="छहों बच्चे दो साल के हैं।",
+            children_value=6,
+        ),
+        Scenario(
+            name="flags_all_six_blue",
+            group="red_flags",
+            caller_name="चंपा",
+            marital_text=married,
+            children_text="छहों बच्चे दो साल के हैं।",
+            children_value=6,
+            positives={
+                "body_blue": {
+                    "value": True,
+                    "utterance": "छहों के होंठ नीले पड़ते हैं।",
+                    "details": {},
+                },
+            },
+            expect_yes=("body_blue",),
+        ),
+        Scenario(
+            name="degenerate_six_age_sent_as_count",
+            group="degenerate",
+            caller_name="द्रोपदी",
+            marital_text=married,
+            children_text="छहों बच्चे दो साल के हैं।",
+            children_value=2,
+        ),
+        Scenario(
             name="no_flags_all_three_four",
             group="no_flags",
             caller_name="कमल",

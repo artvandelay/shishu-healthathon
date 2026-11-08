@@ -1749,7 +1749,9 @@ def _shared_age_for_group(utterance: str, count_n: int) -> dict | None:
     folded = _fold_spoken_numbers(utterance or "")
     # दोनों is the count two, and it is not folded to a digit (दो must not eat it).
     # तीनों and चारों are the same kind of word for three and four.
-    for word, digit in (("पाँचों", "5"), ("पांचों", "5"), ("चारों", "4"), ("तीनों", "3"), ("दोनों", "2")):
+    for word, digit in (
+        ("छहों", "6"), ("पाँचों", "5"), ("पांचों", "5"), ("चारों", "4"), ("तीनों", "3"), ("दोनों", "2"),
+    ):
         if count_n == int(digit):
             folded = re.sub(word, digit, folded, count=1)
             break

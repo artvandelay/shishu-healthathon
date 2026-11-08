@@ -432,7 +432,13 @@ Trio: the delivery happened (no flags, no हाँ lines), bleeding at delivery
 
 Trio: all three are four (no flags), fits for all three (still a yes), and 4 sent as the count (still three children of four, no हाँ lines). Pass.
 
-## Left at 16:54 IST
+## 16:55 IST
+
+छहों is the same word as तीनों and चारों. छहों बच्चे दो साल के हैं is six children of two. The 2 sent as the count is still those six. `197` unit tests. 174 scenarios, 0 failed.
+
+Trio: all six are two (no flags), blue lips for all six (still a yes, the line names होंठ), and 2 sent as the count (still six children of two, no हाँ lines). Pass.
+
+## Left at 16:55 IST
 
 फोर्सेप लगा, नॉर्मल नहीं stays a yes with no delivery type. Forceps was not added to the operation words. भाई को बचपन से नहीं दिखता stays a no on the blindness question. तलाक, विधवा, and शादी टूट stay unmapped as a status, and शादी टूट is not stored as married. Cholesterol is in the English family note, not the Hindi question, so it is not stored. सूजन या गाँठ is still not a place. एक आधा साल stays half a year.
 
