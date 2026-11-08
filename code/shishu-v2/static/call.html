@@ -266,19 +266,20 @@
     }
 
     .call-btn {
-      width: 168px;
-      height: 168px;
-      margin-top: 18px;
+      width: 84px;
+      height: 84px;
+      margin-top: 14px;
       border: 0;
       border-radius: 50%;
       background: var(--yellow);
       color: #fff;
       font: inherit;
-      font-size: 20px;
+      font-size: 16px;
       font-weight: 750;
+      line-height: 1.1;
       letter-spacing: 0.01em;
       cursor: pointer;
-      box-shadow: 0 12px 30px rgba(232, 157, 45, 0.35);
+      box-shadow: 0 8px 18px rgba(232, 157, 45, 0.35);
       touch-action: manipulation;
     }
 
@@ -315,15 +316,15 @@
     }
 
     .nudge-btn {
-      margin-top: 14px;
-      min-height: 44px;
-      padding: 0 18px;
+      margin-top: 10px;
+      min-height: 36px;
+      padding: 0 12px;
       border-radius: 999px;
       border: 1px solid var(--line);
       background: #fff;
       color: var(--ink);
       font: inherit;
-      font-size: 15px;
+      font-size: 13px;
       font-weight: 700;
       cursor: pointer;
       touch-action: manipulation;
@@ -629,7 +630,7 @@
       <button id="hud-toggle" class="header-btn" type="button" hidden>Testing HUD</button>
       <button id="bug-btn" class="header-btn" type="button">Report Bug</button>
       <a id="admin-link" class="admin-link" href="/admin" hidden>Admin</a>
-      <button id="logout-btn" class="header-btn" type="button">Log out</button>
+      <button id="logout-btn" class="header-btn" type="button">बाहर जाएँ</button>
     </div>
   </header>
   <main>
@@ -640,7 +641,7 @@
         <span class="ring r2"></span>
         <div class="avatar" aria-hidden="true"><img src="/static/shishu-logo.png" alt=""></div>
       </div>
-      <p id="status" role="status" aria-live="polite">Tap Start Call to begin in Hindi</p>
+      <p id="status" role="status" aria-live="polite">कॉल शुरू करने के लिए नीचे दबाएँ</p>
       <p id="timer">00:00</p>
       <div id="mic-meter" class="mic-meter" role="meter" aria-label="Microphone level" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
         <span id="mic-level" class="mic-level"></span>
@@ -651,7 +652,7 @@
         <label><input id="consent-check" type="checkbox"> मैं सहमत हूँ</label>
         <a href="https://github.com/artvandelay/shishu-healthathon/blob/main/docs/SHISHU-consent.pdf" target="_blank" rel="noopener">सहमति पत्र</a>
       </p>
-      <button id="call-btn" class="call-btn" type="button" disabled>Start Call</button>
+      <button id="call-btn" class="call-btn" type="button" disabled>शुरू</button>
       <button id="nudge-btn" class="nudge-btn" type="button" hidden>जवाब नहीं आया? यहाँ दबाएँ</button>
     </section>
     <section id="thanks" class="thanks" hidden>
@@ -661,7 +662,7 @@
       <div class="thanks-actions">
         <button id="share-pdf" class="text-btn" type="button" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92-1.31-2.92-2.92-2.92z"/></svg>शेयर करें</button>
         <button id="retry-pdf" class="text-btn" type="button" hidden>रिपोर्ट दोबारा बनाएँ</button>
-        <button id="new-call" class="text-btn" type="button">Start New Call</button>
+        <button id="new-call" class="text-btn" type="button">नई कॉल</button>
         <a id="admin-view" class="dash-link" href="/admin" hidden>View in Admin Dashboard</a>
       </div>
     </section>
@@ -925,16 +926,16 @@
       }
 
       function armEndButton() {
-        callBtn.textContent = "End Call";
+        callBtn.textContent = "बंद";
         callBtn.classList.add("end");
-        callBtn.setAttribute("aria-label", "End Call");
+        callBtn.setAttribute("aria-label", "कॉल बंद करें");
         callBtn.disabled = false;
       }
 
       function armStartButton() {
-        callBtn.textContent = "Start Call";
+        callBtn.textContent = "शुरू";
         callBtn.classList.remove("end");
-        callBtn.setAttribute("aria-label", "Start Call");
+        callBtn.setAttribute("aria-label", "कॉल शुरू करें");
         callBtn.disabled = !consentCheck.checked;
       }
 
@@ -1167,7 +1168,7 @@
             lastBotPlayEndAt = Date.now();
             avatarWrap.classList.remove("speaking", "thinking");
             if (!avatarWrap.classList.contains("reconnecting")) {
-              setStatus("Listening...");
+              setStatus("सुन रही हूँ…");
             }
           }
         };
@@ -1335,7 +1336,7 @@
           if (msg.engine) modelName = msg.engine;
           if (msg.voice) voiceName = msg.voice;
           renderHud();
-          if (phase === "live") setStatus("Listening...");
+          if (phase === "live") setStatus("सुन रही हूँ…");
           startTimer();
         } else if (msg.type === "audio") {
           try { playPcm(msg.data, msg.sample_rate || 24000); } catch (err) { /* skip a bad chunk */ }
@@ -1343,7 +1344,7 @@
           flushPlayback();
           speechEndAt = 0;
           nudgeBtn.classList.remove("hot"); nudgeBtn.hidden = true;
-          if (phase === "live" && !avatarWrap.classList.contains("reconnecting")) setStatus("Listening...");
+          if (phase === "live" && !avatarWrap.classList.contains("reconnecting")) setStatus("सुन रही हूँ…");
         } else if (msg.type === "reconnecting") {
           clearThinkingWatch();
           avatarWrap.classList.remove("speaking", "thinking");
@@ -1352,7 +1353,7 @@
         } else if (msg.type === "reconnected") {
           avatarWrap.classList.remove("reconnecting");
           if (phase === "live" && !isBotPlaying()) {
-            setStatus("Listening...");
+            setStatus("सुन रही हूँ…");
           }
         } else if (msg.type === "transcript") {
           showCaption(msg.role, msg.text);
@@ -1389,9 +1390,9 @@
           leaveLiveChrome();
           avatarWrap.classList.remove("live", "speaking");
           phase = "error";
-          setStatus("Tap Start Call to begin in Hindi");
+          setStatus("कॉल शुरू करने के लिए नीचे दबाएँ");
           showConsentRow();
-          showError("The call disconnected.");
+          showError("कॉल कट गई। नीचे दबाकर फिर शुरू करें।");
         }
       }
 
@@ -1452,7 +1453,7 @@
               if (workletNode) micSource.connect(workletNode);
               else if (processor) micSource.connect(processor);
             }).catch(function () {
-              showError("Microphone disconnected. Reconnect your mic or tap End Call.");
+              showError("माइक्रोफ़ोन कट गया। फिर जोड़ें, या कॉल बंद करें।");
             });
           });
         }
@@ -1498,7 +1499,7 @@
         lastVoiceTs = 0;
         speechEndAt = 0;
         renderHud();
-        setStatus("Listening...");
+        setStatus("सुन रही हूँ…");
         try {
           const configPromise = fetch("/api/config", {
             credentials: "same-origin",
@@ -1533,7 +1534,7 @@
           phase = "live";
           avatarWrap.classList.add("live");
           startNudgeWatch();
-          setStatus("Listening...");
+          setStatus("सुन रही हूँ…");
           startTimer();
           armEndButton();
         } catch (err) {
@@ -1543,12 +1544,12 @@
           leaveLiveChrome();
           avatarWrap.classList.remove("live", "speaking");
           phase = "error";
-          setStatus("Tap Start Call to begin in Hindi");
+          setStatus("कॉल शुरू करने के लिए नीचे दबाएँ");
           showConsentRow();
           const denied = err && (err.name === "NotAllowedError" || err.name === "NotFoundError");
           showError(denied
-            ? "Allow the microphone to start the Hindi call."
-            : ((err && err.message) || "Could not start the call."));
+            ? "कॉल के लिए माइक्रोफ़ोन की अनुमति दें।"
+            : ((err && err.message) || "कॉल शुरू नहीं हो पाई। फिर कोशिश करें।"));
         }
       }
 
@@ -1585,7 +1586,7 @@
         if (!open) {
           phase = "idle";
           closeSocket();
-          setStatus("Tap Start Call to begin in Hindi");
+          setStatus("कॉल शुरू करने के लिए नीचे दबाएँ");
           stageEl.classList.remove("working");
           avatarWrap.classList.remove("working");
           waitEl.hidden = true;
@@ -1731,7 +1732,7 @@
         stageEl.classList.remove("working");
         avatarWrap.classList.remove("working", "live", "speaking");
         waitEl.hidden = true;
-        setStatus("Tap Start Call to begin in Hindi");
+        setStatus("कॉल शुरू करने के लिए नीचे दबाएँ");
         showConsentRow(true);
         renderHud();
         clearError();
@@ -1859,7 +1860,7 @@
         ws.send(JSON.stringify({ type: "nudge" }));
         speechEndAt = 0;
         nudgeBtn.classList.remove("hot"); nudgeBtn.hidden = true;
-        setStatus("Nudging SHISHU...");
+        setStatus("फिर से पूछ रही हूँ…");
       });
 
       bugBtn.addEventListener("click", openBug);

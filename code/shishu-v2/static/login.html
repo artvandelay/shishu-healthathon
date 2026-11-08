@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="hi">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -79,8 +79,22 @@
 
     .lede {
       margin: 0 0 22px;
-      color: var(--muted);
+      color: var(--ink);
       line-height: 1.45;
+    }
+
+    .en {
+      display: block;
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 500;
+      line-height: 1.35;
+    }
+
+    button .en {
+      color: rgba(255, 255, 255, 0.82);
+      font-size: 12px;
     }
 
     .field + .field { margin-top: 14px; }
@@ -163,17 +177,17 @@
         <p class="hi">शिशु</p>
       </div>
     </div>
-    <p class="lede">Enter your name and the passcode to open a Hindi pre-consultation call or the clinical dashboard.</p>
+    <p class="lede">अपना नाम और पासकोड लिखें। फिर कॉल शुरू होगी।<span class="en">Enter your name and the passcode. Then the call starts.</span></p>
     <form id="login-form">
       <div class="field">
-        <label for="username">Your name</label>
-        <input id="username" name="username" type="text" autocomplete="name" placeholder="Enter your name" required>
+        <label for="username">आपका नाम<span class="en">Your name</span></label>
+        <input id="username" name="username" type="text" autocomplete="name" placeholder="नाम लिखें" required>
       </div>
       <div class="field">
-        <label for="passcode">Passcode</label>
+        <label for="passcode">पासकोड<span class="en">Passcode</span></label>
         <input id="passcode" name="passcode" type="password" autocomplete="current-password" required>
       </div>
-      <button id="continue" type="submit">Continue</button>
+      <button id="continue" type="submit">आगे बढ़ें<span class="en">Continue</span></button>
       <p id="error" class="error" role="alert" hidden></p>
     </form>
   </main>
@@ -202,12 +216,12 @@
         const username = usernameInput.value.trim();
         const passcode = passcodeInput.value.trim();
         if (!username) {
-          showError("Enter your name to continue.");
+          showError("नाम लिखें। Enter your name to continue.");
           usernameInput.focus();
           return;
         }
         if (!passcode) {
-          showError("Enter the passcode to continue.");
+          showError("पासकोड लिखें। Enter the passcode to continue.");
           passcodeInput.focus();
           return;
         }
@@ -220,17 +234,17 @@
             body: JSON.stringify({ username: username, passcode: passcode })
           });
           if (res.status === 401) {
-            showError("That name or passcode was not accepted.");
+            showError("नाम या पासकोड सही नहीं है। That name or passcode was not accepted.");
             passcodeInput.select();
             return;
           }
           if (!res.ok) {
-            showError("Sign-in failed. Try again.");
+            showError("साइन-इन नहीं हो पाया। फिर कोशिश करें। Sign-in failed. Try again.");
             return;
           }
           location.href = safeNext();
         } catch (err) {
-          showError("Could not reach SHISHU. Check the connection and try again.");
+          showError("SHISHU तक नहीं पहुँच पाए। कनेक्शन जाँचें। Could not reach SHISHU. Check the connection and try again.");
         } finally {
           button.disabled = false;
         }
