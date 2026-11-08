@@ -88,7 +88,9 @@ A bleeding or bruise finding is not asked as a swollen knee. Lost skills, pubert
 
 पूरे नौ महीने / समय पर is not a red flag even when the stored value is yes. सात महीने or समय से पहले stays early. दस महीने or देर से stays late. A child's present age (छह महीने का है) is not read as the pregnancy length.
 
-A day or time count copied into the follow-up as a sentence ("दो दिन पता नहीं") is stored as the number. The पता नहीं in that sentence does not wipe the count. A whole call answered with ठीक है stays a no. `187` unit tests. 30 scenarios, 0 failed.
+A day or time count copied into the follow-up as a sentence ("दो दिन पता नहीं") is stored as the number. The पता नहीं in that sentence does not wipe the count. A whole call answered with ठीक है stays a no.
+
+सवा साल and सवा महीना are one and a quarter when no number follows सवा. The report prints that as सवा साल / सवा महीना, and the same fraction words for months (डेढ़ महीने, ढाई महीने). The who line must show the formatted age. `187` unit tests. 31 scenarios, 0 failed.
 
 ## Not hardcoded
 

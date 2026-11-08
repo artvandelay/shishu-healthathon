@@ -59,6 +59,8 @@ def _fold_spoken_numbers(text: str) -> str:
     folded = re.sub(r"साढ़े\s*(\d+(?:\.\d+)?)", lambda m: _shift(m, 0.5), folded)
     folded = re.sub(r"सवा\s*(\d+(?:\.\d+)?)", lambda m: _shift(m, 0.25), folded)
     folded = re.sub(r"पौने\s*(\d+(?:\.\d+)?)", lambda m: _shift(m, -0.25), folded)
+    # सवा साल / सवा महीना means one and a quarter when no number follows.
+    folded = re.sub(r"सवा(?=\s*(?:साल|वर्ष|year|महीन))", "1.25", folded)
     return folded
 
 

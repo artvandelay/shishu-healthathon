@@ -362,6 +362,11 @@ def _issues(scenario, state, errors, report, fallback, said) -> list[str]:
             word = "बेटी" if children[0]["sex"] == "female" else "बेटा"
             if word not in (report.get("who") or ""):
                 issues.append("who line dropped the child's sex")
+        who = report.get("who") or ""
+        for child in children:
+            shown = mother_report.hindi_text(mother_report._format_age(child.get("age")))
+            if shown and shown not in who:
+                issues.append(f"who line dropped age {shown}")
     if scenario.expect_close == "complete":
         ages = [
             call_state._child_age_years(c.get("age"))
@@ -492,6 +497,14 @@ def campaign() -> list[Scenario]:
             caller_name="माया",
             marital_text=married,
             children_text="एक बच्चा है, ग्यारह साल का लड़का।",
+            children_value=1,
+        ),
+        Scenario(
+            name="no_flags_sava_saal",
+            group="no_flags",
+            caller_name="राधा",
+            marital_text=married,
+            children_text="एक बेटी है, सवा साल की।",
             children_value=1,
         ),
         Scenario(

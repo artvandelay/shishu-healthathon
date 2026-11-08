@@ -571,6 +571,32 @@ def _detail_values(details: dict, skip_label: str = "") -> str:
     return ", ".join(out)
 
 
+def _quarter_age(value: object, unit_word: str) -> str:
+    """The Hindi fraction she would have said, for years or months."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return ""
+    number = float(value)
+    if abs(number - 0.5) < 1e-6:
+        return "आधा साल" if unit_word == "साल" else "आधा महीना"
+    if abs(number - 1.25) < 1e-6:
+        return "सवा साल" if unit_word == "साल" else "सवा महीना"
+    if abs(number - 1.5) < 1e-6:
+        return "डेढ़ साल" if unit_word == "साल" else "डेढ़ महीने"
+    if abs(number - 2.5) < 1e-6:
+        return "ढाई साल" if unit_word == "साल" else "ढाई महीने"
+    if number > 2 and abs(number * 2 - round(number * 2)) < 1e-6 and abs(number - round(number)) == 0.5:
+        return f"साढ़े {int(number)} {unit_word}"
+    if (
+        abs(number * 4 - round(number * 4)) < 1e-6
+        and abs(number - int(number) - 0.25) < 1e-6
+        and int(number) >= 2
+    ):
+        return f"सवा {int(number)} {unit_word}"
+    if abs(number * 4 - round(number * 4)) < 1e-6 and abs(number - int(number) - 0.75) < 1e-6:
+        return f"पौने {int(number) + 1} {unit_word}"
+    return ""
+
+
 def _format_age(age: object) -> str:
     """Hindi for a stored age. 0.5 years is आधा साल, not the same text as 6 months."""
     if not isinstance(age, dict) or age.get("value") is None:
@@ -578,20 +604,12 @@ def _format_age(age: object) -> str:
     value = age.get("value")
     unit = str(age.get("unit") or "years").lower()
     if unit in {"month", "months", "mahine"}:
-        return f"{value} महीने"
-    if unit in {"year", "years", "saal"} and isinstance(value, (int, float)) and not isinstance(value, bool):
-        if value == 0.5:
-            return "आधा साल"
-        if value == 1.5:
-            return "डेढ़ साल"
-        if value == 2.5:
-            return "ढाई साल"
-        if value > 2 and abs(value * 2 - round(value * 2)) < 1e-6 and abs(value - round(value)) == 0.5:
-            return f"साढ़े {int(value)} साल"
-        if abs(value * 4 - round(value * 4)) < 1e-6 and abs(value - int(value) - 0.25) < 1e-6:
-            return f"सवा {int(value)} साल"
-        if abs(value * 4 - round(value * 4)) < 1e-6 and abs(value - int(value) - 0.75) < 1e-6:
-            return f"पौने {int(value) + 1} साल"
+        spoken = _quarter_age(value, "महीने")
+        return spoken or f"{value} महीने"
+    if unit in {"year", "years", "saal"}:
+        spoken = _quarter_age(value, "साल")
+        if spoken:
+            return spoken
     return f"{value} {age.get('unit') or ''}".strip()
 
 
