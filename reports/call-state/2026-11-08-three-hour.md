@@ -78,7 +78,9 @@ A fact said in the same sentence is stored. “ऑपरेशन हुआ, प
 
 Pregnancy BP and sugar, and whether they continued after delivery, are stored when she says them with the answer. A kinship word in the same sentence (मामा) closes the relationship follow-up.
 
-When a child's sex is known, the report says बड़ी बेटी, बड़ा बेटा, छोटी बेटी, or दूसरी बेटी. Without a sex it still says बड़ा बच्चा or छोटा बच्चा. One PDF of a per-child NICU finding rendered (about 40 KB). `182` unit tests. 24 scenarios, 0 failed.
+When a child's sex is known, the report says बड़ी बेटी, बड़ा बेटा, छोटी बेटी, or दूसरी बेटी. Without a sex it still says बड़ा बच्चा or छोटा बच्चा. One PDF of a per-child NICU finding rendered (about 40 KB).
+
+A family answer whose value is the relationship (कज़िन, मामा) is a yes. “नहीं, मामा को नहीं” stays a no. `183` unit tests.
 
 ## Not hardcoded
 

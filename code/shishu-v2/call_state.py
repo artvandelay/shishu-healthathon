@@ -537,6 +537,17 @@ def _is_positive(topic: dict, _topic_id: str | None = None) -> bool:
         return True
     if _stated_polarity(value) == "no":
         return False
+    if _topic_id and _topic_id.startswith("fam_") and _topic_id != "fam_same_problem":
+        blob = " ".join(
+            str(part or "")
+            for part in (
+                value,
+                details.get("relationship"),
+                details.get("who"),
+            )
+        )
+        if _has_kinship(blob):
+            return True
     if isinstance(value, str) and value.strip().lower() in {
         "yes", "haan", "positive", "early", "late", "operation", "caesarean", "cesarean", "c-section", "abnormal",
         "हाँ", "हां", "ऑपरेशन", "सीजेरियन", "असामान्य",

@@ -483,6 +483,21 @@ def campaign() -> list[Scenario]:
             children_value=1,
         ),
         Scenario(
+            name="flags_kinship_as_the_value",
+            group="red_flags",
+            caller_name="लक्ष्मी",
+            marital_text=married,
+            children_text="एक बच्चा है, दो साल की बेटी।",
+            children_value=1,
+            positives={
+                "fam_related": {
+                    "value": "कज़िन",
+                    "utterance": "हाँ, शादी से पहले कज़िन थे।",
+                },
+            },
+            expect_yes=("fam_related",),
+        ),
+        Scenario(
             name="flags_middle_child",
             group="red_flags",
             caller_name="शीला",

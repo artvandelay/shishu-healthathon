@@ -841,6 +841,14 @@ class CallStateTests(unittest.TestCase):
         )
         self.assertEqual([c["sex"] for c in one_named["profile"]["children"]], [None, None, None])
 
+    def test_a_kinship_word_is_a_family_yes_and_a_denial_is_not(self):
+        cousin = {"state": "answered", "value": "कज़िन", "details": {}}
+        self.assertEqual(call_state.topic_answer_kind(cousin, "fam_related"), "yes")
+        uncle = {"state": "answered", "value": "मामा", "details": {"condition": "बीपी"}}
+        self.assertEqual(call_state.topic_answer_kind(uncle, "fam_bp_stroke"), "yes")
+        denied = {"state": "answered", "value": "नहीं, मामा को नहीं", "details": {}}
+        self.assertEqual(call_state.topic_answer_kind(denied, "fam_bp_stroke"), "no")
+
     def test_hindi_sex_words_count_as_female_or_male(self):
         for word in ("लड़की", "बेटी", "बच्ची"):
             state = call_state.apply_updates(
