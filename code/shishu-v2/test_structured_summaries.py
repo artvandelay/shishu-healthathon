@@ -136,7 +136,7 @@ class StructuredSummaryTests(unittest.TestCase):
         shell = "\n".join(f"{h}\nNot reported." for h in summarizer._REQUIRED_HEADINGS)
         captured_prompts = []
 
-        async def fake_gemini(user_content, system_prompt=""):
+        async def fake_gemini(user_content, system_prompt="", **_kwargs):
             captured_prompts.append((user_content, system_prompt))
             return {
                 "doctor_markdown": shell.replace(
@@ -236,7 +236,7 @@ class StructuredSummaryTests(unittest.TestCase):
             "### Positive Red Flags & NRROID Gate Alerts\nNone.",
         )
 
-        async def fake_gemini(_user_content, system_prompt=""):
+        async def fake_gemini(_user_content, system_prompt="", **_kwargs):
             return {
                 "doctor_markdown": doctor,
                 "mother_hindi": "1. बच्चे का वज़न और टीकाकरण डॉक्टर से पूछें?",
@@ -278,6 +278,39 @@ class StructuredSummaryTests(unittest.TestCase):
 
         report = mother_report.build({"state": res["state"], "summary_mother": res["summary_mother"]})
         self.assertFalse(report["yes"])
+
+    def test_birth_mode_enums_drop_anything_else(self):
+        state = _state()
+        state["topics"]["birth_mode"]["state"] = "answered"
+        state["topics"]["birth_mode"]["value"] = "operation"
+        state["topics"]["birth_mode"]["details"] = {"delivery_type": "operation", "place": "hospital"}
+        quote = "डिलीवरी नॉर्मल हुई, अस्पताल में।"
+        transcript = [{"role": "user", "text": quote}]
+        kept = summarizer.reconcile_state_with_llm_payload(
+            state,
+            {"topic_corrections": [{
+                "topic_id": "birth_mode",
+                "state": "answered",
+                "value": "operation",
+                "details": {"delivery_type": "c_section", "place": "hospital"},
+                "evidence": quote,
+            }]},
+            transcript,
+        )
+        details = kept["topics"]["birth_mode"]["details"]
+        self.assertNotIn("delivery_type", details)
+        self.assertEqual(details.get("place"), "hospital")
+        unchanged = summarizer.reconcile_state_with_llm_payload(
+            state,
+            {"topic_corrections": [{
+                "topic_id": "birth_mode",
+                "state": "answered",
+                "value": "c_section",
+                "evidence": quote,
+            }]},
+            transcript,
+        )
+        self.assertEqual(unchanged["topics"]["birth_mode"]["value"], "operation")
 
 
 if __name__ == "__main__":

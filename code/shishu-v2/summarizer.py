@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 
 import checklist
 import call_state
+import call_state_contract as contract
 import models
 from prompts import DOCTOR_MOTHER_SUMMARY_PROMPT
 
@@ -680,7 +681,7 @@ Your role is to act as a sanity-check and double-checker:
 - If the mother clearly stated a fact in the transcript (e.g., her name, child age/name, or a positive symptom/history/detail) that was missed or mis-parsed in the structured state, include it in `profile_corrections` or `topic_corrections`, and reflect it in `doctor_markdown`, `mother_hindi`, `extracted_findings`, and `red_flags`.
 - You are the judge of the transcript. When the deterministic draft was too rigid, misheard, or misclassified, override it: set `topic_corrections` to the corrected state (`{"state": "answered", "value": true/false, "details": {...}}`) and omit any false positive from `extracted_findings` and `red_flags`. A deterministic yes is a draft, not a fact you must repeat.
 - Each topic line shows the question that was asked. For yes/no topics `value: true` means she said yes to that exact question, which is worded so that yes is a concern. Only set `value: true` in `topic_corrections` when she reported that concern.
-- Every profile or topic correction must include `evidence`: an exact quote of the mother's words from the transcript. A correction without that quote is ignored. `details.delivery_type` is only "normal" or "operation". `details.place` is only "home" or "hospital".
+- Every profile or topic correction must include `evidence`: an exact quote of the mother's words from the transcript. A correction without that quote is ignored. `details.delivery_type` is only "normal" or "operation". `details.place` is only "home" or "hospital". `profile_corrections.marital_status` is only "married", "about_to_marry", or "unmarried".
 - If a topic state is `no_response`, `not_asked`, or `not_applicable`, and the mother did NOT answer it in the transcript, keep that exact label (`no_response`, `not_asked`, or `not_applicable`). NEVER turn `unknown`, `no_response`, `not_asked`, or `not_applicable` into `no`.
 - Do not invent any fact, child identity, answer, or diagnosis. Never name specific rare diseases in `mother_hindi`.
 - `mother_hindi` must contain 3 to 6 clear, natural Devanagari Hindi questions (each ending with `?`) for the mother to ask her doctor or ASHA/ANM दीदी at the next visit, directly covering every positive finding from the call.
@@ -694,8 +695,12 @@ Your role is to act as a sanity-check and double-checker:
   ### Family & Pedigree History
   ### Pertinent Negatives
 
-Return one JSON object and nothing else. Keys must be:
-{"doctor_markdown": "...", "mother_hindi": "...", "extracted_findings": {}, "red_flags": [], "topic_corrections": {}, "profile_corrections": {}}
+Return one JSON object and nothing else. Keys:
+- doctor_sections: object. Keys are the eight section titles above, without the ###. Values are the section text.
+- mother_questions: list of {"topic_id", "question"}. question is one Hindi question ending in ?.
+- extracted_findings: object. red_flags: list of strings.
+- topic_corrections: list of {"topic_id", "state", "value", "details", "evidence"}. state is answered, unknown, no_response, or not_applicable.
+- profile_corrections: {"caller_name", "marital_status", "children", "evidence"}.
 """.strip()
 
 
@@ -835,6 +840,15 @@ def _quote_supported(evidence: object, transcript: list[dict] | None) -> bool:
     return False
 
 
+def _clean_correction_details(details: dict) -> dict:
+    details = dict(details or {})
+    if details.get("delivery_type") not in contract.DELIVERY_TYPES:
+        details.pop("delivery_type", None)
+    if details.get("place") not in contract.BIRTH_PLACES:
+        details.pop("place", None)
+    return details
+
+
 def _apply_topic_correction(
     topic: dict,
     new_state: str,
@@ -845,6 +859,7 @@ def _apply_topic_correction(
     replace: bool,
 ) -> None:
     """Write a model correction. `replace` drops draft details that would veto it."""
+    new_details = _clean_correction_details(new_details)
     if new_state == "answered":
         prior_details = dict(topic.get("details") or {})
         topic["state"] = "answered"
@@ -903,6 +918,12 @@ def reconcile_state_with_llm_payload(
                 reconciled["topics"]["intro_children"]["value"] = True
 
     top_corr = payload.get("topic_corrections")
+    if isinstance(top_corr, list):
+        mapped = {}
+        for item in top_corr:
+            if isinstance(item, dict) and item.get("topic_id"):
+                mapped[str(item["topic_id"])] = item
+        top_corr = mapped
     if isinstance(top_corr, dict):
         topics = reconciled.setdefault("topics", {})
         for tid, patch in top_corr.items():
@@ -913,6 +934,8 @@ def reconcile_state_with_llm_payload(
                 continue
             raw_state = str(patch.get("state") or "").strip().lower()
             new_val = patch.get("value")
+            if tid == "birth_mode" and isinstance(new_val, str) and new_val not in contract.DELIVERY_TYPES:
+                continue
             if raw_state == "yes":
                 new_state = "answered"
                 if new_val is None:
@@ -1058,25 +1081,22 @@ async def _from_gemini(
     user_content: str,
     system_prompt: str = DOCTOR_MOTHER_SUMMARY_PROMPT,
     model: str | None = None,
+    schema=None,
 ) -> dict:
-    from google import genai
-
     if not os.environ.get("GEMINI_API_KEY"):
         raise RuntimeError("GEMINI_API_KEY is unset")
-    client = genai.Client(
-        api_key=os.environ["GEMINI_API_KEY"],
-        http_options={"api_version": "v1beta"},
+    client = models.text_client()
+    response = await client.aio.models.generate_content(
+        model=model or models.TEXT_MODEL,
+        contents=user_content,
+        config=models.text_config(
+            system=system_prompt,
+            schema=schema,
+            max_output_tokens=16384,
+            temperature=0.2,
+        ),
     )
-    try:
-        response = await client.aio.models.generate_content(
-            model=model or models.TEXT_MODEL,
-            contents=user_content,
-            config=models.text_config(system=system_prompt, max_output_tokens=16384, temperature=0.2),
-        )
-        return _parse_json(response.text or "")
-    finally:
-        await client.aio.aclose()
-        client.close()
+    return _parse_json(response.text or "")
 
 
 def _model_findings(payload: dict, reconciled_state: dict) -> dict:
@@ -1104,6 +1124,92 @@ def _model_flags(payload: dict, reconciled_state: dict) -> list[str]:
     return flags
 
 
+def _markdown_from_sections(sections: dict) -> str:
+    parts = []
+    for heading in _REQUIRED_HEADINGS:
+        title = heading.removeprefix("### ").strip()
+        body = str(sections.get(title) or sections.get(heading) or "").strip()
+        parts.append(f"{heading}\n{body or 'Not reported.'}")
+    return "\n".join(parts)
+
+
+def _mother_from_questions(payload: dict) -> str:
+    asked = payload.get("mother_questions")
+    if not isinstance(asked, list):
+        return ""
+    lines = []
+    for item in asked:
+        text = item.get("question") if isinstance(item, dict) else item
+        text = str(text or "").strip()
+        if text:
+            lines.append(text)
+    return "\n".join(lines)
+
+
+def _judge_schema():
+    from google.genai import types
+
+    text = lambda **kwargs: types.Schema(type="STRING", **kwargs)
+    correction = types.Schema(
+        type="OBJECT",
+        properties={
+            "topic_id": text(),
+            "state": text(enum=["answered", "unknown", "no_response", "not_applicable"]),
+            "value": types.Schema(
+                any_of=[types.Schema(type="BOOLEAN"), types.Schema(type="STRING")],
+                nullable=True,
+            ),
+            "details": types.Schema(
+                type="OBJECT",
+                nullable=True,
+                properties={
+                    "delivery_type": text(enum=list(contract.DELIVERY_TYPES), nullable=True),
+                    "place": text(enum=list(contract.BIRTH_PLACES), nullable=True),
+                },
+            ),
+            "evidence": text(),
+        },
+        required=["topic_id", "state", "evidence"],
+    )
+    return types.Schema(
+        type="OBJECT",
+        properties={
+            "doctor_sections": types.Schema(
+                type="OBJECT",
+                properties={
+                    heading.removeprefix("### ").strip(): text()
+                    for heading in _REQUIRED_HEADINGS
+                },
+            ),
+            "mother_questions": types.Schema(
+                type="ARRAY",
+                items=types.Schema(
+                    type="OBJECT",
+                    properties={"topic_id": text(), "question": text()},
+                    required=["topic_id", "question"],
+                ),
+            ),
+            "extracted_findings": types.Schema(type="OBJECT"),
+            "red_flags": types.Schema(type="ARRAY", items=text()),
+            "topic_corrections": types.Schema(type="ARRAY", items=correction),
+            "profile_corrections": types.Schema(
+                type="OBJECT",
+                properties={
+                    "caller_name": text(nullable=True),
+                    "marital_status": text(
+                        enum=["married", "about_to_marry", "unmarried"], nullable=True
+                    ),
+                    "children": types.Schema(
+                        type="ARRAY", items=types.Schema(type="OBJECT"), nullable=True
+                    ),
+                    "evidence": text(nullable=True),
+                },
+            ),
+        },
+        required=["doctor_sections", "mother_questions", "topic_corrections"],
+    )
+
+
 def _finalize_structured_summary(
     payload: dict | None,
     state: dict,
@@ -1114,7 +1220,10 @@ def _finalize_structured_summary(
     """Use the model JSON as the record. The deterministic draft is only the fallback."""
     if not isinstance(payload, dict):
         return build_state_fallback(state, findings, red_flags)
-    doctor = str(payload.get("doctor_markdown") or payload.get("summary_doctor") or "").strip()
+    sections = payload.get("doctor_sections")
+    doctor = _markdown_from_sections(sections) if isinstance(sections, dict) else ""
+    if not doctor.strip():
+        doctor = str(payload.get("doctor_markdown") or payload.get("summary_doctor") or "").strip()
     if not doctor:
         return build_state_fallback(state, findings, red_flags)
     reconciled_state = reconcile_state_with_llm_payload(state, payload, transcript)
@@ -1122,7 +1231,7 @@ def _finalize_structured_summary(
     judged_flags = _model_flags(payload, reconciled_state)
     doctor = _fill_red_flag_section(doctor, judged_flags)
     doctor = _fill_empty_sections(doctor, judged_findings)
-    raw_mother = str(
+    raw_mother = _mother_from_questions(payload) or str(
         payload.get("mother_hindi") or payload.get("questions_hindi") or payload.get("summary_mother") or ""
     ).strip()
     if isinstance(payload.get("questions_hindi"), list) and not payload.get("mother_hindi"):
@@ -1153,7 +1262,9 @@ async def generate_call_summaries(
     if state:
         user_content = state_to_summary_context(state, transcript=transcript)
         try:
-            payload = await _from_gemini(user_content, STRUCTURED_STATE_SUMMARY_PROMPT)
+            payload = await _from_gemini(
+                user_content, STRUCTURED_STATE_SUMMARY_PROMPT, schema=_judge_schema()
+            )
             return _finalize_structured_summary(payload, state, transcript, findings, red_flags)
         except Exception:
             return build_state_fallback(state, findings, red_flags)
