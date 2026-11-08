@@ -154,6 +154,33 @@ class TurnCompleteTests(unittest.TestCase):
         self.assertEqual(telemetry["backstop_saves"], 1)
         self.assertTrue(turn.backstop_checked)
 
+    def test_model_that_stays_out_of_sync_gets_one_resync_cue(self):
+        turn, session, telemetry = self._run("क्या आपकी एक बेटी है, जो तीन साल की है?",
+                                             {"kind": "answer", "delivery_type": "normal", "place": "home"})
+        self.assertEqual(session.texts, [])
+        self.assertTrue(turn.backstop_resync)
+
+        async def not_an_answer(*args):
+            return {"kind": "not_an_answer"}
+
+        original = answer_backstop.extract
+        answer_backstop.extract = not_an_answer
+        try:
+            for _ in range(2):
+                turn.last_user_text = "ठीक है।"
+                turn.bot_text_since_user = "क्या आपकी एक बेटी है, जो तीन साल की है?"
+                turn.tool_called_since_user = False
+                turn.backstop_checked = False
+                asyncio.run(gemini_live._handle_server_message(
+                    _turn_complete(), session, asyncio.Lock(), _FakeWs(), asyncio.Lock(),
+                    turn.call_id or db.create_call("gemini"), telemetry, turn, None, set(), set(),
+                ))
+        finally:
+            answer_backstop.extract = original
+        self.assertEqual(len(session.texts), 1)
+        self.assertIn("already saved", session.texts[0])
+        self.assertFalse(turn.backstop_resync)
+
     def test_cues_the_next_question_when_the_model_said_nothing(self):
         turn, session, _ = self._run("", {"kind": "answer", "delivery_type": "normal", "place": "home"})
         self.assertEqual(len(session.texts), 1)

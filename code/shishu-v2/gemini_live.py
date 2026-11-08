@@ -102,6 +102,7 @@ class _TurnState:
         self.call_id = None
         self.tool_called_since_user = True
         self.backstop_checked = False
+        self.backstop_resync = False
 
 
 class _SessionProxy:
@@ -872,10 +873,19 @@ async def _run_answer_backstop(
             )
     except Exception as exc:
         await _emit(ws, ws_lock, call_id, telemetry, "answer_backstop", f"{label} error: {exc}"[:240])
-        return False
+        updates = []
+    else:
+        if not updates:
+            await _emit(ws, ws_lock, call_id, telemetry, "answer_backstop", f"{label} {result.get('kind')}")
     if not updates:
-        await _emit(ws, ws_lock, call_id, telemetry, "answer_backstop", f"{label} {result.get('kind')}")
-        return False
+        if not state.backstop_resync:
+            return False
+        state.backstop_resync = False
+        return await _send_backstop_cue(
+            session, send_lock, state,
+            "SYSTEM CUE (from the app, not the mother): the app already saved her earlier answer. "
+            + answer_tool.build_turn_context(live_state, asked),
+        )
     live_state, question = _advance(live_state)
     _store_live_state(call_id, state, live_state)
     telemetry["backstop_saves"] = telemetry.get("backstop_saves", 0) + 1
@@ -883,13 +893,19 @@ async def _run_answer_backstop(
     telemetry["progress_group"] = progress
     await _send_json(ws, ws_lock, {"type": "progress", "group": progress})
     await _emit(ws, ws_lock, call_id, telemetry, "answer_backstop", f"{label} saved", {"updates": updates})
-    # A model that already spoke its next line is resynced by its next record_answers response.
+    # A model that already spoke its next line is not interrupted. Its next record_answers
+    # response resyncs it; if its next turn has no tool call either, the cue above does.
     if state.bot_text_since_user and (question or {}).get("question_kind") != "closing":
+        state.backstop_resync = True
         return False
-    cue = (
+    return await _send_backstop_cue(
+        session, send_lock, state,
         "SYSTEM CUE (from the app, not the mother): the app saved her last answer. "
-        + answer_tool.build_turn_context(live_state, question)
+        + answer_tool.build_turn_context(live_state, question),
     )
+
+
+async def _send_backstop_cue(session, send_lock: asyncio.Lock, state: _TurnState, cue: str) -> bool:
     try:
         async with send_lock:
             await session.send_realtime_input(text=cue)
@@ -1035,6 +1051,7 @@ async def _handle_server_message(
     if calls:
         if turn_state := state:
             turn_state.tool_called_since_user = True
+            turn_state.backstop_resync = False
         await _answer_function_calls(
             session,
             send_lock,
