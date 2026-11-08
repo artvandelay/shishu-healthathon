@@ -158,7 +158,7 @@ def fallback_from_call(call: dict) -> dict:
             continue
         line = checklist.question_hi(topic_id).rstrip("?")
         if line.startswith("क्या "):
-            line = line[4:]
+            line = line[len("क्या "):]
         line = summarizer._scrub_diagnostic_terms(line.strip())
         if line and not topic_id.startswith("intro_"):
             yes_hindi.append(line)
@@ -257,7 +257,7 @@ def structured_answers(call: dict) -> dict:
         topic_id = topic["id"]
         saved = topics.get(topic_id) if isinstance(topics.get(topic_id), dict) else {}
         answers[topic_id] = {
-            "answer": call_state.topic_answer_kind(saved),
+            "answer": call_state.topic_answer_kind(saved, topic_id),
             "details": saved.get("details") or {},
             "instances": saved.get("instances") or [],
             "source_turn_ids": saved.get("source_turn_ids") or [],
@@ -274,7 +274,8 @@ def structured_answers(call: dict) -> dict:
             continue
         line = checklist.question_hi(topic_id).rstrip("?").strip()
         if line.startswith("क्या "):
-            line = line[4:]
+            line = line[len("क्या "):]
+        line = line.strip()
         note = mother_report._instance_note(state, topic_id)
         if note:
             line = f"{line} ({note})"

@@ -377,7 +377,9 @@ class CallStateTests(unittest.TestCase):
             utterance="एक बच्चा है, छह महीने का।",
         )
         self.assertEqual(len(state["profile"]["children"]), 1)
-        self.assertAlmostEqual(call_state._child_age_years(state["profile"]["children"][0]["age"]), 0.5)
+        age = state["profile"]["children"][0]["age"]
+        self.assertEqual(age, {"value": 6, "unit": "months"})
+        self.assertAlmostEqual(call_state._child_age_years(age), 0.5)
         self.assertEqual(state["topics"]["intro_children"]["state"], "answered")
 
     def test_month_only_list_is_not_stored_as_years(self):
@@ -629,11 +631,113 @@ class CallStateTests(unittest.TestCase):
         self.assertEqual(call_state._children_payload("2 kids"), ("count", 2))
         self.assertEqual(call_state._children_payload("कोई नहीं"), ("none", []))
         self.assertEqual(call_state._children_payload("none"), ("none", []))
+        self.assertEqual(call_state._children_payload("कोई बच्चा नहीं है"), ("none", []))
+        self.assertEqual(call_state._children_payload("बच्चे नहीं हैं"), ("none", []))
+        self.assertEqual(call_state._children_payload("no children"), ("none", []))
+        self.assertEqual(call_state._children_payload("दो बच्चे"), ("count", 2))
+        state = call_state.apply_updates(
+            call_state.new_call_state(),
+            [_update("profile.children", "कोई बच्चा नहीं है")],
+            1,
+            utterance="कोई बच्चा नहीं है।",
+        )
+        self.assertEqual(state["profile"]["children"], [])
+        self.assertEqual(state["topics"]["intro_children"]["value"], False)
+        self.assertEqual(state["topics"]["birth_mode"]["state"], "not_applicable")
 
     def test_marital_status_hindi_words(self):
         self.assertEqual(call_state._canonical_marital("विवाहित"), "married")
         self.assertEqual(call_state._canonical_marital("शादीशुदा"), "married")
         self.assertEqual(call_state._canonical_marital("shadishuda"), "married")
+
+    def test_half_a_year_stays_years_and_six_months_stay_months(self):
+        months = call_state._spoken_age_records("बड़ी बेटी छह महीने की है।")
+        half = call_state._spoken_age_records("एक आधा साल का है।")
+        self.assertEqual(months, [{"value": 6, "unit": "months"}])
+        self.assertEqual(half, [{"value": 0.5, "unit": "years"}])
+        self.assertAlmostEqual(call_state._child_age_years(months[0]), 0.5)
+        self.assertAlmostEqual(call_state._child_age_years(half[0]), 0.5)
+
+    def test_hindi_half_step_ages_keep_their_year_value(self):
+        samples = {
+            "डेढ़ साल का है।": 1.5,
+            "ढाई साल का है।": 2.5,
+            "साढ़े तीन साल का है।": 3.5,
+            "सवा दो साल का है।": 2.25,
+            "पौने दो साल का है।": 1.75,
+        }
+        for utterance, years in samples.items():
+            records = call_state._spoken_age_records(utterance)
+            self.assertEqual(len(records), 1, utterance)
+            self.assertEqual(records[0]["unit"], "years", utterance)
+            self.assertAlmostEqual(records[0]["value"], years, msg=utterance)
+
+    def test_sex_words_bind_only_when_each_child_is_named(self):
+        both = _ask(call_state.new_call_state(), "intro_children")
+        both = call_state.apply_updates(
+            both,
+            [_update("profile.children", 2)],
+            1,
+            utterance="बड़ी बेटी छह महीने की है और छोटा बेटा दो साल का है।",
+        )
+        self.assertEqual([c["sex"] for c in both["profile"]["children"]], ["female", "male"])
+        self.assertEqual(both["profile"]["children"][0]["age"], {"value": 6, "unit": "months"})
+
+        one_named = _ask(call_state.new_call_state(), "intro_children")
+        one_named = call_state.apply_updates(
+            one_named,
+            [_update("profile.children", 3)],
+            1,
+            utterance="तीन बच्चे हैं। एक आधा साल का है, एक चार साल का है, और बेटी ग्यारह साल की है।",
+        )
+        self.assertEqual([c["sex"] for c in one_named["profile"]["children"]], [None, None, None])
+
+    def test_normal_framed_answers_are_not_findings(self):
+        growth_ok = _ask(call_state.new_call_state(), "body_growth")
+        growth_ok = call_state.apply_updates(
+            growth_ok,
+            [_update("topic.body_growth", True)],
+            1,
+            utterance="हाँ, बाकी बच्चों जैसा बढ़ रहा है।",
+        )
+        self.assertEqual(call_state.topic_answer_kind(growth_ok["topics"]["body_growth"], "body_growth"), "no")
+        self.assertFalse(call_state._is_positive(growth_ok["topics"]["body_growth"], "body_growth"))
+
+        growth_bad = _ask(call_state.new_call_state(), "body_growth")
+        growth_bad = call_state.apply_updates(
+            growth_bad,
+            [_update("topic.body_growth", True)],
+            1,
+            utterance="नहीं, बाकी बच्चों जैसा नहीं बढ़ रहा।",
+        )
+        self.assertEqual(call_state.topic_answer_kind(growth_bad["topics"]["body_growth"], "body_growth"), "yes")
+
+        puberty = _ask(call_state.new_call_state(), "body_puberty")
+        puberty = call_state.apply_updates(
+            puberty,
+            [_update("topic.body_puberty", True)],
+            1,
+            utterance="हाँ, दूसरे बच्चों के साथ ही शुरू हुआ।",
+        )
+        self.assertEqual(call_state.topic_answer_kind(puberty["topics"]["body_puberty"], "body_puberty"), "no")
+
+        early = _ask(call_state.new_call_state(), "body_puberty")
+        early = call_state.apply_updates(
+            early,
+            [_update("topic.body_puberty", True)],
+            1,
+            utterance="हाँ, समय से पहले शुरू हुआ।",
+        )
+        self.assertEqual(call_state.topic_answer_kind(early["topics"]["body_puberty"], "body_puberty"), "yes")
+
+        thal = _ask(call_state.new_call_state(), "preg_thalassemia")
+        thal = call_state.apply_updates(
+            thal,
+            [_update("topic.preg_thalassemia", True)],
+            1,
+            utterance="हाँ, दोनों की जाँच हुई और रिपोर्ट नॉर्मल थी।",
+        )
+        self.assertEqual(call_state.topic_answer_kind(thal["topics"]["preg_thalassemia"], "preg_thalassemia"), "no")
 
 
 if __name__ == "__main__":

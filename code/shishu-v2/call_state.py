@@ -41,6 +41,27 @@ _MONTH_UNIT = r"(?:महीन\w*|mahine|months|month)"
 _YEAR_UNIT = r"(?:साल|वर्ष|saal|years|year|varsh)"
 
 
+def _fold_spoken_numbers(text: str) -> str:
+    """Hindi number words, including the half-step ages, as digits.
+
+    डेढ़ and ढाई are their own words. साढ़े / सवा / पौने modify the next number
+    (साढ़े तीन is 3.5, सवा दो is 2.25, पौने दो is 1.75).
+    """
+    folded = text or ""
+    folded = folded.replace("डेढ़", "1.5").replace("ढाई", "2.5")
+    for word, number in _NUM_WORDS:
+        folded = folded.replace(word, number)
+
+    def _shift(match: re.Match[str], delta: float) -> str:
+        value = float(match.group(1)) + delta
+        return str(int(value) if value.is_integer() else value)
+
+    folded = re.sub(r"साढ़े\s*(\d+(?:\.\d+)?)", lambda m: _shift(m, 0.5), folded)
+    folded = re.sub(r"सवा\s*(\d+(?:\.\d+)?)", lambda m: _shift(m, 0.25), folded)
+    folded = re.sub(r"पौने\s*(\d+(?:\.\d+)?)", lambda m: _shift(m, -0.25), folded)
+    return folded
+
+
 def _when_operation(state: dict, topic: dict) -> bool:
     details = topic.get("details") or {}
     blob = f"{topic.get('value') or ''} {details.get('delivery_type') or ''}".lower()
@@ -70,9 +91,7 @@ def _child_age_years(age: object) -> float | None:
             return float(value) / 12.0
         return float(value)
     if isinstance(age, str):
-        cleaned = age.strip().lower()
-        for word, number in _NUM_WORDS:
-            cleaned = cleaned.replace(word, number)
+        cleaned = _fold_spoken_numbers(age.strip().lower())
         m = re.search(rf"(\d+(?:\.\d+)?)\s*{_MONTH_UNIT}", cleaned, re.I)
         if m:
             return float(m.group(1)) / 12.0
@@ -449,11 +468,29 @@ def _apply_rules(state: dict) -> dict:
     return state
 
 
-def _is_positive(topic: dict) -> bool:
+def _detail_result(details: dict) -> str:
+    for key in ("result", "caller_result", "partner_result"):
+        text = str(details.get(key) or "").strip().lower()
+        if text:
+            return text
+    return ""
+
+
+def _is_reassuring_result(details: dict) -> bool:
+    return _detail_result(details) in {"normal", "negative", "नॉर्मल"}
+
+
+def _affirmative_value(value: object) -> bool:
+    if value is True:
+        return True
+    return str(value or "").strip().lower() in {"yes", "haan", "हाँ", "हां"}
+
+
+def _is_positive(topic: dict, _topic_id: str | None = None) -> bool:
     if topic.get("state") != "answered":
         return False
     details = topic.get("details") or {}
-    if str(details.get("result") or "").strip().lower() in {"normal", "negative", "नॉर्मल"}:
+    if _is_reassuring_result(details):
         return False
     dtype = str(details.get("delivery_type") or "").strip().lower()
     if dtype in {"normal", "नॉर्मल"}:
@@ -471,10 +508,10 @@ def _is_positive(topic: dict) -> bool:
     return False
 
 
-def topic_answer_kind(topic: dict) -> str:
+def topic_answer_kind(topic: dict, topic_id: str | None = None) -> str:
     if not isinstance(topic, dict):
         return "not_asked"
-    if _is_positive(topic):
+    if _is_positive(topic, topic_id):
         return "yes"
     status = str(topic.get("state") or "not_asked")
     value = topic.get("value")
@@ -591,7 +628,7 @@ def _followup_resolved(state: dict, topic: dict, followup_id: str) -> bool:
 
     if followup_id == "affected_child":
         if len(children) <= 1:
-            if len(children) == 1 and _is_positive(topic):
+            if len(children) == 1 and _is_positive(topic, None):
                 child_id = children[0].get("id", "child_1")
                 if not any(inst.get("person_id") == child_id for inst in topic.get("instances") or []):
                     topic.setdefault("instances", []).append({
@@ -655,7 +692,7 @@ def _followup_resolved(state: dict, topic: dict, followup_id: str) -> bool:
 
 def _pending_followups(state: dict, topic_id: str) -> list[dict]:
     topic = state["topics"][topic_id]
-    positive = _is_positive(topic)
+    positive = _is_positive(topic, topic_id)
     answered_no = topic.get("state") == "answered" and topic.get("value") is False
     if not positive and not answered_no:
         return []
@@ -846,28 +883,53 @@ def _is_duration_after(text: str, end: int) -> bool:
     return re.match(r"\s*(?:से|se)(?=\s|$|[।,.])", rest, re.I) is not None
 
 
-def _spoken_ages(utterance: str) -> list[float]:
-    folded = utterance or ""
-    for word, number in _NUM_WORDS:
-        folded = folded.replace(word, number)
+def _spoken_number(raw: str) -> int | float:
+    number = float(raw)
+    return int(number) if number.is_integer() else number
+
+
+def _spoken_age_records(utterance: str) -> list[dict]:
+    """Ages she actually said, keeping months and years apart.
+
+    छह महीने is 6 months. आधा साल is 0.5 years. Both are half a year for
+    comparisons, and they must not be stored as the same bare 0.5.
+    """
+    folded = _fold_spoken_numbers(utterance or "")
     found = []
     for match in re.finditer(rf"(\d+(?:\.\d+)?)\s*{_MONTH_UNIT}", folded, re.I):
         if _is_duration_after(folded, match.end()):
             continue
-        found.append((match.start(), float(match.group(1)) / 12.0))
+        found.append((match.start(), {"value": _spoken_number(match.group(1)), "unit": "months"}))
     for match in re.finditer(rf"(\d+(?:\.\d+)?)\s*{_YEAR_UNIT}", folded, re.I):
         if _is_duration_after(folded, match.end()):
             continue
-        found.append((match.start(), float(match.group(1))))
+        found.append((match.start(), {"value": _spoken_number(match.group(1)), "unit": "years"}))
     found.sort()
-    return [age for _, age in found]
+    return [item for _, item in found]
+
+
+def _spoken_ages(utterance: str) -> list[float]:
+    return [
+        age
+        for age in (_child_age_years(item) for item in _spoken_age_records(utterance))
+        if age is not None
+    ]
+
+
+def _age_records_from_prior(count_n: int, prior: list[str] | None) -> list[dict]:
+    if count_n <= 0:
+        return []
+    for text in reversed(list(prior or [])):
+        records = _spoken_age_records(text or "")
+        if not records:
+            continue
+        return records if len(records) == count_n else []
+    return []
 
 
 def _month_age_numbers(utterance: str) -> set[float]:
     """Bare numbers she used as a month age, not as a duration."""
-    folded = utterance or ""
-    for word, number in _NUM_WORDS:
-        folded = folded.replace(word, number)
+    folded = _fold_spoken_numbers(utterance or "")
     if re.search(_YEAR_UNIT, folded, re.I):
         return set()
     found = set()
@@ -915,10 +977,7 @@ def _ages_from_prior(count_n: int, prior: list[str] | None) -> list[float]:
 
 
 def _has_year_phrase(text: str) -> bool:
-    folded = text or ""
-    for word, number in _NUM_WORDS:
-        folded = folded.replace(word, number)
-    return re.search(_YEAR_UNIT, folded, re.I) is not None
+    return re.search(_YEAR_UNIT, _fold_spoken_numbers(text or ""), re.I) is not None
 
 
 def _retag_month_only(
@@ -957,11 +1016,39 @@ def _retag_month_only(
     return tagged
 
 
-def _children_from_ages(ages: list[float]) -> list[dict]:
-    return [
-        {"id": f"child_{index}", "name": None, "age": age, "sex": None}
-        for index, age in enumerate(ages, start=1)
-    ]
+_SEX_WORDS = (
+    ("बेटी", "female"),
+    ("लड़की", "female"),
+    ("बच्ची", "female"),
+    ("बेटे", "male"),
+    ("बेटा", "male"),
+    ("लड़के", "male"),
+    ("लड़का", "male"),
+)
+
+
+def _spoken_sexes(utterance: str) -> list[str]:
+    """Sex words in the order she said them. Longer words win over prefixes."""
+    text = utterance or ""
+    found: list[str] = []
+    index = 0
+    while index < len(text):
+        match = next((item for item in _SEX_WORDS if text.startswith(item[0], index)), None)
+        if match is None:
+            index += 1
+            continue
+        found.append(match[1])
+        index += len(match[0])
+    return found
+
+
+def _children_from_ages(ages: list, sexes: list[str] | None = None) -> list[dict]:
+    sexes = sexes or []
+    children = []
+    for index, age in enumerate(ages, start=1):
+        sex = sexes[index - 1] if len(sexes) == len(ages) else None
+        children.append({"id": f"child_{index}", "name": None, "age": age, "sex": sex})
+    return children
 
 
 def _parse_field(field: object) -> tuple[str, str]:
@@ -1008,6 +1095,23 @@ def _check_update(update: dict, current_topic: str | None) -> tuple[str, str]:
     return kind, name
 
 
+# A vowel sign is not a word character, so Hindi must not use \w after बच्च.
+_NO_CHILD_RE = re.compile(
+    r"(?:कोई\s+)?बच्च\S*\s+नहीं|bachch\w*\s+नहीं|no\s+child(?:ren)?|not\s+any\s+child(?:ren)?",
+    re.I,
+)
+
+
+def _is_no_children_phrase(text: str) -> bool:
+    """A denial of children, not a sentence that also states an age or a count."""
+    raw = (text or "").strip()
+    if not raw or _spoken_age_records(raw):
+        return False
+    if re.search(r"\d", _fold_spoken_numbers(raw.lower())):
+        return False
+    return _NO_CHILD_RE.search(raw) is not None
+
+
 def _children_payload(value: object) -> tuple[str, object]:
     """none: she said there are no children. count: a number without ages. list: child records."""
     if isinstance(value, bool) or value in (0, None, []) or value == "0":
@@ -1016,7 +1120,7 @@ def _children_payload(value: object) -> tuple[str, object]:
         return ("none", []) if int(value) <= 0 else ("count", int(value))
     if isinstance(value, str):
         val_clean = str(value).strip().lower()
-        if val_clean in {"none", "no", "nahi", "nahin", "zero", "0", "false", "कोई नहीं", "एक भी नहीं"}:
+        if val_clean in {"none", "no", "nahi", "nahin", "zero", "0", "false", "कोई नहीं", "एक भी नहीं"} or _is_no_children_phrase(value):
             return "none", []
         val_folded = val_clean
         for word, number in _NUM_WORDS:
@@ -1178,6 +1282,32 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
             details.setdefault("scan_done", True)
         if "scan_done" not in details and isinstance(value, bool):
             details["scan_done"] = value
+    if name == "preg_thalassemia":
+        text = utterance or ""
+        if "result" not in details and re.search(r"नॉर्मल|normal", text, re.I) and not re.search(
+            r"अबनॉर्मल|abnormal|दिक्कत|पॉजिटिव|positive|carrier", text, re.I
+        ):
+            details["result"] = "normal"
+            details.setdefault("caller_test", True)
+    if name == "body_growth":
+        text = utterance or ""
+        denied = re.search(r"नहीं|नही|nahi|nahin|not growing", text, re.I)
+        fine = re.search(r"जैसा|ठीक|नॉर्मल|normal", text, re.I)
+        if fine and not denied and _affirmative_value(value) and "result" not in details:
+            details["result"] = "normal"
+    if name == "body_puberty":
+        text = utterance or ""
+        if "timing" not in details:
+            if re.search(r"जल्दी|देर से पहले|समय से पहले|early", text, re.I):
+                details["timing"] = "early"
+            elif re.search(r"देर|बाद में|late", text, re.I) and "साथ" not in text:
+                details["timing"] = "late"
+            elif re.search(r"साथ|बाकी बच्चों|नॉर्मल|normal|same", text, re.I):
+                details["timing"] = "same"
+        if str(details.get("timing") or "") in {"same", "normal", "नॉर्मल"}:
+            details["result"] = "normal"
+        elif str(details.get("timing") or "") in {"early", "late"}:
+            details.pop("result", None)
     topic["details"] = details
 
 
@@ -1226,16 +1356,25 @@ def apply_updates(
                         if isinstance(child, dict)
                     ]
                     aged = [child for child in existing if _child_age_years(child.get("age")) is not None]
-                    spoken = _spoken_ages(utterance)
+                    spoken = _spoken_age_records(utterance)
                     count_n = int(norm) if kind_c == "count" else 0
                     if kind_c == "count" and not spoken:
-                        spoken = _ages_from_prior(count_n, prior_utterances)
+                        spoken = _age_records_from_prior(count_n, prior_utterances)
                     if kind_c == "count" and aged and len(existing) == len(aged) == count_n:
                         wrote = True
                         continue
                     use = spoken if kind_c == "ignore" or len(spoken) == count_n else []
                     if use and not aged:
-                        state["profile"]["children"] = _children_from_ages(use)
+                        source_text = utterance if _spoken_age_records(utterance) else ""
+                        if not source_text:
+                            for earlier in reversed(list(prior_utterances or [])):
+                                if len(_spoken_age_records(earlier or "")) == len(use):
+                                    source_text = earlier
+                                    break
+                        sexes = _spoken_sexes(source_text)
+                        state["profile"]["children"] = _children_from_ages(
+                            use, sexes if len(sexes) == len(use) else None
+                        )
                         intro_c = state["topics"]["intro_children"]
                         intro_c["state"] = "answered"
                         intro_c["value"] = True
@@ -1254,7 +1393,9 @@ def apply_updates(
                     _remember_turn(intro_c, turn_id)
                 else:
                     if norm and all(_child_age_years(child.get("age")) is None for child in norm):
-                        spoken_list = _spoken_ages(utterance) or _ages_from_prior(len(norm), prior_utterances)
+                        spoken_list = _spoken_age_records(utterance) or _age_records_from_prior(
+                            len(norm), prior_utterances
+                        )
                         if len(spoken_list) == len(norm):
                             for child, age in zip(norm, spoken_list):
                                 child["age"] = age

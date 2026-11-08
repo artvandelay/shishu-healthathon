@@ -460,7 +460,7 @@ def _saved_state(call: dict) -> dict | None:
 
 def _structured_kind(state: dict, topic_id: str) -> str:
     topic = (state.get("topics") or {}).get(topic_id) or {}
-    return call_state.topic_answer_kind(topic)
+    return call_state.topic_answer_kind(topic, topic_id)
 
 
 def _thalassemia_from_state(state: dict) -> bool:
@@ -485,6 +485,17 @@ _HIDDEN_DETAIL_VALUES = {
 }
 
 
+def _sex_word(child: dict | None) -> str:
+    if not isinstance(child, dict):
+        return ""
+    if call_state._is_female(child):
+        return "बेटी"
+    sex = str(child.get("sex") or "").strip().lower()
+    if sex in {"male", "boy", "m", "beta", "bete", "son", "बेटा", "बेटे", "लड़का", "लड़के"}:
+        return "बेटा"
+    return ""
+
+
 def _child_label(state: dict, child_id: object) -> str:
     children = [
         child
@@ -494,8 +505,9 @@ def _child_label(state: dict, child_id: object) -> str:
     child = next((item for item in children if item.get("id") == child_id), None)
     if child and str(child.get("name") or "").strip():
         return str(child["name"]).strip()
+    sex_word = _sex_word(child) if child else ""
     if len(children) <= 1:
-        return ""
+        return sex_word
     ranked = sorted(
         children,
         key=lambda item: (
@@ -646,7 +658,8 @@ def build(call: dict, extracted: dict | None = None) -> dict:
                 continue
             line = checklist.question_hi(topic["id"]).rstrip("?").strip()
             if line.startswith("क्या "):
-                line = line[4:]
+                line = line[len("क्या "):]
+            line = line.strip()
             note = _instance_note(state, topic["id"])
             if note:
                 line = f"{line} ({note})"
@@ -674,7 +687,8 @@ def build(call: dict, extracted: dict | None = None) -> dict:
                     continue
                 line = checklist.question_hi(topic["id"]).rstrip("?").strip()
                 if line.startswith("क्या "):
-                    line = line[4:]
+                    line = line[len("क्या "):]
+                line = line.strip()
                 if line:
                     yes.append(line)
     groups = []

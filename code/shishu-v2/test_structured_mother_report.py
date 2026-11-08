@@ -201,6 +201,24 @@ class StructuredMotherReportTests(unittest.TestCase):
         self.assertIn("घुटने", q_blob)
         self.assertIn("गुजर", q_blob)
 
+    def test_reassuring_growth_and_puberty_are_not_haan_lines(self):
+        state = self._state()
+        state["profile"]["children"] = [
+            {"id": "child_1", "age": {"value": 11, "unit": "years"}, "sex": "female"}
+        ]
+        state["topics"]["body_growth"]["state"] = "answered"
+        state["topics"]["body_growth"]["value"] = True
+        state["topics"]["body_growth"]["details"] = {"result": "normal"}
+        state["topics"]["body_puberty"]["state"] = "answered"
+        state["topics"]["body_puberty"]["value"] = True
+        state["topics"]["body_puberty"]["details"] = {"timing": "same", "result": "normal"}
+        state["topics"]["preg_thalassemia"]["state"] = "answered"
+        state["topics"]["preg_thalassemia"]["value"] = True
+        state["topics"]["preg_thalassemia"]["details"] = {"result": "normal"}
+        report = mother_report.build(_call(state))
+        self.assertEqual(report["yes"], [])
+        self.assertIn("बेटी", report["who"])
+
     def test_normal_delivery_with_true_value_is_classified_as_no(self):
         state = self._state()
         state["topics"]["birth_mode"]["state"] = "answered"

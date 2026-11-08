@@ -250,6 +250,29 @@ class StructuredSummaryTests(unittest.TestCase):
         self.assertEqual(seen, list(summarizer.SUMMARY_MODEL_CHAIN))
         self.assertEqual(payload["doctor_markdown"], "ok")
 
+    def test_a_finding_does_not_borrow_its_siblings_question(self):
+        state = _state()
+        for topic_id, value, details in (
+            ("birth_mode", "operation", {"delivery_type": "operation"}),
+            ("birth_term", True, {"weeks": "32"}),
+            ("body_transfusion", True, {"times": 2}),
+            ("fam_miscarriage", True, {"count": 1}),
+            ("body_fits_milestones", True, {}),
+        ):
+            state["topics"][topic_id]["state"] = "answered"
+            state["topics"][topic_id]["value"] = value
+            state["topics"][topic_id]["details"] = details
+        findings, flags = summarizer.state_to_findings_and_flags(state)
+        questions = summarizer.default_mother_questions(findings, flags)
+        self.assertIn("ऑपरेशन", questions)
+        self.assertIn("समय से पहले", questions)
+        self.assertIn("खून चढ़ाना", questions)
+        self.assertIn("गर्भ गिरा", questions)
+        self.assertIn("झटके", questions)
+        self.assertNotIn("गुजर गया", questions)
+        self.assertNotIn("भर्ती होना पड़ा", questions)
+        self.assertNotIn("पीलिया", questions)
+
     def test_frontier_model_can_override_a_false_positive(self):
         state = _state()
         state["profile"]["children"] = [

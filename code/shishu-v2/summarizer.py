@@ -369,6 +369,55 @@ _DEFAULT_MOTHER_QUESTIONS: tuple[str, ...] = (
     "क्या परिवार या प्रेग्नेंसी की सामान्य सेहत के लिए खून की कमी (एनीमिया) या थैलेसीमिया जैसी किसी सामान्य जाँच की ज़रूरत है?",
 )
 
+# A domain sentence that names one event must not be reused for a sibling topic.
+# These topics get their own question; the shared domain sentence stays for the rest.
+_TOPIC_MOTHER_QUESTIONS: tuple[tuple[str, re.Pattern[str], str], ...] = (
+    (
+        "birth_mode",
+        re.compile(r"ऑपरेशन|प्रसव", re.I),
+        "प्रसव ऑपरेशन से हुआ था — क्या इस बारे में डॉक्टर से कोई जाँच या सलाह पूछनी चाहिए?",
+    ),
+    (
+        "birth_term",
+        re.compile(r"समय से पहले|समय के बाद", re.I),
+        "बच्चा समय से पहले या समय के बाद पैदा हुआ था — क्या इस कारण अभी कोई जाँच ज़रूरी है?",
+    ),
+    (
+        "body_fits_milestones",
+        re.compile(r"झटके|दौरे", re.I),
+        "बच्चे को झटके आते हैं, या बैठना-चलना-बोलना देर से हुआ — क्या इसके लिए कोई जाँच करवानी चाहिए?",
+    ),
+    (
+        "body_transfusion",
+        re.compile(r"खून चढ़", re.I),
+        "बच्चे को खून चढ़ाना पड़ा था — क्या आगे खून या जाँच के बारे में डॉक्टर से पूछना चाहिए?",
+    ),
+    (
+        "fam_miscarriage",
+        re.compile(r"गर्भ गिर", re.I),
+        "गर्भ गिरा था — क्या अगली गर्भावस्था के लिए कोई सामान्य जाँच या सलाह लेनी चाहिए?",
+    ),
+)
+
+_TOPIC_QUESTION_IDS = {item[0] for item in _TOPIC_MOTHER_QUESTIONS}
+
+
+def _flagged_topic_ids(findings: dict, red_flags: list[str] | None) -> set[str]:
+    found: set[str] = set()
+    blobs = [str(flag) for flag in (red_flags or [])]
+    for value in (findings or {}).values():
+        if isinstance(value, dict) and value.get("is_red_flag"):
+            blobs.append(str(value.get("detail") or ""))
+    for blob in blobs:
+        head = blob.split(":", 1)[0].strip()
+        if head in checklist._BY_ID:
+            found.add(head)
+        for topic_id in checklist._BY_ID:
+            if topic_id in blob:
+                found.add(topic_id)
+    return found
+
+
 _FLAG_DOMAIN_QUESTIONS: tuple[tuple[str, re.Pattern[str], str], ...] = (
     (
         "family_infant_death",
@@ -547,6 +596,7 @@ def _ensure_mother_covers_flags(
     questions = _extract_question_lines(text)
     combined_q = "\n".join(questions)
 
+    flagged_topics = _flagged_topic_ids(findings, red_flags)
     for domain, pattern, fallback_q in _FLAG_DOMAIN_QUESTIONS:
         domain_topics = {tid for tid, dom in TOPIC_TO_DOMAIN.items() if dom == domain}
         entry = (findings or {}).get(domain)
@@ -567,9 +617,21 @@ def _ensure_mother_covers_flags(
         ) or flagged_in_list or topic_flagged
         if not is_flagged:
             continue
+        domain_hits = domain_topics & flagged_topics
+        # A sentence that names one event is not reused for a sibling that has its own question.
+        if domain_hits and domain_hits <= _TOPIC_QUESTION_IDS:
+            continue
         if not pattern.search(combined_q):
             questions.append(fallback_q)
             combined_q = "\n".join(questions)
+
+    for topic_id, pattern, question in _TOPIC_MOTHER_QUESTIONS:
+        if topic_id not in flagged_topics:
+            continue
+        if pattern.search(combined_q):
+            continue
+        questions.append(question)
+        combined_q = "\n".join(questions)
 
     for default_q in _DEFAULT_MOTHER_QUESTIONS:
         if len(questions) >= 3:
@@ -687,8 +749,8 @@ Return one JSON object and nothing else. Keys must be:
 """.strip()
 
 
-def _answer_label(topic: dict) -> str:
-    return call_state.topic_answer_kind(topic)
+def _answer_label(topic: dict, topic_id: str | None = None) -> str:
+    return call_state.topic_answer_kind(topic, topic_id)
 
 
 def _format_topic_detail(topic_id: str, saved: dict) -> str:
@@ -779,7 +841,7 @@ def state_to_findings_and_flags(
         if tid.startswith("intro_") or tid == "close_anything_else":
             continue
         saved = topics.get(tid) if isinstance(topics.get(tid), dict) else {"state": "not_asked"}
-        label = _answer_label(saved)
+        label = _answer_label(saved, tid)
         if label != "yes":
             continue
         detail = _format_topic_detail(tid, saved)
@@ -955,7 +1017,7 @@ def state_to_summary_context(state: dict, transcript: list[dict] | None = None) 
     for topic in checklist.TOPICS:
         saved = topics.get(topic["id"]) if isinstance(topics.get(topic["id"]), dict) else {}
         lines.append(
-            f"{topic['id']}: state={_answer_label(saved)} "
+            f"{topic['id']}: state={_answer_label(saved, topic['id'])} "
             f"value={json.dumps(saved.get('value'), ensure_ascii=False)} "
             f"details={json.dumps(saved.get('details') or {}, ensure_ascii=False)} "
             f"instances={json.dumps(saved.get('instances') or [], ensure_ascii=False)}"
@@ -996,7 +1058,10 @@ def build_state_fallback(
         topic["id"]
         for topic in checklist.TOPICS
         if not topic["id"].startswith("intro_")
-        and _answer_label(topics.get(topic["id"]) if isinstance(topics.get(topic["id"]), dict) else {}) == "no"
+        and _answer_label(
+            topics.get(topic["id"]) if isinstance(topics.get(topic["id"]), dict) else {},
+            topic["id"],
+        ) == "no"
     ]
     if negatives:
         shell = shell.replace(
@@ -1014,7 +1079,7 @@ def build_state_fallback(
     ]
     for topic in checklist.TOPICS:
         saved = topics.get(topic["id"]) if isinstance(topics.get(topic["id"]), dict) else {"state": "not_asked"}
-        label = _answer_label(saved)
+        label = _answer_label(saved, topic["id"])
         lines.append(f"- {topic['id']}: {label}")
 
     return {

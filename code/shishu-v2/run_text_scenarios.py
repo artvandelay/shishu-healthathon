@@ -1,0 +1,661 @@
+"""Text-only screening scenarios.
+
+Drives call_state the way the live tool path does: ask the server's next
+question, begin it, then apply_updates with the mother's Hindi utterance.
+No microphone and no network. A scenario is data (who she is, and any
+positive answers). Everything else is नहीं / नॉर्मल / ठीक है.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass, field
+
+import call_state
+import checklist
+import mother_report
+import question_flow
+import summarizer
+
+
+_GARBAGE = re.compile(
+    r"ओपेरतिओन|child_\d+|(?:[\u0900-\u097F][A-Za-z])|(?:[A-Za-z][\u0900-\u097F])"
+)
+_NORMAL_FRAMED = {
+    "body_growth": ("हाँ, बाकी बच्चों जैसा बढ़ रहा है।", True),
+    "birth_hearing_vision": ("हाँ, जाँच हुई और नॉर्मल थी।", True),
+    "preg_thalassemia": ("हाँ, दोनों की जाँच हुई और रिपोर्ट नॉर्मल थी।", True),
+    "birth_mode": ("नॉर्मल डिलीवरी हुई, अस्पताल में।", "normal"),
+    "body_puberty": ("हाँ, दूसरे बच्चों के साथ ही शुरू हुआ।", True),
+}
+
+
+@dataclass
+class Scenario:
+    name: str
+    group: str
+    caller_name: str
+    marital_text: str
+    children_text: str
+    children_value: object
+    ever_pregnant: bool | None = None
+    positives: dict = field(default_factory=dict)
+    emergency_at: str | None = None
+    stop_at: str | None = None
+    stop_after_clinical: int | None = None
+    clarify_topic: str | None = None
+    unknown_followups: tuple[str, ...] = ()
+    unknown_topics: tuple[str, ...] = ()
+    neighbor_topic: str | None = None
+    contradict_children: object | None = None
+    expect_close: str = "complete"
+    expect_yes: tuple[str, ...] = ()
+
+
+def _update(field_name: str, value, state: str = "answered", details: dict | None = None, child_ids=None):
+    return {
+        "field": field_name,
+        "state": state,
+        "value": value,
+        "scope": "specific" if child_ids else "none",
+        "child_ids": list(child_ids or []),
+        "details": dict(details or {}),
+    }
+
+
+def _reply(scenario: Scenario, question: dict, memory: dict) -> tuple[str, list[dict] | None, str | None]:
+    """Return utterance, tool updates, and an optional close reason."""
+    tid = question.get("topic_id")
+    fid = question.get("followup_id")
+    clinical = bool(tid) and not str(tid).startswith(("intro_", "profile.")) and tid != "close_anything_else"
+
+    if scenario.emergency_at == "after_name" and tid == "intro_married" and not fid:
+        return "बच्चे को साँस नहीं आ रही।", None, "emergency"
+    if scenario.emergency_at == "first_clinical" and clinical and not fid and memory["clinical"] == 0:
+        return "बच्चे को साँस नहीं आ रही।", None, "emergency"
+    if scenario.stop_at == "during_intro" and tid == "intro_married" and not fid:
+        return "अब कॉल बंद कर दो।", None, "caller_stop"
+    if (
+        scenario.stop_after_clinical is not None
+        and clinical
+        and not fid
+        and memory["clinical"] >= scenario.stop_after_clinical
+    ):
+        return "नहीं, कॉल एंड करिए प्लीज।", None, "caller_stop"
+
+    if tid == "intro_name":
+        return f"मेरा नाम {scenario.caller_name} है।", [_update("profile.caller_name", scenario.caller_name)], None
+    if tid == "intro_married":
+        return scenario.marital_text, [_update("profile.marital_status", scenario.marital_text)], None
+    if tid == "intro_children":
+        return scenario.children_text, [_update("profile.children", scenario.children_value)], None
+    if tid == "intro_bridge":
+        return "ठीक है।", [_update("topic.intro_bridge", True)], None
+    if tid == "profile.ever_pregnant":
+        pregnant = scenario.ever_pregnant
+        if pregnant is None:
+            pregnant = bool(scenario.positives) and any(
+                key.startswith("preg_") or key == "fam_miscarriage" for key in scenario.positives
+            )
+            if scenario.children_value not in (0, [], None, False):
+                pregnant = True
+        if pregnant:
+            return "हाँ, पहले गर्भ रहा था।", [_update("profile.ever_pregnant", True)], None
+        return "नहीं, कभी प्रेग्नेंट नहीं हुई।", [_update("profile.ever_pregnant", False)], None
+    if tid == "close_anything_else":
+        return "नहीं, बस इतना ही।", [_update("topic.close_anything_else", False)], None
+
+    positive = scenario.positives.get(tid) or {}
+    if fid and scenario.clarify_topic == tid and not memory["clarified"]:
+        memory["clarified"] = True
+        parent = positive.get("value", True)
+        return "क्या मतलब?", [_update(f"topic.{tid}", parent, details={fid: "क्या मतलब?"})], None
+    if fid and tid in scenario.unknown_followups:
+        parent = positive.get("value", True)
+        return "पता नहीं।", [_update(f"topic.{tid}", parent)], None
+    if fid and fid in (positive.get("followups") or {}):
+        utterance, detail = positive["followups"][fid]
+        return utterance, [_update(f"topic.{tid}", positive.get("value", True), details={fid: detail})], None
+    if fid:
+        parent = positive.get("value", False)
+        return "पता नहीं।", [_update(f"topic.{tid}", parent)], None
+
+    if tid in scenario.unknown_topics:
+        return "पता नहीं।", [_update(f"topic.{tid}", None, state="unknown")], None
+    if scenario.neighbor_topic == tid:
+        text = "ये पड़ोसी के बच्चे को है, मेरे बच्चे को नहीं।"
+        updates = [_update(f"topic.{tid}", False)]
+        if scenario.contradict_children is not None and not memory["contradicted"]:
+            memory["contradicted"] = True
+            updates.insert(0, _update("profile.children", scenario.contradict_children))
+        return text, updates, None
+    if positive:
+        updates = [_update(
+            f"topic.{tid}",
+            positive.get("value", True),
+            details=positive.get("details") or {},
+        )]
+        if scenario.contradict_children is not None and not memory["contradicted"]:
+            memory["contradicted"] = True
+            updates.insert(0, _update("profile.children", scenario.contradict_children))
+        return positive.get("utterance") or "हाँ।", updates, None
+
+    if scenario.contradict_children is not None and clinical and not memory["contradicted"]:
+        memory["contradicted"] = True
+        uttered, value = _NORMAL_FRAMED.get(tid, ("नहीं।", False))
+        return uttered, [
+            _update("profile.children", scenario.contradict_children),
+            _update(f"topic.{tid}", value),
+        ], None
+
+    uttered, value = _NORMAL_FRAMED.get(tid, ("नहीं।", False))
+    return uttered, [_update(f"topic.{tid}", value)], None
+
+
+def run_scenario(scenario: Scenario, max_turns: int = 80) -> dict:
+    state = call_state.new_call_state()
+    question = call_state.next_question(state)
+    if question:
+        state = call_state.begin_question(state, question)
+    memory = {"clinical": 0, "clarified": False, "contradicted": False}
+    said: list[str] = []
+    errors: list[str] = []
+    seen: dict[tuple, int] = {}
+    while question and question.get("question_kind") != "closing" and len(said) < max_turns:
+        key = (question.get("topic_id"), question.get("followup_id"))
+        seen[key] = seen.get(key, 0) + 1
+        if seen[key] > 4:
+            errors.append(f"stuck on {key[0]}/{key[1]}")
+            break
+        utterance, updates, close_reason = _reply(scenario, question, memory)
+        said.append(utterance)
+        clarify_key = None
+        if question.get("followup_id") and call_state.is_clarification(utterance):
+            clarify_key = (question.get("topic_id"), question.get("followup_id"))
+        if question.get("topic_id") and not str(question.get("topic_id")).startswith(("intro_", "profile.")):
+            if not question.get("followup_id"):
+                memory["clinical"] += 1
+        if close_reason == "emergency" and not question_flow.is_emergency_text(utterance):
+            errors.append("emergency phrase was not detected")
+        if close_reason:
+            state = call_state.request_close(state, close_reason)
+            question = call_state.next_question(state)
+            break
+        try:
+            state = call_state.apply_updates(
+                state,
+                updates or [],
+                len(said),
+                utterance=utterance,
+                prior_utterances=said[:-1],
+            )
+            if clarify_key:
+                nxt = call_state.next_question(state)
+                if (
+                    (nxt or {}).get("topic_id") != clarify_key[0]
+                    or (nxt or {}).get("followup_id") != clarify_key[1]
+                ):
+                    errors.append("clarification closed the follow-up")
+        except ValueError as exc:
+            errors.append(str(exc))
+            break
+        question = call_state.next_question(state)
+        if question is None and call_state.is_complete(state):
+            state = call_state.request_close(state, "complete")
+            question = call_state.next_question(state)
+        elif question and question.get("question_kind") != "closing":
+            state = call_state.begin_question(state, question)
+
+    fallback = summarizer.build_state_fallback(state)
+    call = {
+        "started_at": "2026-11-08 14:10:00",
+        "duration_sec": 180,
+        "state": state,
+        "summary_mother": fallback["summary_mother"],
+        "transcript": [{"role": "user", "text": line} for line in said],
+    }
+    report = mother_report.build(call)
+    issues = _issues(scenario, state, errors, report, fallback, said)
+    return {
+        "name": scenario.name,
+        "group": scenario.group,
+        "close_reason": state.get("close_reason"),
+        "profile": state.get("profile"),
+        "issues": issues,
+        "errors": errors,
+        "turns": len(said),
+        "yes": report.get("yes") or [],
+        "questions": (report.get("questions") or [])[:6],
+        "pass": not issues,
+    }
+
+
+def _issues(scenario, state, errors, report, fallback, said) -> list[str]:
+    issues = list(errors)
+    if state.get("close_reason") != scenario.expect_close:
+        issues.append(f"close {state.get('close_reason')} != {scenario.expect_close}")
+    topics = state.get("topics") or {}
+    if scenario.expect_close == "complete":
+        if topics.get("intro_name", {}).get("state") != "answered":
+            issues.append("intro name not answered")
+        if topics.get("intro_married", {}).get("state") != "answered":
+            issues.append("intro married not answered")
+        if topics.get("intro_children", {}).get("state") != "answered":
+            issues.append("intro children not answered")
+        open_ids = call_state.unresolved_topic_ids(state)
+        if open_ids:
+            issues.append("unresolved " + ",".join(open_ids[:8]))
+    for topic in checklist.TOPICS:
+        tid = topic["id"]
+        saved = topics.get(tid) or {}
+        if saved.get("state") == "not_applicable" and not call_state._skip_reason(state, tid):
+            issues.append(f"false not_applicable {tid}")
+        if tid.startswith("intro_"):
+            continue
+        kind = call_state.topic_answer_kind(saved, tid)
+        if scenario.expect_close == "complete" and not scenario.positives:
+            if kind == "yes" and tid not in scenario.expect_yes:
+                issues.append(f"unexpected yes {tid}")
+            pending = call_state._pending_followups(state, tid) if tid in topics else []
+            if pending and kind == "no":
+                issues.append(f"followup open on no {tid}:{pending[0]['id']}")
+    yes_topics = {
+        topic["id"]
+        for topic in checklist.TOPICS
+        if not topic["id"].startswith("intro_")
+        and call_state.topic_answer_kind(topics.get(topic["id"]) or {}, topic["id"]) == "yes"
+    }
+    missing = [tid for tid in scenario.expect_yes if tid not in yes_topics]
+    if missing:
+        issues.append("missing yes " + ",".join(missing))
+    extra = sorted(yes_topics - set(scenario.expect_yes))
+    if extra and scenario.expect_close == "complete":
+        issues.append("extra yes " + ",".join(extra))
+    for tid in scenario.unknown_followups:
+        details = (topics.get(tid) or {}).get("details") or {}
+        unknown_fields = [
+            key for key, val in details.items()
+            if isinstance(val, dict) and val.get("state") == "unknown"
+        ]
+        if not unknown_fields:
+            issues.append(f"{tid} follow-up was not stored as unknown")
+        if (topics.get(tid) or {}).get("state") in {"not_asked", "not_applicable"}:
+            issues.append(f"{tid} follow-up unknown collapsed the topic")
+    for tid in scenario.unknown_topics:
+        kind = call_state.topic_answer_kind(topics.get(tid) or {}, tid)
+        if kind != "unknown":
+            issues.append(f"{tid} kind {kind} != unknown")
+        question = checklist.question_hi(tid)
+        if question in _flat(report.get("unasked")):
+            issues.append(f"{tid} rendered as not asked")
+        if question not in (report.get("unknown") or []):
+            issues.append(f"{tid} missing from unknown")
+    blob = " ".join(
+        [report.get("who") or "", " ".join(report.get("yes") or []), " ".join(report.get("questions") or [])]
+    )
+    if _GARBAGE.search(blob):
+        issues.append("garbage text " + _GARBAGE.search(blob).group(0))
+    if scenario.expect_close == "complete" and not scenario.expect_yes and report.get("yes"):
+        issues.append("bogus haan " + " | ".join(report["yes"])[:240])
+    for line in report.get("yes") or []:
+        if line[:1].isspace():
+            issues.append("yes line has a leading space")
+        if "child_" in line:
+            issues.append("raw child id in yes")
+    if scenario.expect_close == "complete" and isinstance(scenario.children_value, int):
+        children = (state.get("profile") or {}).get("children") or []
+        records = call_state._spoken_age_records(scenario.children_text)
+        sexes = call_state._spoken_sexes(scenario.children_text)
+        if len(records) == scenario.children_value and [c.get("age") for c in children] != records:
+            issues.append("stored ages do not match the ages she said")
+        if len(sexes) == scenario.children_value and [c.get("sex") for c in children] != sexes:
+            issues.append("stored sex does not match the sex words she said")
+        if len(children) == 1 and children[0].get("sex") in {"female", "male"}:
+            word = "बेटी" if children[0]["sex"] == "female" else "बेटा"
+            if word not in (report.get("who") or ""):
+                issues.append("who line dropped the child's sex")
+    if scenario.expect_close == "complete":
+        ages = [
+            call_state._child_age_years(c.get("age"))
+            for c in ((state.get("profile") or {}).get("children") or [])
+        ]
+        puberty = (topics.get("body_puberty") or {}).get("state")
+        if ages and all(age is not None and age < 10 for age in ages) and puberty != "not_applicable":
+            issues.append(f"puberty was {puberty} though every child is under 10")
+        if any(age is not None and age >= 10 for age in ages) and puberty == "not_applicable":
+            issues.append("puberty skipped though a child is 10 or older")
+    questions = " ".join(report.get("questions") or [])
+    named = {
+        "ऑपरेशन": "birth_mode",
+        "समय से पहले": "birth_term",
+        "खून चढ़ाना": "body_transfusion",
+        "गर्भ गिरा": "fam_miscarriage",
+        "झटके": "body_fits_milestones",
+    }
+    for phrase, tid in named.items():
+        if tid in scenario.expect_yes and phrase not in questions:
+            issues.append(f"mother questions omit {tid}")
+    if "fam_infant_death" not in scenario.expect_yes and "गुजर गया" in questions:
+        issues.append("infant-death question without that finding")
+    if not ({"ill_admissions", "ill_iv_antibiotics"} & set(scenario.expect_yes)) and "भर्ती होना पड़ा" in questions:
+        issues.append("admission question without that finding")
+    if "birth_nicu" not in scenario.expect_yes and "पीलिया" in questions:
+        issues.append("jaundice question without that finding")
+    return issues
+
+
+def _flat(groups) -> list[str]:
+    found = []
+    for group in groups or []:
+        found.extend(group.get("items") or [])
+    return found
+
+
+def _child(age, sex=None, name=None):
+    return {"age": age, "sex": sex, "name": name}
+
+
+def campaign() -> list[Scenario]:
+    married = "शादी हो गई है।"
+    no_child = "कोई बच्चा नहीं है।"
+    return [
+        Scenario(
+            name="all_no_one_boy",
+            group="baseline",
+            caller_name="कविता",
+            marital_text=married,
+            children_text="एक बच्चा है, दो साल का लड़का।",
+            children_value=1,
+            expect_yes=(),
+        ),
+        Scenario(
+            name="no_flags_unmarried_never",
+            group="no_flags",
+            caller_name="लता",
+            marital_text="शादी नहीं हुई।",
+            children_text=no_child,
+            children_value=[],
+            ever_pregnant=False,
+        ),
+        Scenario(
+            name="no_flags_months_and_years",
+            group="no_flags",
+            caller_name="सीमा",
+            marital_text=married,
+            children_text="दो बच्चे हैं। बड़ी बेटी छह महीने की है और छोटा बेटा दो साल का है।",
+            children_value=2,
+        ),
+        Scenario(
+            name="no_flags_half_year_and_girl_11",
+            group="no_flags",
+            caller_name="मीना",
+            marital_text=married,
+            children_text="तीन बच्चे हैं। एक आधा साल का है, एक चार साल का है, और बेटी ग्यारह साल की है।",
+            children_value=3,
+        ),
+        Scenario(
+            name="no_flags_half_steps",
+            group="no_flags",
+            caller_name="रमा",
+            marital_text=married,
+            children_text="दो बच्चे हैं। बड़ी बेटी डेढ़ साल की है और छोटा बेटा साढ़े तीन साल का है।",
+            children_value=2,
+        ),
+        Scenario(
+            name="no_flags_married_none",
+            group="no_flags",
+            caller_name="उषा",
+            marital_text=married,
+            children_text=no_child,
+            children_value="कोई बच्चा नहीं है",
+            ever_pregnant=False,
+        ),
+        Scenario(
+            name="no_flags_under_ten",
+            group="no_flags",
+            caller_name="गीता",
+            marital_text=married,
+            children_text="दो बच्चे हैं। एक चार साल का लड़का है और एक आठ साल का लड़का है।",
+            children_value=2,
+        ),
+        Scenario(
+            name="flags_operation_nicu",
+            group="red_flags",
+            caller_name="सुनीता",
+            marital_text=married,
+            children_text="दो बच्चे हैं। बड़ा छह साल का लड़का है और छोटी दो साल की बेटी है।",
+            children_value=[
+                _child({"value": 6, "unit": "years"}, "male"),
+                _child({"value": 2, "unit": "years"}, "female"),
+            ],
+            positives={
+                "birth_mode": {
+                    "value": True,
+                    "utterance": "बड़े वाले का ऑपरेशन हुआ, अस्पताल में, बच्चे की हालत की वजह से।",
+                    "details": {
+                        "delivery_type": "operation",
+                        "place": "hospital",
+                        "operation_reason": "बच्चे की हालत",
+                        "affected_child": "बड़े वाले",
+                    },
+                    "followups": {
+                        "operation_reason": ("बच्चे की हालत की वजह से।", "बच्चे की हालत"),
+                        "place": ("अस्पताल में।", "hospital"),
+                        "affected_child": ("बड़े वाले का।", "बड़े वाले"),
+                    },
+                },
+                "birth_nicu": {
+                    "value": True,
+                    "utterance": "बड़े वाले को पीलिया की वजह से चार दिन काँच के बक्से में रखा।",
+                    "details": {"reason": "jaundice", "days": 4, "affected_child": "बड़े वाले"},
+                    "followups": {
+                        "reason": ("पीलिया की वजह से।", "jaundice"),
+                        "days": ("चार दिन।", 4),
+                        "affected_child": ("बड़े वाले को।", "बड़े वाले"),
+                    },
+                },
+            },
+            expect_yes=("birth_mode", "birth_nicu"),
+        ),
+        Scenario(
+            name="flags_fits_cousin_miscarriage",
+            group="red_flags",
+            caller_name="रीना",
+            marital_text=married,
+            children_text="एक बच्चा है, पहले वाला पाँच साल का है।",
+            children_value=[_child({"value": 5, "unit": "years"}, "male", "आरव")],
+            positives={
+                "body_fits_milestones": {
+                    "value": True,
+                    "utterance": "पहले वाले को झटके आते हैं, एक साल से।",
+                    "details": {"type": "fits", "onset": "एक साल", "affected_child": "पहले वाला"},
+                    "followups": {
+                        "type": ("झटके आते हैं।", "fits"),
+                        "onset": ("एक साल से।", "एक साल"),
+                        "affected_child": ("पहले वाले को।", "पहले वाला"),
+                    },
+                },
+                "fam_related": {
+                    "value": True,
+                    "utterance": "हाँ, शादी से पहले हम कज़िन थे।",
+                    "details": {"relationship": "कज़िन"},
+                    "followups": {"relationship": ("हम कज़िन थे।", "कज़िन")},
+                },
+                "fam_miscarriage": {
+                    "value": True,
+                    "utterance": "हाँ, तीन महीने में एक बार गर्भ गिर गया।",
+                    "details": {"count": 1, "month": "तीन महीने"},
+                    "followups": {
+                        "count": ("एक बार।", 1),
+                        "month": ("तीन महीने में।", "तीन महीने"),
+                    },
+                },
+            },
+            expect_yes=("body_fits_milestones", "fam_related", "fam_miscarriage"),
+        ),
+        Scenario(
+            name="flags_preterm_blood_death",
+            group="red_flags",
+            caller_name="पूजा",
+            marital_text=married,
+            children_text="एक बेटी है, तीन साल की।",
+            children_value=[_child({"value": 3, "unit": "years"}, "female")],
+            positives={
+                "birth_term": {
+                    "value": "early",
+                    "utterance": "बेटी सात महीने में पैदा हुई।",
+                    "details": {"amount": "सात महीने", "affected_child": "बेटी"},
+                    "followups": {
+                        "amount": ("सात महीने में।", "सात महीने"),
+                        "affected_child": ("बेटी का।", "बेटी"),
+                    },
+                },
+                "body_transfusion": {
+                    "value": True,
+                    "utterance": "बेटी को दो बार खून चढ़ाना पड़ा।",
+                    "details": {"count": 2, "affected_child": "बेटी"},
+                    "followups": {
+                        "count": ("दो बार।", 2),
+                        "last_date": ("पिछले साल।", "पिछले साल"),
+                        "affected_child": ("बेटी को।", "बेटी"),
+                    },
+                },
+                "fam_infant_death": {
+                    "value": True,
+                    "utterance": "मामा का बच्चा चार महीने का था, झटकों में गुजर गया।",
+                    "details": {"relationship": "मामा का बच्चा", "age_at_death": "चार महीने", "cause": "fits"},
+                    "followups": {
+                        "relationship": ("मामा का बच्चा।", "मामा का बच्चा"),
+                        "age_at_death": ("चार महीने।", "चार महीने"),
+                        "cause": ("झटकों में।", "fits"),
+                    },
+                },
+            },
+            expect_yes=("birth_term", "body_transfusion", "fam_infant_death"),
+        ),
+        Scenario(
+            name="emergency_after_name",
+            group="degenerate",
+            caller_name="अंजलि",
+            marital_text=married,
+            children_text="एक बच्चा है।",
+            children_value=1,
+            emergency_at="after_name",
+            expect_close="emergency",
+        ),
+        Scenario(
+            name="emergency_first_clinical",
+            group="degenerate",
+            caller_name="कमला",
+            marital_text=married,
+            children_text="एक बच्चा है, तीन साल का।",
+            children_value=1,
+            emergency_at="first_clinical",
+            expect_close="emergency",
+        ),
+        Scenario(
+            name="stop_mid_call",
+            group="degenerate",
+            caller_name="गीता",
+            marital_text=married,
+            children_text="एक बच्चा है, दो साल का।",
+            children_value=1,
+            stop_after_clinical=2,
+            expect_close="caller_stop",
+        ),
+        Scenario(
+            name="clarify_followup",
+            group="degenerate",
+            caller_name="शांति",
+            marital_text=married,
+            children_text="एक बच्चा है, चार साल का।",
+            children_value=[_child({"value": 4, "unit": "years"}, "male")],
+            positives={
+                "birth_nicu": {
+                    "value": True,
+                    "utterance": "हाँ, काँच के बक्से में रखा था।",
+                    "details": {"reason": "jaundice"},
+                    "followups": {
+                        "reason": ("पीलिया था।", "jaundice"),
+                        "days": ("तीन दिन।", 3),
+                    },
+                }
+            },
+            clarify_topic="birth_nicu",
+            expect_yes=("birth_nicu",),
+            expect_close="complete",
+        ),
+        Scenario(
+            name="unknown_followup_and_topic",
+            group="degenerate",
+            caller_name="राधा",
+            marital_text=married,
+            children_text="एक बच्चा है, एक साल का।",
+            children_value=[_child({"value": 1, "unit": "years"}, "female")],
+            positives={
+                "fam_related": {
+                    "value": True,
+                    "utterance": "हाँ, शादी रिश्तेदारी में हुई थी।",
+                    "details": {},
+                    "followups": {},
+                }
+            },
+            unknown_followups=("fam_related",),
+            unknown_topics=("birth_cleft",),
+            expect_yes=("fam_related",),
+        ),
+        Scenario(
+            name="neighbor_and_contradict",
+            group="degenerate",
+            caller_name="निशा",
+            marital_text=married,
+            children_text="दो बच्चे हैं, छह साल और दो साल।",
+            children_value=2,
+            neighbor_topic="body_fits_milestones",
+            contradict_children=1,
+            expect_close="complete",
+        ),
+        Scenario(
+            name="stop_during_intro",
+            group="degenerate",
+            caller_name="हेमा",
+            marital_text=married,
+            children_text=no_child,
+            children_value=[],
+            stop_at="during_intro",
+            expect_close="caller_stop",
+        ),
+        Scenario(
+            name="about_to_marry_past_pregnancy",
+            group="no_flags",
+            caller_name="नेहा",
+            marital_text="शादी होने वाली है।",
+            children_text=no_child,
+            children_value=[],
+            ever_pregnant=True,
+        ),
+    ]
+
+
+def main() -> int:
+    rows = [run_scenario(item) for item in campaign()]
+    for row in rows:
+        brief = {
+            "name": row["name"],
+            "group": row["group"],
+            "pass": row["pass"],
+            "close": row["close_reason"],
+            "turns": row["turns"],
+            "issues": row["issues"],
+            "children": (row["profile"] or {}).get("children"),
+            "yes": row["yes"][:4],
+        }
+        print(json.dumps(brief, ensure_ascii=False), flush=True)
+    failed = [row["name"] for row in rows if not row["pass"]]
+    print(f"FAILED {len(failed)}/{len(rows)}: {', '.join(failed)}", flush=True)
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
