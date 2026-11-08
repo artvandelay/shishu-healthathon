@@ -283,6 +283,10 @@ class StructuredSummaryTests(unittest.TestCase):
             "ill_odor": ("गंध", "खाना देर से"),
             "ill_sudden": ("अचानक बहुत", "खाना देर से"),
             "birth_cleft": ("होंठ या तालु", "पीलिया"),
+            "body_bleeding_bruise": ("चोट पर खून", "घुटने"),
+            "body_regression": ("पहले कर लेता था", "पेट के आकार"),
+            "body_puberty": ("बढ़ती उम्र", "पेट के आकार"),
+            "body_limb_pain": ("बार-बार दर्द", "घुटने"),
         }
         for topic_id, (needed, forbidden) in samples.items():
             state = _state()
