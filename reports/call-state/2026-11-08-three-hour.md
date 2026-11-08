@@ -62,6 +62,12 @@ Degenerate: emergency after the name; emergency on the first clinical turn; call
 - Birth, body, pregnancy, and illness findings that are not the domain’s headline event get their own mother question. A cord bleed is not asked as jaundice. Blue lips are not asked as a hospital admission. An abnormal thalassemia report is not asked as pregnancy BP.
 - On a no, an age-gated follow-up (tooth-fall bleeding, periods) is answered नहीं when she says no. पता नहीं stays unknown, and only when that is what she said.
 
+## Fourth pass
+
+`179` unit tests. 21 scenarios, 0 failed, including a call whose NICU answer is “जी हाँ” and whose other answers are “नहीं जी”.
+
+A no phrase is a no: “नहीं जी” on ever-pregnant stores false and skips miscarriage. “जी हाँ” on a family topic counts as a family yes, so the same-problem question is not hidden. “वजह पता नहीं”, “मुझे पता नहीं है”, and “याद नहीं है” close a follow-up as unknown. “दो दिन पता नहीं” keeps the number, so it is not wiped to unknown.
+
 ## Not hardcoded
 
-No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence.
+No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

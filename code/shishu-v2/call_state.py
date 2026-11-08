@@ -427,7 +427,7 @@ def _all_under_10(state: dict) -> bool:
 def _family_yes(state: dict) -> bool:
     for topic_id in _FAMILY_YES_IDS:
         topic = state["topics"][topic_id]
-        if topic.get("state") == "answered" and topic.get("value") is True:
+        if topic.get("state") == "answered" and _is_positive(topic, topic_id):
             return True
     return False
 
@@ -480,10 +480,36 @@ def _is_reassuring_result(details: dict) -> bool:
     return _detail_result(details) in {"normal", "negative", "नॉर्मल"}
 
 
-def _affirmative_value(value: object) -> bool:
+_AFFIRM_RE = re.compile(r"हाँ|हां|\bhaan\b|\byes\b", re.I)
+_DENY_RE = re.compile(r"नहीं|नही|\bnahi\b|\bnahin\b|\bno\b", re.I)
+
+
+def _stated_polarity(value: object) -> str | None:
+    """Yes or no when the stored words say so, including जी हाँ and नहीं जी.
+
+    A sentence that contains both is left unset. Delivery type and a normal
+    result are decided before this.
+    """
     if value is True:
-        return True
-    return str(value or "").strip().lower() in {"yes", "haan", "हाँ", "हां"}
+        return "yes"
+    if value is False:
+        return "no"
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    affirmed = _AFFIRM_RE.search(text) is not None
+    denied = _DENY_RE.search(text) is not None
+    if affirmed and not denied:
+        return "yes"
+    if denied and not affirmed:
+        return "no"
+    return None
+
+
+def _affirmative_value(value: object) -> bool:
+    return _stated_polarity(value) == "yes"
 
 
 def _is_positive(topic: dict, _topic_id: str | None = None) -> bool:
@@ -498,8 +524,10 @@ def _is_positive(topic: dict, _topic_id: str | None = None) -> bool:
     if any(w in dtype for w in ("operation", "caesarean", "cesarean", "c-section", "c section", "ऑपरेशन", "सीजेरियन")):
         return True
     value = topic.get("value")
-    if value is True:
+    if _stated_polarity(value) == "yes":
         return True
+    if _stated_polarity(value) == "no":
+        return False
     if isinstance(value, str) and value.strip().lower() in {
         "yes", "haan", "positive", "early", "late", "operation", "caesarean", "cesarean", "c-section", "abnormal",
         "हाँ", "हां", "ऑपरेशन", "सीजेरियन", "असामान्य",
@@ -520,6 +548,7 @@ def topic_answer_kind(topic: dict, topic_id: str | None = None) -> str:
         value is False
         or str(details.get("result") or "").strip().lower() in {"normal", "negative", "नॉर्मल"}
         or str(details.get("delivery_type") or "").strip().lower() in {"normal", "नॉर्मल"}
+        or _stated_polarity(value) == "no"
         or str(value or "").strip().lower() in {"no", "nahi", "nahin", "normal", "negative", "नहीं", "नही", "नॉर्मल"}
     ):
         return "no"
@@ -694,7 +723,9 @@ def _followup_resolved(state: dict, topic: dict, followup_id: str) -> bool:
 def _pending_followups(state: dict, topic_id: str) -> list[dict]:
     topic = state["topics"][topic_id]
     positive = _is_positive(topic, topic_id)
-    answered_no = topic.get("state") == "answered" and topic.get("value") is False
+    answered_no = topic.get("state") == "answered" and (
+        topic.get("value") is False or _stated_polarity(topic.get("value")) == "no"
+    )
     if not positive and not answered_no:
         return []
     pending = []
@@ -1222,9 +1253,18 @@ _CLARIFY_RE = re.compile(
     re.I,
 )
 _UNKNOWN_UTT_RE = re.compile(
-    r"^(?:पता\s+नहीं|याद\s+नहीं|नहीं\s+पता|pata\s+nahi|don'?t\s+know)[।.!?]*$",
+    r"^(?:(?:\S+\s+){0,2})(?:पता\s+नहीं|याद\s+नहीं|नहीं\s+पता|pata\s+nahi|yaad\s+nahi|don'?t\s+know)"
+    r"(?:\s+(?:है|था|थी|थे|जी|hai|tha|thi|the|ji))?[।.!?]*$",
     re.I,
 )
+
+
+def _is_unknown_utterance(text: str) -> bool:
+    """She said she does not know. A number in the same line is a fact, not a blank."""
+    raw = (text or "").strip()
+    if not raw or re.search(r"\d", _fold_spoken_numbers(raw.lower())):
+        return False
+    return _UNKNOWN_UTT_RE.match(raw) is not None
 
 
 def _is_parent_echo(value: object, topic_value: object) -> bool:
@@ -1416,6 +1456,12 @@ def apply_updates(
                         continue
                 else:
                     val = update.get("value")
+                if name in {"ever_pregnant", "has_delivered"}:
+                    polarity = _stated_polarity(val)
+                    if polarity == "yes":
+                        val = True
+                    elif polarity == "no":
+                        val = False
                 state["profile"][name] = val
                 if name == "caller_name" and val:
                     intro_n = state["topics"]["intro_name"]
@@ -1490,7 +1536,7 @@ def apply_updates(
                 )
                 if not explicit:
                     raw_val = update.get("value")
-                    if _UNKNOWN_UTT_RE.match(clean_utt):
+                    if _is_unknown_utterance(clean_utt):
                         details[followup_id] = {"state": "unknown"}
                     elif raw_val is not None and not isinstance(raw_val, bool) and not _is_parent_echo(raw_val, previous_value):
                         details[followup_id] = raw_val
@@ -1498,6 +1544,8 @@ def apply_updates(
                         details[followup_id] = clean_utt
                     elif _is_parent_echo(details.get(followup_id), previous_value):
                         details.pop(followup_id, None)
+                elif _is_unknown_utterance(str(incoming.get(followup_id) or "")):
+                    details[followup_id] = {"state": "unknown"}
             topic["details"] = details
             if topic.get("state") != "answered":
                 topic["state"] = "answered" if previous_state == "answered" else status

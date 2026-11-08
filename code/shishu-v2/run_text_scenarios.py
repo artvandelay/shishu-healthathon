@@ -51,6 +51,8 @@ class Scenario:
     contradict_children: object | None = None
     expect_close: str = "complete"
     expect_yes: tuple[str, ...] = ()
+    no_utterance: str = "नहीं।"
+    no_value: object = False
 
 
 def _update(field_name: str, value, state: str = "answered", details: dict | None = None, child_ids=None):
@@ -113,14 +115,14 @@ def _reply(scenario: Scenario, question: dict, memory: dict) -> tuple[str, list[
         return "क्या मतलब?", [_update(f"topic.{tid}", parent, details={fid: "क्या मतलब?"})], None
     if fid and tid in scenario.unknown_followups:
         parent = positive.get("value", True)
-        return "पता नहीं।", [_update(f"topic.{tid}", parent)], None
+        return "मुझे पता नहीं है।", [_update(f"topic.{tid}", parent)], None
     if fid and fid in (positive.get("followups") or {}):
         utterance, detail = positive["followups"][fid]
         return utterance, [_update(f"topic.{tid}", positive.get("value", True), details={fid: detail})], None
     if fid:
         if positive:
             return "पता नहीं।", [_update(f"topic.{tid}", positive.get("value", True))], None
-        return "नहीं।", [_update(f"topic.{tid}", False)], None
+        return scenario.no_utterance, [_update(f"topic.{tid}", scenario.no_value)], None
 
     if tid in scenario.unknown_topics:
         return "पता नहीं।", [_update(f"topic.{tid}", None, state="unknown")], None
@@ -144,13 +146,13 @@ def _reply(scenario: Scenario, question: dict, memory: dict) -> tuple[str, list[
 
     if scenario.contradict_children is not None and clinical and not memory["contradicted"]:
         memory["contradicted"] = True
-        uttered, value = _NORMAL_FRAMED.get(tid, ("नहीं।", False))
+        uttered, value = _NORMAL_FRAMED.get(tid, (scenario.no_utterance, scenario.no_value))
         return uttered, [
             _update("profile.children", scenario.contradict_children),
             _update(f"topic.{tid}", value),
         ], None
 
-    uttered, value = _NORMAL_FRAMED.get(tid, ("नहीं।", False))
+    uttered, value = _NORMAL_FRAMED.get(tid, (scenario.no_utterance, scenario.no_value))
     return uttered, [_update(f"topic.{tid}", value)], None
 
 
@@ -476,6 +478,28 @@ def campaign() -> list[Scenario]:
                 },
             },
             expect_yes=("body_bleeding_bruise",),
+        ),
+        Scenario(
+            name="flags_phrase_yes_and_no",
+            group="red_flags",
+            caller_name="कमल",
+            marital_text=married,
+            children_text="एक बच्चा है, तीन साल का लड़का।",
+            children_value=1,
+            no_utterance="नहीं जी।",
+            no_value="नहीं जी",
+            positives={
+                "birth_nicu": {
+                    "value": "जी हाँ",
+                    "utterance": "जी हाँ, पीलिया की वजह से दो दिन रखा।",
+                    "details": {"reason": "jaundice", "days": 2},
+                    "followups": {
+                        "reason": ("पीलिया की वजह से।", "jaundice"),
+                        "days": ("दो दिन।", 2),
+                    },
+                },
+            },
+            expect_yes=("birth_nicu",),
         ),
         Scenario(
             name="flags_operation_nicu",

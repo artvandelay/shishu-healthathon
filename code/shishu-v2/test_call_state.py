@@ -537,6 +537,36 @@ class CallStateTests(unittest.TestCase):
         nxt = call_state.next_question(state)
         self.assertNotEqual((nxt or {}).get("followup_id"), "reason")
 
+        for utterance in ("वजह पता नहीं।", "मुझे पता नहीं है।", "याद नहीं है।"):
+            wrapped = _ask(call_state.new_call_state(), "birth_nicu")
+            wrapped = call_state.apply_updates(wrapped, [_update("topic.birth_nicu", True)], 1)
+            wrapped = _ask(wrapped, "birth_nicu", "reason")
+            wrapped = call_state.apply_updates(
+                wrapped,
+                [_update("topic.birth_nicu", True)],
+                2,
+                utterance=utterance,
+            )
+            self.assertEqual(
+                wrapped["topics"]["birth_nicu"]["details"].get("reason"),
+                {"state": "unknown"},
+                utterance,
+            )
+
+        numbered = _ask(call_state.new_call_state(), "birth_nicu")
+        numbered = call_state.apply_updates(numbered, [_update("topic.birth_nicu", True)], 1)
+        numbered = _ask(numbered, "birth_nicu", "reason")
+        numbered = call_state.apply_updates(
+            numbered,
+            [_update("topic.birth_nicu", True)],
+            2,
+            utterance="दो दिन पता नहीं।",
+        )
+        self.assertNotEqual(
+            numbered["topics"]["birth_nicu"]["details"].get("reason"),
+            {"state": "unknown"},
+        )
+
     def test_devanagari_kinship_resolves_the_family_followup(self):
         state = _ask(call_state.new_call_state(), "fam_bp_stroke")
         state = call_state.apply_updates(
@@ -647,6 +677,38 @@ class CallStateTests(unittest.TestCase):
         self.assertEqual(state["topics"]["intro_children"]["value"], False)
         self.assertEqual(state["topics"]["birth_mode"]["state"], "not_applicable")
 
+    def test_a_no_phrase_means_never_pregnant_and_a_yes_phrase_is_a_family_yes(self):
+        never = call_state.apply_updates(
+            call_state.new_call_state(),
+            [_update("profile.ever_pregnant", "नहीं जी")],
+            1,
+            utterance="नहीं जी, कभी गर्भ नहीं रहा।",
+        )
+        self.assertIs(never["profile"]["ever_pregnant"], False)
+        self.assertEqual(never["topics"]["fam_miscarriage"]["state"], "not_applicable")
+
+        pregnant = call_state.apply_updates(
+            call_state.new_call_state(),
+            [_update("profile.ever_pregnant", "जी हाँ")],
+            1,
+            utterance="जी हाँ।",
+        )
+        self.assertIs(pregnant["profile"]["ever_pregnant"], True)
+
+        family = call_state.apply_updates(
+            call_state.new_call_state(),
+            [_update("profile.children", [{"age": {"value": 4, "unit": "years"}, "sex": "female"}])],
+            1,
+        )
+        family = _ask(family, "fam_related")
+        family = call_state.apply_updates(
+            family,
+            [_update("topic.fam_related", "जी हाँ")],
+            2,
+            utterance="जी हाँ, कज़िन हैं।",
+        )
+        self.assertIsNone(call_state._skip_reason(family, "fam_same_problem"))
+
     def test_marital_status_hindi_words(self):
         self.assertEqual(call_state._canonical_marital("विवाहित"), "married")
         self.assertEqual(call_state._canonical_marital("शादीशुदा"), "married")
@@ -693,6 +755,41 @@ class CallStateTests(unittest.TestCase):
             utterance="तीन बच्चे हैं। एक आधा साल का है, एक चार साल का है, और बेटी ग्यारह साल की है।",
         )
         self.assertEqual([c["sex"] for c in one_named["profile"]["children"]], [None, None, None])
+
+    def test_yes_and_no_phrases_keep_their_polarity(self):
+        for value in ("जी हाँ", "हाँ जी", "haan ji", "yes"):
+            topic = {"state": "answered", "value": value, "details": {}}
+            self.assertEqual(call_state.topic_answer_kind(topic, "birth_nicu"), "yes", value)
+        for value in ("नहीं जी", "जी नहीं", "nahi ji"):
+            topic = {"state": "answered", "value": value, "details": {}}
+            self.assertEqual(call_state.topic_answer_kind(topic, "birth_nicu"), "no", value)
+        mixed = {"state": "answered", "value": "हाँ, नहीं पता", "details": {}}
+        self.assertNotEqual(call_state.topic_answer_kind(mixed, "birth_nicu"), "yes")
+
+        growth = _ask(call_state.new_call_state(), "body_growth")
+        growth = call_state.apply_updates(
+            growth,
+            [_update("topic.body_growth", "जी हाँ")],
+            1,
+            utterance="जी हाँ, बाकी बच्चों जैसा बढ़ रहा है।",
+        )
+        self.assertEqual(call_state.topic_answer_kind(growth["topics"]["body_growth"], "body_growth"), "no")
+
+        bleeding = call_state.new_call_state()
+        bleeding = call_state.apply_updates(
+            bleeding,
+            [_update("profile.children", [{"age": {"value": 11, "unit": "years"}, "sex": "female"}])],
+            1,
+        )
+        bleeding = _ask(bleeding, "body_bleeding_bruise")
+        bleeding = call_state.apply_updates(
+            bleeding,
+            [_update("topic.body_bleeding_bruise", "नहीं जी")],
+            2,
+            utterance="नहीं जी।",
+        )
+        pending = [item["id"] for item in call_state._pending_followups(bleeding, "body_bleeding_bruise")]
+        self.assertIn("periods", pending)
 
     def test_normal_framed_answers_are_not_findings(self):
         growth_ok = _ask(call_state.new_call_state(), "body_growth")
