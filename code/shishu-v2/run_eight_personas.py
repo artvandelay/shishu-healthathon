@@ -226,6 +226,11 @@ def _state_snapshot(state: dict) -> tuple:
     return (topics, dict(state.get("profile") or {}))
 
 
+# Tool-protocol shapes that must never appear in a spoken line. A bot transcript
+# containing one means the model read a server note aloud (p8 call 16).
+_PROTOCOL_LEAK_MARKERS = ("record_answers", "Next tool", "topic.<", "[internal")
+
+
 async def one_call(name: str, url: str, headers: dict) -> dict:
     import websockets
 
@@ -250,7 +255,14 @@ async def one_call(name: str, url: str, headers: dict) -> dict:
                     spoke = True
                 elif kind == "transcript" and payload.get("role") == "assistant":
                     spoke = True
-                    last_bot = (last_bot + " " + str(payload.get("text") or "")).strip()[-400:]
+                    chunk = str(payload.get("text") or "")
+                    if any(marker in chunk for marker in _PROTOCOL_LEAK_MARKERS):
+                        memory["desyncs"] += 1
+                        print(
+                            f"[{name}] DESYNC step {step + 1} bot spoke internal protocol text: {chunk[:160]!r}",
+                            flush=True,
+                        )
+                    last_bot = (last_bot + " " + chunk).strip()[-400:]
                 elif (
                     kind == "telemetry"
                     and (payload.get("last_event") or {}).get("type") == "turn_complete"

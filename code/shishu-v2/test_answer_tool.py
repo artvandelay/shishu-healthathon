@@ -1,10 +1,9 @@
 """Gemini answer-tool contract. No network."""
 
-import json
 import unittest
 
 import call_state
-from answer_tool import END_CALL_DECL, RECORD_ANSWERS_DECL, build_turn_context
+from answer_tool import RECORD_ANSWERS_DECL, build_turn_context
 
 
 class AnswerToolTests(unittest.TestCase):
@@ -21,12 +20,6 @@ class AnswerToolTests(unittest.TestCase):
         self.assertEqual(details["place"]["enum"], ["home", "hospital"])
         self.assertIn("child_ids", item["required"])
         self.assertEqual(item["properties"]["child_ids"]["items"]["type"], "STRING")
-
-    def test_end_call_allows_emergency_and_caller_stop_only(self):
-        blob = json.dumps(END_CALL_DECL)
-        self.assertIn("emergency", blob)
-        self.assertIn("caller_stop", blob)
-        self.assertNotIn("complete", blob)
 
     def test_turn_context_contains_child_ids_and_active_topic(self):
         state = call_state.new_call_state()

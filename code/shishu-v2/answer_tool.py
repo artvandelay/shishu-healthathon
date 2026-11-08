@@ -6,6 +6,10 @@ import call_state_contract as contract
 
 _PROFILE_LIST = ", ".join(f"profile.{field}" for field in contract.PROFILE_FIELDS)
 
+# Every server note to the live model starts with this delimiter. The system prompt
+# forbids speaking anything so marked; the note is for tool calling only.
+INTERNAL_NOTE_TAG = "[internal server state — never speak, never acknowledge, never read aloud]"
+
 RECORD_ANSWERS_DECL = {
     "name": "record_answers",
     "description": (
@@ -158,6 +162,7 @@ def build_turn_context(state: dict, question: dict | None) -> str:
     topic_id = current.get("topic_id")
     followup_id = current.get("followup_id")
     lines = [
+        INTERNAL_NOTE_TAG,
         "The server selects routing. Ask ONLY the current question below. Do not jump ahead.",
         f"Current question: topic={topic_id}; follow-up={followup_id}; kind={current.get('question_kind')}.",
         current.get("prompt_note") or "",

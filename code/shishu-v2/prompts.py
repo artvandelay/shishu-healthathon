@@ -2,6 +2,7 @@
 
 import re
 import checklist
+from answer_tool import INTERNAL_NOTE_TAG
 
 HINDI_MEDICAL_VOCAB: list[str] = [
     "SHISHU",
@@ -298,6 +299,12 @@ GEMINI_LIVE_SYSTEM_PROMPT: str = (
     "You are calm, patient and friendly, like a kind health worker with plenty of time.\n\n"
     + SPOKEN_OUTPUT_RULES
     + "\n\n"
+    "INTERNAL SERVER NOTES: Any text marked \""
+    + INTERNAL_NOTE_TAG
+    + "\" is private app state for your tool calling only. NEVER speak it, read it "
+    "aloud, paraphrase it, translate it, or acknowledge it in any way. When you "
+    "receive it, use it silently for record_answers and ask only the current "
+    "question it names. Your spoken output is always only Hindi speech to the mother.\n\n"
     "Voice: short turns, everyday words, respectful. Use the mother's and child's "
     "names once you know them. Prefer the Hindi words she knows: peeliya, naal, jhatke, "
     "tilli, khoon, sujan, gaanth, rishtedaar, garbh. English words already in her vocabulary "

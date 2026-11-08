@@ -13,6 +13,7 @@ import checklist  # noqa: E402
 import db  # noqa: E402
 import gemini_live  # noqa: E402
 import prompts  # noqa: E402
+from answer_tool import INTERNAL_NOTE_TAG, build_turn_context  # noqa: E402
 
 
 class PromptTests(unittest.TestCase):
@@ -31,6 +32,17 @@ class PromptTests(unittest.TestCase):
             prompts.OPENAI_RESPONSES_BACKEND_PROMPT,
         ):
             self.assertNotIn("set_progress", other)
+
+    def test_turn_context_is_marked_internal_and_the_prompt_forbids_speaking_it(self):
+        text = build_turn_context(
+            {"profile": {}},
+            {"topic_id": "birth_term", "followup_id": None, "question_kind": "topic",
+             "prompt_note": "Ask it."},
+        )
+        self.assertTrue(text.startswith(INTERNAL_NOTE_TAG))
+        prompt = prompts.GEMINI_LIVE_SYSTEM_PROMPT
+        self.assertIn(INTERNAL_NOTE_TAG, prompt)
+        self.assertIn("NEVER speak it", prompt)
 
 
 class _FakeWs:
