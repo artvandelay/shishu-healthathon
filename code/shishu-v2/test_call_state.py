@@ -798,6 +798,10 @@ class CallStateTests(unittest.TestCase):
         self.assertEqual(call_state._canonical_marital("विवाहित"), "married")
         self.assertEqual(call_state._canonical_marital("शादीशुदा"), "married")
         self.assertEqual(call_state._canonical_marital("shadishuda"), "married")
+        self.assertEqual(call_state._canonical_marital("शादी हुई है"), "married")
+        self.assertEqual(call_state._canonical_marital("शादी हो चुकी है"), "married")
+        self.assertEqual(call_state._canonical_marital("शादी नहीं हुई"), "unmarried")
+        self.assertEqual(call_state._canonical_marital("शादीशुदा नहीं हूँ"), "unmarried")
 
     def test_half_a_year_stays_years_and_six_months_stay_months(self):
         months = call_state._spoken_age_records("बड़ी बेटी छह महीने की है।")

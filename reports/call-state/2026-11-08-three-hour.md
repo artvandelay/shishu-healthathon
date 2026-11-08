@@ -94,7 +94,9 @@ A day or time count copied into the follow-up as a sentence ("दो दिन �
 
 दो हफ़्ते का है and पंद्रह दिन की है are ages. दो दिन रहा and दो दिन का बुखार are not. A fifteen-day NICU stay stays a day count on that finding. Number words through तीस do not eat ordinals (तीस must not turn तीसरे into a number).
 
-आठ, छह और चार साल is three ages that share one unit. एक आधा साल stays one age. छह महीने और दो साल stays one of each unit. `187` unit tests. 35 scenarios, 0 failed.
+आठ, छह और चार साल is three ages that share one unit. एक आधा साल stays one age. छह महीने और दो साल stays one of each unit.
+
+शादी हुई है and शादी हो चुकी है are married. शादी नहीं हुई and शादीशुदा नहीं are unmarried. A denial beats the marriage word. `187` unit tests. 37 scenarios, 0 failed.
 
 ## Not hardcoded
 

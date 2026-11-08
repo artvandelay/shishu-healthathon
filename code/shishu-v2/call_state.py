@@ -1320,15 +1320,16 @@ def _canonical_marital(value: object) -> str | None:
         or "हो गई" in raw
         or "ho gayi" in text
         or "shaadi ho" in text
-        or any(word in raw for word in ("विवाहित", "शादीशुदा"))
-        or any(word in text for word in ("shadishuda", "shaadi shuda"))
+        or any(word in raw for word in ("विवाहित", "शादीशुदा", "हुई", "हो चुकी", "हो चुका", "ब्याही"))
+        or any(word in text for word in ("shadishuda", "shaadi shuda", "ho chuki", "ho chuka"))
     )
-    if about:
+    # A denial beats a marriage word: शादी नहीं हुई, शादीशुदा नहीं.
+    if about and not denial:
         return "about_to_marry"
-    if denial and not married:
-        return "unmarried"
-    if married:
+    if married and not denial:
         return "married"
+    if denial:
+        return "unmarried"
     return None
 
 
