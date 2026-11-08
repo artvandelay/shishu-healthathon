@@ -202,6 +202,17 @@ class CallStateTests(unittest.TestCase):
         self.assertIs(state["topics"]["body_bleeding_bruise"]["details"].get("teeth"), False)
         self.assertNotEqual((call_state.next_question(state) or {}).get("followup_id"), "teeth")
 
+        # A nahi during a later follow-up resolves that follow-up only. It must not
+        # turn the topic's yes into a no, or the remaining follow-ups are dropped.
+        state = _ask(call_state.new_call_state(), "fam_bleeding")
+        state = call_state.apply_updates(state, [_update("topic.fam_bleeding", True)], 4)
+        state = call_state.begin_question(state, call_state.next_question(state))
+        state = call_state.apply_updates(state, [_update("topic.fam_bleeding", False)], 5)
+        self.assertEqual(
+            (state["topics"]["fam_bleeding"]["value"], call_state.next_question(state)["followup_id"]),
+            (True, "who"),
+        )
+
     def test_a_no_to_a_count_followup_is_not_saved_as_the_count(self):
         state = _ask(call_state.new_call_state(), "ill_admissions")
         state = call_state.apply_updates(state, [_update("topic.ill_admissions", True)], 1)

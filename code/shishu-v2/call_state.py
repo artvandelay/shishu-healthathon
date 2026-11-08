@@ -1030,7 +1030,13 @@ def apply_updates(
                     details[followup_id] = update.get("value")
             topic["details"] = details
             if isinstance(update.get("value"), bool):
-                topic["value"] = update.get("value")
+                incoming_value = update.get("value")
+                # The open question is a follow-up of this topic. False answers that
+                # follow-up; it must not turn the topic's saved yes into a no.
+                kind = (state.get("current_question") or {}).get("question_kind")
+                on_followup = kind in (None, "followup")
+                if not (on_followup and incoming_value is False and previous_value is True):
+                    topic["value"] = incoming_value
             if topic.get("state") != "answered":
                 topic["state"] = "answered" if previous_state == "answered" else status
             topic["source"] = "model"
@@ -1141,6 +1147,8 @@ def begin_question(state: dict, question: dict) -> dict:
         "topic_id": question.get("topic_id"),
         "followup_id": question.get("followup_id"),
     }
+    if question.get("question_kind") in ("topic", "followup", "closing"):
+        state["current_question"]["question_kind"] = question.get("question_kind")
     same_followup = (
         previous.get("topic_id") == question.get("topic_id")
         and previous.get("followup_id") == question.get("followup_id")
