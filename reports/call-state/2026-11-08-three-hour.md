@@ -238,6 +238,12 @@ A danda is a clause boundary, the same as a comma. और कुछ नहीं
 
 Trio: एक बेटा है। दो साल का है। (no flags), pain after a sentence break (still a yes), and नहीं। बस इतना ही। sent as true (no हाँ lines). Pass.
 
+## 16:20 IST
+
+बेटा और बेटी दोनों चार साल के is two children of that age. The दोनों rule now runs after a numbered tool value is set aside, because the sentence itself has no numbered count. पति की उम्र तीस साल is not a child; the बेटा एक साल का beside it is. उम्र पाँच, तीन और एक साल after the children stays theirs. चार साल का था जब is when the fits happened, so the child stored is the current छह साल. `196` unit tests. 81 scenarios, 0 failed.
+
+Trio: son and daughter both four (no flags), fits at four and now six (still a yes, one child of six), and the husband's 30 sent as the child count (one boy of one year, no हाँ lines). Pass.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

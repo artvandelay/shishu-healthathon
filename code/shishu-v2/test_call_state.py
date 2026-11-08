@@ -1221,6 +1221,24 @@ class CallStateTests(unittest.TestCase):
             [(c["sex"], c["age"]) for c in sons["profile"]["children"]],
             [("male", {"value": 4, "unit": "years"}), ("male", {"value": 4, "unit": "years"})],
         )
+        pair = stored("बेटा और बेटी दोनों चार साल के।", 2)
+        self.assertEqual(
+            [(c["sex"], c["age"]) for c in pair["profile"]["children"]],
+            [
+                ("male", {"value": 4, "unit": "years"}),
+                ("female", {"value": 4, "unit": "years"}),
+            ],
+        )
+        husband = stored("मेरे पति की उम्र तीस साल है और बेटा एक साल का है।", 1)
+        self.assertEqual(
+            [(c["sex"], c["age"]) for c in husband["profile"]["children"]],
+            [("male", {"value": 1, "unit": "years"})],
+        )
+        then = stored("चार साल का था जब झटके हुए, अब छह साल का है।", 6)
+        self.assertEqual(
+            [c["age"] for c in then["profile"]["children"]],
+            [{"value": 6, "unit": "years"}],
+        )
         mother = stored("मेरी उम्र तीस साल है और दो बच्चे हैं।")
         self.assertTrue(all(c.get("age") is None for c in mother["profile"]["children"]))
         self.assertNotEqual(mother["topics"]["intro_children"]["state"], "answered")

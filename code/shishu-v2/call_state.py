@@ -1598,6 +1598,58 @@ def _merge_year_and_months(folded: str, found: list) -> list[dict]:
     return merged
 
 
+_OTHER_PERSON_RE = re.compile(
+    r"मेरी|मेरा|मेरे|मैं|पति|पत्नी|माता|पिता|मम्मी|पापा|भाई|भैया|भइया|बहन|दीदी|"
+    r"दादा|दादी|चाचा|चाची|नाना|नानी|मामा|मामी|मौसी|मासी|ससुर|सास|देवर|जेठ|ननद"
+)
+
+
+def _child_ages_in(utterance: str) -> list[dict]:
+    """Ages of her children. Someone else's उम्र, and an age at a past event, are not.
+
+    पति की उम्र तीस साल is the husband. उम्र पाँच, तीन और एक साल after the
+    children is theirs. चार साल का था जब is when something happened.
+    """
+    records = _spoken_age_records(utterance)
+    folded = _fold_spoken_numbers(utterance or "")
+    units = {
+        "years": _YEAR_UNIT,
+        "months": _MONTH_UNIT,
+        "weeks": _WEEK_UNIT,
+        "days": _DAY_UNIT,
+    }
+    cursor = 0
+    kept = []
+    for record in records:
+        value = record.get("value")
+        number = int(value) if isinstance(value, float) and value.is_integer() else value
+        unit = units.get(record.get("unit") or "")
+        match = None
+        if unit is not None and number is not None:
+            match = re.search(
+                rf"(?<![\d.]){re.escape(str(number))}(?!\.\d)\s*{unit}",
+                folded[cursor:],
+            )
+        if not match:
+            kept.append(record)
+            continue
+        start = cursor + match.start()
+        cursor = cursor + match.end()
+        window = folded[max(0, start - 32):start]
+        if "उम्र" in window:
+            last_other = max((item.end() for item in _OTHER_PERSON_RE.finditer(window)), default=-1)
+            last_child = max((item.end() for item in _CHILD_WORD.finditer(window)), default=-1)
+            if last_other >= 0 and last_other > last_child:
+                continue
+        if re.match(
+            rf"{re.escape(str(number))}\s*{unit}\s+(?:का|की|के)\s+(?:था|थी|थे)\s+जब",
+            folded[start:],
+        ):
+            continue
+        kept.append(record)
+    return kept
+
+
 def _spoken_ages(utterance: str) -> list[float]:
     return [
         age
@@ -2548,18 +2600,10 @@ def apply_updates(
                         if isinstance(child, dict)
                     ]
                     aged = [child for child in existing if _child_age_years(child.get("age")) is not None]
-                    spoken_now = _spoken_age_records(utterance)
+                    spoken_now = _child_ages_in(utterance)
                     # The tool's integer is an age when the sentence states ages
                     # and does not state that many children. आठ साल का एक बच्चा
                     # sent as 8 is one child. छह महीने sent as 6 is one child.
-                    if (
-                        kind_c == "ignore"
-                        and len(spoken_now) == 1
-                        and re.search(r"दोनों|जुड़वाँ|जुड़वां|जुड़वाँ|twins", utterance or "", re.I)
-                        and _count_from_child_words(_fold_spoken_numbers(utterance or "")) is None
-                    ):
-                        # दोनों एक साल के, or जुड़वाँ, is two children of that age.
-                        spoken_now = [spoken_now[0], spoken_now[0]]
                     if kind_c == "count" and spoken_now:
                         recounted = _count_from_child_words(_fold_spoken_numbers(utterance or ""))
                         age_values = {
@@ -2574,6 +2618,16 @@ def apply_updates(
                             kind_c = "ignore"
                         elif recounted != int(norm) and int(norm) in age_values:
                             norm = recounted
+                    if (
+                        kind_c == "ignore"
+                        and len(spoken_now) == 1
+                        and re.search(r"दोनों|जुड़वाँ|जुड़वां|जुड़वाँ|twins", utterance or "", re.I)
+                        and _count_from_child_words(_fold_spoken_numbers(utterance or "")) is None
+                    ):
+                        # दोनों एक साल के, or जुड़वाँ, is two children of that age.
+                        # बेटा और बेटी दोनों चार साल arrives as a count and becomes
+                        # this case once the sentence shows no numbered count.
+                        spoken_now = [spoken_now[0], spoken_now[0]]
                     count_n = int(norm) if kind_c == "count" else 0
                     shared = _shared_age_for_group(utterance, count_n)
                     if shared:
