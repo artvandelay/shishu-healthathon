@@ -605,6 +605,38 @@ def campaign() -> list[Scenario]:
             no_value=True,
         ),
         Scenario(
+            name="no_flags_one_of_each_age",
+            group="no_flags",
+            caller_name="जया",
+            marital_text=married,
+            children_text="तीन साल का एक और एक साल की एक।",
+            children_value=2,
+        ),
+        Scenario(
+            name="flags_one_of_each_age",
+            group="red_flags",
+            caller_name="हेमलता",
+            marital_text=married,
+            children_text="तीन साल का एक और एक साल की एक।",
+            children_value=2,
+            positives={
+                "body_blue": {
+                    "value": True,
+                    "utterance": "बड़े वाले के होंठ नीले पड़ते हैं।",
+                    "details": {},
+                },
+            },
+            expect_yes=("body_blue",),
+        ),
+        Scenario(
+            name="degenerate_one_sent_as_three",
+            group="degenerate",
+            caller_name="कुसुम",
+            marital_text=married,
+            children_text="तीन साल का एक और एक साल की एक।",
+            children_value=3,
+        ),
+        Scenario(
             name="no_flags_sons_without_the_word_year",
             group="no_flags",
             caller_name="सविता",

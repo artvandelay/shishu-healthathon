@@ -1486,6 +1486,9 @@ def _ages_with_unit(
     for match in listed.finditer(folded):
         if not re.search(r",|और|and", match.group(1), re.I):
             continue
+        # तीन साल का एक और एक साल की एक. The एक after का is one child, not an age.
+        if re.search(r"(?:का|की|के)\s*$", folded[:match.start()]):
+            continue
         if not _span_is_age(folded, match.end(), require_copula):
             continue
         if skip_event_month and _is_event_month_after(folded, match.end()):
