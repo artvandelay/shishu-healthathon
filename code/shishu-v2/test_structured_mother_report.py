@@ -142,6 +142,75 @@ class StructuredMotherReportTests(unittest.TestCase):
         self.assertIn(question, _joined(report_normal["groups"]))
         self.assertIn(question + '</span><span class="ans">नहीं</span>', rendered)
 
+    def test_unknown_is_printed_under_unknown_not_unasked(self):
+        state = self._state()
+        state["topics"]["birth_cleft"]["state"] = "unknown"
+        report = mother_report.build(_call(state))
+        question = checklist.question_hi("birth_cleft")
+        rendered = mother_report.render_html(report)
+        self.assertIn(question, report["unknown"])
+        self.assertNotIn(question, _joined(report["unasked"]))
+        self.assertIn(question + '</span><span class="ans">पता नहीं</span>', rendered)
+
+    def test_english_clinical_details_and_child_ages_render_in_clean_hindi(self):
+        state = self._state()
+        state["profile"]["caller_name"] = "Shilpa"
+        state["profile"]["children"] = [
+            {"id": "child_1", "name": "Aarav", "age": {"value": 6, "unit": "years"}, "sex": "male"},
+            {"id": "child_2", "name": "Isha", "age": {"value": 6, "unit": "months"}, "sex": "female"},
+        ]
+        state["topics"]["birth_nicu"]["state"] = "answered"
+        state["topics"]["birth_nicu"]["value"] = True
+        state["topics"]["birth_nicu"]["instances"] = [
+            {"person_id": "child_2", "value": True, "details": {"reason": "jaundice", "days": "4 days"}},
+        ]
+        state["topics"]["body_fits_milestones"]["state"] = "answered"
+        state["topics"]["body_fits_milestones"]["value"] = True
+        state["topics"]["body_fits_milestones"]["instances"] = [
+            {"person_id": "child_1", "value": True, "details": {"type": "fits", "onset": "late walking"}},
+        ]
+        state["topics"]["fam_related"]["state"] = "answered"
+        state["topics"]["fam_related"]["value"] = True
+        state["topics"]["fam_related"]["details"] = {"relationship": "first cousin"}
+
+        report = mother_report.build(_call(state))
+        self.assertIn("6 साल", report["who"])
+        self.assertIn("6 महीने", report["who"])
+        self.assertNotIn("years", report["who"])
+        self.assertNotIn("months", report["who"])
+
+        yes_blob = " ".join(report["yes"])
+        self.assertIn("पीलिया", yes_blob)
+        self.assertIn("झटके", yes_blob)
+        self.assertIn("चलने में देरी", yes_blob)
+        self.assertIn("सगे कज़िन", yes_blob)
+        self.assertNotIn("जौन्दिcए", yes_blob)
+        self.assertNotIn("jaundice", yes_blob.lower())
+
+    def test_structured_positive_findings_generate_tailored_mother_questions(self):
+        state = self._state()
+        state["topics"]["body_joint_swelling"]["state"] = "answered"
+        state["topics"]["body_joint_swelling"]["value"] = True
+        state["topics"]["body_joint_swelling"]["details"] = {"joint": "ghutna", "duration": "4 din"}
+        state["topics"]["fam_infant_death"]["state"] = "answered"
+        state["topics"]["fam_infant_death"]["value"] = True
+        state["topics"]["fam_infant_death"]["details"] = {"age_at_death": "3 mahine", "cause": "fits"}
+
+        report = mother_report.build(_call(state))
+        q_blob = " ".join(report["questions"])
+        self.assertIn("घुटने", q_blob)
+        self.assertIn("गुजर", q_blob)
+
+    def test_normal_delivery_with_true_value_is_classified_as_no(self):
+        state = self._state()
+        state["topics"]["birth_mode"]["state"] = "answered"
+        state["topics"]["birth_mode"]["value"] = True
+        state["topics"]["birth_mode"]["details"] = {"delivery_type": "normal", "place": "hospital"}
+        report = mother_report.build(_call(state))
+        self.assertEqual(report["yes"], [])
+        question = checklist.question_hi("birth_mode")
+        self.assertIn(question, _joined(report["groups"]))
+
 
 if __name__ == "__main__":
     unittest.main()

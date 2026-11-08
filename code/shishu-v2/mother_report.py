@@ -158,6 +158,7 @@ _CONS = (
     ("bh", "भ"), ("sh", "श"), ("k", "क"), ("g", "ग"), ("t", "त"), ("d", "द"),
     ("n", "न"), ("p", "प"), ("b", "ब"), ("m", "म"), ("y", "य"), ("r", "र"),
     ("l", "ल"), ("v", "व"), ("w", "व"), ("s", "स"), ("h", "ह"), ("f", "फ"),
+    ("c", "क"), ("q", "क"), ("x", "क्स"), ("z", "ज़"),
 )
 _VOW = (
     ("aa", "ा", "आ"), ("ii", "ी", "ई"), ("ee", "ी", "ई"), ("uu", "ू", "ऊ"),
@@ -165,6 +166,137 @@ _VOW = (
     ("i", "ि", "इ"), ("u", "ु", "उ"), ("e", "े", "ए"), ("o", "ो", "ओ"),
 )
 _KEEP_LATIN = {"asha", "anm", "bcg", "icu", "nicu", "bp", "shishu"}
+
+_PHRASE_HI: tuple[tuple[re.Pattern[str], str], ...] = tuple(
+    (re.compile(rf"(?i)\b{re.escape(phrase)}\b"), replacement)
+    for phrase, replacement in (
+        ("low birth weight", "कम वज़न"),
+        ("not normal", "असामान्य"),
+        ("not_normal", "असामान्य"),
+        ("late walking", "चलने में देरी"),
+        ("late speech", "बोलने में देरी"),
+        ("late talking", "बोलने में देरी"),
+        ("late sitting", "बैठने में देरी"),
+        ("blood pressure", "बीपी"),
+        ("high bp", "हाई बीपी"),
+        ("first cousin", "सगे कज़िन"),
+        ("second cousin", "दूर के कज़िन"),
+        ("c-section", "ऑपरेशन"),
+        ("c section", "ऑपरेशन"),
+        ("mother's brother", "मामा"),
+        ("father's brother", "चाचा"),
+        ("mother's sister", "मौसी"),
+        ("father's sister", "बुआ"),
+        ("mother's mother", "नानी"),
+        ("father's mother", "दादी"),
+        ("mother's father", "नाना"),
+        ("father's father", "दादा"),
+        ("kaanch ka box", "काँच का बक्सा"),
+        ("blue light", "नीली रोशनी"),
+    )
+)
+
+_TOKEN_HI = {
+    "years": "साल",
+    "year": "साल",
+    "saal": "साल",
+    "months": "महीने",
+    "month": "महीने",
+    "mahine": "महीने",
+    "mahina": "महीना",
+    "days": "दिन",
+    "day": "दिन",
+    "din": "दिन",
+    "weeks": "हफ़्ते",
+    "week": "हफ़्ता",
+    "hafte": "हफ़्ते",
+    "hafta": "हफ़्ता",
+    "male": "लड़का",
+    "female": "लड़की",
+    "boy": "लड़का",
+    "girl": "लड़की",
+    "operation": "ऑपरेशन",
+    "caesarean": "ऑपरेशन",
+    "cesarean": "ऑपरेशन",
+    "normal": "नॉर्मल",
+    "hospital": "अस्पताल",
+    "clinic": "क्लिनिक",
+    "home": "घर",
+    "ghar": "घर",
+    "early": "समय से पहले",
+    "preterm": "समय से पहले",
+    "late": "समय के बाद",
+    "postterm": "समय के बाद",
+    "jaundice": "पीलिया",
+    "peeliya": "पीलिया",
+    "piliya": "पीलिया",
+    "breathing": "साँस की दिक्कत",
+    "abnormal": "असामान्य",
+    "low": "कम",
+    "high": "ज़्यादा",
+    "both": "दोनों",
+    "dono": "दोनों",
+    "fits": "झटके",
+    "seizures": "झटके",
+    "seizure": "झटके",
+    "jhatke": "झटके",
+    "delayed": "देरी",
+    "delay": "देरी",
+    "urine": "पेशाब",
+    "stool": "पॉटी",
+    "potty": "पॉटी",
+    "fever": "बुखार",
+    "bukhar": "बुखार",
+    "pneumonia": "निमोनिया",
+    "infection": "इन्फेक्शन",
+    "swelling": "सूजन",
+    "sujan": "सूजन",
+    "soojan": "सूजन",
+    "boil": "फोड़ा",
+    "phoda": "फोड़ा",
+    "lump": "गाँठ",
+    "gaanth": "गाँठ",
+    "bleeding": "खून आना",
+    "bruising": "नील पड़ना",
+    "bruises": "नील पड़ना",
+    "transfusion": "खून चढ़ाना",
+    "sleepiness": "सुस्ती",
+    "lethargy": "सुस्ती",
+    "vomiting": "उल्टी",
+    "ulti": "उल्टी",
+    "sugar": "शुगर",
+    "diabetes": "शुगर",
+    "thyroid": "थायरॉइड",
+    "stroke": "लकवा",
+    "cancer": "कैंसर",
+    "cousin": "कज़िन",
+    "uncle": "चाचा/मामा",
+    "aunt": "बुआ/मौसी",
+    "grandmother": "दादी/नानी",
+    "grandfather": "दादा/नाना",
+    "brother": "भाई",
+    "bhai": "भाई",
+    "sister": "बहन",
+    "behen": "बहन",
+    "mother": "माँ",
+    "father": "पिता",
+    "mama": "मामा",
+    "chacha": "चाचा",
+    "bua": "बुआ",
+    "mausi": "मौसी",
+    "masi": "मासी",
+    "dadi": "दादी",
+    "nani": "नानी",
+    "dada": "दादा",
+    "nana": "नाना",
+    "ghutna": "घुटना",
+    "ghutne": "घुटने",
+    "knee": "घुटना",
+    "joint": "जोड़",
+    "isha": "ईशा",
+    "ram": "राम",
+    "aarav": "आरव",
+}
 
 
 def transliterate(word: str) -> str:
@@ -196,17 +328,20 @@ def transliterate(word: str) -> str:
 
 
 def hindi_text(text: str) -> str:
+    raw = text or ""
+    for pattern, replacement in _PHRASE_HI:
+        raw = pattern.sub(replacement, raw)
+
     def one(match: re.Match) -> str:
         word = match.group(0)
-        if word.lower() in _KEEP_LATIN:
+        lower = word.lower()
+        if lower in _TOKEN_HI:
+            return _TOKEN_HI[lower]
+        if lower in _KEEP_LATIN:
             return word
-        if word.lower() in {"year", "years"}:
-            return "साल"
-        if word.lower() in {"month", "months"}:
-            return "महीने"
         return transliterate(word)
 
-    return re.sub(r"[A-Za-z]+", one, text or "")
+    return re.sub(r"[A-Za-z]+", one, raw)
 
 
 def _name(call: dict) -> str:
@@ -345,13 +480,8 @@ def _thalassemia_from_state(state: dict) -> bool:
     return status == "answered" and topic.get("value") is False
 
 
-_TOKEN_HI = {
-    "operation": "ऑपरेशन",
-    "caesarean": "ऑपरेशन",
-    "cesarean": "ऑपरेशन",
-    "normal": "नॉर्मल",
-    "hospital": "अस्पताल",
-    "home": "घर",
+_HIDDEN_DETAIL_VALUES = {
+    "noted", "skip", "unknown", "no_response", "none", "true", "false", "yes", "no", "null", "n/a",
 }
 
 
@@ -396,14 +526,26 @@ def _shown_value(value: object) -> str:
     if value is None or isinstance(value, (dict, bool)):
         return ""
     text = str(value).strip()
-    if not text or text.startswith("child_"):
+    if not text or text.startswith("child_") or text.lower() in _HIDDEN_DETAIL_VALUES:
         return ""
-    return _TOKEN_HI.get(text.lower(), text)
+    mapped = _TOKEN_HI.get(text.lower(), text)
+    cleaned = hindi_text(mapped)
+    cleaned = re.sub(r"(\S+)\s*\(\1\)", r"\1", cleaned)
+    return cleaned.strip()
 
 
-def _detail_values(details: dict) -> str:
-    shown = [_shown_value(value) for value in details.values()]
-    return ", ".join(part for part in shown if part)
+def _detail_values(details: dict, skip_label: str = "") -> str:
+    out: list[str] = []
+    skip_norm = hindi_text(skip_label).strip() if skip_label else ""
+    for key, value in details.items():
+        if key == "affected_child" and skip_norm:
+            continue
+        shown = _shown_value(value)
+        if not shown or shown == skip_norm:
+            continue
+        if shown not in out:
+            out.append(shown)
+    return ", ".join(out)
 
 
 def _children_label(state: dict) -> str:
@@ -421,7 +563,7 @@ def _children_label(state: dict) -> str:
             age_text = ""
         bit = " ".join(part for part in (label, age_text) if part)
         if bit:
-            parts.append(bit)
+            parts.append(hindi_text(bit))
     return ", ".join(parts)
 
 
@@ -433,7 +575,7 @@ def _instance_note(state: dict, topic_id: str) -> str:
             continue
         label = _child_label(state, instance.get("person_id"))
         details = instance.get("details") if isinstance(instance.get("details"), dict) else {}
-        extra = _detail_values(details)
+        extra = _detail_values(details, skip_label=label)
         bit = " ".join(part for part in (label, extra) if part)
         if bit:
             bits.append(bit)
@@ -478,7 +620,16 @@ def build(call: dict, extracted: dict | None = None) -> dict:
             incomplete = False
         elif close_reason in {"emergency", "silence", "time_limit", "caller_stop", "browser_hangup"}:
             incomplete = True
-    questions = [hindi_text(q) for q in _questions(str(call.get("summary_mother") or ""))]
+    raw_summary_mother = str(call.get("summary_mother") or "").strip()
+    if not raw_summary_mother and state:
+        import summarizer
+
+        st_findings, st_flags = summarizer.state_to_findings_and_flags(state)
+        if st_flags or any(
+            isinstance(v, dict) and v.get("is_red_flag") for v in st_findings.values()
+        ):
+            raw_summary_mother = summarizer.default_mother_questions(st_findings, st_flags)
+    questions = [hindi_text(q) for q in _questions(raw_summary_mother)]
     show_thalassemia = (
         _thalassemia_from_state(state)
         if state
@@ -539,14 +690,11 @@ def build(call: dict, extracted: dict | None = None) -> dict:
             kind = _structured_kind(state, topic["id"]) if state else ground_kind(call, topic["id"], answers)
             if kind == "not_applicable":
                 continue
-            if state and kind in {"unknown", "no_response", "not_asked"}:
-                missed.append(checklist.question_hi(topic["id"]))
-                continue
-            if kind == "no":
+            if kind in {"no", "answered"}:
                 nos.append(checklist.question_hi(topic["id"]))
             elif kind == "unknown":
                 unknown.append(checklist.question_hi(topic["id"]))
-            elif kind == "not_asked" and not topic.get("optional"):
+            elif kind in {"no_response", "not_asked"} and not topic.get("optional"):
                 missed.append(checklist.question_hi(topic["id"]))
         if nos:
             groups.append({"title": checklist.GROUP_HI[group], "items": nos})

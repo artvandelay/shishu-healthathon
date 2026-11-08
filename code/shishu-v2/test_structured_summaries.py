@@ -89,6 +89,124 @@ class StructuredSummaryTests(unittest.TestCase):
         self.assertIn("birth_mode: yes", fallback["summary_doctor"])
         self.assertTrue(any(f.startswith("birth_mode:") for f in fallback["red_flags"]))
 
+    def test_state_to_findings_and_flags_populates_domains_and_mother_questions(self):
+        state = _state()
+        state["profile"]["caller_name"] = "कविता"
+        state["profile"]["children"] = [
+            {"id": "child_1", "name": "आरव", "age": {"value": 3, "unit": "years"}, "sex": "male"}
+        ]
+        state["topics"]["birth_nicu"]["state"] = "answered"
+        state["topics"]["birth_nicu"]["value"] = True
+        state["topics"]["birth_nicu"]["details"] = {"reason": "jaundice", "days": 4}
+        state["topics"]["ill_admissions"]["state"] = "answered"
+        state["topics"]["ill_admissions"]["value"] = True
+        state["topics"]["ill_admissions"]["details"] = {"count": 3, "reasons": "fever"}
+
+        findings, flags = summarizer.state_to_findings_and_flags(state)
+        self.assertIn("birth_nicu", findings)
+        self.assertTrue(findings["birth_nicu"]["is_red_flag"])
+        self.assertIn("infections", findings)
+        self.assertTrue(findings["infections"]["is_red_flag"])
+        self.assertTrue(any(f.startswith("birth_nicu:") for f in flags))
+        self.assertTrue(any(f.startswith("ill_admissions:") for f in flags))
+
+        extracted = answer_extractor.structured_answers({"state": state})
+        self.assertTrue(len(extracted["yes_hindi"]) >= 2)
+        self.assertTrue(any("पीलिया" in y for y in extracted["yes_hindi"]))
+        self.assertTrue(len(extracted["questions_hindi"]) >= 3)
+        mother_text = answer_extractor.mother_summary(extracted, findings, flags)
+        self.assertIn("NICU", mother_text)
+        self.assertIn("भर्ती", mother_text)
+
+    def test_frontier_gemini_reconciliation_pass_fixes_missed_topic_and_preserves_unasked(self):
+        state = _state()
+        state["topics"]["body_puberty"]["state"] = "not_applicable"
+        state["topics"]["body_puberty"]["source"] = "server_rule"
+        state["topics"]["body_puberty"]["reason"] = "all_under_10"
+        state["profile"]["children"] = [
+            {"id": "child_1", "name": "Aarav", "age": {"value": 2, "unit": "years"}, "sex": "male"}
+        ]
+        transcript = [
+            {"role": "assistant", "text": "आपका नाम क्या है?"},
+            {"role": "user", "text": "मेरा नाम सुनीता है। बच्चे को काँच के बक्से में 3 दिन पीलिया के लिए रखा था।"},
+        ]
+        shell = "\n".join(f"{h}\nNot reported." for h in summarizer._REQUIRED_HEADINGS)
+        captured_prompts = []
+
+        async def fake_gemini(user_content, system_prompt=""):
+            captured_prompts.append((user_content, system_prompt))
+            return {
+                "doctor_markdown": shell.replace(
+                    "### Birth & Neonatal History\nNot reported.",
+                    "### Birth & Neonatal History\n- NICU stay for 3 days due to neonatal jaundice.",
+                ),
+                "mother_hindi": "1. जन्म के समय पीलिया और काँच के बक्से (NICU) के बारे में डॉक्टर से क्या जाँच पूछें?",
+                "extracted_findings": {},
+                "red_flags": ["birth_nicu: 3 days NICU for jaundice"],
+                "profile_corrections": {"caller_name": "सुनीता"},
+                "topic_corrections": {
+                    "birth_nicu": {
+                        "state": "answered",
+                        "value": True,
+                        "details": {"reason": "पीलिया", "days": "3 दिन"},
+                    },
+                    "fam_cancer": {
+                        "state": "answered",
+                        "value": False,
+                        "evidence": "hallucinated quote not in transcript",
+                    },
+                },
+            }
+
+        orig_gemini = summarizer._from_gemini
+        summarizer._from_gemini = fake_gemini
+        try:
+            res = asyncio.run(
+                summarizer.generate_call_summaries(transcript, {}, [], state=state)
+            )
+        finally:
+            summarizer._from_gemini = orig_gemini
+
+        self.assertEqual(len(captured_prompts), 1)
+        self.assertIn("Call Transcript", captured_prompts[0][0])
+        self.assertIn("सुनीता", res["state"]["profile"]["caller_name"])
+        self.assertEqual(res["state"]["topics"]["birth_nicu"]["state"], "answered")
+        self.assertTrue(res["state"]["topics"]["birth_nicu"]["value"])
+        # Unasked topic without grounded transcript quote must NOT become answered/no
+        self.assertEqual(res["state"]["topics"]["fam_cancer"]["state"], "not_asked")
+        # Server skip rule must remain enforced
+        self.assertEqual(res["state"]["topics"]["body_puberty"]["state"], "not_applicable")
+        self.assertIn("NICU", res["summary_mother"])
+        self.assertTrue(any(f.startswith("birth_nicu:") for f in res["red_flags"]))
+
+    def test_frontier_gemini_reconciliation_falls_back_cleanly_on_error(self):
+        state = _state()
+        state["topics"]["fam_infant_death"]["state"] = "answered"
+        state["topics"]["fam_infant_death"]["value"] = True
+        state["topics"]["fam_infant_death"]["details"] = {"age_at_death": "4 mahine", "cause": "fits"}
+
+        async def fail_provider(*_args, **_kwargs):
+            raise RuntimeError("offline")
+
+        orig_gemini = summarizer._from_gemini
+        orig_openai = summarizer._from_openai
+        summarizer._from_gemini = fail_provider
+        summarizer._from_openai = fail_provider
+        try:
+            res = asyncio.run(
+                summarizer.generate_call_summaries(
+                    [{"role": "user", "text": "हाँ"}], {}, [], state=state
+                )
+            )
+        finally:
+            summarizer._from_gemini = orig_gemini
+            summarizer._from_openai = orig_openai
+
+        self.assertIn("fam_infant_death: yes", res["summary_doctor"])
+        self.assertIn("गुजर", res["summary_mother"])
+        self.assertIn("family_infant_death", res["findings"])
+        self.assertTrue(any(f.startswith("fam_infant_death:") for f in res["red_flags"]))
+
 
 if __name__ == "__main__":
     unittest.main()

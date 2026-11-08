@@ -1,5 +1,6 @@
 """Post-call doctor and mother summaries."""
 
+import copy
 import json
 import os
 import re
@@ -466,6 +467,59 @@ def _extract_question_lines(text: str) -> list[str]:
     return questions
 
 
+TOPIC_TO_DOMAIN: dict[str, str] = {
+    "birth_mode": "birth_nicu",
+    "birth_term": "birth_nicu",
+    "birth_nicu": "birth_nicu",
+    "birth_cord_bleed": "birth_nicu",
+    "birth_cord_3weeks": "birth_nicu",
+    "birth_bcg": "birth_nicu",
+    "birth_hearing_vision": "birth_nicu",
+    "birth_cleft": "birth_nicu",
+    "body_fits_milestones": "milestones",
+    "body_regression": "milestones",
+    "body_private_parts": "milestones",
+    "body_lumps_birth": "milestones",
+    "body_proportion": "milestones",
+    "body_thumb": "milestones",
+    "body_growth": "milestones",
+    "body_puberty": "milestones",
+    "body_joint_swelling": "bleeding_joints",
+    "body_bleeding_bruise": "bleeding_joints",
+    "body_limb_pain": "bleeding_joints",
+    "ill_fasting": "metabolic_fasting",
+    "ill_odor": "metabolic_fasting",
+    "ill_sudden": "metabolic_fasting",
+    "ill_admissions": "infections",
+    "ill_iv_antibiotics": "infections",
+    "body_transfusion": "infections",
+    "body_blood_count": "infections",
+    "body_tummy": "infections",
+    "body_blue": "infections",
+    "preg_conditions": "pregnancy",
+    "preg_thalassemia": "pregnancy",
+    "preg_scan": "pregnancy",
+    "preg_heart": "pregnancy",
+    "preg_transfusion": "pregnancy",
+    "preg_delivery": "pregnancy",
+    "fam_related": "consanguinity",
+    "fam_miscarriage": "family_infant_death",
+    "fam_infant_death": "family_infant_death",
+    "fam_fits_delay": "family_history",
+    "fam_blind": "family_history",
+    "fam_deaf": "family_history",
+    "fam_transfusion": "family_history",
+    "fam_bleeding": "family_history",
+    "fam_cancer": "family_history",
+    "fam_heart": "family_history",
+    "fam_kidney": "family_history",
+    "fam_bp_stroke": "family_history",
+    "fam_maternal_side": "family_history",
+    "fam_lumps": "family_history",
+    "fam_same_problem": "family_history",
+}
+
+
 def _has_any_red_flag(findings: dict, red_flags: list[str] | None = None) -> bool:
     if red_flags:
         return True
@@ -485,13 +539,23 @@ def _ensure_mother_covers_flags(
     combined_q = "\n".join(questions)
 
     for domain, pattern, fallback_q in _FLAG_DOMAIN_QUESTIONS:
+        domain_topics = {tid for tid, dom in TOPIC_TO_DOMAIN.items() if dom == domain}
         entry = (findings or {}).get(domain)
-        flagged_in_list = any(str(f).startswith(f"{domain}:") for f in (red_flags or []))
+        flagged_in_list = any(
+            str(f).split(":", 1)[0].strip() in ({domain} | domain_topics)
+            for f in (red_flags or [])
+        )
+        topic_flagged = any(
+            isinstance((findings or {}).get(tid), dict)
+            and bool((findings or {})[tid].get("is_red_flag"))
+            and not _unknown_detail(str((findings or {})[tid].get("detail") or ""))
+            for tid in domain_topics
+        )
         is_flagged = (
             isinstance(entry, dict)
             and bool(entry.get("is_red_flag"))
             and not _unknown_detail(str(entry.get("detail") or ""))
-        ) or flagged_in_list
+        ) or flagged_in_list or topic_flagged
         if not is_flagged:
             continue
         if not pattern.search(combined_q):
@@ -587,13 +651,29 @@ def _assemble(payload: dict, findings: dict, red_flags: list[str], transcript: l
 
 
 STRUCTURED_STATE_SUMMARY_PROMPT = """
-You write the post-call record for a SHISHU screening.
-You can write language only from the structured state.
-Do not add a fact, child identity, answer, or diagnosis.
-Return one JSON object and nothing else. Keys must be exactly:
-{"doctor_markdown": "...", "mother_hindi": "...", "extracted_findings": {}, "red_flags": []}
-If a topic state is no_response, not_asked, or not_applicable, keep that label.
-Do not turn unknown, no_response, not_asked, or not_applicable into no.
+You are the post-call clinical screening auditor and summarizer for a SHISHU call.
+You are given:
+1. The deterministic structured call state (profile + all 54 topics) and deterministic draft summary.
+2. The call transcript (when available).
+
+Your role is to act as a sanity-check and double-checker:
+- Compare the deterministic structured state against the call transcript.
+- If the mother clearly stated a fact in the transcript (e.g., her name, child age/name, or a positive symptom/history/detail) that was missed or mis-parsed in the structured state, include it in `profile_corrections` or `topic_corrections`, and reflect it in `doctor_markdown`, `mother_hindi`, `extracted_findings`, and `red_flags`.
+- If a topic state is `no_response`, `not_asked`, or `not_applicable`, and the mother did NOT answer it in the transcript, keep that exact label (`no_response`, `not_asked`, or `not_applicable`). NEVER turn `unknown`, `no_response`, `not_asked`, or `not_applicable` into `no`.
+- Do not invent any fact, child identity, answer, or diagnosis. Never name specific rare diseases in `mother_hindi`.
+- `mother_hindi` must contain 3 to 6 clear, natural Devanagari Hindi questions (each ending with `?`) for the mother to ask her doctor or ASHA/ANM दीदी at the next visit, directly covering every positive finding from the call.
+- `doctor_markdown` must be a concise English clinical summary containing all required section headings:
+  ### Patient Profile & Chief Complaint
+  ### Positive Red Flags & NRROID Gate Alerts
+  ### Birth & Neonatal History
+  ### Development, Growth & Physical Features
+  ### Systemic, Infections & Hematology
+  ### Antenatal (Pregnancy) History
+  ### Family & Pedigree History
+  ### Pertinent Negatives
+
+Return one JSON object and nothing else. Keys must be:
+{"doctor_markdown": "...", "mother_hindi": "...", "extracted_findings": {}, "red_flags": [], "topic_corrections": {}, "profile_corrections": {}}
 """.strip()
 
 
@@ -601,11 +681,198 @@ def _answer_label(topic: dict) -> str:
     return call_state.topic_answer_kind(topic)
 
 
-def state_to_summary_context(state: dict) -> str:
-    """Facts the summary model may use. No transcript."""
+def _format_topic_detail(topic_id: str, saved: dict) -> str:
+    need = (checklist._BY_ID.get(topic_id) or {}).get("need") or topic_id
+    parts: list[str] = []
+    details = saved.get("details") if isinstance(saved.get("details"), dict) else {}
+    for k, v in details.items():
+        if v is None or isinstance(v, (dict, bool)):
+            continue
+        sv = str(v).strip()
+        if sv and sv.lower() not in {"noted", "skip", "unknown", "no_response", "none", "true", "false"}:
+            parts.append(f"{k}={sv}")
+    for inst in saved.get("instances") or []:
+        if not isinstance(inst, dict):
+            continue
+        pid = str(inst.get("person_id") or "").strip()
+        idet = inst.get("details") if isinstance(inst.get("details"), dict) else {}
+        ibits = [
+            f"{k}={v}"
+            for k, v in idet.items()
+            if v is not None
+            and not isinstance(v, (dict, bool))
+            and str(v).strip().lower() not in {"", "noted", "skip", "unknown", "no_response", "none", "true", "false"}
+        ]
+        if pid or ibits:
+            parts.append(f"{pid}({', '.join(ibits)})" if ibits else pid)
+    if parts:
+        return f"positive finding reported in structured call state ({need}; {'; '.join(parts)})"
+    return "positive finding reported in structured call state"
+
+
+def state_to_findings_and_flags(
+    state: dict | None,
+    existing_findings: dict | None = None,
+    existing_flags: list[str] | None = None,
+) -> tuple[dict, list[str]]:
+    """Deterministically project structured CallState into findings and red_flags."""
+    findings: dict = copy.deepcopy(existing_findings) if isinstance(existing_findings, dict) else {}
+    red_flags: list[str] = [
+        _flag_text(item) for item in (existing_flags or []) if _flag_text(item)
+    ]
+    if not isinstance(state, dict):
+        return findings, red_flags
+
+    profile = state.get("profile") if isinstance(state.get("profile"), dict) else {}
+    caller_name = str(profile.get("caller_name") or "").strip()
+    if caller_name and caller_name.lower() not in {"not reported", "unknown", "no_response"}:
+        findings.setdefault(
+            "profile_mother_name",
+            {"status": "info", "detail": f"Mother's name is {caller_name}.", "is_red_flag": False},
+        )
+    children = [c for c in (profile.get("children") or []) if isinstance(c, dict)]
+    if children:
+        age_bits = []
+        name_bits = []
+        sex_bits = []
+        for c in children:
+            cname = str(c.get("name") or "").strip()
+            if cname:
+                name_bits.append(cname)
+            csex = str(c.get("sex") or "").strip()
+            if csex:
+                sex_bits.append(csex)
+            cage = c.get("age")
+            if isinstance(cage, dict) and cage.get("value") is not None:
+                age_bits.append(f"{cage['value']} {cage.get('unit') or 'years'}")
+            elif cage not in (None, ""):
+                age_bits.append(str(cage))
+        if age_bits:
+            findings.setdefault(
+                "profile_child_age",
+                {"status": "info", "detail": ", ".join(age_bits), "is_red_flag": False},
+            )
+        if name_bits:
+            findings.setdefault(
+                "profile_child_name",
+                {"status": "info", "detail": ", ".join(name_bits), "is_red_flag": False},
+            )
+        if sex_bits:
+            findings.setdefault(
+                "profile_child_gender",
+                {"status": "info", "detail": ", ".join(sex_bits), "is_red_flag": False},
+            )
+
+    topics = state.get("topics") if isinstance(state.get("topics"), dict) else {}
+    for topic in checklist.TOPICS:
+        tid = topic["id"]
+        if tid.startswith("intro_") or tid == "close_anything_else":
+            continue
+        saved = topics.get(tid) if isinstance(topics.get(tid), dict) else {"state": "not_asked"}
+        label = _answer_label(saved)
+        if label != "yes":
+            continue
+        detail = _format_topic_detail(tid, saved)
+        flag_line = f"{tid}: {detail}"
+        if not any(f.startswith(f"{tid}:") for f in red_flags):
+            red_flags.append(flag_line)
+        domain = TOPIC_TO_DOMAIN.get(tid, tid)
+        prev_dom = findings.get(domain)
+        if isinstance(prev_dom, dict) and prev_dom.get("status") == "positive":
+            prev_det = str(prev_dom.get("detail") or "").strip()
+            if detail not in prev_det:
+                prev_dom["detail"] = f"{prev_det}; {tid}: {detail}" if prev_det else f"{tid}: {detail}"
+            prev_dom["is_red_flag"] = True
+        else:
+            findings[domain] = {
+                "status": "positive",
+                "detail": f"{tid}: {detail}",
+                "is_red_flag": True,
+            }
+    return findings, red_flags
+
+
+def reconcile_state_with_llm_payload(
+    state: dict,
+    payload: dict | None,
+    transcript: list[dict] | None = None,
+) -> dict:
+    """Apply grounded reconciliation patches from the frontier Gemini check to a copy of state."""
+    reconciled = copy.deepcopy(state)
+    if not isinstance(payload, dict):
+        return reconciled
+    user_blob = _user_text(transcript or []).strip().lower()
+    prof_corr = payload.get("profile_corrections")
+    if isinstance(prof_corr, dict) and user_blob:
+        prof = reconciled.setdefault("profile", {})
+        cname = str(prof_corr.get("caller_name") or "").strip()
+        if cname and not prof.get("caller_name") and cname.lower() not in {"not reported", "unknown", "shilpa"}:
+            prof["caller_name"] = cname
+            reconciled["topics"]["intro_name"]["state"] = "answered"
+            reconciled["topics"]["intro_name"]["value"] = cname
+        mstat = call_state._canonical_marital(prof_corr.get("marital_status"))
+        if mstat and not prof.get("marital_status"):
+            prof["marital_status"] = mstat
+            reconciled["topics"]["intro_married"]["state"] = "answered"
+            reconciled["topics"]["intro_married"]["value"] = mstat
+        if isinstance(prof_corr.get("children"), list) and prof_corr["children"] and not prof.get("children"):
+            norm_kids = call_state._normalize_children(prof_corr["children"])
+            if norm_kids:
+                prof["children"] = norm_kids
+                reconciled["topics"]["intro_children"]["state"] = "answered"
+                reconciled["topics"]["intro_children"]["value"] = True
+
+    top_corr = payload.get("topic_corrections")
+    if isinstance(top_corr, dict):
+        topics = reconciled.setdefault("topics", {})
+        for tid, patch in top_corr.items():
+            if tid not in checklist._BY_ID or not isinstance(patch, dict):
+                continue
+            cur = topics.get(tid)
+            if not isinstance(cur, dict) or cur.get("state") == "not_applicable":
+                continue
+            new_state = str(patch.get("state") or "").strip()
+            new_val = patch.get("value")
+            new_details = patch.get("details") if isinstance(patch.get("details"), dict) else {}
+            new_instances = patch.get("instances") if isinstance(patch.get("instances"), list) else []
+            if cur.get("state") == "answered":
+                if new_details:
+                    merged_det = dict(cur.get("details") or {})
+                    merged_det.update(new_details)
+                    cur["details"] = merged_det
+                if new_instances and not cur.get("instances"):
+                    cur["instances"] = new_instances
+                continue
+            if not user_blob:
+                continue
+            candidate = {"state": new_state, "value": new_val, "details": new_details}
+            if new_state == "answered" and call_state._is_positive(candidate):
+                cur["state"] = "answered"
+                cur["value"] = new_val if new_val is not None else True
+                if new_details:
+                    merged_det = dict(cur.get("details") or {})
+                    merged_det.update(new_details)
+                    cur["details"] = merged_det
+                if new_instances:
+                    cur["instances"] = new_instances
+            elif new_state == "unknown" and cur.get("state") in {"not_asked", "no_response"}:
+                cur["state"] = "unknown"
+            elif new_state == "answered" and new_val is False and cur.get("state") in {"not_asked", "no_response"}:
+                evidence = str(patch.get("evidence") or "").strip().lower()
+                if len(evidence) >= 6 and evidence in user_blob:
+                    cur["state"] = "answered"
+                    cur["value"] = False
+    call_state._apply_rules(reconciled)
+    return reconciled
+
+
+def state_to_summary_context(state: dict, transcript: list[dict] | None = None) -> str:
+    """Facts and deterministic draft for the summary/reconciliation model."""
+    det_findings, det_flags = state_to_findings_and_flags(state)
+    det_mother = default_mother_questions(det_findings, det_flags)
     lines = [
         "Structured call state.",
-        "Write language only from the structured state.",
+        "Write language only from the structured state and grounded transcript.",
         "Do not add a fact, child identity, answer, or diagnosis.",
         "Profile: " + json.dumps(state.get("profile") or {}, ensure_ascii=False),
     ]
@@ -618,46 +885,112 @@ def state_to_summary_context(state: dict) -> str:
             f"details={json.dumps(saved.get('details') or {}, ensure_ascii=False)} "
             f"instances={json.dumps(saved.get('instances') or [], ensure_ascii=False)}"
         )
+    lines.append("Deterministic Red Flags: " + json.dumps(det_flags, ensure_ascii=False))
+    lines.append("Deterministic Mother Questions Draft:\n" + det_mother)
+    if transcript:
+        t_lines = []
+        for turn in transcript:
+            if not isinstance(turn, dict):
+                continue
+            role = str(turn.get("role") or "").strip()
+            text = str(turn.get("text") or "").strip()
+            if role and text:
+                t_lines.append(f"{role}: {text}")
+        if t_lines:
+            lines.append("Call Transcript (for sanity-checking and fixing missed answers):\n" + "\n".join(t_lines))
     return "\n".join(lines)
 
 
-def build_state_fallback(state: dict) -> dict:
-    """Doctor note from structured states when both summary providers fail."""
-    lines = ["Structured screening record."]
+def build_state_fallback(
+    state: dict,
+    existing_findings: dict | None = None,
+    existing_flags: list[str] | None = None,
+) -> dict:
+    """Doctor note and mother questions from structured states when both summary providers fail."""
+    findings, red_flags = state_to_findings_and_flags(state, existing_findings, existing_flags)
     profile = state.get("profile") or {}
-    lines.append("Profile: " + json.dumps(profile, ensure_ascii=False))
     topics = state.get("topics") or {}
-    red_flags = []
+
+    shell = "\n".join(f"{heading}\nNot reported." for heading in _REQUIRED_HEADINGS)
+    profile_lines = [f"- Profile: {json.dumps(profile, ensure_ascii=False)}"]
+    shell = shell.replace(
+        "### Patient Profile & Chief Complaint\nNot reported.",
+        "### Patient Profile & Chief Complaint\n" + "\n".join(profile_lines),
+    )
+    negatives = [
+        topic["id"]
+        for topic in checklist.TOPICS
+        if not topic["id"].startswith("intro_")
+        and _answer_label(topics.get(topic["id"]) if isinstance(topics.get(topic["id"]), dict) else {}) == "no"
+    ]
+    if negatives:
+        shell = shell.replace(
+            "### Pertinent Negatives\nNot reported.",
+            "### Pertinent Negatives\n- Negative topics: " + ", ".join(negatives),
+        )
+    doctor = _fill_red_flag_section(shell, red_flags)
+    doctor = _fill_empty_sections(doctor, findings)
+
+    lines = [
+        doctor,
+        "",
+        "Structured screening record.",
+        "Profile: " + json.dumps(profile, ensure_ascii=False),
+    ]
     for topic in checklist.TOPICS:
         saved = topics.get(topic["id"]) if isinstance(topics.get(topic["id"]), dict) else {"state": "not_asked"}
         label = _answer_label(saved)
         lines.append(f"- {topic['id']}: {label}")
-        if label == "yes":
-            red_flags.append(f"{topic['id']}: positive finding reported in structured call state")
+
     return {
         "summary_doctor": "\n".join(lines),
-        "summary_mother": default_mother_questions({}, red_flags),
-        "findings": {},
+        "summary_mother": default_mother_questions(findings, red_flags),
+        "findings": findings,
         "red_flags": red_flags,
+        "state": state,
     }
 
 
-async def _from_gemini(user_content: str, system_prompt: str = DOCTOR_MOTHER_SUMMARY_PROMPT) -> dict:
+async def _from_gemini(
+    user_content: str,
+    system_prompt: str = DOCTOR_MOTHER_SUMMARY_PROMPT,
+    model: str | None = None,
+) -> dict:
     from google import genai
 
+    chosen_model = (
+        model
+        or os.environ.get("GEMINI_SUMMARY_MODEL")
+        or ("gemini-2.5-pro" if system_prompt == STRUCTURED_STATE_SUMMARY_PROMPT else "gemini-2.5-flash")
+    )
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
     try:
-        response = await client.aio.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=user_content,
-            config={
-                "system_instruction": system_prompt,
-                "response_mime_type": "application/json",
-                "temperature": 0.2,
-                "max_output_tokens": 8192,
-            },
-        )
-        return _parse_json(response.text or "")
+        try:
+            response = await client.aio.models.generate_content(
+                model=chosen_model,
+                contents=user_content,
+                config={
+                    "system_instruction": system_prompt,
+                    "response_mime_type": "application/json",
+                    "temperature": 0.2,
+                    "max_output_tokens": 8192,
+                },
+            )
+            return _parse_json(response.text or "")
+        except Exception:
+            if chosen_model == "gemini-2.5-flash":
+                raise
+            response = await client.aio.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=user_content,
+                config={
+                    "system_instruction": system_prompt,
+                    "response_mime_type": "application/json",
+                    "temperature": 0.2,
+                    "max_output_tokens": 8192,
+                },
+            )
+            return _parse_json(response.text or "")
     finally:
         await client.aio.aclose()
         client.close()
@@ -683,6 +1016,48 @@ async def _from_openai(user_content: str, system_prompt: str = DOCTOR_MOTHER_SUM
         await client.close()
 
 
+def _finalize_structured_summary(
+    payload: dict | None,
+    state: dict,
+    transcript: list[dict],
+    findings: dict,
+    red_flags: list[str],
+) -> dict:
+    reconciled_state = reconcile_state_with_llm_payload(state, payload, transcript)
+    det_findings, det_flags = state_to_findings_and_flags(reconciled_state, findings, red_flags)
+    if not isinstance(payload, dict):
+        return build_state_fallback(reconciled_state, det_findings, det_flags)
+    doctor = str(payload.get("doctor_markdown") or payload.get("summary_doctor") or "").strip()
+    if not doctor:
+        return build_state_fallback(reconciled_state, det_findings, det_flags)
+
+    extracted = payload.get("extracted_findings")
+    if isinstance(extracted, dict):
+        for k, v in extracted.items():
+            if k not in det_findings and not _not_reported(v):
+                det_findings[k] = v
+    incoming_flags = payload.get("red_flags")
+    if isinstance(incoming_flags, list):
+        for item in incoming_flags:
+            text = _flag_text(item)
+            if text and text not in det_flags and not _unknown_detail(text):
+                det_flags.append(text)
+
+    doctor = _fill_red_flag_section(doctor, det_flags)
+    doctor = _fill_empty_sections(doctor, det_findings)
+    raw_mother = str(payload.get("mother_hindi") or payload.get("summary_mother") or "").strip()
+    if transcript:
+        raw_mother, doctor = _strip_unspoken_mother_name(raw_mother, doctor, det_findings, transcript)
+    mother = _ensure_mother_covers_flags(raw_mother, det_findings, det_flags)
+    return {
+        "summary_doctor": doctor,
+        "summary_mother": mother,
+        "findings": det_findings,
+        "red_flags": det_flags,
+        "state": reconciled_state,
+    }
+
+
 async def generate_call_summaries(
     transcript: list[dict],
     findings: dict,
@@ -691,32 +1066,16 @@ async def generate_call_summaries(
 ) -> dict:
     """Return doctor and mother summaries, with findings and red flags merged."""
     if state:
-        user_content = state_to_summary_context(state)
+        user_content = state_to_summary_context(state, transcript=transcript)
         try:
             payload = await _from_gemini(user_content, STRUCTURED_STATE_SUMMARY_PROMPT)
-            doctor = str((payload or {}).get("doctor_markdown") or "").strip()
-            if not doctor:
-                return build_state_fallback(state)
-            return {
-                "summary_doctor": doctor,
-                "summary_mother": str((payload or {}).get("mother_hindi") or ""),
-                "findings": findings,
-                "red_flags": red_flags,
-            }
+            return _finalize_structured_summary(payload, state, transcript, findings, red_flags)
         except Exception:
             try:
                 payload = await _from_openai(user_content, STRUCTURED_STATE_SUMMARY_PROMPT)
-                doctor = str((payload or {}).get("doctor_markdown") or "").strip()
-                if not doctor:
-                    return build_state_fallback(state)
-                return {
-                    "summary_doctor": doctor,
-                    "summary_mother": str((payload or {}).get("mother_hindi") or ""),
-                    "findings": findings,
-                    "red_flags": red_flags,
-                }
+                return _finalize_structured_summary(payload, state, transcript, findings, red_flags)
             except Exception:
-                return build_state_fallback(state)
+                return build_state_fallback(state, findings, red_flags)
     user_content = _user_content(transcript, findings, red_flags)
     try:
         payload = await _from_gemini(user_content)

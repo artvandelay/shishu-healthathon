@@ -250,7 +250,8 @@ async def _from_llm(call: dict) -> dict:
 
 def structured_answers(call: dict) -> dict:
     """Version 5 answers taken from the saved call state. No model call."""
-    topics = ((call.get("state") or {}).get("topics") or {})
+    state = call.get("state") if isinstance(call.get("state"), dict) else {}
+    topics = state.get("topics") or {}
     answers: dict[str, dict] = {}
     for topic in checklist.TOPICS:
         topic_id = topic["id"]
@@ -262,11 +263,31 @@ def structured_answers(call: dict) -> dict:
             "source_turn_ids": saved.get("source_turn_ids") or [],
             "reason": saved.get("reason"),
         }
+    import mother_report
+
+    yes_hindi: list[str] = []
+    for topic in checklist.TOPICS:
+        topic_id = topic["id"]
+        if topic_id.startswith("intro_"):
+            continue
+        if answers[topic_id]["answer"] != "yes":
+            continue
+        line = checklist.question_hi(topic_id).rstrip("?").strip()
+        if line.startswith("क्या "):
+            line = line[4:]
+        note = mother_report._instance_note(state, topic_id)
+        if note:
+            line = f"{line} ({note})"
+        if line:
+            yes_hindi.append(mother_report.hindi_text(line))
+    st_findings, st_flags = summarizer.state_to_findings_and_flags(state)
+    mother_text = summarizer.default_mother_questions(st_findings, st_flags)
+    questions_hindi = summarizer._extract_question_lines(mother_text)
     return {
         "version": 5,
         "answers": answers,
-        "yes_hindi": [],
-        "questions_hindi": [],
+        "yes_hindi": yes_hindi,
+        "questions_hindi": questions_hindi[:6],
     }
 
 

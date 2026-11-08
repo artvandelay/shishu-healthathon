@@ -443,29 +443,52 @@ def save_doctor_summary(
     summary_doctor: str,
     findings: dict | None = None,
     red_flags: list | None = None,
+    summary_mother: str | None = None,
 ) -> None:
-    """Write the English doctor note after the call. Leave the mother text alone."""
+    """Write the English doctor note after the call. Optionally update mother text when reconciled."""
     with _db_lock:
         cur = conn.cursor()
         if isinstance(findings, dict) and isinstance(red_flags, list):
-            cur.execute(
-                """
-                UPDATE calls
-                SET summary_doctor = ?, findings_json = ?, red_flags_json = ?
-                WHERE id = ?
-                """,
-                (
-                    summary_doctor or "",
-                    json.dumps(findings, ensure_ascii=False),
-                    json.dumps(red_flags, ensure_ascii=False),
-                    call_id,
-                ),
-            )
+            if summary_mother:
+                cur.execute(
+                    """
+                    UPDATE calls
+                    SET summary_doctor = ?, summary_mother = ?, findings_json = ?, red_flags_json = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        summary_doctor or "",
+                        summary_mother,
+                        json.dumps(findings, ensure_ascii=False),
+                        json.dumps(red_flags, ensure_ascii=False),
+                        call_id,
+                    ),
+                )
+            else:
+                cur.execute(
+                    """
+                    UPDATE calls
+                    SET summary_doctor = ?, findings_json = ?, red_flags_json = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        summary_doctor or "",
+                        json.dumps(findings, ensure_ascii=False),
+                        json.dumps(red_flags, ensure_ascii=False),
+                        call_id,
+                    ),
+                )
         else:
-            cur.execute(
-                "UPDATE calls SET summary_doctor = ? WHERE id = ?",
-                (summary_doctor or "", call_id),
-            )
+            if summary_mother:
+                cur.execute(
+                    "UPDATE calls SET summary_doctor = ?, summary_mother = ? WHERE id = ?",
+                    (summary_doctor or "", summary_mother, call_id),
+                )
+            else:
+                cur.execute(
+                    "UPDATE calls SET summary_doctor = ? WHERE id = ?",
+                    (summary_doctor or "", call_id),
+                )
         conn.commit()
 
 
@@ -671,12 +694,53 @@ def get_call_state(call_id: int) -> dict | None:
 
 def save_call_state(call_id: int, state: dict) -> None:
     payload = json.dumps(state, ensure_ascii=False)
+    prof = (state.get("profile") or {}) if isinstance(state, dict) else {}
+    caller_name = str(prof.get("caller_name") or "").strip()
+    if caller_name.lower() in {"not reported", "unknown", "no_response"}:
+        caller_name = ""
+    children = [c for c in (prof.get("children") or []) if isinstance(c, dict)]
+    child_name = ""
+    child_age = ""
+    child_gender = ""
+    if children:
+        names = [str(c.get("name") or "").strip() for c in children if str(c.get("name") or "").strip()]
+        ages = []
+        sexes = [str(c.get("sex") or "").strip() for c in children if str(c.get("sex") or "").strip()]
+        for c in children:
+            age = c.get("age")
+            if isinstance(age, dict) and age.get("value") is not None:
+                ages.append(f"{age['value']} {age.get('unit') or 'years'}")
+            elif age not in (None, ""):
+                ages.append(str(age))
+        child_name = ", ".join(names)
+        child_age = ", ".join(ages)
+        child_gender = ", ".join(sexes)
     with _db_lock:
         cur = conn.cursor()
         cur.execute(
             "UPDATE calls SET state_json = ? WHERE id = ?",
             (payload, call_id),
         )
+        if caller_name:
+            cur.execute(
+                "UPDATE calls SET mother_name = ? WHERE id = ? AND (mother_name IS NULL OR mother_name = '')",
+                (caller_name, call_id),
+            )
+        if child_name:
+            cur.execute(
+                "UPDATE calls SET child_name = ? WHERE id = ? AND (child_name IS NULL OR child_name = '')",
+                (child_name, call_id),
+            )
+        if child_age:
+            cur.execute(
+                "UPDATE calls SET child_age = ? WHERE id = ? AND (child_age IS NULL OR child_age = '')",
+                (child_age, call_id),
+            )
+        if child_gender:
+            cur.execute(
+                "UPDATE calls SET child_gender = ? WHERE id = ? AND (child_gender IS NULL OR child_gender = '')",
+                (child_gender, call_id),
+            )
         conn.commit()
 
 

@@ -1436,25 +1436,43 @@ async def _write_doctor_note(
     if not isinstance(result, dict):
         return
     summary_doctor = str(result.get("summary_doctor") or "")
+    summary_mother = str(result.get("summary_mother") or "").strip() or None
     merged_findings = result.get("findings") if isinstance(result.get("findings"), dict) else findings
     merged_flags = result.get("red_flags") if isinstance(result.get("red_flags"), list) else red_flags
+    reconciled_state = result.get("state") if isinstance(result.get("state"), dict) else call_state_obj
+    if isinstance(reconciled_state, dict):
+        try:
+            db.save_call_state(call_id, reconciled_state)
+        except Exception:
+            pass
     if telemetry is not None:
-        if call_state_obj:
-            open_ids = set(call_state.unresolved_topic_ids(call_state_obj))
+        if reconciled_state:
+            open_ids = set(call_state.unresolved_topic_ids(reconciled_state))
             covered = [topic_id for topic_id in checklist.REQUIRED_IDS if topic_id not in open_ids]
-            close_reason = str(call_state_obj.get("close_reason") or telemetry.get("close_reason") or "")
+            close_reason = str(reconciled_state.get("close_reason") or telemetry.get("close_reason") or "")
         else:
             covered = telemetry.get("coverage") or []
             close_reason = str(telemetry.get("close_reason") or "")
-        doctor_note, _mother_note = checklist.incomplete_notes(
+        doctor_note, mother_note = checklist.incomplete_notes(
             covered,
             close_reason,
             str(telemetry.get("emergency_detail") or ""),
         )
         if doctor_note:
             summary_doctor = doctor_note + "\n\n" + summary_doctor
+        if mother_note and summary_mother:
+            if close_reason == "emergency":
+                summary_mother = (mother_note + "\n\n" + summary_mother).strip()
+            else:
+                summary_mother = (summary_mother + "\n\n" + mother_note).strip()
     try:
-        db.save_doctor_summary(call_id, summary_doctor, merged_findings, list(merged_flags))
+        db.save_doctor_summary(
+            call_id,
+            summary_doctor,
+            merged_findings,
+            list(merged_flags),
+            summary_mother=summary_mother if reconciled_state else None,
+        )
     except Exception:
         return
 
@@ -1485,6 +1503,10 @@ async def _finalize(
     findings = dict(call.get("findings") or {})
     red_flags = list(call.get("red_flags") or [])
     saved_state = call.get("state") if isinstance(call.get("state"), dict) else None
+    if saved_state:
+        import summarizer
+
+        findings, red_flags = summarizer.state_to_findings_and_flags(saved_state, findings, red_flags)
     try:
         extracted = await answer_extractor.cached_answers(call)
     except Exception:

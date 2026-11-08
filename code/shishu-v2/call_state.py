@@ -453,13 +453,19 @@ def _is_positive(topic: dict) -> bool:
     if topic.get("state") != "answered":
         return False
     details = topic.get("details") or {}
-    if str(details.get("result") or "").strip().lower() in {"normal", "negative"}:
+    if str(details.get("result") or "").strip().lower() in {"normal", "negative", "नॉर्मल"}:
         return False
+    dtype = str(details.get("delivery_type") or "").strip().lower()
+    if dtype in {"normal", "नॉर्मल"}:
+        return False
+    if any(w in dtype for w in ("operation", "caesarean", "cesarean", "c-section", "c section", "ऑपरेशन", "सीजेरियन")):
+        return True
     value = topic.get("value")
     if value is True:
         return True
     if isinstance(value, str) and value.strip().lower() in {
-        "yes", "haan", "positive", "early", "late", "operation", "abnormal",
+        "yes", "haan", "positive", "early", "late", "operation", "caesarean", "cesarean", "c-section", "abnormal",
+        "हाँ", "हां", "ऑपरेशन", "सीजेरियन", "असामान्य",
     }:
         return True
     return False
@@ -475,8 +481,9 @@ def topic_answer_kind(topic: dict) -> str:
     details = topic.get("details") or {}
     if status == "answered" and (
         value is False
-        or str(details.get("result") or "").strip().lower() in {"normal", "negative"}
-        or str(value or "").strip().lower() in {"no", "nahi", "normal", "negative"}
+        or str(details.get("result") or "").strip().lower() in {"normal", "negative", "नॉर्मल"}
+        or str(details.get("delivery_type") or "").strip().lower() in {"normal", "नॉर्मल"}
+        or str(value or "").strip().lower() in {"no", "nahi", "nahin", "normal", "negative", "नहीं", "नही", "नॉर्मल"}
     ):
         return "no"
     if status in {"unknown", "no_response", "not_asked", "not_applicable"}:
