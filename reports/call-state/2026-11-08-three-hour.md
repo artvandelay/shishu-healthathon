@@ -176,6 +176,8 @@ A second child name does not need the word नाम again. बड़े वा�
 
 जी। by itself is an acknowledgement. It is not a हाँ on a clinical topic, and it does not turn a follow-up into a finding. जी हाँ and जी नहीं keep their polarity. `196` unit tests. 56 scenarios, 0 failed.
 
+One month is 1 महीना, the same singular rule a week already uses. Two months stay 2 महीने. A quarter of a year is 3 महीने, not 0.25 years. `196` unit tests. 57 scenarios, 0 failed.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

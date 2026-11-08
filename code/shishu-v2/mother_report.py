@@ -598,6 +598,8 @@ def _quarter_age(value: object, unit_word: str) -> str:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return ""
     number = float(value)
+    if unit_word == "साल" and abs(number - 0.25) < 1e-6:
+        return "3 महीने"
     if abs(number - 0.5) < 1e-6:
         return "आधा साल" if unit_word == "साल" else "आधा महीना"
     if abs(number - 1.25) < 1e-6:
@@ -627,7 +629,11 @@ def _format_age(age: object) -> str:
     unit = str(age.get("unit") or "years").lower()
     if unit in {"month", "months", "mahine"}:
         spoken = _quarter_age(value, "महीने")
-        return spoken or f"{_number_text(value)} महीने"
+        if spoken:
+            return spoken
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and float(value) == 1:
+            return "1 महीना"
+        return f"{_number_text(value)} महीने"
     if unit in {"week", "weeks", "hafte", "hafta"} and isinstance(value, (int, float)) and not isinstance(value, bool):
         shown = _number_text(value)
         return f"{shown} {'हफ़्ता' if float(value) == 1 else 'हफ़्ते'}"
