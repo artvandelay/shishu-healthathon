@@ -1209,10 +1209,10 @@ def _prefer_spoken_units(
     utterance: str,
     prior: list[str] | None = None,
 ) -> list[dict]:
-    """A month she said beats a year unit the tool stamped on the same number.
+    """A month, week, or day she said beats a year unit stamped on that number.
 
-    छह महीने stored as 6 years is 6 months. दो साल stored as 2 years stays 2 years.
-    A number she used for both units is left as the tool sent it.
+    छह महीने, दो हफ़्ते, or पंद्रह दिन stored as years uses the unit she said.
+    दो साल stays years. A number she used for two units is left as sent.
     """
     records = _spoken_age_records(utterance)
     if not records:
@@ -1222,8 +1222,9 @@ def _prefer_spoken_units(
                 break
     if not records:
         return children
-    month_values = {item["value"] for item in records if item.get("unit") == "months"}
-    year_values = {item["value"] for item in records if item.get("unit") == "years"}
+    by_unit: dict[str, set] = {}
+    for item in records:
+        by_unit.setdefault(item.get("unit") or "", set()).add(item.get("value"))
     out = []
     for child in children:
         child = dict(child)
@@ -1231,8 +1232,12 @@ def _prefer_spoken_units(
         if isinstance(age, dict):
             unit = str(age.get("unit") or "").lower()
             value = age.get("value")
-            if unit in {"year", "years", "saal"} and value in month_values and value not in year_values:
-                child["age"] = {"value": value, "unit": "months"}
+            if unit in {"year", "years", "saal"}:
+                for spoken in ("months", "weeks", "days"):
+                    others = set().union(*(vals for name, vals in by_unit.items() if name != spoken))
+                    if value in by_unit.get(spoken, ()) and value not in others:
+                        child["age"] = {"value": value, "unit": spoken}
+                        break
         out.append(child)
     return out
 

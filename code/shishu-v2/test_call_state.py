@@ -890,6 +890,20 @@ class CallStateTests(unittest.TestCase):
             [child["age"] for child in mixed["profile"]["children"]],
             [{"value": 6, "unit": "months"}, {"value": 2, "unit": "years"}],
         )
+        weeks = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "intro_children"),
+            [_update("profile.children", [{"age": {"value": 2, "unit": "years"}}])],
+            1,
+            utterance="एक बेटा है, दो हफ़्ते का है।",
+        )
+        self.assertEqual(weeks["profile"]["children"][0]["age"], {"value": 2, "unit": "weeks"})
+        days = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "intro_children"),
+            [_update("profile.children", [{"age": {"value": 15, "unit": "years"}}])],
+            1,
+            utterance="एक बेटी है, पंद्रह दिन की है।",
+        )
+        self.assertEqual(days["profile"]["children"][0]["age"], {"value": 15, "unit": "days"})
         self.assertEqual(half, [{"value": 0.5, "unit": "years"}])
         self.assertAlmostEqual(call_state._child_age_years(months[0]), 0.5)
         self.assertAlmostEqual(call_state._child_age_years(half[0]), 0.5)

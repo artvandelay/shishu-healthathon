@@ -110,7 +110,7 @@ A list stored on a finding is printed as its items. Pregnancy BP and sugar are �
 
 shaadi nahi hui is unmarried, the same denial as शादी नहीं हुई. shaadi hui hai is married.
 
-छह महीने stored with a year unit becomes 6 months. दो साल in the same sentence stays years. A number she used for both units is left as sent. `187` unit tests. 39 scenarios, 0 failed.
+छह महीने stored with a year unit becomes 6 months. दो हफ़्ते and पंद्रह दिन stored as years become weeks and days. दो साल stays years. A number she used for two units is left as sent. `187` unit tests. 39 scenarios, 0 failed.
 
 ## Not hardcoded
 
