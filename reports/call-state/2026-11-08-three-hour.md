@@ -140,7 +140,9 @@ The only child is stored on a finding that asks which child, so the report says 
 
 सबसे बड़े is the oldest child. सब is not found inside सबसे, so the younger child is not included. दोनों and सबको still mean every child.
 
-जी क्या मतलब, मुझे समझ नहीं आया, and फिर से बोलिए leave the follow-up open. चार दिन and नहीं are still answers. `193` unit tests. 49 scenarios, 0 failed.
+जी क्या मतलब, मुझे समझ नहीं आया, and फिर से बोलिए leave the follow-up open. चार दिन and नहीं are still answers.
+
+शादी है is married. जाँच हुई, बात हुई, and हो गई by themselves are not. A denial still wins. `193` unit tests. 50 scenarios, 0 failed.
 
 ## Not hardcoded
 

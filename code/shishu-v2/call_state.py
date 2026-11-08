@@ -1511,14 +1511,16 @@ def _canonical_marital(value: object) -> str | None:
         or "engaged" in text
         or "होने वाली" in raw
     )
-    married = (
+    # हुई / ho gayi only complete a marriage. जाँच हुई and बात हुई do not.
+    marriage_noun = any(
+        _contains_word(raw, word) for word in ("शादी", "विवाह", "ब्याह")
+    ) or any(_contains_word(text, word) for word in ("shaadi", "shadi", "vivah", "byah"))
+    status_word = (
         text in {"true", "yes", "haan", "married"}
-        or "हो गई" in raw
-        or "ho gayi" in text
-        or "shaadi ho" in text
-        or any(word in raw for word in ("विवाहित", "शादीशुदा", "हुई", "हो चुकी", "हो चुका", "ब्याही"))
-        or any(word in text for word in ("shadishuda", "shaadi shuda", "ho chuki", "ho chuka", "hui", "huyi"))
+        or any(_contains_word(raw, word) for word in ("विवाहित", "शादीशुदा", "ब्याही"))
+        or any(_contains_word(text, word) for word in ("shadishuda", "shaadi shuda"))
     )
+    married = status_word or marriage_noun
     # A denial beats a marriage word: शादी नहीं हुई, शादीशुदा नहीं.
     if about and not denial:
         return "about_to_marry"
