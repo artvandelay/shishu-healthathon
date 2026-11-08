@@ -611,6 +611,32 @@ class CallStateTests(unittest.TestCase):
             {"state": "unknown"},
         )
 
+    def test_conditions_and_kinship_stated_with_the_answer_are_not_asked_again(self):
+        state = _ask(call_state.new_call_state(), "preg_conditions")
+        state = call_state.apply_updates(
+            state,
+            [_update("topic.preg_conditions", True)],
+            1,
+            utterance="प्रेग्नेंसी में बीपी और शुगर था, डिलीवरी के बाद भी है।",
+        )
+        details = state["topics"]["preg_conditions"]["details"]
+        self.assertEqual(details.get("conditions"), ["bp", "sugar"])
+        self.assertIs(details.get("continued_after_delivery"), True)
+        pending = [item["id"] for item in call_state._pending_followups(state, "preg_conditions")]
+        self.assertEqual(pending, [])
+
+        state = _ask(call_state.new_call_state(), "fam_infant_death")
+        state = call_state.apply_updates(
+            state,
+            [_update("topic.fam_infant_death", True)],
+            1,
+            utterance="मामा का बच्चा चार महीने में गुजर गया, झटके की वजह से।",
+        )
+        details = state["topics"]["fam_infant_death"]["details"]
+        self.assertIn("मामा", details.get("relationship") or "")
+        pending = [item["id"] for item in call_state._pending_followups(state, "fam_infant_death")]
+        self.assertNotIn("relationship", pending)
+
     def test_devanagari_kinship_resolves_the_family_followup(self):
         state = _ask(call_state.new_call_state(), "fam_bp_stroke")
         state = call_state.apply_updates(

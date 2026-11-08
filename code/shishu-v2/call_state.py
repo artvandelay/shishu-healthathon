@@ -1397,6 +1397,29 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
             details["result"] = "normal"
         elif str(details.get("timing") or "") in {"early", "late"}:
             details.pop("result", None)
+    if name == "preg_conditions":
+        if "conditions" not in details:
+            found = [
+                label
+                for label, words in (
+                    ("bp", ("बीपी", "bp", "रक्तचाप", "blood pressure")),
+                    ("sugar", ("शुगर", "sugar", "मधुमेह")),
+                    ("thyroid", ("थायरॉइड", "thyroid")),
+                )
+                if any(word in combined for word in words)
+            ]
+            if found:
+                details["conditions"] = found
+        if "continued_after_delivery" not in details:
+            if re.search(r"बाद नहीं|अब नहीं|नहीं रहा", utt_blob):
+                details["continued_after_delivery"] = False
+            elif re.search(r"बाद भी|अब भी|continued|still", utt_blob):
+                details["continued_after_delivery"] = True
+    follow_ids = {spec["id"] for spec in TOPIC_RULES.get(name, {}).get("followups") or []}
+    if "relationship" in follow_ids and "relationship" not in details and _has_kinship(utterance or ""):
+        details["relationship"] = (utterance or "").strip()
+    if "who" in follow_ids and "who" not in details and _has_kinship(utterance or ""):
+        details["who"] = (utterance or "").strip()
     topic["details"] = details
 
 

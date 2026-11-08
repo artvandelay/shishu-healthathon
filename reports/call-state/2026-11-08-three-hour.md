@@ -74,7 +74,9 @@ A fact said in the same sentence is stored. “ऑपरेशन हुआ, प
 
 दूसरा is the second child by age: the younger of two, the middle of three. बीच वाला is the middle. तीसरा is the third. छोटा stays the youngest. An unmarried woman with a past pregnancy can record a miscarriage, and cousin-marriage stays not applicable. A boy of 11 is asked about puberty and tooth-fall bleeding, and is not asked about periods. Periods stay limited to a daughter of 11 or older.
 
-लड़की, बेटी, and बच्ची are female. लड़का and बेटा are male. A daughter stored with the Hindi word is asked about periods at 11. A son stored as लड़का is not. `181` unit tests. 24 scenarios, 0 failed.
+लड़की, बेटी, and बच्ची are female. लड़का and बेटा are male. A daughter stored with the Hindi word is asked about periods at 11. A son stored as लड़का is not.
+
+Pregnancy BP and sugar, and whether they continued after delivery, are stored when she says them with the answer. A kinship word in the same sentence (मामा) closes the relationship follow-up. `182` unit tests. 24 scenarios, 0 failed.
 
 ## Not hardcoded
 
