@@ -1101,6 +1101,10 @@ class CallStateTests(unittest.TestCase):
             [{"value": 1, "unit": "years", "plus_days": 10}],
         )
         self.assertEqual(
+            call_state._spoken_age_records("एक साल दो हफ्ते का है।"),
+            [{"value": 1, "unit": "years", "plus_days": 14}],
+        )
+        self.assertEqual(
             call_state._spoken_age_records("सवा हफ्ता का है।"),
             [{"value": 1.25, "unit": "weeks"}],
         )
@@ -1520,6 +1524,8 @@ class CallStateTests(unittest.TestCase):
         self.assertEqual(ninth["topics"]["birth_term"]["details"].get("term"), "full")
         self.assertEqual(call_state._term_label("समय से पहले पैदा हुई।"), "early")
         self.assertEqual(call_state._spoken_times("दूसरी बार खून चढ़ा।"), 2)
+        self.assertIsNone(call_state._spoken_times("डेढ़ बार।"))
+        self.assertIsNone(call_state._spoken_times("सवा दो बार।"))
         self.assertEqual(call_state._spoken_times("पहली बार।"), 1)
         self.assertEqual(call_state._spoken_times("दो बार।"), 2)
         self.assertIsNone(call_state._spoken_times("दूसरा बच्चा।"))
@@ -1998,6 +2004,24 @@ class CallStateTests(unittest.TestCase):
             utterance="निशान ठीक से भरा है।",
         )
         self.assertEqual(call_state.topic_answer_kind(scar["topics"]["birth_bcg"], "birth_bcg"), "no")
+        # A ठीक clause does not erase a different clause that names the problem.
+        mixed = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "body_fits_milestones"),
+            [_update("topic.body_fits_milestones", True)],
+            1,
+            utterance="झटके आते हैं, अब ठीक है।",
+        )
+        self.assertEqual(
+            call_state.topic_answer_kind(mixed["topics"]["body_fits_milestones"], "body_fits_milestones"),
+            "yes",
+        )
+        only_fine = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "ill_odor"),
+            [_update("topic.ill_odor", True)],
+            1,
+            utterance="सब ठीक है।",
+        )
+        self.assertEqual(call_state.topic_answer_kind(only_fine["topics"]["ill_odor"], "ill_odor"), "no")
         swelling = call_state.apply_updates(
             _ask(call_state.new_call_state(), "birth_bcg"),
             [_update("topic.birth_bcg", "सूजन हो गई।")],
@@ -2153,6 +2177,8 @@ class CallStateTests(unittest.TestCase):
         self.assertEqual(call_state._pending_followups(second, "preg_delivery"), [])
         self.assertEqual(call_state._spoken_pregnancy_index("पहली बार प्रसव में दिक्कत हुई।"), 1)
         self.assertIsNone(call_state._spoken_pregnancy_index("प्रसव हो गया।"))
+        self.assertIsNone(call_state._spoken_pregnancy_index("2.5 प्रेग्नेंसी में।"))
+        self.assertEqual(call_state._spoken_pregnancy_index("2 प्रेग्नेंसी में।"), 2)
 
 
 if __name__ == "__main__":

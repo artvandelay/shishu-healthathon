@@ -541,6 +541,27 @@ _REASSURE_RE = re.compile(
 )
 
 
+def _clauses(text: str) -> list[str]:
+    return [bit.strip() for bit in re.split(r"[,،;]| और | and ", text or "") if bit.strip()]
+
+
+def _clause_is_reassurance(clause: str) -> bool:
+    """ठीक है / ठीक से / ठीक रहा in this clause, and the clause does not also say हाँ or नहीं."""
+    if not clause or _DENY_RE.search(clause) or _AFFIRM_RE.search(clause):
+        return False
+    return _REASSURE_RE.search(clause) is not None
+
+
+def _only_reassurance(text: str) -> bool:
+    """Every clause says it is fine. A different clause that names a problem does not.
+
+    निशान ठीक से भरा है is reassurance. पेशाब में बदबू है, पाखाना ठीक है is not,
+    because the smell is a separate clause.
+    """
+    bits = _clauses(text)
+    return bool(bits) and all(_clause_is_reassurance(bit) for bit in bits)
+
+
 def _stated_polarity(value: object) -> str | None:
     """Yes or no when the stored words say so, including जी हाँ and नहीं जी.
 
@@ -562,7 +583,7 @@ def _stated_polarity(value: object) -> str | None:
         return "yes"
     if denied and not affirmed:
         return "no"
-    if _REASSURE_RE.search(text):
+    if _only_reassurance(text):
         return "no"
     return None
 
@@ -1191,7 +1212,7 @@ def _spoken_pregnancy_index(text: str) -> int | None:
         if re.search(rf"{word}\s*(?:प्रेग्न|गर्भावस्थ|pregnancy|बार)", raw, re.I):
             return number
     folded = _fold_spoken_numbers(raw)
-    match = re.search(r"(\d+)\s*(?:प्रेग्न|गर्भावस्थ|pregnancy)", folded, re.I)
+    match = re.search(r"(?<![\d.])(\d+)(?!\.\d)\s*(?:प्रेग्न|गर्भावस्थ|pregnancy)", folded, re.I)
     if match:
         return int(match.group(1))
     return None
@@ -1200,7 +1221,8 @@ def _spoken_pregnancy_index(text: str) -> int | None:
 def _spoken_times(text: str) -> int | None:
     """How many times, as in दो बार or दूसरी बार. A day count is not a time count."""
     folded = _fold_spoken_numbers(text or "")
-    match = re.search(r"(\d+)\s*(?:बार|times|time)", folded, re.I)
+    # 2.25 बार must not be read as 25 times. The digits after the dot are not the count.
+    match = re.search(r"(?<![\d.])(\d+)(?!\.\d)\s*(?:बार|times|time)", folded, re.I)
     if match:
         return int(match.group(1))
     for word, number in (
@@ -1461,7 +1483,12 @@ def _merge_weeks_and_days(folded: str, found: list) -> list:
     while index < len(found):
         start, record = found[index]
         nxt = found[index + 1] if index + 1 < len(found) else None
-        if nxt and record.get("unit") in {"weeks", "months", "years"} and nxt[1].get("unit") == "days":
+        nxt_unit = (nxt[1].get("unit") if nxt else None)
+        smaller = (
+            nxt_unit == "days"
+            or (nxt_unit == "weeks" and record.get("unit") in {"months", "years"})
+        )
+        if nxt and record.get("unit") in {"weeks", "months", "years"} and smaller:
             between = folded[start:nxt[0]]
             unit_re = {"weeks": _WEEK_UNIT, "months": _MONTH_UNIT, "years": _YEAR_UNIT}[record["unit"]]
             after_larger = re.sub(
@@ -1473,20 +1500,20 @@ def _merge_weeks_and_days(folded: str, found: list) -> list:
             )
             # महीने leaves the े. That matra is still the unit, not a new word.
             after_larger = re.sub(r"^[\u093e-\u094d]+", "", after_larger or "")
-            days = nxt[1].get("value")
+            extra = nxt[1].get("value")
             if (
                 re.fullmatch(r"\s*", after_larger or "")
-                and isinstance(days, (int, float))
-                and not isinstance(days, bool)
+                and isinstance(extra, (int, float))
+                and not isinstance(extra, bool)
             ):
+                amount = float(extra) * (7 if nxt_unit == "weeks" else 1)
                 if record["unit"] == "weeks":
-                    total = float(record["value"]) * 7 + float(days)
+                    total = float(record["value"]) * 7 + amount
                     shown = int(total) if total.is_integer() else total
                     merged.append((start, {"value": shown, "unit": "days"}))
                 else:
                     kept = dict(record)
-                    plus = int(days) if float(days).is_integer() else days
-                    kept["plus_days"] = plus
+                    kept["plus_days"] = int(amount) if amount.is_integer() else amount
                     merged.append((start, kept))
                 index += 2
                 continue
@@ -2411,9 +2438,7 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str, on_followup: bo
     )
     reassured = (
         not acknowledgement
-        and _REASSURE_RE.search(utterance or "") is not None
-        and _DENY_RE.search(utterance or "") is None
-        and _AFFIRM_RE.search(utterance or "") is None
+        and _only_reassurance(utterance or "")
         and not ("ठीक" in question and "ठीक" in (utterance or ""))
     )
     if reassured:

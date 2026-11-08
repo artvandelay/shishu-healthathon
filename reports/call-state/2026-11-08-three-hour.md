@@ -218,6 +218,14 @@ Trio: चारों बच्चे with ages 2, 4, 6 and 8 (no flags), दस
 
 झटके in the same sentence is the family-fits condition, so that follow-up is not asked again. देर is delay. भूल or नहीं कर is a lost skill. `196` unit tests. 69 scenarios, 0 failed.
 
+## Resume 16:00 IST
+
+Pulled `origin/refactor/deterministic-call-state` at 16:00 IST. HEAD was `19cc09c`. The frontier gate was already present: `SUMMARY_MODEL_CHAIN` is `gemini-3.1-pro-preview`, then `gemini-3-pro-preview`, then `gemini-2.5-pro`, and `_finalize_structured_summary` uses the model findings and flags. Invalid JSON or no key uses `build_state_fallback`. Flash is not that chain.
+
+ठीक से was already a no. `_REASSURE_RE` contains ठीक से, and a question that itself contains ठीक (joint swelling that settles) is left as a finding. निशान ठीक से भरा है with a tool yes is kind no. The class that was still wrong: a ठीक clause cleared the whole sentence, so झटके आते हैं, अब ठीक है became a no. Reassurance now covers only the clause that says it is fine. A sentence that is only reassurance, including सब ठीक है sent as true, stays a no. The digits after a decimal are not a count of times or a pregnancy number. डेढ़ बार is not 5, and 2.5 प्रेग्नेंसी is not 5. एक साल दो हफ्ते का is one child, with those two weeks kept as 14 days. `196` unit tests. 72 scenarios, 0 failed.
+
+Trio: एक साल दो हफ्ते (no flags), झटके now ठीक (still a yes), and सब ठीक है sent as true on every clinical answer (no हाँ lines). Pass.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.
