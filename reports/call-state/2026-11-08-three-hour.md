@@ -392,6 +392,12 @@ Trio: pain without a hospital visit (no flags, no हाँ lines), leg pain tha
 
 Trio: born on time (no flags, no हाँ lines), two months early (still a yes, the line says 2 महीने), and two weeks late sent as false (still a yes, the line says 2 हफ्ते). Pass.
 
+## 16:47 IST
+
+हाथ-पैर on the proportion question is the body part, the same choice as the limb. हाथ छोटे नहीं हैं stays a no. `197` unit tests. 156 scenarios, 0 failed.
+
+Trio: arms not short (no flags, no हाँ lines), short arms (still a yes, the line names हाथ), and short legs sent as false (still a yes, the line names पैर). Pass.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

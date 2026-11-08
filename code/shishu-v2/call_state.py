@@ -2399,7 +2399,7 @@ def _store_question_choice(name: str, details: dict, follow_ids: set, utterance:
     The words come from the question. A location follow-up is a different question:
     सूजन या गाँठ is the finding, not where it is. A copula beside या is not an option.
     """
-    choice_ids = ("source", "low_or_high", "joint", "finger_or_thumb", "location")
+    choice_ids = ("source", "low_or_high", "joint", "finger_or_thumb", "location", "body_part")
     choice_id = next((fid for fid in choice_ids if fid in follow_ids and fid not in details), None)
     if not choice_id or _only_reassurance(utterance):
         return

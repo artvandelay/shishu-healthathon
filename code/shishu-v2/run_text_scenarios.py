@@ -637,6 +637,53 @@ def campaign() -> list[Scenario]:
             children_value=3,
         ),
         Scenario(
+            name="no_flags_arms_not_short",
+            group="no_flags",
+            caller_name="किरण",
+            marital_text=married,
+            children_text="एक बेटा है, दो साल का।",
+            children_value=1,
+            positives={
+                "body_proportion": {
+                    "value": True,
+                    "utterance": "हाथ छोटे नहीं हैं।",
+                    "details": {},
+                },
+            },
+        ),
+        Scenario(
+            name="flags_short_arms",
+            group="red_flags",
+            caller_name="भावना",
+            marital_text=married,
+            children_text="एक बेटी है, चार साल की।",
+            children_value=1,
+            positives={
+                "body_proportion": {
+                    "value": True,
+                    "utterance": "हाथ बहुत छोटे हैं।",
+                    "details": {},
+                },
+            },
+            expect_yes=("body_proportion",),
+        ),
+        Scenario(
+            name="degenerate_short_legs_sent_as_no",
+            group="degenerate",
+            caller_name="दीपा",
+            marital_text=married,
+            children_text="एक बेटा है, तीन साल का।",
+            children_value=1,
+            positives={
+                "body_proportion": {
+                    "value": False,
+                    "utterance": "पैर बहुत छोटे हैं।",
+                    "details": {},
+                },
+            },
+            expect_yes=("body_proportion",),
+        ),
+        Scenario(
             name="no_flags_on_time",
             group="no_flags",
             caller_name="लक्ष्मी",

@@ -2505,6 +2505,13 @@ class CallStateTests(unittest.TestCase):
             utterance="पैर में दर्द होता है, अस्पताल गए थे।",
         )
         self.assertEqual(leg["topics"]["body_limb_pain"]["details"].get("location"), "पैर")
+        short = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "body_proportion"),
+            [_update("topic.body_proportion", True)],
+            1,
+            utterance="हाथ बहुत छोटे हैं।",
+        )
+        self.assertEqual(short["topics"]["body_proportion"]["details"].get("body_part"), "हाथ")
         self.assertEqual(
             call_state.topic_answer_kind(leg["topics"]["body_limb_pain"], "body_limb_pain"),
             "yes",
