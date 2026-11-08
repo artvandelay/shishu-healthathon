@@ -163,7 +163,9 @@ def build_turn_context(state: dict, question: dict | None) -> str:
         current.get("prompt_note") or "",
         "Children: " + _format_children_context(children),
         f"Permitted profile fields: {_PROFILE_LIST}.",
-        "Next tool: you MUST call record_answers on the caller's next reply for the current question AND any other topic.<topic_id> or profile.<field> facts she states.",
+        "Next tool: you MUST call record_answers on the caller's next reply for the current question AND any other topic.<topic_id> or profile.<field> facts she states. "
+        "For a follow-up question, her answer goes in details.<followup_id>, not in value. "
+        "If she only asks a question back or does not answer the current question, do NOT record it.",
         "Call end_call only for emergency or caller_stop. The server accepts either reason.",
     ]
     return "\n".join(line for line in lines if line)

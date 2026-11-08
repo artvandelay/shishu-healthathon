@@ -385,7 +385,7 @@ class CallStateTests(unittest.TestCase):
             "डॉक्टर ने पानी कम बताया था।",
         )
 
-    def test_a_missing_followup_keeps_her_words(self):
+    def test_clarification_does_not_close_the_followup(self):
         state = _ask(call_state.new_call_state(), "birth_nicu")
         state = call_state.apply_updates(state, [_update("topic.birth_nicu", True)], 1)
         state = _ask(state, "birth_nicu", "reason")
@@ -393,21 +393,11 @@ class CallStateTests(unittest.TestCase):
             state,
             [_update("topic.birth_nicu", True)],
             2,
+            utterance="पीलिया हुआ था।",
         )
         self.assertNotIn("reason", state["topics"]["birth_nicu"]["details"])
         nxt = call_state.next_question(state)
         self.assertEqual(nxt["followup_id"], "reason")
-
-        state = call_state.apply_updates(
-            state,
-            [_update("topic.birth_nicu", True)],
-            3,
-            utterance="पीलिया हुआ था।",
-        )
-        self.assertEqual(state["topics"]["birth_nicu"]["details"].get("reason"), "पीलिया हुआ था।")
-        nxt = call_state.next_question(state)
-        self.assertEqual(nxt["followup_id"], "days")
-        state = _ask(state, "birth_nicu", "days")
 
         state = call_state.apply_updates(
             state,
@@ -417,6 +407,21 @@ class CallStateTests(unittest.TestCase):
         self.assertEqual(state["topics"]["birth_nicu"]["details"].get("reason"), "पीलिया")
         nxt = call_state.next_question(state)
         self.assertEqual(nxt["followup_id"], "days")
+
+    def test_a_no_to_a_count_followup_is_not_saved_as_the_count(self):
+        state = _ask(call_state.new_call_state(), "ill_admissions")
+        state = call_state.apply_updates(state, [_update("topic.ill_admissions", True)], 1)
+        state = _ask(state, "ill_admissions", "count")
+        state = call_state.apply_updates(
+            state,
+            [_update("topic.ill_admissions", True)],
+            2,
+            utterance="नहीं।",
+        )
+        topic = state["topics"]["ill_admissions"]
+        self.assertNotIn("count", topic["details"])
+        self.assertIs(topic["value"], True)
+        self.assertEqual(call_state.next_question(state)["followup_id"], "count")
 
     def test_pata_nahi_resolves_the_followup_as_unknown(self):
         state = _ask(call_state.new_call_state(), "birth_nicu")

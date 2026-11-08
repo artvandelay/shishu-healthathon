@@ -966,23 +966,13 @@ def apply_updates(
             elif status == "unknown":
                 details[followup_id] = {"state": "unknown"}
             else:
+                # A follow-up answer is saved only from update["details"]: the typed
+                # fields sent by record_answers or the backstop. Raw value strings and
+                # her raw utterance are never copied into the follow-up field.
                 for key, val in incoming.items():
                     if val is None or (not isinstance(val, bool) and val == previous_value):
                         continue
                     details[key] = val
-                if followup_id not in incoming:
-                    raw_val = update.get("value")
-                    if (
-                        isinstance(raw_val, str)
-                        and raw_val.strip()
-                        and raw_val != previous_value
-                        and raw_val.strip().lower() not in {"true", "false"}
-                    ):
-                        details[followup_id] = raw_val
-                if followup_id not in details:
-                    said = str(utterance or "").strip()
-                    if said:
-                        details[followup_id] = said
             topic["details"] = details
             if isinstance(update.get("value"), bool):
                 topic["value"] = update.get("value")
