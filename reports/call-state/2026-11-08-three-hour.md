@@ -204,6 +204,8 @@ A fraction of a week is said the same way as a fraction of a year. सवा ह
 
 Trio: पौने साल का बेटा (no flags), आठवें महीने में पैदा हुई (early, tool had said no), डेढ़ दिन का NICU with पीलिया, and दूसरी प्रेग्नेंसी में प्रसव में खून. Pass. 63 scenarios, 0 failed. `196` unit tests.
 
+डेढ़ बच्चा is not five children, and सवा दो बच्चे is not twenty-five. The digits after a decimal point are not a count. चारों बच्चे is four. तीनों means every child. बारह बच्चे is still twelve. सबसे बड़े is still only the oldest. `196` unit tests. 63 scenarios, 0 failed.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

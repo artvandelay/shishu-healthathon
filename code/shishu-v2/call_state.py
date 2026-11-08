@@ -1795,8 +1795,17 @@ def _numbers_before_child_words(folded: str) -> list[tuple[int, str]]:
     आठ साल का एक बच्चा is only (1, बच्चा): आठ sits against साल.
     """
     found = []
-    for match in re.finditer(rf"(\d+)\s*({_CHILD_COUNT_WORD})", folded or "", re.I):
+    # 1.5 बच्चा must not be read as five. The digit after the dot is not a count.
+    for match in re.finditer(rf"(?<![\d.])(\d+)\s*({_CHILD_COUNT_WORD})", folded or "", re.I):
         found.append((int(match.group(1)), match.group(2)))
+    if found:
+        return found
+    for word, number in (
+        ("दोनों", 2), ("तीनों", 3), ("चारों", 4),
+        ("पाँचों", 5), ("पांचों", 5), ("छहों", 6),
+    ):
+        if re.search(rf"{word}\s*(?:{_CHILD_COUNT_WORD}|को)", folded or ""):
+            found.append((number, word))
     return found
 
 
@@ -2063,7 +2072,8 @@ _is_clarification = is_clarification
 
 _EVERY_CHILD_WORDS = (
     "all", "both", "dono", "sabhi", "sabko", "everyone", "sab",
-    "दोनों", "सभी", "सबको", "सब", "हर एक",
+    "दोनों", "तीनों", "चारों", "पाँचों", "पांचों", "छहों",
+    "सभी", "सबको", "सब", "हर एक",
 )
 
 

@@ -1165,6 +1165,20 @@ class CallStateTests(unittest.TestCase):
             [{"value": 8, "unit": "years"}, {"value": 3, "unit": "years"}],
         )
         self.assertEqual(call_state._children_payload("दो"), ("count", 2))
+        folded_half = call_state._fold_spoken_numbers("डेढ़ बच्चा है।")
+        self.assertIsNone(call_state._count_from_child_words(folded_half))
+        folded_quarter = call_state._fold_spoken_numbers("सवा दो बच्चे हैं।")
+        self.assertIsNone(call_state._count_from_child_words(folded_quarter))
+        self.assertEqual(
+            call_state._count_from_child_words(call_state._fold_spoken_numbers("चारों बच्चे हैं।")),
+            4,
+        )
+        self.assertEqual(
+            call_state._count_from_child_words(call_state._fold_spoken_numbers("बारह बच्चे हैं।")),
+            12,
+        )
+        self.assertTrue(call_state._means_every_child("तीनों को झटके आते हैं।"))
+        self.assertFalse(call_state._means_every_child("सबसे बड़े वाले को।"))
         shared = stored("तीन साल की दो बेटियाँ हैं।")
         self.assertEqual(
             [(c["sex"], c["age"]) for c in shared["profile"]["children"]],
