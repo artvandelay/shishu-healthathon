@@ -470,6 +470,17 @@ class CallStateTests(unittest.TestCase):
         )
         self.assertEqual(state["topics"]["birth_hearing_vision"]["details"].get("result"), "abnormal")
         self.assertTrue(call_state._is_positive(state["topics"]["birth_hearing_vision"], "birth_hearing_vision"))
+        deaf = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "birth_hearing_vision"),
+            [_update("topic.birth_hearing_vision", True)],
+            1,
+            utterance="सुनाई नहीं देता।",
+        )
+        self.assertEqual(deaf["topics"]["birth_hearing_vision"]["details"].get("result"), "abnormal")
+        self.assertEqual(
+            call_state.topic_answer_kind(deaf["topics"]["birth_hearing_vision"], "birth_hearing_vision"),
+            "yes",
+        )
         pregnant = _ask(call_state.new_call_state(), "preg_conditions")
         pregnant = call_state.apply_updates(
             pregnant,

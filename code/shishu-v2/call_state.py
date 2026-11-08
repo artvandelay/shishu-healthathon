@@ -2502,6 +2502,10 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str, on_followup: bo
                 details.setdefault("test_done", True)
         if "test_done" not in details and isinstance(value, bool):
             details["test_done"] = value
+        if re.search(r"(?:सुनाई|दिखाई)\s*नहीं|नहीं\s*(?:सुन|दिख)", utterance or ""):
+            details["result"] = "abnormal"
+            details["test_done"] = True
+            topic["value"] = True
     if name == "preg_scan":
         named = _lab_result(utterance or "")
         if named:

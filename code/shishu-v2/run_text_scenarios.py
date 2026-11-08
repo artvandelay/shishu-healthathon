@@ -605,6 +605,53 @@ def campaign() -> list[Scenario]:
             no_value=True,
         ),
         Scenario(
+            name="no_flags_hearing_normal",
+            group="no_flags",
+            caller_name="रश्मि",
+            marital_text=married,
+            children_text="एक बेटा है, एक साल का।",
+            children_value=1,
+            positives={
+                "birth_hearing_vision": {
+                    "value": True,
+                    "utterance": "सुनने की जाँच हुई थी और नॉर्मल थी।",
+                    "details": {},
+                },
+            },
+        ),
+        Scenario(
+            name="flags_cannot_hear",
+            group="red_flags",
+            caller_name="सुधा",
+            marital_text=married,
+            children_text="एक बेटी है, दो साल की।",
+            children_value=1,
+            positives={
+                "birth_hearing_vision": {
+                    "value": True,
+                    "utterance": "सुनाई नहीं देता।",
+                    "details": {},
+                },
+            },
+            expect_yes=("birth_hearing_vision",),
+        ),
+        Scenario(
+            name="degenerate_vision_sent_as_yes",
+            group="degenerate",
+            caller_name="किरण",
+            marital_text=married,
+            children_text="एक बेटा है, तीन साल का।",
+            children_value=1,
+            positives={
+                "birth_hearing_vision": {
+                    "value": False,
+                    "utterance": "दिखाई नहीं देता।",
+                    "details": {},
+                },
+            },
+            expect_yes=("birth_hearing_vision",),
+        ),
+        Scenario(
             name="no_flags_scan_found_nothing",
             group="no_flags",
             caller_name="अंजना",

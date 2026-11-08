@@ -314,6 +314,12 @@ Trio: नाम बता रही हूँ (no flags, no child named बत�
 
 Trio: scan found nothing (no flags, no हाँ lines), a hole on the scan (still a yes), and कुछ नहीं दिखा sent as true (no हाँ lines). Pass.
 
+## 16:28 IST
+
+सुनाई नहीं देता on the newborn hearing question is an abnormal result, and so is दिखाई नहीं देता. सुनने की जाँच हुई और नॉर्मल थी stays a no. `197` unit tests. 117 scenarios, 0 failed.
+
+Trio: a normal hearing test (no flags), cannot hear (still a yes), and cannot see sent as false (still a yes). Pass.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.
