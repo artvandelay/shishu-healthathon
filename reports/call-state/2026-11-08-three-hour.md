@@ -326,6 +326,12 @@ Trio: a normal hearing test (no flags), cannot hear (still a yes), and cannot se
 
 Trio: her daughter, not his earlier children (no flags), blue lips for that daughter (still a yes), and the birth weight 3 sent as the count (one boy of one, no हाँ lines). Pass.
 
+## 16:33 IST
+
+पेशाब या पाखाना: she named one, and said the other is fine, so the source is पेशाब and that follow-up is not asked again. Both named stays open. पेशाब और पाखाना दोनों ठीक हैं is one reassurance (the plural हैं, and दोनों joins the options that और had split). झटके आते हैं और अब ठीक हैं stays a yes. A lump's सूजन या गाँठ is not stored as the place. `197` unit tests. 123 scenarios, 0 failed.
+
+Trio: both are fine (no flags, no हाँ lines), urine smell with stool fine (still a yes, the line names the boy and पेशाब), and both smell (still a yes). Pass.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

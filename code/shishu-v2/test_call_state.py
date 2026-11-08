@@ -2295,6 +2295,49 @@ class CallStateTests(unittest.TestCase):
             utterance="स्कैन में दिल में छेद बताया।",
         )
         self.assertEqual(call_state.topic_answer_kind(hole["topics"]["preg_scan"], "preg_scan"), "yes")
+        urine = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "ill_odor"),
+            [_update("topic.ill_odor", True)],
+            1,
+            utterance="पेशाब में बदबू है, पाखाना ठीक है।",
+        )
+        self.assertEqual(urine["topics"]["ill_odor"]["details"].get("source"), "पेशाब")
+        both_fine = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "ill_odor"),
+            [_update("topic.ill_odor", True)],
+            1,
+            utterance="पेशाब और पाखाना दोनों ठीक हैं।",
+        )
+        self.assertEqual(call_state.topic_answer_kind(both_fine["topics"]["ill_odor"], "ill_odor"), "no")
+        self.assertNotIn("source", both_fine["topics"]["ill_odor"]["details"])
+        plural = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "body_fits_milestones"),
+            [_update("topic.body_fits_milestones", True)],
+            1,
+            utterance="झटके आते हैं और अब ठीक हैं।",
+        )
+        self.assertEqual(
+            call_state.topic_answer_kind(plural["topics"]["body_fits_milestones"], "body_fits_milestones"),
+            "yes",
+        )
+        self.assertNotIn(
+            "source",
+            [item["id"] for item in call_state._pending_followups(urine, "ill_odor")],
+        )
+        both_smells = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "ill_odor"),
+            [_update("topic.ill_odor", True)],
+            1,
+            utterance="पेशाब और पाखाना दोनों में बदबू है।",
+        )
+        self.assertNotIn("source", both_smells["topics"]["ill_odor"]["details"])
+        lump = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "body_lumps_birth"),
+            [_update("topic.body_lumps_birth", True)],
+            1,
+            utterance="पीठ पर सूजन है।",
+        )
+        self.assertNotIn("location", lump["topics"]["body_lumps_birth"]["details"])
         fine = call_state.apply_updates(
             _ask(call_state.new_call_state(), "ill_odor"),
             [_update("topic.ill_odor", True)],

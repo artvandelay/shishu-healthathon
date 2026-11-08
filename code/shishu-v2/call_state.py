@@ -536,10 +536,11 @@ def _is_reassuring_result(details: dict) -> bool:
 _AFFIRM_RE = re.compile(r"हाँ|हां|\bhaan\b|\byes\b", re.I)
 _DENY_RE = re.compile(r"नहीं|नही|\bnahi\b|\bnahin\b|\bno\b", re.I)
 _REASSURE_RE = re.compile(
-    r"ठीक\s*है|ठीक\s*से|ठीक\s*रह|"
+    r"ठीक\s*हैं?|ठीक\s*से|ठीक\s*रह|"
     r"theek\s*hai|thik\s*hai|कोई\s+(?:दिक्कत|परेशानी)\s+नहीं|no\s+problem|sab\s+theek|all\s+fine",
     re.I,
 )
+_CLAIM_RE = re.compile(r"हैं|है|था|थी|थे|हो|आत|आए|आय|पड़|रह")
 
 
 def _clauses(text: str) -> list[str]:
@@ -603,10 +604,18 @@ def _only_reassurance(text: str) -> bool:
     """Every clause says it is fine. A different clause that names a problem does not.
 
     निशान ठीक से भरा है is reassurance. पेशाब में बदबू है, पाखाना ठीक है is not,
-    because the smell is a separate clause.
+    because the smell is a separate clause. पेशाब और पाखाना दोनों ठीक हैं is one
+    reassurance: और splits the two options, and दोनों pulls them back together.
+    झटके आते हैं और अब ठीक हैं stays a finding. The first clause has its own verb.
     """
-    bits = _clauses(text)
-    return bool(bits) and all(_clause_is_reassurance(bit) for bit in bits)
+    bits = [bit for bit in _clauses(text) if bit]
+    if not bits:
+        return False
+    if all(_clause_is_reassurance(bit) for bit in bits):
+        return True
+    if not any(_clause_is_reassurance(bit) and "दोनों" in bit for bit in bits):
+        return False
+    return all(_clause_is_reassurance(bit) or _CLAIM_RE.search(bit) is None for bit in bits)
 
 
 def _stated_polarity(value: object) -> str | None:
@@ -2381,6 +2390,29 @@ def _word_denied(text: str, word: str) -> bool:
     )
 
 
+def _store_question_choice(name: str, details: dict, follow_ids: set, utterance: str) -> None:
+    """पेशाब या पाखाना. If she named one, and not only to say it is fine, store it.
+
+    The words come from the question. A location follow-up is a different question:
+    सूजन या गाँठ is the finding, not where it is.
+    """
+    if "source" not in follow_ids or "source" in details or _only_reassurance(utterance):
+        return
+    question = checklist.question_hi(name)
+    said = []
+    problem = " ".join(
+        bit for bit in _clauses(utterance) if bit and not _clause_is_reassurance(bit)
+    )
+    for match in re.finditer(r"([\u0900-\u097F]{2,})\s+या\s+([\u0900-\u097F]{2,})", question):
+        for word in (match.group(1), match.group(2)):
+            if word in {"नहीं", "नही", "क्या"}:
+                continue
+            if word in problem and word not in said:
+                said.append(word)
+    if len(said) == 1:
+        details["source"] = said[0]
+
+
 def _lab_result(text: str) -> str | None:
     """normal or abnormal from this utterance. normal inside abnormal does not count."""
     if not text:
@@ -2609,6 +2641,7 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str, on_followup: bo
             details["condition"] = named[0] if len(named) == 1 else named
     if "relationship" in follow_ids and "relationship" not in details and _has_kinship(utterance or ""):
         details["relationship"] = (utterance or "").strip()
+    _store_question_choice(name, details, follow_ids, utterance or "")
     if "who" in follow_ids and "who" not in details and _has_kinship(utterance or ""):
         details["who"] = (utterance or "").strip()
     # The words describe the problem. A tool value of false does not hide them.
@@ -2623,7 +2656,7 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str, on_followup: bo
     # tool just logged from the previous sentence. A sentence that says the
     # thing healed or is fine does.
     acknowledgement = re.fullmatch(
-        r"\s*(?:जी\s+)?(?:ठीक\s*है|theek\s*hai|thik\s*hai)[।.!\s]*",
+        r"\s*(?:जी\s+)?(?:ठीक\s*हैं?|theek\s*hai|thik\s*hai)[।.!\s]*",
         utterance or "",
         re.I,
     )
