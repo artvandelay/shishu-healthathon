@@ -1247,6 +1247,12 @@ class CallStateTests(unittest.TestCase):
         denied = birth("not normal, operation hua", True)
         self.assertEqual(denied["details"].get("delivery_type"), "operation")
         self.assertEqual(call_state.topic_answer_kind(denied, "birth_mode"), "yes")
+        nukta = birth("सीज़ेरियन हुआ।", "सीज़ेरियन हुआ।")
+        self.assertEqual(nukta["details"].get("delivery_type"), "operation")
+        self.assertEqual(call_state.topic_answer_kind(nukta, "birth_mode"), "yes")
+        glued = birth("घरपे हुई।", "घरपे हुई।")
+        self.assertEqual(glued["details"].get("place"), "home")
+        self.assertNotEqual(call_state.topic_answer_kind(glued, "birth_mode"), "yes")
 
     def test_the_only_child_is_named_on_a_finding(self):
         state = call_state.apply_updates(

@@ -182,6 +182,8 @@ One month is 1 महीना, the same singular rule a week already uses. Two 
 
 A half month of pregnancy is kept. साढ़े सात महीने में is early, and the amount is साढ़े 7 महीने, not 8. ढाई महीने पहले is how long ago, not a pregnancy month. Under nine months is early. Nine is full. `196` unit tests. 58 scenarios, 0 failed.
 
+A nukta does not make a different word. सीज़ेरियन is an operation, the same as सीजेरियन. घरपे is home. घरेलू is still not घर, and सब is still not inside सबसे. `196` unit tests. 58 scenarios, 0 failed.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

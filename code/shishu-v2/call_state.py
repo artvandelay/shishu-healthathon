@@ -1945,13 +1945,27 @@ def _means_every_child(text: str) -> bool:
     return any(_contains_word(text or "", word) for word in _EVERY_CHILD_WORDS)
 
 
+def _strip_nukta(text: str) -> str:
+    """सीज़ेरियन and सीजेरियन are the same word. The nukta is optional."""
+    return (text or "").replace("़", "")
+
+
 def _contains_word(text: str, word: str) -> bool:
-    """A whole word. abnormal is not normal, and घरेलू is not घर."""
+    """A whole word. abnormal is not normal, and घरेलू is not घर.
+
+    घरपे is still घर. A nukta does not make a different word.
+    """
     if not text or not word:
         return False
+    text = _strip_nukta(text)
+    word = _strip_nukta(word)
     if re.search(r"[A-Za-z]", word):
         return re.search(rf"(?i)(?<![A-Za-z]){re.escape(word)}(?![A-Za-z])", text) is not None
-    return re.search(rf"(?<![\u0900-\u097F]){re.escape(word)}(?![\u0900-\u097F])", text) is not None
+    # घरपे is घर. घरेलू is not.
+    return re.search(
+        rf"(?<![\u0900-\u097F]){re.escape(word)}(?=(?:पे|पर|में)|[^\u0900-\u097F]|$)",
+        text,
+    ) is not None
 
 
 def _word_denied(text: str, word: str) -> bool:
