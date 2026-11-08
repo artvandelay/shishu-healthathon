@@ -219,10 +219,13 @@ async def ask_mother(spec: dict, bot_line: str, step: int) -> str:
 
 
 def _state_snapshot(state: dict) -> tuple:
-    topics = {
-        key: (row.get("state"), row.get("value"), row.get("details"))
-        for key, row in (state.get("topics") or {}).items()
-    }
+    topics = {}
+    for key, row in (state.get("topics") or {}).items():
+        details = dict(row.get("details") or {})
+        for detail_key, detail_val in list(details.items()):
+            if str(detail_val).strip() in {"क्या मतलब?", "क्या मतलब"}:
+                details.pop(detail_key)
+        topics[key] = (row.get("state"), row.get("value"), details)
     return (topics, dict(state.get("profile") or {}))
 
 

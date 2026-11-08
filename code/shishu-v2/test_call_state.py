@@ -385,7 +385,7 @@ class CallStateTests(unittest.TestCase):
             "डॉक्टर ने पानी कम बताया था।",
         )
 
-    def test_clarification_does_not_close_the_followup(self):
+    def test_a_missing_followup_keeps_her_words(self):
         state = _ask(call_state.new_call_state(), "birth_nicu")
         state = call_state.apply_updates(state, [_update("topic.birth_nicu", True)], 1)
         state = _ask(state, "birth_nicu", "reason")
@@ -393,12 +393,21 @@ class CallStateTests(unittest.TestCase):
             state,
             [_update("topic.birth_nicu", True)],
             2,
-            utterance="क्या मतलब?",
         )
         self.assertNotIn("reason", state["topics"]["birth_nicu"]["details"])
         nxt = call_state.next_question(state)
-        self.assertEqual(nxt["topic_id"], "birth_nicu")
         self.assertEqual(nxt["followup_id"], "reason")
+
+        state = call_state.apply_updates(
+            state,
+            [_update("topic.birth_nicu", True)],
+            3,
+            utterance="पीलिया हुआ था।",
+        )
+        self.assertEqual(state["topics"]["birth_nicu"]["details"].get("reason"), "पीलिया हुआ था।")
+        nxt = call_state.next_question(state)
+        self.assertEqual(nxt["followup_id"], "days")
+        state = _ask(state, "birth_nicu", "days")
 
         state = call_state.apply_updates(
             state,

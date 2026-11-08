@@ -979,6 +979,10 @@ def apply_updates(
                         and raw_val.strip().lower() not in {"true", "false"}
                     ):
                         details[followup_id] = raw_val
+                if followup_id not in details:
+                    said = str(utterance or "").strip()
+                    if said:
+                        details[followup_id] = said
             topic["details"] = details
             if isinstance(update.get("value"), bool):
                 topic["value"] = update.get("value")
