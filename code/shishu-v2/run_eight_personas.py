@@ -2,9 +2,9 @@
 
 import asyncio
 import json
-import os
 import sys
 from inspect import signature
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -15,7 +15,7 @@ import db
 import models
 import mother_report
 
-load_dotenv("/workspace/.env")
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 
 def _intro(name: str, married: str, children: str) -> dict:
@@ -63,7 +63,6 @@ PERSONAS = {
             ("fam_infant_death", "cause"): "तेज़ झटके आए थे और फिर गुज़र गया।",
             ("close_anything_else", None): "नहीं, बस इतना ही।",
         },
-        "clarify_once": ("body_joint_swelling", "trigger"),
         "expect_close": "complete",
         "expect_yes": ("body_joint_swelling", "fam_infant_death"),
     },
@@ -175,40 +174,6 @@ PERSONAS = {
 }
 
 
-def reply_for(name: str, state: dict, memory: dict) -> str | None:
-    if not state or state.get("phase") in ("closing", "ended"):
-        return None
-    spec = PERSONAS[name]
-    cur = state.get("current_question") or {}
-    tid, fid = cur.get("topic_id"), cur.get("followup_id")
-    key = (tid, fid)
-
-    if spec.get("emergency_on") and tid == spec["emergency_on"]:
-        return "रुकिए, अभी मेरे बच्चे को साँस नहीं आ रही है और होंठ नीले पड़ रहे हैं, इमरजेंसी है!"
-
-    if spec.get("clarify_once") == key and not memory.get("clarified"):
-        memory["clarified"] = True
-        memory["clarify_key"] = key
-        return "क्या मतलब?"
-
-    if memory.get("clarify_key") == key and memory.get("clarified"):
-        memory["reasked_after_clarify"] = True
-
-    table = spec["table"]
-    if key in table:
-        return table[key]
-
-    if tid == "profile.ever_pregnant":
-        return "हाँ, प्रेग्नेंट हुई थी।"
-    if tid == "profile.has_delivered":
-        return "हाँ, डिलीवरी हुई थी।"
-    if fid is not None:
-        if tid in dict(key_pair for key_pair in table if key_pair[1] is None):
-            return table.get((tid, None), "पता नहीं।")
-        return "पता नहीं।"
-    return "नहीं।"
-
-
 def _facts(spec: dict) -> str:
     lines = [spec.get("desc") or ""]
     for (topic_id, followup_id), answer in spec["table"].items():
@@ -228,12 +193,10 @@ async def ask_mother(spec: dict, bot_line: str, step: int) -> str:
             "do not answer it. Say exactly: रुकिए, अभी मेरे बच्चे को साँस नहीं आ रही है "
             "और होंठ नीले पड़ रहे हैं, इमरजेंसी है!"
         )
-    from google import genai
     from google.genai import types
 
-    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"], http_options={"api_version": "v1beta"})
-    try:
-        response = await client.aio.models.generate_content(
+    client = models.text_client()
+    response = await client.aio.models.generate_content(
             model=models.TEXT_MODEL,
             contents=(
                 f"Step {step}.\n{behaviour}\nFacts:\n{_facts(spec)}\n\n"
@@ -252,10 +215,7 @@ async def ask_mother(spec: dict, bot_line: str, step: int) -> str:
                 ),
             ),
         )
-        return str((json.loads(response.text or "{}")).get("reply") or "").strip() or "नहीं।"
-    finally:
-        await client.aio.aclose()
-        client.close()
+    return str((json.loads(response.text or "{}")).get("reply") or "").strip() or "नहीं।"
 
 
 def _state_snapshot(state: dict) -> tuple:
@@ -266,17 +226,10 @@ def _state_snapshot(state: dict) -> tuple:
     return (topics, dict(state.get("profile") or {}))
 
 
-def _topic_words(question: dict) -> set[str]:
-    topic_id = (question or {}).get("topic_id") or ""
-    text = checklist.question_hi(topic_id) if topic_id in checklist._BY_ID else ""
-    return {word for word in text.replace("?", " ").split() if len(word) >= 4}
-
-
 async def one_call(name: str, url: str, headers: dict) -> dict:
     import websockets
 
-    memory = {"clarified": False, "reasked_after_clarify": False, "clarify_key": None,
-              "clarify_mutated": False, "desyncs": 0}
+    memory = {"clarify_mutated": False, "desyncs": 0}
     call_id = None
     step = 0
     spoke = False
@@ -315,24 +268,25 @@ async def one_call(name: str, url: str, headers: dict) -> dict:
                         last_bot = ""
                         continue
                     cur = state.get("current_question") or {}
-                    words = _topic_words(cur)
-                    if words and last_bot and not words & set(last_bot.split()):
-                        memory["desyncs"] += 1
                     heard = last_bot
-                    try:
-                        text = await ask_mother(PERSONAS[name], heard, step + 1)
-                    except Exception as exc:
-                        print(f"[{name}] mother model failed ({exc}); using the fact table", flush=True)
-                        text = reply_for(name, state, memory)
+                    if not heard.strip():
+                        memory["desyncs"] += 1
+                        print(
+                            f"[{name}] DESYNC step {step + 1} server={cur.get('topic_id')} "
+                            f"asked nothing",
+                            flush=True,
+                        )
+                    text = await ask_mother(PERSONAS[name], heard, step + 1)
                     last_bot = ""
                     if not text:
                         continue
                     step += 1
                     if text.strip() in {"क्या मतलब?", "क्या मतलब"}:
                         clarify_snapshot = _state_snapshot(state)
+                    asked = checklist.question_hi(str(cur.get("topic_id") or ""))
                     print(
                         f"[{name}] step {step} server={cur.get('topic_id')}/{cur.get('followup_id')} "
-                        f"bot={heard!r} -> {text}",
+                        f"q={asked!r} bot={heard!r} -> {text}",
                         flush=True,
                     )
                     await ws.send(json.dumps({"type": "text", "text": text}))
@@ -378,7 +332,6 @@ async def evaluate_call(row: dict) -> dict:
 
     close_ok = reason == spec["expect_close"]
     complete_ok = (not unresolved) if spec["expect_close"] == "complete" else True
-    clarify_ok = row["memory"].get("reasked_after_clarify", True) if spec.get("clarify_once") else True
 
     passed = (
         row.get("status") == "completed"
@@ -386,7 +339,6 @@ async def evaluate_call(row: dict) -> dict:
         and complete_ok
         and not missing_yes
         and not extra_yes
-        and clarify_ok
         and not row["memory"].get("clarify_mutated")
         and has_doctor_note
     )
@@ -402,7 +354,6 @@ async def evaluate_call(row: dict) -> dict:
         "actual_yes": list(actual_yes),
         "missing_yes": missing_yes,
         "extra_yes": extra_yes,
-        "clarify_reasked": row["memory"].get("reasked_after_clarify") if spec.get("clarify_once") else None,
         "yes_hindi_count": len(yes_lines),
         "questions_count": len(questions),
         "has_doctor_note": has_doctor_note,

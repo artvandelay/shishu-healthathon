@@ -494,108 +494,39 @@ class AdversarialFlowTests(unittest.TestCase):
         pending_ids = [f["id"] for f in call_state._pending_followups(state, "birth_mode")]
         self.assertIn("operation_reason", pending_ids)
 
-    def test_flow_7_hearing_vision_concern_asks_which(self):
-        """A hearing or vision concern asks which one; no concern asks whether the newborn test was done."""
-        state = _ask(call_state.new_call_state(), "birth_hearing_vision")
-        no = call_state.apply_updates(state, [_up("topic.birth_hearing_vision", False)], 1)
-        self.assertEqual(
-            [f["id"] for f in call_state._pending_followups(no, "birth_hearing_vision")], ["test_done"]
-        )
-        yes = call_state.apply_updates(state, [_up("topic.birth_hearing_vision", True)], 1)
-        self.assertEqual(
-            [f["id"] for f in call_state._pending_followups(yes, "birth_hearing_vision")], ["hearing_or_vision"]
-        )
-
-    def test_flow_8_cleft_lip_palate_multi_child_attribution(self):
-        """Cleft lip/palate requires child attribution when multiple children exist."""
-        state = call_state.new_call_state()
-        state = call_state.apply_updates(
-            state,
-            [_up("profile.children", [
-                {"age": {"value": 3, "unit": "years"}},
-                {"age": {"value": 1, "unit": "years"}},
-            ])],
-            1,
-        )
-        state = _ask(state, "birth_cleft")
-        state = call_state.apply_updates(state, [_up("topic.birth_cleft", True)], 2)
-        nxt = call_state.next_question(state)
-        self.assertEqual(nxt["topic_id"], "birth_cleft")
-        self.assertEqual(nxt["followup_id"], "affected_child")
-
-    def test_flow_9_cord_bleeding_and_delay_multi_child(self):
-        """Cord delay > 3 weeks requires child attribution when multiple children exist."""
-        state = call_state.new_call_state()
-        state = call_state.apply_updates(
-            state,
-            [_up("profile.children", [
-                {"age": {"value": 4, "unit": "years"}},
-                {"age": {"value": 2, "unit": "years"}},
-            ])],
-            1,
-        )
-        state = _ask(state, "birth_cord_3weeks")
-        state = call_state.apply_updates(state, [_up("topic.birth_cord_3weeks", True)], 2)
-        nxt = call_state.next_question(state)
-        self.assertEqual(nxt["topic_id"], "birth_cord_3weeks")
-        self.assertEqual(nxt["followup_id"], "affected_child")
-
-    def test_flow_10_blood_count_abnormal_levels_and_timing(self):
-        """Abnormal blood count follow-up requires low/high and timing."""
-        state = call_state.new_call_state()
-        state = _ask(state, "body_blood_count")
-        state = call_state.apply_updates(state, [_up("topic.body_blood_count", True)], 1)
-        pending = [f["id"] for f in call_state._pending_followups(state, "body_blood_count")]
-        self.assertIn("low_or_high", pending)
-        self.assertIn("timing", pending)
-
-    def test_flow_11_blue_lips_or_fingers_location_and_timing(self):
-        """Cyanosis episodes require location and timing."""
-        state = call_state.new_call_state()
-        state = _ask(state, "body_blue")
-        state = call_state.apply_updates(state, [_up("topic.body_blue", True)], 1)
-        pending = [f["id"] for f in call_state._pending_followups(state, "body_blue")]
-        self.assertIn("location", pending)
-        self.assertIn("timing", pending)
-
-    def test_flow_12_limb_pain_hospital_visits_resolution(self):
-        """Limb pain requires location, frequency, and hospital visits."""
-        state = call_state.new_call_state()
-        state = _ask(state, "body_limb_pain")
-        state = call_state.apply_updates(state, [_up("topic.body_limb_pain", True)], 1)
-        pending = [f["id"] for f in call_state._pending_followups(state, "body_limb_pain")]
-        self.assertIn("location", pending)
-        self.assertIn("frequency", pending)
-        self.assertIn("hospital_visits", pending)
-
-    def test_flow_13_metabolic_fasting_spell_multiple_triggers(self):
-        """Metabolic fasting spells require symptom, trigger, and count."""
-        state = call_state.new_call_state()
-        state = _ask(state, "ill_fasting")
-        state = call_state.apply_updates(state, [_up("topic.ill_fasting", True)], 1)
-        pending = [f["id"] for f in call_state._pending_followups(state, "ill_fasting")]
-        self.assertIn("symptom", pending)
-        self.assertIn("trigger", pending)
-        self.assertIn("count", pending)
-
-    def test_flow_14_recurrent_infections_iv_antibiotics(self):
-        """Hospital admissions and IV antibiotics require admission count and reasons."""
-        state = call_state.new_call_state()
-        state = _ask(state, "ill_admissions")
-        state = call_state.apply_updates(state, [_up("topic.ill_admissions", True)], 1)
-        pending = [f["id"] for f in call_state._pending_followups(state, "ill_admissions")]
-        self.assertIn("count", pending)
-        self.assertIn("reasons", pending)
-
-    def test_flow_15_pregnancy_conditions_postpartum_persistence(self):
-        """Pregnancy conditions require conditions (BP/sugar/thyroid) and postpartum persistence."""
-        state = call_state.new_call_state()
-        state = call_state.apply_updates(state, [_up("profile.ever_pregnant", True)], 1)
-        state = _ask(state, "preg_conditions")
-        state = call_state.apply_updates(state, [_up("topic.preg_conditions", True)], 2)
-        pending = [f["id"] for f in call_state._pending_followups(state, "preg_conditions")]
-        self.assertIn("conditions", pending)
-        self.assertIn("continued_after_delivery", pending)
+    def test_a_yes_opens_only_that_topics_followups(self):
+        """Near-duplicate follow-up routes, one table."""
+        cases = [
+            ("birth_hearing_vision", False, ["test_done"], 0, False),
+            ("birth_hearing_vision", True, ["hearing_or_vision"], 0, False),
+            ("birth_cleft", True, ["affected_child"], 2, False),
+            ("birth_cord_3weeks", True, ["affected_child"], 2, False),
+            ("body_blood_count", True, ["low_or_high", "timing"], 0, False),
+            ("body_blue", True, ["location", "timing"], 0, False),
+            ("body_limb_pain", True, ["location", "frequency", "hospital_visits"], 0, False),
+            ("ill_fasting", True, ["symptom", "trigger", "count"], 0, False),
+            ("ill_admissions", True, ["count", "reasons"], 0, False),
+            ("preg_conditions", True, ["conditions", "continued_after_delivery"], 0, True),
+            ("fam_infant_death", True, ["relationship", "age_at_death", "cause"], 0, False),
+        ]
+        for topic_id, value, expected, n_children, ever_pregnant in cases:
+            with self.subTest(topic=topic_id, value=value):
+                state = call_state.new_call_state()
+                if n_children:
+                    state = call_state.apply_updates(
+                        state,
+                        [_up("profile.children", [
+                            {"age": {"value": age, "unit": "years"}} for age in range(1, n_children + 1)
+                        ])],
+                        1,
+                    )
+                if ever_pregnant:
+                    state = call_state.apply_updates(state, [_up("profile.ever_pregnant", True)], 1)
+                state = _ask(state, topic_id)
+                state = call_state.apply_updates(state, [_up(f"topic.{topic_id}", value)], 2)
+                pending = [item["id"] for item in call_state._pending_followups(state, topic_id)]
+                for followup_id in expected:
+                    self.assertIn(followup_id, pending)
 
     def test_flow_16_currently_pregnant_first_time_delivery_not_applicable(self):
         """First pregnancy in progress (never delivered) skips preg_delivery but retains preg_scan."""
@@ -647,16 +578,6 @@ class AdversarialFlowTests(unittest.TestCase):
         state = call_state.apply_updates(state, [_up("topic.fam_cancer", True, details={"who": "dadi", "relationship": "dadi"})], 2)
         self.assertNotEqual(state["topics"]["fam_same_problem"]["state"], "not_applicable")
         self.assertEqual(state["topics"]["fam_same_problem"]["state"], "not_asked")
-
-    def test_flow_20_fam_infant_death_age_and_cause(self):
-        """Family infant death requires relationship, age at death, and cause."""
-        state = call_state.new_call_state()
-        state = _ask(state, "fam_infant_death")
-        state = call_state.apply_updates(state, [_up("topic.fam_infant_death", True)], 1)
-        pending = [f["id"] for f in call_state._pending_followups(state, "fam_infant_death")]
-        self.assertIn("relationship", pending)
-        self.assertIn("age_at_death", pending)
-        self.assertIn("cause", pending)
 
     def test_flow_21_fam_cancer_kinship_validation(self):
         """A relationship the tool records closes that follow-up. The server does not grade the kinship word."""
