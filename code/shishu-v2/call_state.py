@@ -725,14 +725,6 @@ def _followup_resolved(state: dict, topic: dict, followup_id: str) -> bool:
 
     if followup_id == "affected_child":
         if len(children) <= 1:
-            if len(children) == 1 and _is_positive(topic, None):
-                child_id = children[0].get("id", "child_1")
-                if not any(inst.get("person_id") == child_id for inst in topic.get("instances") or []):
-                    topic.setdefault("instances", []).append({
-                        "person_id": child_id,
-                        "value": topic.get("value"),
-                        "details": dict(details),
-                    })
             return True
         if topic.get("instances"):
             valid_ids = _known_child_ids(children)
@@ -2082,8 +2074,37 @@ def apply_updates(
         )
     if not wrote:
         raise ValueError(problems[0] if problems else "no applicable update")
+    _bind_lone_child(state)
     _apply_rules(state)
     return state
+
+
+def _bind_lone_child(state: dict) -> None:
+    """The only child is the affected child. Which-child is not asked, but the report still names her."""
+    children = [
+        child
+        for child in (state.get("profile") or {}).get("children") or []
+        if isinstance(child, dict) and child.get("id")
+    ]
+    if len(children) != 1:
+        return
+    child_id = children[0]["id"]
+    for topic_id, topic in state["topics"].items():
+        followups = TOPIC_RULES.get(topic_id, {}).get("followups") or []
+        if not any(spec.get("id") == "affected_child" for spec in followups):
+            continue
+        instances = [item for item in (topic.get("instances") or []) if isinstance(item, dict)]
+        if not _is_positive(topic, topic_id):
+            topic["instances"] = [item for item in instances if item.get("person_id") != child_id]
+            continue
+        if any(item.get("person_id") == child_id for item in instances):
+            continue
+        instances.append({
+            "person_id": child_id,
+            "value": topic.get("value"),
+            "details": dict(topic.get("details") or {}),
+        })
+        topic["instances"] = instances
 
 
 def next_question(state: dict) -> dict | None:

@@ -134,7 +134,9 @@ An age of 6.0 months prints as 6 महीने, and 10.0 years prints as 10 ye
 
 abnormal is not a normal delivery, and घरेलू is not a home birth. not normal does not store a normal delivery. An unknown lowercase English word stays in Latin. A capitalized name such as Shilpa is still written in Hindi.
 
-A pregnancy month stored as 3 prints as 3 महीने, the same way a day count prints as दिन and a time count prints as बार. `191` unit tests. 48 scenarios, 0 failed.
+A pregnancy month stored as 3 prints as 3 महीने, the same way a day count prints as दिन and a time count prints as बार.
+
+The only child is stored on a finding that asks which child, so the report says her name or बेटी/बेटा. A family finding such as a miscarriage is not pinned to that child. A no drops the binding. `192` unit tests. 48 scenarios, 0 failed.
 
 ## Not hardcoded
 

@@ -4,6 +4,7 @@ import unittest
 
 import checklist
 import call_state
+import mother_report
 
 
 def _update(field, value, state="answered", scope="none", child_ids=None, details=None):
@@ -1104,6 +1105,41 @@ class CallStateTests(unittest.TestCase):
         denied = birth("not normal, operation hua", True)
         self.assertEqual(denied["details"].get("delivery_type"), "operation")
         self.assertEqual(call_state.topic_answer_kind(denied, "birth_mode"), "yes")
+
+    def test_the_only_child_is_named_on_a_finding(self):
+        state = call_state.apply_updates(
+            call_state.new_call_state(),
+            [_update("profile.children", [{"name": "आरव", "age": {"value": 5, "unit": "years"}, "sex": "male"}])],
+            1,
+        )
+        state = call_state.apply_updates(
+            _ask(state, "body_fits_milestones"),
+            [_update("topic.body_fits_milestones", True, details={"type": "fits", "affected_child": "पहले वाला"})],
+            2,
+            utterance="पहले वाले को झटके आते हैं।",
+        )
+        child_id = state["profile"]["children"][0]["id"]
+        instances = state["topics"]["body_fits_milestones"]["instances"]
+        self.assertEqual([item["person_id"] for item in instances], [child_id])
+        note = mother_report._instance_note(state, "body_fits_milestones")
+        self.assertIn("आरव", note)
+        self.assertNotIn("पहले वाला", note)
+
+        state = call_state.apply_updates(
+            _ask(state, "fam_miscarriage"),
+            [_update("topic.fam_miscarriage", True, details={"count": 1})],
+            3,
+            utterance="एक बार गर्भ गिरा।",
+        )
+        self.assertEqual(state["topics"]["fam_miscarriage"].get("instances") or [], [])
+
+        cleared = call_state.apply_updates(
+            _ask(state, "body_fits_milestones"),
+            [_update("topic.body_fits_milestones", False)],
+            4,
+            utterance="नहीं।",
+        )
+        self.assertEqual(cleared["topics"]["body_fits_milestones"].get("instances") or [], [])
 
     def test_a_full_term_answer_is_not_a_finding(self):
         full = _ask(call_state.new_call_state(), "birth_term")
