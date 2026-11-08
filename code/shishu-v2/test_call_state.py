@@ -1437,6 +1437,10 @@ class CallStateTests(unittest.TestCase):
             utterance="नहीं।",
         )
         self.assertEqual(call_state.topic_answer_kind(denied["topics"]["birth_cleft"], "birth_cleft"), "no")
+        for phrase in ("मालूम नहीं।", "नहीं मालूम।", "पता नही।", "मुझे याद नही है।", "malum nahi"):
+            self.assertTrue(call_state._is_unknown_utterance(phrase), phrase)
+        self.assertFalse(call_state._is_unknown_utterance("नहीं।"))
+        self.assertFalse(call_state._is_unknown_utterance("दो दिन पता नहीं।"))
 
     def test_a_day_phrase_copied_into_the_field_is_stored_as_the_count(self):
         state = _ask(call_state.new_call_state(), "birth_nicu")

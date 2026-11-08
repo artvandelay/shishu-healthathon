@@ -150,7 +150,7 @@ A later sentence that states its own ages replaces the child list. The same ages
 
 The number next to the event is the one stored. NICU days skip N दिन का बुखार and keep the stay. A pregnancy month skips N महीने का and keeps N महीने में. जैसा नहीं बढ़ रहा is a growth finding even when the tool sent false. A plain नहीं stays a no.
 
-पता नहीं is unknown, not a no. It does not skip pregnancy history, and it does not land in the नहीं column. A plain नहीं still does. `195` unit tests. 51 scenarios, 0 failed.
+पता नहीं is unknown, not a no. It does not skip pregnancy history, and it does not land in the नहीं column. A plain नहीं still does. मालूम नहीं, नहीं मालूम, and नही without the bindu are the same unknown. `195` unit tests. 51 scenarios, 0 failed.
 
 ## Not hardcoded
 
