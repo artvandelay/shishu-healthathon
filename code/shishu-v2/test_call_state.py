@@ -2086,6 +2086,16 @@ class CallStateTests(unittest.TestCase):
             call_state.topic_answer_kind(fine["topics"]["preg_delivery"], "preg_delivery"),
             "no",
         )
+        second = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "preg_delivery"),
+            [_update("topic.preg_delivery", True)],
+            1,
+            utterance="दूसरी प्रेग्नेंसी में प्रसव में बहुत खून बह गया।",
+        )
+        self.assertEqual(second["topics"]["preg_delivery"]["details"].get("pregnancy"), 2)
+        self.assertEqual(call_state._pending_followups(second, "preg_delivery"), [])
+        self.assertEqual(call_state._spoken_pregnancy_index("पहली बार प्रसव में दिक्कत हुई।"), 1)
+        self.assertIsNone(call_state._spoken_pregnancy_index("प्रसव हो गया।"))
 
 
 if __name__ == "__main__":

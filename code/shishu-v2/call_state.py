@@ -1170,6 +1170,27 @@ def _is_duration_after(text: str, end: int) -> bool:
     return re.match(r"\s*(?:से|se)(?=\s|$|[।,.])", rest, re.I) is not None
 
 
+def _spoken_pregnancy_index(text: str) -> int | None:
+    """Which pregnancy: पहली प्रेग्नेंसी, दूसरी गर्भावस्था, or 2nd pregnancy.
+
+    पहली बार is the first time, so it counts only on a pregnancy question.
+    """
+    raw = text or ""
+    for word, number in (
+        ("पहली", 1), ("पहला", 1), ("first", 1),
+        ("दूसरी", 2), ("दूसरा", 2), ("second", 2),
+        ("तीसरी", 3), ("तीसरा", 3), ("third", 3),
+        ("चौथी", 4), ("चौथा", 4), ("fourth", 4),
+    ):
+        if re.search(rf"{word}\s*(?:प्रेग्न|गर्भावस्थ|pregnancy|बार)", raw, re.I):
+            return number
+    folded = _fold_spoken_numbers(raw)
+    match = re.search(r"(\d+)\s*(?:प्रेग्न|गर्भावस्थ|pregnancy)", folded, re.I)
+    if match:
+        return int(match.group(1))
+    return None
+
+
 def _spoken_times(text: str) -> int | None:
     """How many times, as in दो बार or दूसरी बार. A day count is not a time count."""
     folded = _fold_spoken_numbers(text or "")
@@ -2211,6 +2232,12 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str, on_followup: bo
             and not _names_reassuring_normal(said)
         ):
             details["problem"] = said.strip()
+    if name in {"preg_delivery", "preg_transfusion"}:
+        key = "pregnancy" if name == "preg_delivery" else "pregnancy_number"
+        if key not in details:
+            index = _spoken_pregnancy_index(utterance or "")
+            if index:
+                details[key] = index
     keep_positive = False
     if name == "body_growth":
         text = utterance or ""
