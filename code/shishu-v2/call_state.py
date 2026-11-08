@@ -1014,6 +1014,15 @@ def apply_updates(
                     if val is None or (not isinstance(val, bool) and val == previous_value):
                         continue
                     details[key] = val
+                if (
+                    followup_id in _YES_NO_FOLLOWUP_IDS
+                    and followup_id not in details
+                    and isinstance(update.get("value"), bool)
+                ):
+                    # The pending question is this yes/no follow-up, so a bare boolean
+                    # is her typed answer to it. Otherwise the follow-up can never
+                    # resolve when the model records only the parent value.
+                    details[followup_id] = update.get("value")
             topic["details"] = details
             if isinstance(update.get("value"), bool):
                 topic["value"] = update.get("value")

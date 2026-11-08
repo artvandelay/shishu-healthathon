@@ -193,6 +193,15 @@ class CallStateTests(unittest.TestCase):
         nxt = call_state.next_question(state)
         self.assertEqual(nxt["followup_id"], "days")
 
+        # A bare boolean does close a pending yes/no follow-up: the pending question
+        # is the follow-up itself, so the boolean is her typed answer to it.
+        state = _ask(call_state.new_call_state(), "body_bleeding_bruise")
+        state = call_state.apply_updates(state, [_update("topic.body_bleeding_bruise", False)], 1)
+        state = _ask(state, "body_bleeding_bruise", "teeth")
+        state = call_state.apply_updates(state, [_update("topic.body_bleeding_bruise", False)], 2)
+        self.assertIs(state["topics"]["body_bleeding_bruise"]["details"].get("teeth"), False)
+        self.assertNotEqual((call_state.next_question(state) or {}).get("followup_id"), "teeth")
+
     def test_a_no_to_a_count_followup_is_not_saved_as_the_count(self):
         state = _ask(call_state.new_call_state(), "ill_admissions")
         state = call_state.apply_updates(state, [_update("topic.ill_admissions", True)], 1)
