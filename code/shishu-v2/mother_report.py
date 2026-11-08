@@ -271,6 +271,7 @@ _TOKEN_HI = {
     "diabetes": "शुगर",
     "thyroid": "थायरॉइड",
     "stroke": "लकवा",
+    "skin": "खुजली",
     "cancer": "कैंसर",
     "cousin": "कज़िन",
     "uncle": "चाचा/मामा",

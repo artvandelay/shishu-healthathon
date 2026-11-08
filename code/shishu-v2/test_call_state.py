@@ -1702,6 +1702,17 @@ class CallStateTests(unittest.TestCase):
             utterance="पापा को लकवा है।",
         )
         self.assertEqual(stroke["topics"]["fam_bp_stroke"]["details"].get("condition"), "stroke")
+        skin = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "fam_maternal_side"),
+            [_update("topic.fam_maternal_side", True)],
+            1,
+            utterance="मामी को खुजली वाले धब्बे हैं।",
+        )
+        self.assertEqual(skin["topics"]["fam_maternal_side"]["details"].get("condition"), "skin")
+        self.assertNotIn(
+            "condition",
+            [item["id"] for item in call_state._pending_followups(skin, "fam_maternal_side")],
+        )
         self.assertEqual(
             call_state._spoken_age_records("उन्नीस साल का बेटा है।"),
             [{"value": 19, "unit": "years"}],

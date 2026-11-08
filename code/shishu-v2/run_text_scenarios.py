@@ -637,6 +637,53 @@ def campaign() -> list[Scenario]:
             children_value=3,
         ),
         Scenario(
+            name="no_flags_no_itch",
+            group="no_flags",
+            caller_name="जया",
+            marital_text=married,
+            children_text="एक बेटी है, एक साल की।",
+            children_value=1,
+            positives={
+                "fam_maternal_side": {
+                    "value": True,
+                    "utterance": "खुजली नहीं है।",
+                    "details": {},
+                },
+            },
+        ),
+        Scenario(
+            name="flags_maternal_skin",
+            group="red_flags",
+            caller_name="हेमा",
+            marital_text=married,
+            children_text="एक बेटा है, दो साल का।",
+            children_value=1,
+            positives={
+                "fam_maternal_side": {
+                    "value": True,
+                    "utterance": "मामी को खुजली वाले धब्बे हैं।",
+                    "details": {},
+                },
+            },
+            expect_yes=("fam_maternal_side",),
+        ),
+        Scenario(
+            name="degenerate_maternal_both",
+            group="degenerate",
+            caller_name="रेखा",
+            marital_text=married,
+            children_text="एक बेटी है, चार साल की।",
+            children_value=1,
+            positives={
+                "fam_maternal_side": {
+                    "value": True,
+                    "utterance": "मामी को इंफेक्शन और खून दोनों की समस्या है।",
+                    "details": {},
+                },
+            },
+            expect_yes=("fam_maternal_side",),
+        ),
+        Scenario(
             name="no_flags_no_sugar",
             group="no_flags",
             caller_name="अर्चना",

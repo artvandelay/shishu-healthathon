@@ -356,6 +356,12 @@ Trio: a son of nineteen (no flags), father's sugar at forty (still a yes, the li
 
 Trio: no sugar (no flags, no हाँ lines), father's stroke (still a yes), and BP plus sugar (still a yes, the line names both). Pass.
 
+## 16:41 IST
+
+माँ की तरफ: ज़्यादा खून, इंफेक्शन, and खुजली are the condition. खुजली नहीं है stays a no. The report says खुजली, not the English code. `197` unit tests. 138 scenarios, 0 failed.
+
+Trio: no itch (no flags, no हाँ lines), maternal skin patches (still a yes), and infection plus bleeding (still a yes). Pass.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

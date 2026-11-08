@@ -2685,6 +2685,18 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str, on_followup: bo
         ]
         if named:
             details["condition"] = named[0] if len(named) == 1 else named
+    if name == "fam_maternal_side" and "condition" not in details:
+        named = [
+            label
+            for label, words in (
+                ("bleeding", ("खून", "bleeding")),
+                ("infection", ("इंफेक्शन", "infection", "संक्रमण")),
+                ("skin", ("खुजली", "धब्बे")),
+            )
+            if _named_and_not_denied(val_blob, utt_blob, words)
+        ]
+        if named:
+            details["condition"] = named[0] if len(named) == 1 else named
     if "relationship" in follow_ids and "relationship" not in details and _has_kinship(utterance or ""):
         details["relationship"] = (utterance or "").strip()
     _store_question_choice(name, details, follow_ids, utterance or "")
