@@ -1014,6 +1014,14 @@ async def _handle_server_message(
                 return True
             except Exception:
                 pass
+        if (
+            live_state
+            and live_state.get("phase") == "asking"
+            and state.awaiting_bot_reply
+            and not telemetry.get("end_requested")
+        ):
+            state.awaiting_bot_reply = False
+            state.speech_end_waiting = False
         if not state.awaiting_bot_reply:
             state.quiet_from = max(time.time(), state.playback_ends_at)
         if live_state and live_state.get("phase") == "closing" and not telemetry.get("ending_sent"):

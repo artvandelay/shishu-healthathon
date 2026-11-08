@@ -561,7 +561,16 @@ def _children_label(state: dict) -> str:
         label = _child_label(state, child.get("id"))
         age = child.get("age")
         if isinstance(age, dict) and age.get("value") is not None:
-            age_text = f"{age.get('value')} {age.get('unit') or ''}".strip()
+            val = age.get("value")
+            if isinstance(val, float) and val.is_integer():
+                val = int(val)
+            age_text = f"{val} {age.get('unit') or 'years'}".strip()
+        elif isinstance(age, (int, float)) and not isinstance(age, bool):
+            if 0 < float(age) < 1 and abs(float(age) * 12 - round(float(age) * 12)) < 1e-4:
+                age_text = f"{int(round(float(age) * 12))} महीने"
+            else:
+                val = int(age) if isinstance(age, float) and age.is_integer() else age
+                age_text = f"{val} साल"
         elif age not in (None, ""):
             age_text = str(age)
         else:
@@ -574,16 +583,20 @@ def _children_label(state: dict) -> str:
 
 def _instance_note(state: dict, topic_id: str) -> str:
     topic = (state.get("topics") or {}).get(topic_id) or {}
+    group = (checklist._BY_ID.get(topic_id) or {}).get("group")
     bits = []
-    for instance in topic.get("instances") or []:
-        if not isinstance(instance, dict):
-            continue
-        label = _child_label(state, instance.get("person_id"))
-        details = instance.get("details") if isinstance(instance.get("details"), dict) else {}
-        extra = _detail_values(details, skip_label=label)
-        bit = " ".join(part for part in (label, extra) if part)
-        if bit:
-            bits.append(bit)
+    top_details = topic.get("details") if isinstance(topic.get("details"), dict) else {}
+    if group in {"birth", "body", "illness"}:
+        for instance in topic.get("instances") or []:
+            if not isinstance(instance, dict):
+                continue
+            label = _child_label(state, instance.get("person_id"))
+            inst_details = instance.get("details") if isinstance(instance.get("details"), dict) else {}
+            merged_details = {**top_details, **inst_details}
+            extra = _detail_values(merged_details, skip_label=label)
+            bit = " ".join(part for part in (label, extra) if part)
+            if bit:
+                bits.append(bit)
     if not bits and isinstance(topic.get("details"), dict):
         extra = _detail_values(topic["details"])
         if extra:

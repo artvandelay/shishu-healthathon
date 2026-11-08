@@ -641,13 +641,18 @@ def _followup_resolved(state: dict, topic: dict, followup_id: str) -> bool:
     if followup_id in ("relationship", "who"):
         val = details.get(followup_id)
         other = details.get("who" if followup_id == "relationship" else "relationship")
+        topic_val = topic.get("value")
         if isinstance(val, dict) and val.get("state") in ("unknown", "no_response"):
             return True
         if isinstance(other, dict) and other.get("state") in ("unknown", "no_response"):
             return True
         if str(val or "").strip().lower() in ("noted", "unknown", "no_response", "skip"):
             return True
-        if _has_kinship(str(val or "")) or _has_kinship(str(other or "")):
+        if (
+            _has_kinship(str(val or ""))
+            or _has_kinship(str(other or ""))
+            or (isinstance(topic_val, str) and _has_kinship(topic_val))
+        ):
             return True
         if followup_id in details and val is not None:
             if len(str(val).split()) >= 2:
@@ -691,13 +696,25 @@ def _topic_resolved(state: dict, topic_id: str) -> bool:
 def _topic_question(topic_id: str) -> dict:
     meta = checklist._BY_ID[topic_id]
     words = question_flow.WIDE_WORDS.get(topic_id) or meta["words"]
+    extra = ""
+    if topic_id == "body_growth":
+        extra = (
+            " Ask whether there is any concern that the child is growing slower or smaller than peers "
+            "(kya bachche ke badhne ya wazan mein koi kami ya chinta hai). "
+            "Record value=true ONLY if there IS a growth concern; if growing normally like peers, record value=false."
+        )
+    elif topic_id == "preg_delivery":
+        extra = (
+            " Record value=true ONLY if there was a delivery complication/problem; "
+            "if delivery went normally without problems, record value=false."
+        )
     return {
         "topic_id": topic_id,
         "followup_id": None,
         "question_kind": "topic",
         "prompt_note": (
             f"Ask one short Hindi question for {topic_id}: {meta['need']}. "
-            f"Suggested words: {words}. Then stop and wait. The server selects routing."
+            f"Suggested words: {words}.{extra} Then stop and wait. The server selects routing."
         ),
     }
 
@@ -729,8 +746,8 @@ def _followup_question(topic_id: str, spec: dict, state: dict | None = None) -> 
             )
     elif spec["id"] in ("relationship", "who"):
         prompt_note = (
-            f"Ask who in the family and their exact kinship (e.g. mama, chacha, bua, maata-pita). "
-            f"A name alone without kinship is not enough. Record in details.relationship."
+            f"For {topic_id}, ask who in the family and their exact kinship (e.g. mama, chacha, bua, cousin). "
+            f"A name alone without kinship is not enough. Call record_answers with field='topic.{topic_id}' and details.{spec['id']}."
         )
 
     return {

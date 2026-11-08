@@ -853,7 +853,8 @@ You are given:
 Your role is to act as a sanity-check and double-checker:
 - Compare the deterministic structured state against the call transcript.
 - If the mother clearly stated a fact in the transcript (e.g., her name, child age/name, or a positive symptom/history/detail) that was missed or mis-parsed in the structured state, include it in `profile_corrections` or `topic_corrections`, and reflect it in `doctor_markdown`, `mother_hindi`, `extracted_findings`, and `red_flags`.
-- You are the judge of the transcript. When the deterministic draft was too rigid, misheard, or misclassified, override it: set `topic_corrections` to the corrected state and omit that false positive from `extracted_findings` and `red_flags`. A deterministic yes is a draft, not a fact you must repeat.
+- You are the judge of the transcript. When the deterministic draft was too rigid, misheard, or misclassified, override it: set `topic_corrections` to the corrected state (`{"state": "answered", "value": true/false, "details": {...}}`) and omit any false positive from `extracted_findings` and `red_flags`. A deterministic yes is a draft, not a fact you must repeat.
+- Only add a `yes` (`value: true`) in `topic_corrections` if a clinical concern/abnormality was actually reported for that topic. When the caller gives a routine blanket `नहीं` to a rapid sequence of screening questions (even if the bot phrased `body_growth` as 'kya bachcha baaki bachchon jaisa badh raha hai?'), treat a bare `नहीं` with no stated growth complaint as `no` (no concern), NOT a growth failure, unless she explicitly described poor weight/height/growth or answered follow-up details.
 - If a topic state is `no_response`, `not_asked`, or `not_applicable`, and the mother did NOT answer it in the transcript, keep that exact label (`no_response`, `not_asked`, or `not_applicable`). NEVER turn `unknown`, `no_response`, `not_asked`, or `not_applicable` into `no`.
 - Do not invent any fact, child identity, answer, or diagnosis. Never name specific rare diseases in `mother_hindi`.
 - `mother_hindi` must contain 3 to 6 clear, natural Devanagari Hindi questions (each ending with `?`) for the mother to ask her doctor or ASHA/ANM दीदी at the next visit, directly covering every positive finding from the call.
@@ -1024,12 +1025,17 @@ def _apply_topic_correction(
 ) -> None:
     """Write a model correction. `replace` drops draft details that would veto it."""
     if new_state == "answered":
+        prior_details = dict(topic.get("details") or {})
         topic["state"] = "answered"
         topic["value"] = new_val if new_val is not None else (False if replace else True)
         if replace:
-            topic["details"] = dict(new_details)
+            if new_details:
+                topic["details"] = dict(new_details)
+            else:
+                kept = {k: v for k, v in prior_details.items() if k in {"teeth", "periods"}}
+                topic["details"] = kept
         elif new_details:
-            merged = dict(topic.get("details") or {})
+            merged = dict(prior_details)
             merged.update(new_details)
             topic["details"] = merged
         if new_instances:
@@ -1084,8 +1090,18 @@ def reconcile_state_with_llm_payload(
             cur = topics.get(tid)
             if not isinstance(cur, dict):
                 continue
-            new_state = str(patch.get("state") or "").strip()
+            raw_state = str(patch.get("state") or "").strip().lower()
             new_val = patch.get("value")
+            if raw_state == "yes":
+                new_state = "answered"
+                if new_val is None:
+                    new_val = True
+            elif raw_state == "no":
+                new_state = "answered"
+                if new_val is None:
+                    new_val = False
+            else:
+                new_state = raw_state
             new_details = patch.get("details") if isinstance(patch.get("details"), dict) else {}
             new_instances = patch.get("instances") if isinstance(patch.get("instances"), list) else []
             prior = cur.get("state")
@@ -1217,18 +1233,23 @@ def build_state_fallback(
 
 async def _generate_accepted_model(client, models: list[str], user_content: str, system_prompt: str) -> dict:
     """Call models in order. The first response the API accepts and that parses wins."""
+    from google.genai import types
+
     last_error: Exception | None = None
     for chosen in models:
         try:
+            cfg: dict = {
+                "system_instruction": system_prompt,
+                "response_mime_type": "application/json",
+                "temperature": 0.2,
+                "max_output_tokens": 16384,
+            }
+            if "gemini-3" in chosen:
+                cfg["thinking_config"] = types.ThinkingConfig(thinking_level="LOW")
             response = await client.aio.models.generate_content(
                 model=chosen,
                 contents=user_content,
-                config={
-                    "system_instruction": system_prompt,
-                    "response_mime_type": "application/json",
-                    "temperature": 0.2,
-                    "max_output_tokens": 8192,
-                },
+                config=cfg,
             )
             return _parse_json(response.text or "")
         except Exception as exc:
@@ -1245,7 +1266,10 @@ async def _from_gemini(
 
     if not os.environ.get("GEMINI_API_KEY"):
         raise RuntimeError("GEMINI_API_KEY is unset")
-    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+    client = genai.Client(
+        api_key=os.environ["GEMINI_API_KEY"],
+        http_options={"api_version": "v1beta"},
+    )
     try:
         return await _generate_accepted_model(
             client, summary_model_chain(model), user_content, system_prompt
@@ -1352,7 +1376,11 @@ async def generate_call_summaries(
             payload = await _from_gemini(user_content, STRUCTURED_STATE_SUMMARY_PROMPT)
             return _finalize_structured_summary(payload, state, transcript, findings, red_flags)
         except Exception:
-            return build_state_fallback(state, findings, red_flags)
+            try:
+                payload = await _from_openai(user_content, STRUCTURED_STATE_SUMMARY_PROMPT)
+                return _finalize_structured_summary(payload, state, transcript, findings, red_flags)
+            except Exception:
+                return build_state_fallback(state, findings, red_flags)
     user_content = _user_content(transcript, findings, red_flags)
     try:
         payload = await _from_gemini(user_content)
