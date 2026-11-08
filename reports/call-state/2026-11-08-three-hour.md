@@ -302,6 +302,12 @@ Trio: one of three and one of one (no flags), blue lips for the elder (still a y
 
 Trio: twins, boy and girl, both one (no flags), fits for her son and not the mother-in-law's children (still a yes), and the mother-in-law's 2 sent as the count (one boy of three, no हाँ lines). Pass.
 
+## 16:26 IST
+
+नाम बता रही हूँ does not name a child बता. The names said before that stay unset unless नाम introduces them. नाम राम है, और सीता does store राम and सीता, and राम को झटके binds राम. An onset एक साल से does not choose the one-year-old. `197` unit tests. 111 scenarios, 0 failed.
+
+Trio: नाम बता रही हूँ (no flags, no child named बता), राम named with नाम and fits (the yes line names राम), and सीता's 4 sent as the count (still two children, unnamed, no हाँ lines). Pass.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

@@ -605,6 +605,38 @@ def campaign() -> list[Scenario]:
             no_value=True,
         ),
         Scenario(
+            name="no_flags_telling_the_names",
+            group="no_flags",
+            caller_name="स्वाति",
+            marital_text=married,
+            children_text="राम दो साल का और सीता चार साल की, नाम बता रही हूँ।",
+            children_value=2,
+        ),
+        Scenario(
+            name="flags_named_with_naam",
+            group="red_flags",
+            caller_name="दीपा",
+            marital_text=married,
+            children_text="नाम राम है दो साल का, और सीता चार साल की।",
+            children_value=2,
+            positives={
+                "body_fits_milestones": {
+                    "value": True,
+                    "utterance": "राम को झटके आते हैं।",
+                    "details": {},
+                },
+            },
+            expect_yes=("body_fits_milestones",),
+        ),
+        Scenario(
+            name="degenerate_telling_age_sent_as_count",
+            group="degenerate",
+            caller_name="माला",
+            marital_text=married,
+            children_text="राम दो साल का और सीता चार साल की, नाम बता रही हूँ।",
+            children_value=4,
+        ),
+        Scenario(
             name="no_flags_twins_boy_and_girl",
             group="no_flags",
             caller_name="नेहा",

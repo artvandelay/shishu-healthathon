@@ -841,6 +841,25 @@ class CallStateTests(unittest.TestCase):
         self.assertFalse(
             nxt and nxt.get("topic_id") == "body_fits_milestones" and nxt.get("followup_id") == "affected_child"
         )
+        named_state = call_state.apply_updates(
+            call_state.new_call_state(),
+            [_update("profile.children", [
+                {"id": "child_1", "name": "राम", "age": {"value": 2, "unit": "years"}},
+                {"id": "child_2", "name": "सीता", "age": {"value": 4, "unit": "years"}},
+            ])],
+            4,
+            utterance="नाम राम है दो साल का, और सीता चार साल की।",
+        )
+        named_state = call_state.apply_updates(
+            _ask(named_state, "body_fits_milestones"),
+            [_update("topic.body_fits_milestones", True)],
+            5,
+            utterance="राम को झटके आते हैं।",
+        )
+        self.assertEqual(
+            [item["person_id"] for item in named_state["topics"]["body_fits_milestones"]["instances"]],
+            ["child_1"],
+        )
         both = call_state.apply_updates(
             _ask(state, "body_blue"),
             [_update("topic.body_blue", True)],
@@ -1276,6 +1295,12 @@ class CallStateTests(unittest.TestCase):
         self.assertEqual(
             [(c["sex"], c["age"]) for c in inlaw["profile"]["children"]],
             [("male", {"value": 3, "unit": "years"})],
+        )
+        telling = stored("राम दो साल का और सीता चार साल की, नाम बता रही हूँ।", 2)
+        self.assertTrue(all(child.get("name") is None for child in telling["profile"]["children"]))
+        self.assertEqual(
+            [child["age"]["value"] for child in telling["profile"]["children"]],
+            [2, 4],
         )
         twins = stored("जुड़वाँ हैं, एक लड़का एक लड़की, दोनों एक साल के।", 2)
         self.assertEqual(

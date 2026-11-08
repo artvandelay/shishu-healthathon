@@ -2151,6 +2151,8 @@ def _spoken_given_names(text: str) -> list[str]:
         "बच्चा", "बच्चे", "बच्चों", "बेटा", "बेटे", "बेटी", "बेटियाँ", "बेटियां",
         "लड़का", "लड़के", "लड़की", "लड़कियाँ", "लड़कियां",
         "वाले", "वाली", "वाला", "बड़े", "बड़ा", "बड़ी", "छोटे", "छोटा", "छोटी",
+        "बता", "बताती", "बताता", "बताना", "बताइए", "बताओ", "रही", "रहा", "रहे",
+        "हूँ", "हूं", "है",
     })
     found = []
 
@@ -2999,9 +3001,24 @@ def _bind_unique_sex(state: dict, utterance: str, turn_id: int) -> None:
     बच्चा does not pick a sex.
     """
     sexes = set(_spoken_sexes(utterance or ""))
-    if len(sexes) != 1:
-        return
-    child_id = _find_child_id(state, utterance or "")
+    child_id = None
+    if len(sexes) == 1:
+        child_id = _find_child_id(state, utterance or "")
+    elif not sexes:
+        # राम को झटके names him. एक साल से is an onset, not a child, so an age
+        # in the sentence does not choose.
+        children = [
+            child
+            for child in (state.get("profile") or {}).get("children") or []
+            if isinstance(child, dict) and child.get("id")
+        ]
+        named = [
+            child["id"]
+            for child in children
+            if str(child.get("name") or "").strip() and str(child.get("name")).strip() in (utterance or "")
+        ]
+        if len(named) == 1:
+            child_id = named[0]
     if not child_id:
         return
     for topic_id, topic in state["topics"].items():
