@@ -580,11 +580,24 @@ def _detail_values(details: dict, skip_label: str = "") -> str:
             shown = f"{shown} बार"
         elif key == "month" and re.fullmatch(r"\d+(?:\.\d+)?", shown):
             shown = call_state._month_phrase(float(shown))
+        elif key in {"pregnancy", "pregnancy_number"} and re.fullmatch(r"\d+", shown):
+            shown = _pregnancy_phrase(int(shown))
         if not shown or shown == skip_norm:
             continue
         if shown not in out:
             out.append(shown)
-    return ", ".join(out)
+    kept = [
+        part for part in out
+        if not any(part != other and part in other for other in out)
+    ]
+    return ", ".join(kept)
+
+
+def _pregnancy_phrase(index: int) -> str:
+    """2 is दूसरी प्रेग्नेंसी, not a bare 2 beside the sentence that already said it."""
+    words = {1: "पहली", 2: "दूसरी", 3: "तीसरी", 4: "चौथी", 5: "पाँचवीं"}
+    word = words.get(index) or str(index)
+    return f"{word} प्रेग्नेंसी"
 
 
 def _number_text(value: object) -> str:

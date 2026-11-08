@@ -174,6 +174,14 @@ class StructuredMotherReportTests(unittest.TestCase):
         self.assertEqual(mother_report._format_age({"value": 1.5, "unit": "weeks"}), "डेढ़ हफ़्ते")
         self.assertEqual(mother_report._format_age({"value": 2.5, "unit": "weeks"}), "ढाई हफ़्ते")
         self.assertEqual(mother_report._format_age({"value": 0.5, "unit": "weeks"}), "आधा हफ़्ता")
+        self.assertEqual(
+            mother_report._detail_values({
+                "problem": "दूसरी प्रेग्नेंसी में प्रसव में बहुत खून बह गया।",
+                "pregnancy": 2,
+            }),
+            "दूसरी प्रेग्नेंसी में प्रसव में बहुत खून बह गया",
+        )
+        self.assertEqual(mother_report._detail_values({"pregnancy": 3}), "तीसरी प्रेग्नेंसी")
         self.assertEqual(mother_report._format_age({"value": 15, "unit": "days"}), "15 दिन")
         self.assertNotIn("हेअव्य", mother_report.hindi_text("heavy"))
 
