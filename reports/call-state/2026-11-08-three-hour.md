@@ -126,7 +126,9 @@ A stored day count prints as 4 दिन and a stored time count as 3 बार.
 
 7, 8, or 9 महीने use the same early, late, and full-term rule as the Hindi words. 9 महीने में is full term. 6 महीने का है is still the child's age now.
 
-A call with no children does not ask about मेरे बच्चे की उम्र, टीके, or the child's daily food. Those fillers are for a child she has. `189` unit tests. 43 scenarios, 0 failed.
+A call with no children does not ask about मेरे बच्चे की उम्र, टीके, or the child's daily food. Those fillers are for a child she has.
+
+An age of 6.0 months prints as 6 महीने, and 10.0 years prints as 10 years. `189` unit tests. 43 scenarios, 0 failed.
 
 ## Not hardcoded
 

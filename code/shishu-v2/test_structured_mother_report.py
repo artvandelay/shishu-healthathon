@@ -153,6 +153,8 @@ class StructuredMotherReportTests(unittest.TestCase):
         self.assertEqual(mother_report._detail_values({"count": 3}), "3 बार")
         self.assertNotIn("[", mother_report._shown_value(["bp", "sugar"]))
         self.assertEqual(mother_report._format_age({"value": 6, "unit": "months"}), "6 महीने")
+        self.assertEqual(mother_report._format_age({"value": 6.0, "unit": "months"}), "6 महीने")
+        self.assertEqual(mother_report._format_age({"value": 10.0, "unit": "years"}), "10 years")
         self.assertEqual(mother_report._format_age({"value": 0.5, "unit": "years"}), "आधा साल")
         self.assertEqual(mother_report._format_age({"value": 1.5, "unit": "years"}), "डेढ़ साल")
         self.assertEqual(mother_report._format_age({"value": 3.5, "unit": "years"}), "साढ़े 3 साल")

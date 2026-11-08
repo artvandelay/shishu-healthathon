@@ -553,6 +553,8 @@ def _shown_value(value: object) -> str:
     if value is None or isinstance(value, (dict, bool)):
         return ""
     text = str(value).strip().strip("।.! ")
+    if re.fullmatch(r"\d+\.0+", text):
+        text = str(int(float(text)))
     if not text or text.startswith("child_") or text.lower() in _HIDDEN_DETAIL_VALUES:
         return ""
     mapped = _TOKEN_HI.get(text.lower(), text)
@@ -577,6 +579,12 @@ def _detail_values(details: dict, skip_label: str = "") -> str:
         if shown not in out:
             out.append(shown)
     return ", ".join(out)
+
+
+def _number_text(value: object) -> str:
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
 
 
 def _quarter_age(value: object, unit_word: str) -> str:
@@ -613,16 +621,17 @@ def _format_age(age: object) -> str:
     unit = str(age.get("unit") or "years").lower()
     if unit in {"month", "months", "mahine"}:
         spoken = _quarter_age(value, "महीने")
-        return spoken or f"{value} महीने"
+        return spoken or f"{_number_text(value)} महीने"
     if unit in {"week", "weeks", "hafte", "hafta"} and isinstance(value, (int, float)) and not isinstance(value, bool):
-        return f"{value} {'हफ़्ता' if float(value) == 1 else 'हफ़्ते'}"
+        shown = _number_text(value)
+        return f"{shown} {'हफ़्ता' if float(value) == 1 else 'हफ़्ते'}"
     if unit in {"day", "days", "din"} and isinstance(value, (int, float)) and not isinstance(value, bool):
-        return f"{value} दिन"
+        return f"{_number_text(value)} दिन"
     if unit in {"year", "years", "saal"}:
         spoken = _quarter_age(value, "साल")
         if spoken:
             return spoken
-    return f"{value} {age.get('unit') or ''}".strip()
+    return f"{_number_text(value)} {age.get('unit') or ''}".strip()
 
 
 def _children_label(state: dict) -> str:
