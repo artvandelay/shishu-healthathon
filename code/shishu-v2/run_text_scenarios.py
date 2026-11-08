@@ -637,6 +637,53 @@ def campaign() -> list[Scenario]:
             children_value=3,
         ),
         Scenario(
+            name="no_flags_not_blue",
+            group="no_flags",
+            caller_name="यमुना",
+            marital_text=married,
+            children_text="एक बेटी है, एक साल की।",
+            children_value=1,
+            positives={
+                "body_blue": {
+                    "value": True,
+                    "utterance": "नीली नहीं पड़ती।",
+                    "details": {},
+                },
+            },
+        ),
+        Scenario(
+            name="flags_blue_fingers",
+            group="red_flags",
+            caller_name="तरन्नुम",
+            marital_text=married,
+            children_text="एक बेटा है, दो साल का।",
+            children_value=1,
+            positives={
+                "body_blue": {
+                    "value": True,
+                    "utterance": "उंगलियाँ नीली पड़ती हैं।",
+                    "details": {},
+                },
+            },
+            expect_yes=("body_blue",),
+        ),
+        Scenario(
+            name="degenerate_blue_lips_sent_as_no",
+            group="degenerate",
+            caller_name="फरजाना",
+            marital_text=married,
+            children_text="एक बेटी है, तीन साल की।",
+            children_value=1,
+            positives={
+                "body_blue": {
+                    "value": False,
+                    "utterance": "होंठ नीले हो जाते हैं।",
+                    "details": {},
+                },
+            },
+            expect_yes=("body_blue",),
+        ),
+        Scenario(
             name="no_flags_still_walks",
             group="no_flags",
             caller_name="निर्मला",

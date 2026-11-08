@@ -2474,6 +2474,13 @@ class CallStateTests(unittest.TestCase):
             utterance="पीठ पर सूजन है।",
         )
         self.assertNotIn("location", lump["topics"]["body_lumps_birth"]["details"])
+        blue = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "body_blue"),
+            [_update("topic.body_blue", True)],
+            1,
+            utterance="उंगलियाँ नीली पड़ती हैं।",
+        )
+        self.assertEqual(blue["topics"]["body_blue"]["details"].get("location"), "उंगलियाँ")
         fine = call_state.apply_updates(
             _ask(call_state.new_call_state(), "ill_odor"),
             [_update("topic.ill_odor", True)],

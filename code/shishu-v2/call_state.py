@@ -2399,7 +2399,7 @@ def _store_question_choice(name: str, details: dict, follow_ids: set, utterance:
     The words come from the question. A location follow-up is a different question:
     सूजन या गाँठ is the finding, not where it is. A copula beside या is not an option.
     """
-    choice_ids = ("source", "low_or_high", "joint", "finger_or_thumb")
+    choice_ids = ("source", "low_or_high", "joint", "finger_or_thumb", "location")
     choice_id = next((fid for fid in choice_ids if fid in follow_ids and fid not in details), None)
     if not choice_id or _only_reassurance(utterance):
         return
@@ -2408,7 +2408,11 @@ def _store_question_choice(name: str, details: dict, follow_ids: set, utterance:
     problem = " ".join(
         bit for bit in _clauses(utterance) if bit and not _clause_is_reassurance(bit)
     )
-    skip = {"नहीं", "नही", "क्या", "है", "हैं", "था", "थी", "थे", "हुआ", "हुई", "हुए"}
+    skip = {
+        "नहीं", "नही", "क्या", "है", "हैं", "था", "थी", "थे", "हुआ", "हुई", "हुए",
+        # सूजन या गाँठ is what it is, not where it is.
+        "सूजन", "गाँठ", "गाँठें", "गाँठे",
+    }
     for match in re.finditer(r"([\u0900-\u097F]{2,})\s+या\s+([\u0900-\u097F]{2,})", question):
         for word in (match.group(1), match.group(2)):
             if word in skip:

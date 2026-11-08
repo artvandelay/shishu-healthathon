@@ -374,6 +374,12 @@ Trio: no vomiting (no flags, no हाँ lines), fits when a meal is missed (st
 
 Trio: he does not walk, with no earlier skill (no flags, no हाँ lines), stopped talking (still a yes), and stopped walking sent as false (still a yes). Pass.
 
+## 16:44 IST
+
+होंठ या उंगलियाँ is the place. सूजन या गाँठ is still not a place. नीली नहीं पड़ती stays a no. `197` unit tests. 147 scenarios, 0 failed.
+
+Trio: not blue (no flags, no हाँ lines), blue fingers (still a yes, the line names उंगलियाँ), and blue lips sent as false (still a yes, the line names होंठ). Pass.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.
