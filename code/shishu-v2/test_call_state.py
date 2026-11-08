@@ -1703,6 +1703,29 @@ class CallStateTests(unittest.TestCase):
             self.assertTrue(call_state._is_unknown_utterance(phrase), phrase)
         self.assertFalse(call_state._is_unknown_utterance("नहीं।"))
         self.assertFalse(call_state._is_unknown_utterance("दो दिन पता नहीं।"))
+        self.assertTrue(call_state._is_unknown_utterance("हो सकता है।"))
+        self.assertTrue(call_state._is_unknown_utterance("शायद।"))
+        self.assertFalse(call_state._is_unknown_utterance("शायद झटके होते हैं।"))
+        hedge = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "body_fits_milestones"),
+            [_update("topic.body_fits_milestones", True)],
+            1,
+            utterance="हो सकता है।",
+        )
+        self.assertEqual(
+            call_state.topic_answer_kind(hedge["topics"]["body_fits_milestones"], "body_fits_milestones"),
+            "unknown",
+        )
+        named = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "body_fits_milestones"),
+            [_update("topic.body_fits_milestones", True)],
+            1,
+            utterance="शायद झटके होते हैं।",
+        )
+        self.assertEqual(
+            call_state.topic_answer_kind(named["topics"]["body_fits_milestones"], "body_fits_milestones"),
+            "yes",
+        )
 
     def test_a_day_phrase_copied_into_the_field_is_stored_as_the_count(self):
         state = _ask(call_state.new_call_state(), "birth_nicu")

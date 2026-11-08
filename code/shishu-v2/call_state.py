@@ -2222,7 +2222,8 @@ _CLARIFY_RE = re.compile(
 _UNKNOWN_UTT_RE = re.compile(
     r"^(?:(?:\S+\s+){0,2})(?:"
     r"(?:पता|याद|मालूम)\s+(?:नहीं|नही)|(?:नहीं|नही)\s+(?:पता|मालूम)|"
-    r"(?:pata|yaad|malum|maaloom)\s+nahi|don'?t\s+know"
+    r"(?:pata|yaad|malum|maaloom)\s+nahi|don'?t\s+know|"
+    r"शायद|हो\s+सकता\s+है|maybe"
     r")(?:\s+(?:है|था|थी|थे|जी|hai|tha|thi|the|ji))?[।.!?]*$",
     re.I,
 )

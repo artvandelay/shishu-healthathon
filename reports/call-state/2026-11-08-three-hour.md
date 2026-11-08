@@ -250,6 +250,12 @@ Trio: son and daughter both four (no flags), fits at four and now six (still a y
 
 Trio: both daughters four (no flags), was five and now seven with fits (one child of seven, still a yes), and the old age 5 sent as the count (one child of seven, no हाँ lines). Pass.
 
+## 16:30 IST
+
+हो सकता है and a bare शायद are the same blank as पता नहीं. शायद झटके होते हैं still names the fits, so it stays a yes. `196` unit tests. 87 scenarios, 0 failed.
+
+Trio: one boy of eight months (no flags), maybe-fits that names झटके (still a yes), and हो सकता है sent as true on every clinical answer (no हाँ lines). Pass.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.
