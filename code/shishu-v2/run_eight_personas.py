@@ -163,7 +163,7 @@ PERSONAS = {
         },
         "emergency_on": "birth_term",
         "expect_close": "emergency",
-        "expect_yes": ("birth_mode",),
+        "expect_yes": ("birth_mode", "body_blue"),
     },
 }
 
