@@ -727,17 +727,47 @@ _MONTH_UNIT = r"(?:महीन\w*|mahine|months|month)"
 _YEAR_UNIT = r"(?:साल|वर्ष|saal|years|year|varsh)"
 
 
+def _is_duration_after(text: str, end: int) -> bool:
+    """'छह महीने से' is how long something has lasted, not an age.
+
+    The month regex can stop before a Hindi vowel sign, so skip the rest of
+    that word before looking for से.
+    """
+    rest = re.sub(r"^\S*", "", text[end:])
+    # A vowel sign is not a word character, so \b does not see the end of से.
+    return re.match(r"\s*(?:से|se)(?=\s|$|[।,.])", rest, re.I) is not None
+
+
 def _spoken_ages(utterance: str) -> list[float]:
     folded = utterance or ""
     for word, number in _NUM_WORDS:
         folded = folded.replace(word, number)
     found = []
     for match in re.finditer(rf"(\d+(?:\.\d+)?)\s*{_MONTH_UNIT}", folded, re.I):
+        if _is_duration_after(folded, match.end()):
+            continue
         found.append((match.start(), float(match.group(1)) / 12.0))
     for match in re.finditer(rf"(\d+(?:\.\d+)?)\s*{_YEAR_UNIT}", folded, re.I):
+        if _is_duration_after(folded, match.end()):
+            continue
         found.append((match.start(), float(match.group(1))))
     found.sort()
     return [age for _, age in found]
+
+
+def _month_age_numbers(utterance: str) -> set[float]:
+    """Bare numbers she used as a month age, not as a duration."""
+    folded = utterance or ""
+    for word, number in _NUM_WORDS:
+        folded = folded.replace(word, number)
+    if re.search(_YEAR_UNIT, folded, re.I):
+        return set()
+    found = set()
+    for match in re.finditer(rf"(\d+(?:\.\d+)?)\s*{_MONTH_UNIT}", folded, re.I):
+        if _is_duration_after(folded, match.end()):
+            continue
+        found.add(float(match.group(1)))
+    return found
 
 
 def _ages_from_prior(count_n: int, prior: list[str] | None) -> list[float]:
@@ -757,17 +787,23 @@ def _ages_from_prior(count_n: int, prior: list[str] | None) -> list[float]:
 
 
 def _retag_month_only(children: list[dict], utterance: str) -> list[dict]:
-    text = utterance or ""
-    if not re.search(_MONTH_UNIT, text, re.I) or re.search(_YEAR_UNIT, text, re.I):
+    month_ages = _month_age_numbers(utterance)
+    if not month_ages:
         return children
     tagged = []
     for child in children:
         child = dict(child)
         age = child.get("age")
-        if isinstance(age, (int, float)) and not isinstance(age, bool) and float(age) >= 1:
-            child["age"] = {"value": age, "unit": "months"}
+        number = None
+        if isinstance(age, (int, float)) and not isinstance(age, bool):
+            number = float(age)
         elif isinstance(age, dict) and not age.get("unit") and isinstance(age.get("value"), (int, float)):
-            child["age"] = {**age, "unit": "months"}
+            number = float(age["value"])
+        if number is not None and number >= 1 and number in month_ages:
+            if isinstance(age, dict):
+                child["age"] = {**age, "unit": "months"}
+            else:
+                child["age"] = {"value": age, "unit": "months"}
         tagged.append(child)
     return tagged
 

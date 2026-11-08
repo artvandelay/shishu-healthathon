@@ -305,6 +305,21 @@ class CallStateTests(unittest.TestCase):
         self.assertAlmostEqual(call_state._child_age_years(state["profile"]["children"][0]["age"]), 0.5)
         self.assertEqual(state["topics"]["intro_children"]["state"], "answered")
 
+    def test_a_duration_in_months_does_not_rewrite_a_year_age(self):
+        state = _ask(call_state.new_call_state(), "intro_children")
+        state = call_state.apply_updates(
+            state,
+            [_update("profile.children", [{"age": 2}])],
+            2,
+            utterance="झटके छह महीने से आ रहे हैं।",
+            prior_utterances=["एक बच्चा है, दो साल का, और उसे झटके आते हैं।"],
+        )
+        age = state["profile"]["children"][0]["age"]
+        self.assertEqual(age, 2)
+        self.assertAlmostEqual(call_state._child_age_years(age), 2)
+        self.assertEqual(call_state._spoken_ages("झटके छह महीने से आ रहे हैं।"), [])
+        self.assertAlmostEqual(call_state._spoken_ages("एक बच्चा है, छह महीने का।")[0], 0.5)
+
     def test_spoken_months_fill_a_bare_count(self):
         state = _ask(call_state.new_call_state(), "intro_children")
         state = call_state.apply_updates(
