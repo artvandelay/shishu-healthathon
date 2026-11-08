@@ -73,10 +73,17 @@ def _fold_spoken_numbers(text: str) -> str:
     return folded
 
 
+# One procedure, however she says it. A nukta is already ignored by word matching.
+_OPERATION_WORDS = (
+    "operation", "caesarean", "cesarean", "c-section", "c section",
+    "ऑपरेशन", "सीजेरियन", "सिजेरियन", "सी-सेक्शन", "सी सेक्शन",
+)
+
+
 def _when_operation(state: dict, topic: dict) -> bool:
     details = topic.get("details") or {}
     blob = f"{topic.get('value') or ''} {details.get('delivery_type') or ''}".lower()
-    return any(_contains_word(blob, word) for word in ("operation", "caesarean", "cesarean", "c-section", "c section"))
+    return any(_contains_word(blob, word) for word in _OPERATION_WORDS)
 
 
 def _when_abnormal(state: dict, topic: dict) -> bool:
@@ -713,7 +720,7 @@ def _is_positive(topic: dict, _topic_id: str | None = None) -> bool:
     dtype = str(details.get("delivery_type") or "").strip().lower()
     if dtype in {"normal", "नॉर्मल"}:
         return False
-    if any(w in dtype for w in ("operation", "caesarean", "cesarean", "c-section", "c section", "ऑपरेशन", "सीजेरियन")):
+    if any(_contains_word(dtype, word) for word in _OPERATION_WORDS):
         return True
     value = topic.get("value")
     if _stated_polarity(value) == "yes":
@@ -2089,7 +2096,7 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
     utt_blob = (utterance or "").lower()
     combined = f"{val_blob} {utt_blob}"
     if name == "birth_mode":
-        op_words = ("operation", "caesarean", "cesarean", "c-section", "ऑपरेशन", "सीजेरियन")
+        op_words = _OPERATION_WORDS
         norm_words = ("normal", "नॉर्मल", "सामान्य")
         said_op = _named_and_not_denied(val_blob, utt_blob, op_words)
         said_norm = _named_and_not_denied(val_blob, utt_blob, norm_words)

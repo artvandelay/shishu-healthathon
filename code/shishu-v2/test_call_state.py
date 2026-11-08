@@ -1269,6 +1269,10 @@ class CallStateTests(unittest.TestCase):
         nukta = birth("सीज़ेरियन हुआ।", "सीज़ेरियन हुआ।")
         self.assertEqual(nukta["details"].get("delivery_type"), "operation")
         self.assertEqual(call_state.topic_answer_kind(nukta, "birth_mode"), "yes")
+        for spelling in ("सी-सेक्शन हुआ।", "सी सेक्शन हुआ।", "सिजेरियन हुआ।"):
+            spelled = birth(spelling, spelling)
+            self.assertEqual(spelled["details"].get("delivery_type"), "operation", spelling)
+            self.assertEqual(call_state.topic_answer_kind(spelled, "birth_mode"), "yes", spelling)
         glued = birth("घरपे हुई।", "घरपे हुई।")
         self.assertEqual(glued["details"].get("place"), "home")
         self.assertNotEqual(call_state.topic_answer_kind(glued, "birth_mode"), "yes")
