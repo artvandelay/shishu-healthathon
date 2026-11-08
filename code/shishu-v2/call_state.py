@@ -2871,6 +2871,14 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str, on_followup: bo
     # even when the pain is a separate clause.
     if name == "body_limb_pain" and _word_denied(utterance or "", "अस्पताल"):
         topic["value"] = False
+    # एक साल से कम. दो साल का था जब मर गया is not this question.
+    # A living child's का है is not the age at death.
+    if name == "fam_infant_death" and re.search(r"का\s+था|की\s+थी|उम्र\s+में\s+(?:मर|गुजर)|जब\s+मर", utterance or ""):
+        spoken = _spoken_age_records(utterance or "")
+        if len(spoken) == 1:
+            years = _child_age_years(spoken[0])
+            if years is not None and years >= 1:
+                topic["value"] = False
     topic["details"] = details
 
 

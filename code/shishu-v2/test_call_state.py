@@ -1688,6 +1688,26 @@ class CallStateTests(unittest.TestCase):
             utterance="मामा की आँख तीस साल की उम्र में गई।",
         )
         self.assertEqual(blind["topics"]["fam_blind"]["details"].get("onset_age"), "30 साल")
+        older = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "fam_infant_death"),
+            [_update("topic.fam_infant_death", True)],
+            1,
+            utterance="भाई दो साल का था जब मर गया।",
+        )
+        self.assertEqual(
+            call_state.topic_answer_kind(older["topics"]["fam_infant_death"], "fam_infant_death"),
+            "no",
+        )
+        infant = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "fam_infant_death"),
+            [_update("topic.fam_infant_death", True)],
+            1,
+            utterance="भाई एक महीने का था जब मर गया।",
+        )
+        self.assertEqual(
+            call_state.topic_answer_kind(infant["topics"]["fam_infant_death"], "fam_infant_death"),
+            "yes",
+        )
         forty = call_state.apply_updates(
             _ask(call_state.new_call_state(), "fam_bp_stroke"),
             [_update("topic.fam_bp_stroke", True)],

@@ -414,6 +414,12 @@ Trio: no swelling (no flags, no हाँ lines), swelling for two days (still a
 
 गिरने पर is the trigger the question already names. The swelling line now says 2 दिन, गिरने, and घुटने. `197` unit tests. 162 scenarios, 0 failed.
 
+## 16:51 IST
+
+भाई दो साल का था जब मर गया is not a death under one year. भाई एक महीने का था जब मर गया still is. A living child's का है is not the age at death. `197` unit tests. 165 scenarios, 0 failed.
+
+Trio: a brother who died at two (no flags, no हाँ lines), a brother who died at one month (still a yes, the line says 1 महीने), and that sentence sent as false (still a yes). Pass.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

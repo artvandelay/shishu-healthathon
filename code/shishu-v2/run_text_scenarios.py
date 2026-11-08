@@ -637,6 +637,53 @@ def campaign() -> list[Scenario]:
             children_value=3,
         ),
         Scenario(
+            name="no_flags_died_at_two",
+            group="no_flags",
+            caller_name="मंजू",
+            marital_text=married,
+            children_text="एक बेटी है, तीन साल की।",
+            children_value=1,
+            positives={
+                "fam_infant_death": {
+                    "value": True,
+                    "utterance": "भाई दो साल का था जब मर गया।",
+                    "details": {},
+                },
+            },
+        ),
+        Scenario(
+            name="flags_died_at_one_month",
+            group="red_flags",
+            caller_name="सरला",
+            marital_text=married,
+            children_text="एक बेटा है, दो साल का।",
+            children_value=1,
+            positives={
+                "fam_infant_death": {
+                    "value": True,
+                    "utterance": "भाई एक महीने का था जब मर गया।",
+                    "details": {},
+                },
+            },
+            expect_yes=("fam_infant_death",),
+        ),
+        Scenario(
+            name="degenerate_infant_death_sent_as_no",
+            group="degenerate",
+            caller_name="पुष्पा",
+            marital_text=married,
+            children_text="एक बेटी है, एक साल की।",
+            children_value=1,
+            positives={
+                "fam_infant_death": {
+                    "value": False,
+                    "utterance": "भाई एक महीने का था जब मर गया।",
+                    "details": {},
+                },
+            },
+            expect_yes=("fam_infant_death",),
+        ),
+        Scenario(
             name="no_flags_no_swelling",
             group="no_flags",
             caller_name="रमा",
