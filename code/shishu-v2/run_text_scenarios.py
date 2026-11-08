@@ -1165,6 +1165,21 @@ def campaign() -> list[Scenario]:
             expect_close="caller_stop",
         ),
         Scenario(
+            name="flags_lost_skill",
+            group="red_flags",
+            caller_name="मीरा",
+            marital_text=married,
+            children_text="एक बेटा है, छह साल का।",
+            children_value=[_child({"value": 6, "unit": "years"}, "male")],
+            positives={
+                "body_regression": {
+                    "value": "अब नहीं कर पाता।",
+                    "utterance": "पहले चलता था, अब नहीं कर पाता।",
+                },
+            },
+            expect_yes=("body_regression",),
+        ),
+        Scenario(
             name="flags_described_without_haan",
             group="red_flags",
             caller_name="लता",

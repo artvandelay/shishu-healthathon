@@ -582,6 +582,58 @@ def _names_reassuring_normal(value: object) -> bool:
     return False
 
 
+_QUESTION_FUNCTION_WORDS = frozenset({
+    "क्या", "या", "है", "हैं", "था", "थी", "थे", "को", "के", "की", "में", "से", "का",
+    "और", "नहीं", "नही", "पर", "भी", "तो", "यह", "ये", "वो", "वह", "कोई", "एक",
+    "बच्चा", "बच्चे", "बच्चों", "बच्ची",
+})
+
+
+def _content_stems(text: str) -> set[str]:
+    stems = set()
+    for word in re.findall(r"[\u0900-\u097F]+", text or ""):
+        if word in _QUESTION_FUNCTION_WORDS or len(word) < 3:
+            continue
+        stems.add(word[:3])
+    return stems
+
+
+def _restates_negative_question(topic_id: str | None, value: object) -> bool:
+    """The question's own yes contains नहीं. Repeating that negative is a finding.
+
+    नहीं। and नहीं जी stay a no. झटके नहीं आते stays a no, because that question
+    does not contain नहीं. Denying the property (छोटी नहीं) is a no. Saying the
+    named thing is absent (अंगूठा नहीं है) is a finding when the question offers
+    absence as its own yes.
+    """
+    if not topic_id or not isinstance(value, str):
+        return False
+    question = checklist.question_hi(topic_id)
+    if "नहीं" not in question and "नही" not in question:
+        return False
+    if not _DENY_RE.search(value):
+        return False
+    said = _content_stems(value)
+    neg_stems: set[str] = set()
+    for bit in re.split(r"[।,?]| या ", question):
+        if "नहीं" in bit or "नही" in bit:
+            neg_stems |= _content_stems(bit)
+    if neg_stems:
+        return bool(neg_stems & said)
+    if not re.search(r"या\s+नहीं\s+है", question):
+        return False
+    properties = {
+        match.group(1)
+        for match in re.finditer(r"([\u0900-\u097F]+)\s+है", question)
+        if match.group(1) not in _QUESTION_FUNCTION_WORDS and match.group(1) not in {"नहीं", "नही"}
+    }
+    before = re.search(r"([\u0900-\u097F]+)\s+(?:नहीं|नही)", value)
+    word = before.group(1) if before else ""
+    if not word or word in properties or word in _QUESTION_FUNCTION_WORDS or len(word) < 3:
+        return False
+    return word[:3] in _content_stems(question)
+
+
 def _described_problem(topic_id: str | None, value: object, details: dict) -> bool:
     """A stored sentence that names the problem, with no हाँ and no नहीं.
 
@@ -630,7 +682,7 @@ def _is_positive(topic: dict, _topic_id: str | None = None) -> bool:
     if _stated_polarity(value) == "yes":
         return True
     if _stated_polarity(value) == "no":
-        return False
+        return _restates_negative_question(_topic_id, value)
     if _topic_id and _topic_id.startswith("fam_") and _topic_id != "fam_same_problem":
         blob = " ".join(
             str(part or "")
@@ -1949,6 +2001,8 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
     if topic.get("value") is False and _stated_polarity(utterance) != "no":
         if _described_problem(name, utterance, details):
             topic["value"] = True
+    elif topic.get("value") is False and _restates_negative_question(name, utterance):
+        topic["value"] = True
     topic["details"] = details
 
 

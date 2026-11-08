@@ -154,6 +154,8 @@ The number next to the event is the one stored. NICU days skip N दिन क�
 
 A sentence that names the problem is a finding even without हाँ. झटके आते हैं, होंठ नीले पड़ते हैं, भर्ती हुआ, गर्भ गिर गया, खून चढ़ा, होंठ कटा, बीपी था, and पीलिया की वजह से चार दिन are हाँ lines. A tool value of false does not hide that sentence. नहीं, नॉर्मल है, and सामान्य है stay no. अस्पताल में हुई is not an operation. सामान्य हुआ is a normal delivery. बाकी बच्चों जैसा बढ़ रहा है and a test that was only done stay out of the हाँ list. A sentence that says both हाँ and नहीं is not promoted. `196` unit tests. 52 scenarios, 0 failed.
 
+Questions whose own yes contains नहीं were stored as a no when she repeated that negative. अब नहीं कर पाता, वैसे नहीं दिखते, and अंगूठा नहीं है are findings. नहीं। and नहीं जी stay no. झटके नहीं आते stays no. छोटी नहीं denies the property, so it stays no. `196` unit tests. 53 scenarios, 0 failed.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

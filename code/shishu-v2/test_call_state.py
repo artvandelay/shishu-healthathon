@@ -1747,6 +1747,53 @@ class CallStateTests(unittest.TestCase):
             "yes",
         )
 
+        # The question's own yes contains नहीं. Repeating it is a finding. A bare नहीं is not.
+        for topic_id, text in (
+            ("body_regression", "अब नहीं कर पाता।"),
+            ("body_private_parts", "वैसे नहीं दिखते।"),
+            ("body_thumb", "अंगूठा नहीं है।"),
+        ):
+            state = call_state.apply_updates(
+                _ask(call_state.new_call_state(), topic_id),
+                [_update(f"topic.{topic_id}", text)],
+                1,
+                utterance=text,
+            )
+            self.assertEqual(
+                call_state.topic_answer_kind(state["topics"][topic_id], topic_id),
+                "yes",
+                text,
+            )
+        for topic_id, text in (
+            ("body_regression", "नहीं।"),
+            ("body_private_parts", "नहीं जी।"),
+            ("body_thumb", "नहीं।"),
+            ("body_fits_milestones", "झटके नहीं आते।"),
+            ("body_thumb", "उंगली छोटी नहीं है।"),
+            ("body_regression", "ऐसा नहीं है।"),
+        ):
+            state = call_state.apply_updates(
+                _ask(call_state.new_call_state(), topic_id),
+                [_update(f"topic.{topic_id}", text)],
+                1,
+                utterance=text,
+            )
+            self.assertEqual(
+                call_state.topic_answer_kind(state["topics"][topic_id], topic_id),
+                "no",
+                text,
+            )
+        forced = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "body_regression"),
+            [_update("topic.body_regression", False)],
+            1,
+            utterance="पहले चलता था, अब नहीं चल पाता।",
+        )
+        self.assertEqual(
+            call_state.topic_answer_kind(forced["topics"]["body_regression"], "body_regression"),
+            "yes",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
