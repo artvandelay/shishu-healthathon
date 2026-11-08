@@ -660,6 +660,14 @@ def campaign() -> list[Scenario]:
             ever_pregnant=False,
         ),
         Scenario(
+            name="no_flags_about_four_years",
+            group="no_flags",
+            caller_name="यमुना",
+            marital_text="शादी है।",
+            children_text="लगभग चार साल का है।",
+            children_value="लगभग चार साल का है।",
+        ),
+        Scenario(
             name="no_flags_shaadi_hai",
             group="no_flags",
             caller_name="सरोज",

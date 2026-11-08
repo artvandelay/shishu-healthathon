@@ -142,7 +142,9 @@ The only child is stored on a finding that asks which child, so the report says 
 
 जी क्या मतलब, मुझे समझ नहीं आया, and फिर से बोलिए leave the follow-up open. चार दिन and नहीं are still answers.
 
-शादी है is married. जाँच हुई, बात हुई, and हो गई by themselves are not. A denial still wins. `193` unit tests. 50 scenarios, 0 failed.
+शादी है is married. जाँच हुई, बात हुई, and हो गई by themselves are not. A denial still wins.
+
+लगभग चार साल, करीब छह महीने, 4.5 साल, and दो महीने are one child of that age. A bare number is a count only when she did not also say an age. बड़ा वाला आठ साल और छोटा वाला तीन साल is two children. `193` unit tests. 51 scenarios, 0 failed.
 
 ## Not hardcoded
 

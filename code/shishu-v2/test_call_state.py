@@ -1098,6 +1098,28 @@ class CallStateTests(unittest.TestCase):
         self.assertEqual(call_state._children_payload("एक बच्चा भी नहीं है।"), ("none", []))
         self.assertEqual(call_state._children_payload("मेरा बच्चा नहीं रोता।"), ("ignore", []))
         self.assertEqual(call_state._children_payload("आठ साल का एक बच्चा है।"), ("count", 1))
+        self.assertEqual(
+            [(c["age"]) for c in stored("लगभग चार साल का है।")["profile"]["children"]],
+            [{"value": 4, "unit": "years"}],
+        )
+        self.assertEqual(
+            stored("करीब छह महीने का है।")["profile"]["children"][0]["age"],
+            {"value": 6, "unit": "months"},
+        )
+        self.assertEqual(
+            stored("4.5 साल का है।")["profile"]["children"][0]["age"],
+            {"value": 4.5, "unit": "years"},
+        )
+        self.assertEqual(
+            stored("दो महीने का है।")["profile"]["children"][0]["age"],
+            {"value": 2, "unit": "months"},
+        )
+        ranked = stored("बड़ा वाला आठ साल का और छोटा वाला तीन साल का।")
+        self.assertEqual(
+            [c["age"] for c in ranked["profile"]["children"]],
+            [{"value": 8, "unit": "years"}, {"value": 3, "unit": "years"}],
+        )
+        self.assertEqual(call_state._children_payload("दो"), ("count", 2))
 
     def test_a_word_inside_another_word_is_not_that_word(self):
         def birth(text, value=True):
