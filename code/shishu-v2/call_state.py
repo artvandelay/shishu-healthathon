@@ -4,7 +4,6 @@ import copy
 import re
 
 import checklist
-import question_flow
 import call_state_contract as contract
 
 TOPIC_STATES = contract.TOPIC_STATES
@@ -47,13 +46,16 @@ def _when_operation(state: dict, topic: dict) -> bool:
     return any(word in blob for word in ("operation", "caesarean", "cesarean", "c-section", "c section"))
 
 
-def _when_abnormal(state: dict, topic: dict) -> bool:
-    result = str((topic.get("details") or {}).get("result") or "").lower()
-    return result in {"abnormal", "not_normal", "not normal"}
-
-
 def _when_partner(state: dict, topic: dict) -> bool:
     return state["profile"].get("marital_status") in _PARTNER_STATUSES
+
+
+def _when_no(state: dict, topic: dict) -> bool:
+    return topic.get("value") is False
+
+
+def _when_partner_no(state: dict, topic: dict) -> bool:
+    return _when_partner(state, topic) and _when_no(state, topic)
 
 
 def _child_age_years(age: object) -> float | None:
@@ -156,10 +158,9 @@ def _build_topic_rules() -> dict:
         _follow("affected_child", "Ask which child had the reaction to BCG.", _when_multiple_children),
     ]
     rules["birth_hearing_vision"]["followups"] = [
-        _follow("test_done", "Ask whether the newborn hearing and vision test was done."),
-        _follow("result", "Ask whether the result was normal, abnormal, or unknown."),
-        _follow("hearing_or_vision", "Ask whether the abnormal result was hearing, vision, or both.", _when_abnormal),
-        _follow("affected_child", "Ask which child had the hearing or vision test issue.", _when_multiple_children),
+        _follow("hearing_or_vision", "Ask whether the problem is with hearing, vision, or both."),
+        _follow("affected_child", "Ask which child has the hearing or vision problem.", _when_multiple_children),
+        _follow("test_done", "Ask whether the newborn hearing and vision test was done.", _when_no, after_no=True),
     ]
     rules["birth_cleft"]["followups"] = [
         _follow("affected_child", "Ask which child has cleft lip or palate.", _when_multiple_children),
@@ -281,14 +282,14 @@ def _build_topic_rules() -> dict:
         _follow("continued_after_delivery", "Ask whether each condition continued after delivery."),
     ]
     rules["preg_thalassemia"]["followups"] = [
-        _follow("caller_test", "Ask whether the caller was tested for thalassemia."),
-        _follow("caller_result", "Ask the caller's thalassemia result."),
-        _follow("partner_test", "Ask whether the partner was tested. Skip this when no partner exists.", _when_partner),
-        _follow("partner_result", "Ask the partner's thalassemia result. Skip this when no partner exists.", _when_partner),
+        _follow("caller_result", "Ask what her own thalassemia result was."),
+        _follow("partner_result", "Ask what her husband's thalassemia result was.", _when_partner),
+        _follow("caller_test", "Ask whether she has had a thalassemia blood test.", _when_no, after_no=True),
+        _follow("partner_test", "Ask whether her husband has had a thalassemia blood test.", _when_partner_no, after_no=True),
     ]
     rules["preg_scan"]["followups"] = [
-        _follow("scan_done", "Ask whether a pregnancy scan was done."),
-        _follow("result", "Ask whether the scan was normal, abnormal, or unknown."),
+        _follow("finding", "Ask what the scan showed, in her words."),
+        _follow("scan_done", "Ask whether any pregnancy scan was done.", _when_no, after_no=True),
     ]
     rules["preg_heart"]["followups"] = [
         _follow("report", "Ask what the heart report said."),
@@ -453,8 +454,6 @@ def _is_positive(topic: dict) -> bool:
     if topic.get("state") != "answered":
         return False
     details = topic.get("details") or {}
-    if str(details.get("result") or "").strip().lower() in {"normal", "negative", "नॉर्मल"}:
-        return False
     dtype = str(details.get("delivery_type") or "").strip().lower()
     if dtype in {"normal", "नॉर्मल"}:
         return False
@@ -481,7 +480,6 @@ def topic_answer_kind(topic: dict) -> str:
     details = topic.get("details") or {}
     if status == "answered" and (
         value is False
-        or str(details.get("result") or "").strip().lower() in {"normal", "negative", "नॉर्मल"}
         or str(details.get("delivery_type") or "").strip().lower() in {"normal", "नॉर्मल"}
         or str(value or "").strip().lower() in {"no", "nahi", "nahin", "normal", "negative", "नहीं", "नही", "नॉर्मल"}
     ):
@@ -694,27 +692,20 @@ def _topic_resolved(state: dict, topic_id: str) -> bool:
 
 
 def _topic_question(topic_id: str) -> dict:
-    meta = checklist._BY_ID[topic_id]
-    words = question_flow.WIDE_WORDS.get(topic_id) or meta["words"]
-    extra = ""
-    if topic_id == "body_growth":
-        extra = (
-            " Ask whether there is any concern that the child is growing slower or smaller than peers "
-            "(kya bachche ke badhne ya wazan mein koi kami ya chinta hai). "
-            "Record value=true ONLY if there IS a growth concern; if growing normally like peers, record value=false."
+    if checklist.is_yes_no(topic_id):
+        how = (
+            "Ask it as one yes/no question in this same direction. Do not add an 'ya ...' alternative "
+            "or a second question. 'Haan' is value=true and 'nahi' is value=false."
         )
-    elif topic_id == "preg_delivery":
-        extra = (
-            " Record value=true ONLY if there was a delivery complication/problem; "
-            "if delivery went normally without problems, record value=false."
-        )
+    else:
+        how = "Ask it as one short question."
     return {
         "topic_id": topic_id,
         "followup_id": None,
         "question_kind": "topic",
         "prompt_note": (
-            f"Ask one short Hindi question for {topic_id}: {meta['need']}. "
-            f"Suggested words: {words}.{extra} Then stop and wait. The server selects routing."
+            f"Ask this question for {topic_id} in simple spoken Hindi, keeping its meaning: "
+            f"\"{checklist.question_hi(topic_id)}\" {how} Then stop and wait."
         ),
     }
 
@@ -1191,18 +1182,6 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str) -> None:
                 details["place"] = "hospital"
             elif utt_words & home_set:
                 details["place"] = "home"
-    if name == "birth_hearing_vision":
-        if "result" not in details and (utt_words & {"normal", "नॉर्मल", "सामान्य"}) and not (utt_words & {"abnormal", "अबनॉर्मल", "असामान्य", "दिक्कत"}):
-            details["result"] = "normal"
-            details.setdefault("test_done", True)
-        if "test_done" not in details and isinstance(value, bool):
-            details["test_done"] = value
-    if name == "preg_scan":
-        if "result" not in details and (utt_words & {"normal", "नॉर्मल", "सामान्य"}) and not (utt_words & {"abnormal", "अबनॉर्मल", "असामान्य", "दिक्कत"}):
-            details["result"] = "normal"
-            details.setdefault("scan_done", True)
-        if "scan_done" not in details and isinstance(value, bool):
-            details["scan_done"] = value
     topic["details"] = details
 
 

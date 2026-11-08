@@ -41,8 +41,7 @@ def _call(**extra):
 class HindiQuestions(unittest.TestCase):
     def test_every_topic_has_a_hindi_question(self):
         for topic in checklist.TOPICS:
-            self.assertIn(topic["id"], checklist.HI_QUESTIONS)
-            self.assertTrue(checklist.HI_QUESTIONS[topic["id"]].endswith("?"))
+            self.assertTrue(checklist.question_hi(topic["id"]).endswith("?"))
             self.assertIn(topic["group"], checklist.GROUP_HI)
 
 

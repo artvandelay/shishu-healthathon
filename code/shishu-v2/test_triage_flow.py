@@ -487,6 +487,8 @@ class Call228RegressionTests(unittest.TestCase):
                 continue
             state["topics"][topic_id]["state"] = "answered"
             state["topics"][topic_id]["value"] = False
+            for spec in call_state._pending_followups(state, topic_id):
+                state["topics"][topic_id]["details"][spec["id"]] = False
         state = call_state.begin_question(state, {"topic_id": "close_anything_else", "followup_id": None})
         turn = gemini_live._TurnState()
         turn.call_state = state

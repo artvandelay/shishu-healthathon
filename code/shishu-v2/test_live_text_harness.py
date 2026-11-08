@@ -505,26 +505,17 @@ class AdversarialFlowTests(unittest.TestCase):
         pending_ids = [f["id"] for f in call_state._pending_followups(state, "birth_mode")]
         self.assertIn("operation_reason", pending_ids)
 
-    def test_flow_7_hearing_vision_abnormal_triggers_type(self):
-        """Normal newborn hearing/vision skips hearing_or_vision; abnormal requires it."""
-        state = call_state.new_call_state()
-        state = _ask(state, "birth_hearing_vision")
-
-        # Test done, normal result
-        state = call_state.apply_updates(
-            state,
-            [_up("topic.birth_hearing_vision", True, details={"test_done": True, "result": "normal"})],
-            1,
+    def test_flow_7_hearing_vision_concern_asks_which(self):
+        """A hearing or vision concern asks which one; no concern asks whether the newborn test was done."""
+        state = _ask(call_state.new_call_state(), "birth_hearing_vision")
+        no = call_state.apply_updates(state, [_up("topic.birth_hearing_vision", False)], 1)
+        self.assertEqual(
+            [f["id"] for f in call_state._pending_followups(no, "birth_hearing_vision")], ["test_done"]
         )
-        self.assertNotIn("hearing_or_vision", [f["id"] for f in call_state._pending_followups(state, "birth_hearing_vision")])
-
-        # Abnormal result
-        state = call_state.apply_updates(
-            state,
-            [_up("topic.birth_hearing_vision", True, details={"test_done": True, "result": "abnormal"})],
-            2,
+        yes = call_state.apply_updates(state, [_up("topic.birth_hearing_vision", True)], 1)
+        self.assertEqual(
+            [f["id"] for f in call_state._pending_followups(yes, "birth_hearing_vision")], ["hearing_or_vision"]
         )
-        self.assertIn("hearing_or_vision", [f["id"] for f in call_state._pending_followups(state, "birth_hearing_vision")])
 
     def test_flow_8_cleft_lip_palate_multi_child_attribution(self):
         """Cleft lip/palate requires child attribution when multiple children exist."""
@@ -639,12 +630,12 @@ class AdversarialFlowTests(unittest.TestCase):
         state = call_state.new_call_state()
         state = call_state.apply_updates(state, [_up("profile.marital_status", "unmarried")], 1)
         state = _ask(state, "preg_thalassemia")
-        state = call_state.apply_updates(state, [_up("topic.preg_thalassemia", True)], 2)
-        pending = [f["id"] for f in call_state._pending_followups(state, "preg_thalassemia")]
-        self.assertIn("caller_test", pending)
-        self.assertIn("caller_result", pending)
-        self.assertNotIn("partner_test", pending)
-        self.assertNotIn("partner_result", pending)
+        yes = call_state.apply_updates(state, [_up("topic.preg_thalassemia", True)], 2)
+        pending = [f["id"] for f in call_state._pending_followups(yes, "preg_thalassemia")]
+        self.assertEqual(pending, ["caller_result"])
+        no = call_state.apply_updates(state, [_up("topic.preg_thalassemia", False)], 2)
+        pending = [f["id"] for f in call_state._pending_followups(no, "preg_thalassemia")]
+        self.assertEqual(pending, ["caller_test"])
 
     def test_flow_18_consanguinity_fam_related_skipped_for_unmarried(self):
         """Unmarried caller skips consanguinity (fam_related) completely."""
@@ -742,6 +733,10 @@ class AdversarialFlowTests(unittest.TestCase):
         for tid in checklist.REQUIRED_IDS:
             if state["topics"][tid]["state"] in ("not_asked", "asking"):
                 state = call_state.apply_updates(state, [_up(f"topic.{tid}", False)], 6)
+                pending = call_state._pending_followups(state, tid)
+                if pending:
+                    details = {spec["id"]: False for spec in pending}
+                    state = call_state.apply_updates(state, [_up(f"topic.{tid}", False, details=details)], 7)
 
         self.assertTrue(call_state.is_complete(state))
         state = call_state.request_close(state, "complete")

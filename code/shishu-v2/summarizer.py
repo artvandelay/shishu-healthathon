@@ -854,7 +854,7 @@ Your role is to act as a sanity-check and double-checker:
 - Compare the deterministic structured state against the call transcript.
 - If the mother clearly stated a fact in the transcript (e.g., her name, child age/name, or a positive symptom/history/detail) that was missed or mis-parsed in the structured state, include it in `profile_corrections` or `topic_corrections`, and reflect it in `doctor_markdown`, `mother_hindi`, `extracted_findings`, and `red_flags`.
 - You are the judge of the transcript. When the deterministic draft was too rigid, misheard, or misclassified, override it: set `topic_corrections` to the corrected state (`{"state": "answered", "value": true/false, "details": {...}}`) and omit any false positive from `extracted_findings` and `red_flags`. A deterministic yes is a draft, not a fact you must repeat.
-- Only add a `yes` (`value: true`) in `topic_corrections` if a clinical concern/abnormality was actually reported for that topic. When the caller gives a routine blanket `नहीं` to a rapid sequence of screening questions (even if the bot phrased `body_growth` as 'kya bachcha baaki bachchon jaisa badh raha hai?'), treat a bare `नहीं` with no stated growth complaint as `no` (no concern), NOT a growth failure, unless she explicitly described poor weight/height/growth or answered follow-up details.
+- Each topic line shows the question that was asked. For yes/no topics `value: true` means she said yes to that exact question, which is worded so that yes is a concern. Only set `value: true` in `topic_corrections` when she reported that concern.
 - If a topic state is `no_response`, `not_asked`, or `not_applicable`, and the mother did NOT answer it in the transcript, keep that exact label (`no_response`, `not_asked`, or `not_applicable`). NEVER turn `unknown`, `no_response`, `not_asked`, or `not_applicable` into `no`.
 - Do not invent any fact, child identity, answer, or diagnosis. Never name specific rare diseases in `mother_hindi`.
 - `mother_hindi` must contain 3 to 6 clear, natural Devanagari Hindi questions (each ending with `?`) for the mother to ask her doctor or ASHA/ANM दीदी at the next visit, directly covering every positive finding from the call.
@@ -1156,7 +1156,7 @@ def state_to_summary_context(state: dict, transcript: list[dict] | None = None) 
     for topic in checklist.TOPICS:
         saved = topics.get(topic["id"]) if isinstance(topics.get(topic["id"]), dict) else {}
         lines.append(
-            f"{topic['id']}: state={_answer_label(saved)} "
+            f"{topic['id']} (asked: {topic['question']}): state={_answer_label(saved)} "
             f"value={json.dumps(saved.get('value'), ensure_ascii=False)} "
             f"details={json.dumps(saved.get('details') or {}, ensure_ascii=False)} "
             f"instances={json.dumps(saved.get('instances') or [], ensure_ascii=False)}"

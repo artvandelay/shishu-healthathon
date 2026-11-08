@@ -426,16 +426,21 @@ class CallStateTests(unittest.TestCase):
         self.assertEqual(state["topics"]["birth_mode"]["value"], "operation")
         self.assertEqual(state["topics"]["birth_mode"]["details"].get("delivery_type"), "operation")
 
-    def test_normal_hearing_is_not_a_positive_finding(self):
-        state = _ask(call_state.new_call_state(), "birth_hearing_vision")
-        state = call_state.apply_updates(
-            state,
-            [_update("profile.children", [{"age": 3}]), _update("topic.birth_hearing_vision", True)],
-            1,
-            utterance="सुनने की जाँच हुई थी और नॉर्मल थी।",
-        )
-        self.assertEqual(state["topics"]["birth_hearing_vision"]["details"].get("result"), "normal")
-        self.assertFalse(call_state._is_positive(state["topics"]["birth_hearing_vision"]))
+    def test_test_topics_ask_whether_the_test_was_done_only_after_no(self):
+        for topic_id, done_id in (
+            ("birth_hearing_vision", "test_done"),
+            ("preg_scan", "scan_done"),
+            ("preg_thalassemia", "caller_test"),
+        ):
+            base = call_state.apply_updates(
+                call_state.new_call_state(), [_update("profile.children", [{"age": 3}])], 1
+            )
+            no = call_state.apply_updates(_ask(base, topic_id), [_update(f"topic.{topic_id}", False)], 2)
+            self.assertFalse(call_state._is_positive(no["topics"][topic_id]))
+            self.assertIn(done_id, [f["id"] for f in call_state._pending_followups(no, topic_id)])
+            yes = call_state.apply_updates(_ask(base, topic_id), [_update(f"topic.{topic_id}", True)], 2)
+            self.assertTrue(call_state._is_positive(yes["topics"][topic_id]))
+            self.assertNotIn(done_id, [f["id"] for f in call_state._pending_followups(yes, topic_id)])
 
     def test_fact_from_the_next_question_is_kept(self):
         state = call_state.new_call_state()
