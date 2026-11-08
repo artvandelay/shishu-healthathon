@@ -1771,6 +1771,23 @@ class CallStateTests(unittest.TestCase):
             utterance="सात महीने में पैदा हुई।",
         )
         self.assertEqual(early["topics"]["birth_term"]["details"].get("amount"), "7 महीने")
+        gap = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "birth_term"),
+            [_update("topic.birth_term", True)],
+            1,
+            utterance="समय से दो महीने पहले हुआ।",
+        )
+        self.assertEqual(gap["topics"]["birth_term"]["details"].get("term"), "early")
+        self.assertEqual(gap["topics"]["birth_term"]["details"].get("amount"), "2 महीने")
+        self.assertEqual(call_state.topic_answer_kind(gap["topics"]["birth_term"], "birth_term"), "yes")
+        later = call_state.apply_updates(
+            _ask(call_state.new_call_state(), "birth_term"),
+            [_update("topic.birth_term", True)],
+            1,
+            utterance="समय से दो हफ्ते बाद हुआ।",
+        )
+        self.assertEqual(later["topics"]["birth_term"]["details"].get("term"), "late")
+        self.assertEqual(later["topics"]["birth_term"]["details"].get("amount"), "2 हफ्ते")
         half = call_state.apply_updates(
             _ask(call_state.new_call_state(), "birth_term"),
             [_update("topic.birth_term", False)],

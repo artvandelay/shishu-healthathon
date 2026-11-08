@@ -386,6 +386,12 @@ Trio: not blue (no flags, no हाँ lines), blue fingers (still a yes, the li
 
 Trio: pain without a hospital visit (no flags, no हाँ lines), leg pain that needed hospital (still a yes, the line names पैर), and hand pain sent as false (still a yes, the line names हाथ). Pass.
 
+## 16:47 IST
+
+समय से दो महीने पहले is early by two months. समय से दो हफ्ते बाद is late by two weeks. समय से पहले, with no number, is still early and the amount stays unasked. समय पर stays a no. `197` unit tests. 153 scenarios, 0 failed.
+
+Trio: born on time (no flags, no हाँ lines), two months early (still a yes, the line says 2 महीने), and two weeks late sent as false (still a yes, the line says 2 हफ्ते). Pass.
+
 ## Not hardcoded
 
 No caller names, call ids, or scenario sentences in `call_state.py` / `mother_report.py` / `summarizer.py`. No new list whose only job is one failing sentence. `ओपेरतिओन` is not treated as success. Half-step ages stay numeric (1.5 साल, 3.5 साल) rather than a special label for one sentence. A later bare child count still does not replace children who already have ages. Normal delivery stays in the नहीं column.

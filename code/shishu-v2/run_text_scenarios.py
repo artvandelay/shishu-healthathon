@@ -637,6 +637,53 @@ def campaign() -> list[Scenario]:
             children_value=3,
         ),
         Scenario(
+            name="no_flags_on_time",
+            group="no_flags",
+            caller_name="लक्ष्मी",
+            marital_text=married,
+            children_text="एक बेटी है, एक साल की।",
+            children_value=1,
+            positives={
+                "birth_term": {
+                    "value": True,
+                    "utterance": "समय पर हुआ।",
+                    "details": {},
+                },
+            },
+        ),
+        Scenario(
+            name="flags_two_months_early",
+            group="red_flags",
+            caller_name="पार्वती",
+            marital_text=married,
+            children_text="एक बेटा है, दो साल का।",
+            children_value=1,
+            positives={
+                "birth_term": {
+                    "value": True,
+                    "utterance": "समय से दो महीने पहले हुआ।",
+                    "details": {},
+                },
+            },
+            expect_yes=("birth_term",),
+        ),
+        Scenario(
+            name="degenerate_two_weeks_late_sent_as_no",
+            group="degenerate",
+            caller_name="सीमा",
+            marital_text=married,
+            children_text="एक बेटी है, तीन साल की।",
+            children_value=1,
+            positives={
+                "birth_term": {
+                    "value": False,
+                    "utterance": "समय से दो हफ्ते बाद हुआ।",
+                    "details": {},
+                },
+            },
+            expect_yes=("birth_term",),
+        ),
+        Scenario(
             name="no_flags_pain_no_hospital",
             group="no_flags",
             caller_name="नजमा",

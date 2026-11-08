@@ -2444,12 +2444,36 @@ def _lab_result(text: str) -> str | None:
     return None
 
 
+def _term_gap(text: str) -> tuple[str, str] | None:
+    """समय से दो महीने पहले is early by two months. समय से पहले has no amount."""
+    folded = _fold_spoken_numbers(text or "")
+    match = re.search(
+        r"समय से\s+(\d+(?:\.\d+)?)\s*((?:महीन|हफ़्त|हफ्त|दिन)\S*)\s*(पहले|(?:के\s+)?बाद)",
+        folded,
+        re.I,
+    )
+    if not match:
+        return None
+    number = float(match.group(1))
+    unit = match.group(2)
+    shown = int(number) if number.is_integer() else number
+    if unit.startswith("महीन"):
+        phrase = _month_phrase(number)
+    elif unit.startswith("हफ्त") or unit.startswith("हफ़्त"):
+        phrase = f"{shown} {'हफ्ता' if shown == 1 else 'हफ्ते'}"
+    else:
+        phrase = _day_phrase(number)
+    which = "early" if "पहले" in match.group(3) else "late"
+    return which, phrase
+
+
 def _term_label(text: str) -> str | None:
     """early, late, or full. A child's present age (6 महीने का है) is not a term."""
     if not text:
         return None
     folded = _fold_spoken_numbers(text)
     born = r"(?:\s+में|\s+का\s+पैदा)"
+    gap = _term_gap(text)
     early = re.search(
         rf"समय से पहले|जल्दी|preterm|early|(?:6|7|8)\s+महीन\S*{born}",
         folded,
@@ -2469,6 +2493,9 @@ def _term_label(text: str) -> str | None:
         early = early or month < 9
         late = late or month > 9
         full = full or month == 9
+    if gap:
+        early = early or gap[0] == "early"
+        late = late or gap[0] == "late"
     if early and not late:
         return "early"
     if late and not early:
@@ -2664,6 +2691,10 @@ def _absorb_stated_value(name: str, topic: dict, utterance: str, on_followup: bo
         month = _spoken_month_count(utterance or "")
         if month is not None:
             details["amount"] = _month_phrase(month)
+        else:
+            gap = _term_gap(utterance or "")
+            if gap:
+                details["amount"] = gap[1]
     ages = _spoken_age_records(utterance or "")
     if len(ages) == 1:
         phrase = _age_phrase(ages[0])
