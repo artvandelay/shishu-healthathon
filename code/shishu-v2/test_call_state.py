@@ -821,6 +821,32 @@ class CallStateTests(unittest.TestCase):
             self.assertEqual(len(records), 1, utterance)
             self.assertEqual(records[0]["unit"], "years", utterance)
             self.assertAlmostEqual(records[0]["value"], years, msg=utterance)
+        self.assertEqual(
+            call_state._spoken_age_records("एक बेटा है, दो हफ़्ते का है।"),
+            [{"value": 2, "unit": "weeks"}],
+        )
+        self.assertEqual(
+            call_state._spoken_age_records("पंद्रह दिन की बेटी है।"),
+            [{"value": 15, "unit": "days"}],
+        )
+        self.assertEqual(call_state._spoken_age_records("NICU में दो दिन रहा।"), [])
+        self.assertEqual(call_state._spoken_age_records("दो दिन का बुखार था।"), [])
+        self.assertEqual(
+            call_state._spoken_age_records("बच्चा NICU में दो दिन रहा, उम्र दो हफ़्ते का है।"),
+            [{"value": 2, "unit": "weeks"}],
+        )
+        newborn = _ask(call_state.new_call_state(), "intro_children")
+        newborn = call_state.apply_updates(
+            newborn,
+            [_update("profile.children", 1)],
+            1,
+            utterance="एक बेटा है, दो हफ़्ते का है।",
+        )
+        self.assertTrue(call_state._all_under_10(newborn))
+        self.assertAlmostEqual(
+            call_state._child_age_years(newborn["profile"]["children"][0]["age"]),
+            2 / 52,
+        )
         months = call_state._spoken_age_records("सवा महीने का है।")
         self.assertEqual(months, [{"value": 1.25, "unit": "months"}])
         self.assertAlmostEqual(call_state._child_age_years(months[0]), 1.25 / 12)

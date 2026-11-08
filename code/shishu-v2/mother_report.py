@@ -606,6 +606,10 @@ def _format_age(age: object) -> str:
     if unit in {"month", "months", "mahine"}:
         spoken = _quarter_age(value, "महीने")
         return spoken or f"{value} महीने"
+    if unit in {"week", "weeks", "hafte", "hafta"} and isinstance(value, (int, float)) and not isinstance(value, bool):
+        return f"{value} {'हफ़्ता' if float(value) == 1 else 'हफ़्ते'}"
+    if unit in {"day", "days", "din"} and isinstance(value, (int, float)) and not isinstance(value, bool):
+        return f"{value} दिन"
     if unit in {"year", "years", "saal"}:
         spoken = _quarter_age(value, "साल")
         if spoken:

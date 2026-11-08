@@ -90,7 +90,9 @@ A bleeding or bruise finding is not asked as a swollen knee. Lost skills, pubert
 
 A day or time count copied into the follow-up as a sentence ("दो दिन पता नहीं") is stored as the number. The पता नहीं in that sentence does not wipe the count. A whole call answered with ठीक है stays a no.
 
-सवा साल and सवा महीना are one and a quarter when no number follows सवा. The report prints that as सवा साल / सवा महीना, and the same fraction words for months (डेढ़ महीने, ढाई महीने). The who line must show the formatted age. `187` unit tests. 31 scenarios, 0 failed.
+सवा साल and सवा महीना are one and a quarter when no number follows सवा. The report prints that as सवा साल / सवा महीना, and the same fraction words for months (डेढ़ महीने, ढाई महीने). The who line must show the formatted age.
+
+दो हफ़्ते का है and पंद्रह दिन की है are ages. दो दिन रहा and दो दिन का बुखार are not. A fifteen-day NICU stay stays a day count on that finding. Number words through तीस do not eat ordinals (तीस must not turn तीसरे into a number). `187` unit tests. 34 scenarios, 0 failed.
 
 ## Not hardcoded
 

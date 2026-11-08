@@ -32,13 +32,19 @@ _FAMILY_YES_IDS = tuple(
 )
 
 _NUM_WORDS = (
-    ("ग्यारह", "11"), ("बारह", "12"), ("आधा", "0.5"),
+    ("उनतीस", "29"), ("अट्ठाईस", "28"), ("सत्ताईस", "27"), ("छब्बीस", "26"),
+    ("पच्चीस", "25"), ("चौबीस", "24"), ("तेईस", "23"), ("बाईस", "22"), ("इक्कीस", "21"),
+    ("अठारह", "18"), ("सत्रह", "17"), ("सोलह", "16"), ("पंद्रह", "15"), ("पन्द्रह", "15"),
+    ("चौदह", "14"), ("तेरह", "13"), ("ग्यारह", "11"), ("बारह", "12"), ("आधा", "0.5"),
+    ("बीस", "20"), ("तीस", "30"),
     ("पाँच", "5"), ("पांच", "5"), ("छह", "6"), ("छः", "6"),
     ("एक", "1"), ("दो", "2"), ("तीन", "3"), ("चार", "4"),
     ("सात", "7"), ("आठ", "8"), ("नौ", "9"), ("दस", "10"),
 )
 _MONTH_UNIT = r"(?:महीन\w*|mahine|months|month)"
 _YEAR_UNIT = r"(?:साल|वर्ष|saal|years|year|varsh)"
+_WEEK_UNIT = r"(?:हफ़्त\S*|हफ्त\S*|hafte|weeks|week)"
+_DAY_UNIT = r"(?:दिन|din|days|day)"
 
 
 def _fold_spoken_numbers(text: str) -> str:
@@ -50,7 +56,8 @@ def _fold_spoken_numbers(text: str) -> str:
     folded = text or ""
     folded = folded.replace("डेढ़", "1.5").replace("ढाई", "2.5")
     for word, number in _NUM_WORDS:
-        folded = folded.replace(word, number)
+        # तीस must not eat तीसरे, and दो must not eat दोनों.
+        folded = re.sub(rf"{re.escape(word)}(?![\u0900-\u097F])", number, folded)
 
     def _shift(match: re.Match[str], delta: float) -> str:
         value = float(match.group(1)) + delta
@@ -91,6 +98,10 @@ def _child_age_years(age: object) -> float | None:
         unit = str(age.get("unit") or "years").lower()
         if unit in {"month", "months", "mahine"}:
             return float(value) / 12.0
+        if unit in {"week", "weeks", "hafte", "hafta"}:
+            return float(value) / 52.0
+        if unit in {"day", "days", "din"}:
+            return float(value) / 365.0
         return float(value)
     if isinstance(age, str):
         cleaned = _fold_spoken_numbers(age.strip().lower())
@@ -100,6 +111,12 @@ def _child_age_years(age: object) -> float | None:
         m = re.search(rf"(\d+(?:\.\d+)?)\s*{_YEAR_UNIT}", cleaned, re.I)
         if m:
             return float(m.group(1))
+        m = re.search(rf"(\d+(?:\.\d+)?)\s*{_WEEK_UNIT}", cleaned, re.I)
+        if m:
+            return float(m.group(1)) / 52.0
+        m = re.search(rf"(\d+(?:\.\d+)?)\s*{_DAY_UNIT}", cleaned, re.I)
+        if m:
+            return float(m.group(1)) / 365.0
         m = re.search(r"^\s*(\d+(?:\.\d+)?)\s*$", cleaned)
         if m:
             return float(m.group(1))
@@ -625,9 +642,7 @@ def _find_child_id(state: dict, raw: object) -> str | None:
     if not raw or not isinstance(raw, str):
         return None
     raw_cleaned = raw.strip().lower()
-    cleaned = raw_cleaned
-    for word, number in _NUM_WORDS:
-        cleaned = cleaned.replace(word, number)
+    cleaned = _fold_spoken_numbers(raw_cleaned)
     children = state.get("profile", {}).get("children") or []
     for c in children:
         cid = str(c.get("id") or "").lower()
@@ -999,6 +1014,15 @@ def _spoken_number(raw: str) -> int | float:
     return int(number) if number.is_integer() else number
 
 
+def _followed_by_age_copula(text: str, end: int) -> bool:
+    """दो हफ़्ते का है is an age. दो दिन रहा and दो दिन का बुखार are not."""
+    rest = re.sub(r"^\S*", "", text[end:])
+    return re.match(
+        r"\s*(?:का|की|के)\s*(?:है|हैं|था|थी|थे|बच्च|बेटा|बेटी|लड़क)",
+        rest,
+    ) is not None
+
+
 def _spoken_age_records(utterance: str) -> list[dict]:
     """Ages she actually said, keeping months and years apart.
 
@@ -1015,6 +1039,13 @@ def _spoken_age_records(utterance: str) -> list[dict]:
         if _is_duration_after(folded, match.end()):
             continue
         found.append((match.start(), {"value": _spoken_number(match.group(1)), "unit": "years"}))
+    for pattern, unit in ((_WEEK_UNIT, "weeks"), (_DAY_UNIT, "days")):
+        for match in re.finditer(rf"(\d+(?:\.\d+)?)\s*{pattern}", folded, re.I):
+            if _is_duration_after(folded, match.end()):
+                continue
+            if not _followed_by_age_copula(folded, match.end()):
+                continue
+            found.append((match.start(), {"value": _spoken_number(match.group(1)), "unit": unit}))
     found.sort()
     return [item for _, item in found]
 

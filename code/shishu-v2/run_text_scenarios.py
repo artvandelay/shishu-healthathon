@@ -500,6 +500,42 @@ def campaign() -> list[Scenario]:
             children_value=1,
         ),
         Scenario(
+            name="no_flags_two_weeks",
+            group="no_flags",
+            caller_name="कुसुम",
+            marital_text=married,
+            children_text="एक बेटा है, दो हफ़्ते का है।",
+            children_value=1,
+        ),
+        Scenario(
+            name="no_flags_fifteen_days",
+            group="no_flags",
+            caller_name="शांति",
+            marital_text=married,
+            children_text="एक बेटी है, पंद्रह दिन की है।",
+            children_value=1,
+        ),
+        Scenario(
+            name="flags_nicu_fifteen_days",
+            group="red_flags",
+            caller_name="धारी",
+            marital_text=married,
+            children_text="एक बेटा है, दो साल का।",
+            children_value=1,
+            positives={
+                "birth_nicu": {
+                    "value": True,
+                    "utterance": "पीलिया था।",
+                    "details": {"reason": "jaundice"},
+                    "followups": {
+                        "reason": ("पीलिया था।", "jaundice"),
+                        "days": ("पंद्रह दिन रहा।", "पंद्रह दिन रहा।"),
+                    },
+                },
+            },
+            expect_yes=("birth_nicu",),
+        ),
+        Scenario(
             name="no_flags_sava_saal",
             group="no_flags",
             caller_name="राधा",
