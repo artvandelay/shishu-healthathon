@@ -359,3 +359,165 @@ HI_QUESTIONS: dict[str, str] = {
 
 def question_hi(topic_id: str) -> str:
     return HI_QUESTIONS.get(topic_id) or topic_id
+
+
+# Report polarity is a property of the question, not of a sentence.
+# concern: a literal yes is the screened concern.
+# reassuring: a literal yes is the healthy answer. A literal no is the concern.
+# choice / test: the model fills typed slots. Only the values named here are concerns.
+# fact: intro and the closing question never become a doctor concern.
+_TEST_RESULT = ("not_done", "normal", "abnormal", "unknown")
+_GENE_RESULT = ("not_done", "normal", "carrier", "affected", "unknown")
+
+
+def _base_rules() -> dict[str, dict]:
+    rules: dict[str, dict] = {}
+    for topic in TOPICS:
+        if topic["group"] == "intro" or topic["id"] == "close_anything_else":
+            rules[topic["id"]] = {"polarity": "fact"}
+        else:
+            rules[topic["id"]] = {"polarity": "concern"}
+    rules["body_growth"] = {"polarity": "reassuring"}
+    rules["birth_mode"] = {
+        "polarity": "choice",
+        "slots": {
+            "delivery_mode": ("vaginal", "operation", "unknown"),
+            "delivery_place": ("hospital", "home", "unknown"),
+        },
+        "concern_slot": "delivery_mode",
+        "concern_values": frozenset({"operation"}),
+    }
+    rules["birth_hearing_vision"] = {
+        "polarity": "test",
+        "slots": {"result": _TEST_RESULT},
+        "concern_slot": "result",
+        "concern_values": frozenset({"abnormal"}),
+    }
+    rules["preg_scan"] = {
+        "polarity": "test",
+        "slots": {"result": _TEST_RESULT},
+        "concern_slot": "result",
+        "concern_values": frozenset({"abnormal"}),
+    }
+    rules["preg_thalassemia"] = {
+        "polarity": "test",
+        "slots": {
+            "mother_result": _GENE_RESULT,
+            "father_result": _GENE_RESULT,
+        },
+        "concern_any": frozenset({"carrier", "affected"}),
+    }
+    rules["body_puberty"] = {
+        "polarity": "choice",
+        "slots": {
+            "timing": ("not_started", "typical", "early", "late", "unknown"),
+        },
+        "concern_slot": "timing",
+        "concern_values": frozenset({"early", "late"}),
+    }
+    return rules
+
+
+REPORT_RULES: dict[str, dict] = _base_rules()
+
+_FACT_HI: dict[str, dict[str, dict[str, str]]] = {
+    "birth_mode": {
+        "delivery_mode": {"vaginal": "सामान्य प्रसव", "operation": "ऑपरेशन"},
+        "delivery_place": {"hospital": "अस्पताल", "home": "घर"},
+    },
+    "birth_hearing_vision": {
+        "result": {"not_done": "जाँच नहीं हुई", "normal": "जाँच हुई, सामान्य"},
+    },
+    "preg_scan": {
+        "result": {"not_done": "स्कैन नहीं हुआ", "normal": "स्कैन हुआ, सामान्य"},
+    },
+    "preg_thalassemia": {
+        "mother_result": {
+            "not_done": "माँ की जाँच नहीं हुई",
+            "normal": "माँ सामान्य",
+        },
+        "father_result": {
+            "not_done": "पिता की जाँच नहीं हुई",
+            "normal": "पिता सामान्य",
+        },
+    },
+    "body_puberty": {
+        "timing": {"not_started": "शुरू नहीं हुए", "typical": "उम्र के अनुसार"},
+    },
+}
+
+
+def report_rule(topic_id: str) -> dict:
+    return REPORT_RULES.get(topic_id) or {"polarity": "concern"}
+
+
+def slot_prompt_lines() -> str:
+    lines = []
+    for topic in TOPICS:
+        slots = report_rule(topic["id"]).get("slots") or {}
+        if not slots:
+            continue
+        parts = [f"{name} {'|'.join(values)}" for name, values in slots.items()]
+        lines.append(f"- {topic['id']}: " + "; ".join(parts))
+    return "\n".join(lines)
+
+
+def accepted_slots(topic_id: str, raw) -> dict[str, str]:
+    spec = report_rule(topic_id).get("slots") or {}
+    if not spec or not isinstance(raw, dict):
+        return {}
+    clean: dict[str, str] = {}
+    for name, allowed in spec.items():
+        value = str(raw.get(name) or "").strip()
+        if value in allowed:
+            clean[name] = value
+    return clean
+
+
+def _slot_is_concern(topic_id: str, slots: dict) -> bool:
+    rule = report_rule(topic_id)
+    if "concern_slot" in rule:
+        return slots.get(rule["concern_slot"]) in rule.get("concern_values", frozenset())
+    bad = rule.get("concern_any") or frozenset()
+    return any(slots.get(name) in bad for name in (rule.get("slots") or {}))
+
+
+def is_concern(topic_id: str, entry: dict | None) -> bool:
+    """True only for a grounded doctor concern. Ambiguous slots are not concerns."""
+    if not isinstance(entry, dict) or topic_id not in _BY_ID:
+        return False
+    rule = report_rule(topic_id)
+    answer = str(entry.get("answer") or "")
+    evidence = str(entry.get("evidence") or "").strip()
+    polarity = rule["polarity"]
+    if polarity == "fact" or not evidence:
+        return False
+    if polarity == "concern":
+        return answer == "yes"
+    if not entry.get("literal"):
+        return False
+    if polarity == "reassuring":
+        return answer == "no"
+    slots = entry.get("slots") if isinstance(entry.get("slots"), dict) else {}
+    if not slots:
+        return False
+    return _slot_is_concern(topic_id, slots)
+
+
+def fact_label(topic_id: str, entry: dict | None) -> str | None:
+    """Benign choice or test fact for the detail page. Concerns have no fact label."""
+    if not isinstance(entry, dict) or not entry.get("literal"):
+        return None
+    if not str(entry.get("evidence") or "").strip() or is_concern(topic_id, entry):
+        return None
+    rule = report_rule(topic_id)
+    if rule["polarity"] == "reassuring" and str(entry.get("answer") or "") == "yes":
+        return "हाँ"
+    labels = _FACT_HI.get(topic_id) or {}
+    slots = entry.get("slots") if isinstance(entry.get("slots"), dict) else {}
+    bits = []
+    for name, words in labels.items():
+        text = words.get(str(slots.get(name) or ""))
+        if text:
+            bits.append(text)
+    return ", ".join(bits) or None

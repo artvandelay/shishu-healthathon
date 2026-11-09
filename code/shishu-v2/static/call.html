@@ -669,7 +669,7 @@
         <span id="mic-level" class="mic-level"></span>
       </div>
       <p id="caption"></p>
-      <p id="wait" role="status" hidden><span class="hi">रिपोर्ट तैयार हो रही है…</span><span class="en">Preparing report…</span><br><span class="hi">कृपया इस पेज पर बने रहिए।</span><span class="en">Please stay on this page.</span><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span></p>
+      <p id="wait" role="status" hidden><span class="hi">रिपोर्ट तैयार हो रही है…</span><span class="en">Preparing report…</span><br><span class="hi">इसमें थोड़ा समय लग सकता है। कृपया इस पेज पर बने रहिए।</span><span class="en">This can take a little while. Please stay on this page.</span><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span></p>
       <p id="consent-row" class="consent-row">
         <label><input id="consent-check" type="checkbox"><span><span class="hi">मैं सहमत हूँ</span><span class="en">I agree</span></span></label>
         <a href="https://github.com/artvandelay/shishu-healthathon/blob/main/docs/SHISHU-consent.pdf" target="_blank" rel="noopener"><span class="hi">सहमति पत्र</span><span class="en">Consent</span></a>
@@ -1585,10 +1585,6 @@
         avatarWrap.classList.add("working");
         waitEl.hidden = false;
         callBtn.disabled = true;
-        if (summaryTimer) clearTimeout(summaryTimer);
-        summaryTimer = setTimeout(function () {
-          if (phase === "preparing") showReportRetry(callId);
-        }, 60000);
       }
 
       function hangupWhenQuiet() {

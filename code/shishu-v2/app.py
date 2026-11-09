@@ -437,6 +437,11 @@ async def _reject_ws(ws: WebSocket) -> None:
     await ws.close(code=1008)
 
 
+async def _begin_report(call_id: int, snapshot: dict) -> None:
+    """App-owned hook. The live session does not import the report modules."""
+    await report_service.begin_answers(call_id, snapshot)
+
+
 async def _prepare_mother_pdf(call_id: int) -> bool:
     """Build the one PDF for this call. Share stays hidden until this is true."""
     try:
@@ -462,4 +467,5 @@ async def ws_gemini(ws: WebSocket) -> None:
         caller_name=username,
         user_role=role,
         on_call_completed=_prepare_mother_pdf,
+        on_end_accepted=_begin_report,
     )

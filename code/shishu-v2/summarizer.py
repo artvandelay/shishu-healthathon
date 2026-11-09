@@ -590,13 +590,14 @@ async def _from_gemini(user_content: str) -> dict:
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
     try:
         response = await client.aio.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.8-flash",
             contents=user_content,
             config={
                 "system_instruction": DOCTOR_MOTHER_SUMMARY_PROMPT,
                 "response_mime_type": "application/json",
                 "temperature": 0.2,
                 "max_output_tokens": 8192,
+                "thinking_config": {"thinking_level": "LOW"},
             },
         )
         return _parse_json(response.text or "")

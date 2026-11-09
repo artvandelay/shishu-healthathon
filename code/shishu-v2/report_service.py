@@ -1,8 +1,14 @@
-"""One mother PDF per completed call, written only after extraction."""
+"""One mother PDF per completed call.
+
+Extraction can start from an immutable snapshot while the outro is still playing.
+Rendering waits until the caller has the completed call, then reuses that extraction.
+"""
 
 import asyncio
+import json
 import os
 import tempfile
+import time
 from pathlib import Path
 
 import answer_extractor
@@ -10,6 +16,7 @@ import db
 import mother_report
 
 _REPORTS = Path(db.DATA_DIR) / "mother-pdfs"
+_answers: dict[int, asyncio.Task] = {}
 _inflight: dict[int, asyncio.Task] = {}
 _claim_guard: asyncio.Lock | None = None
 
@@ -60,6 +67,51 @@ def _guard() -> asyncio.Lock:
     return _claim_guard
 
 
+def _failed(task: asyncio.Task) -> bool:
+    if not task.done():
+        return False
+    if task.cancelled():
+        return True
+    return task.exception() is not None
+
+
+def _event(call_id: int, event_type: str, meta: dict | None = None) -> None:
+    answer_extractor._event(call_id, event_type, meta)
+
+
+def _ms(started: float) -> int:
+    return max(0, int((time.perf_counter() - started) * 1000))
+
+
+def _freeze(call_id: int, snapshot: dict) -> dict:
+    frozen = json.loads(json.dumps(snapshot, ensure_ascii=False))
+    if not isinstance(frozen, dict):
+        frozen = {}
+    frozen["id"] = int(call_id)
+    return frozen
+
+
+async def begin_answers(call_id: int, snapshot: dict) -> None:
+    """Start extraction once from a snapshot. A later render awaits this task."""
+    async with _guard():
+        task = _answers.get(call_id)
+        if task is not None and not _failed(task):
+            return
+        frozen = _freeze(call_id, snapshot)
+        _answers[call_id] = asyncio.create_task(answer_extractor.cached_answers(frozen))
+
+
+async def _answers_task(call_id: int) -> asyncio.Task:
+    async with _guard():
+        task = _answers.get(call_id)
+        if task is not None and not _failed(task):
+            return task
+        call = db.get_call(call_id) or {"id": int(call_id)}
+        task = asyncio.create_task(answer_extractor.cached_answers(call))
+        _answers[call_id] = task
+        return task
+
+
 async def _claim(call_id: int) -> asyncio.Task:
     async with _guard():
         task = _inflight.get(call_id)
@@ -70,23 +122,41 @@ async def _claim(call_id: int) -> asyncio.Task:
 
 
 async def _build(call_id: int) -> tuple[bytes, str]:
-    call = await asyncio.to_thread(db.get_call, call_id)
-    if call is None:
-        raise LookupError(f"Call {call_id} was not found")
-    extracted = await answer_extractor.cached_answers(call)
-    report = mother_report.build(call, extracted)
-    pdf = await asyncio.to_thread(mother_report.render_pdf, report)
-    if not pdf.startswith(b"%PDF"):
-        raise ValueError("Renderer did not return a PDF")
-    await asyncio.to_thread(_atomic_write, pdf_path(call_id), pdf)
+    task = await _answers_task(call_id)
+    try:
+        extracted = await task
+    except Exception:
+        async with _guard():
+            if _answers.get(call_id) is task:
+                _answers.pop(call_id, None)
+        raise
+    started = time.perf_counter()
+    _event(call_id, "render_start")
+    try:
+        call = await asyncio.to_thread(db.get_call, call_id)
+        if call is None:
+            raise LookupError(f"Call {call_id} was not found")
+        report = mother_report.build(call, extracted)
+        pdf = await asyncio.to_thread(mother_report.render_pdf, report)
+        if not pdf.startswith(b"%PDF"):
+            raise ValueError("Renderer did not return a PDF")
+        _event(call_id, "render_end", {"ms": _ms(started)})
+        await asyncio.to_thread(_atomic_write, pdf_path(call_id), pdf)
+        _event(call_id, "pdf_write", {"bytes": len(pdf)})
+        _event(call_id, "report_ready", {"ms": _ms(started)})
+    finally:
+        async with _guard():
+            if _answers.get(call_id) is task:
+                _answers.pop(call_id, None)
     return pdf, mother_report.filename(call)
 
 
 async def mother_pdf(call_id: int) -> tuple[bytes, str]:
-    """Extract, render, and atomically store this call's one PDF.
+    """Render and atomically store this call's one PDF.
 
-    Overlapping calls for the same id share one build. A later call, including
-    Retry, builds again and overwrites call-{id}.pdf.
+    Reuses an extraction already started from the end-of-call snapshot. Overlapping
+    calls for the same id share one build. A later call, including Retry, extracts
+    again and overwrites call-{id}.pdf.
     """
     task = await _claim(call_id)
     return await task

@@ -125,6 +125,7 @@ _TELEMETRY_EVENTS = {
     "silence_check_in",
     "auto_close",
     "error",
+    "end_accepted",
 }
 
 
@@ -653,6 +654,52 @@ async def _forward_transcript(
     return text
 
 
+def _report_snapshot(call_id: int) -> dict:
+    """Immutable transcript and findings for extraction. No later caller turn is included."""
+    call = db.get_call(call_id) or {}
+    snapshot = {
+        "id": int(call_id),
+        "transcript": call.get("transcript") or [],
+        "findings": call.get("findings") or {},
+        "telemetry": call.get("telemetry") or {},
+        "status": call.get("status") or "",
+        "started_at": call.get("started_at") or "",
+        "duration_sec": call.get("duration_sec") or 0,
+    }
+    return json.loads(json.dumps(snapshot))
+
+
+def _accept_end(telemetry: dict) -> bool:
+    """Mark the call closing. True only the first time end_call is accepted."""
+    first = not telemetry.get("end_requested")
+    telemetry["end_requested"] = True
+    telemetry["closing"] = True
+    telemetry["end_requested_at"] = time.time()
+    return first
+
+
+async def _schedule_end_report(
+    ws: WebSocket,
+    ws_lock: asyncio.Lock,
+    call_id: int,
+    telemetry: dict,
+    reason: str,
+    on_end_accepted: Callable[[int, dict], Awaitable[None] | None] | None,
+) -> None:
+    if telemetry.get("extraction_scheduled"):
+        return
+    telemetry["extraction_scheduled"] = True
+    await _emit(ws, ws_lock, call_id, telemetry, "end_accepted", reason, {"reason": reason})
+    if on_end_accepted is None:
+        return
+    try:
+        scheduled = on_end_accepted(int(call_id), _report_snapshot(call_id))
+        if inspect.isawaitable(scheduled):
+            await scheduled
+    except Exception:
+        telemetry["extraction_schedule_failed"] = True
+
+
 async def _answer_function_calls(
     session,
     send_lock: asyncio.Lock,
@@ -665,11 +712,13 @@ async def _answer_function_calls(
     cancelled: set[str],
     last_user_text: str = "",
     last_bot_text: str = "",
+    on_end_accepted: Callable[[int, dict], Awaitable[None] | None] | None = None,
 ) -> None:
     responses: list[types.FunctionResponse] = []
     logged: list[str] = []
     db_records: list[tuple[str, str, str, bool]] = []
     ws_messages: list[dict] = []
+    schedule_reason = ""
     for fc in calls:
         fc_id = getattr(fc, "id", None) or ""
         if fc_id and (fc_id in cancelled or fc_id in seen):
@@ -690,8 +739,8 @@ async def _answer_function_calls(
                 telemetry["close_reason"] = end_reason
                 if end_reason == "emergency" and not telemetry.get("emergency_detail"):
                     telemetry["emergency_detail"] = (last_user_text or "")[:300]
-                telemetry["end_requested"] = True
-                telemetry["end_requested_at"] = time.time()
+                if _accept_end(telemetry):
+                    schedule_reason = end_reason
                 ws_messages.append({"type": "ending"})
                 body = {"result": "ok"}
                 logged.append(f"end_call_{end_reason}")
@@ -709,8 +758,8 @@ async def _answer_function_calls(
                     body = {"result": "not_yet", "note": note}
                     logged.append("end_call_refused")
                 else:
-                    telemetry["end_requested"] = True
-                    telemetry["end_requested_at"] = time.time()
+                    if _accept_end(telemetry):
+                        schedule_reason = end_reason
                     ws_messages.append({"type": "ending"})
                     body = {"result": "ok"}
                     logged.append("end_call")
@@ -861,6 +910,10 @@ async def _answer_function_calls(
             telemetry,
             "Could not send the tool response to Gemini",
         )
+    if schedule_reason:
+        await _schedule_end_report(
+            ws, ws_lock, call_id, telemetry, schedule_reason, on_end_accepted
+        )
 
 
 async def _on_bot_audio(
@@ -920,6 +973,7 @@ async def _handle_server_message(
     recorder: audio_recorder.CallAudioRecorder,
     seen: set[str],
     cancelled: set[str],
+    on_end_accepted: Callable[[int, dict], Awaitable[None] | None] | None = None,
 ) -> bool:
     """Handle one Live server message. Return False when the session should stop."""
     cancellation = getattr(response, "tool_call_cancellation", None)
@@ -936,13 +990,15 @@ async def _handle_server_message(
         await _emit(ws, ws_lock, call_id, telemetry, "interrupted", "interrupted")
 
     if server_content is not None:
-        user_text = await _forward_transcript(
-            ws,
-            ws_lock,
-            call_id,
-            "user",
-            server_content.input_transcription,
-        )
+        user_text = ""
+        if not telemetry.get("end_requested"):
+            user_text = await _forward_transcript(
+                ws,
+                ws_lock,
+                call_id,
+                "user",
+                server_content.input_transcription,
+            )
         if user_text:
             if state.bot_text_since_user:
                 state.last_bot_text = state.bot_text_since_user
@@ -1011,6 +1067,7 @@ async def _handle_server_message(
             cancelled,
             state.last_user_text,
             last_bot_text=state.last_bot_text,
+            on_end_accepted=on_end_accepted,
         )
         if not telemetry.get("end_requested"):
             _arm_waiting_reply(state, speech_end_waiting=False)
@@ -1044,6 +1101,7 @@ async def _gemini_loop(
     state: _TurnState,
     recorder: audio_recorder.CallAudioRecorder,
     reconnect,
+    on_end_accepted: Callable[[int, dict], Awaitable[None] | None] | None = None,
 ) -> None:
     seen: set[str] = set()
     cancelled: set[str] = set()
@@ -1065,6 +1123,7 @@ async def _gemini_loop(
                     recorder,
                     seen,
                     cancelled,
+                    on_end_accepted,
                 )
                 if not keep_going:
                     stop.set()
@@ -1259,6 +1318,8 @@ async def _browser_loop(
                 )
                 continue
             kind = payload.get("type")
+            if telemetry.get("end_requested") and kind in {"audio", "text", "speech_end", "nudge"}:
+                continue
             if kind == "audio":
                 pcm = _pcm_bytes(payload.get("data") or "")
                 if not pcm:
@@ -1463,9 +1524,9 @@ async def _finalize(
         findings=findings,
         red_flags=red_flags,
     )
-    _spawn_doctor_note(call_id, transcript, findings, red_flags, telemetry)
     ready = await _report_is_ready(on_call_completed, call_id)
     if ready:
+        _spawn_doctor_note(call_id, transcript, findings, red_flags, telemetry)
         await _send_json(ws, ws_lock, {"type": "call_completed", "call_id": call_id})
     else:
         await _send_json(ws, ws_lock, {"type": "report_failed", "call_id": call_id})
@@ -1499,6 +1560,7 @@ async def handle_gemini_ws(
     caller_name: str = "",
     user_role: str = "user",
     on_call_completed: Callable[[int], Awaitable[bool] | bool] | None = None,
+    on_end_accepted: Callable[[int, dict], Awaitable[None] | None] | None = None,
 ) -> None:
     load_dotenv(_ENV_PATH)
     if ws.client_state == WebSocketState.CONNECTING:
@@ -1623,6 +1685,7 @@ async def handle_gemini_ws(
                 state,
                 recorder,
                 _reconnect,
+                on_end_accepted,
             )
         )
         watchdog_task = asyncio.create_task(

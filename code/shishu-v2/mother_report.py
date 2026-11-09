@@ -298,19 +298,29 @@ def build(call: dict, extracted: dict | None = None) -> dict:
     not_asked_groups: list[str] = []
     for group in checklist.DETAIL_GROUPS:
         nos = []
+        facts = []
         missed = []
         for topic in checklist.TOPICS:
             if topic["group"] != group:
                 continue
+            entry = answers.get(topic["id"]) if isinstance(answers.get(topic["id"]), dict) else {}
+            question = checklist.question_hi(topic["id"])
+            if checklist.is_concern(topic["id"], entry):
+                continue
+            fact = checklist.fact_label(topic["id"], entry)
             kind = _answer(answers, topic["id"]) or "not_asked"
-            if kind == "no":
-                nos.append(checklist.question_hi(topic["id"]))
-            elif kind == "unknown":
-                unknown.append(checklist.question_hi(topic["id"]))
+            if fact:
+                facts.append({"q": question, "a": fact})
+            elif kind == "no":
+                nos.append(question)
+            elif kind == "unknown" or (
+                kind == "yes" and checklist.report_rule(topic["id"])["polarity"] != "concern"
+            ):
+                unknown.append(question)
             elif kind == "not_asked" and not topic.get("optional"):
-                missed.append(checklist.question_hi(topic["id"]))
-        if nos:
-            groups.append({"title": checklist.GROUP_HI[group], "items": nos})
+                missed.append(question)
+        if nos or facts:
+            groups.append({"title": checklist.GROUP_HI[group], "items": nos, "facts": facts})
         if missed:
             unasked.append({"title": checklist.GROUP_HI[group], "items": missed})
             if incomplete:
@@ -385,6 +395,14 @@ def render_html(report: dict) -> str:
                 '<div class="no-row"><span>'
                 + html.escape(question)
                 + '</span><span class="ans">नहीं</span></div>'
+            )
+        for fact in group.get("facts") or []:
+            rows.append(
+                '<div class="no-row"><span>'
+                + html.escape(fact["q"])
+                + '</span><span class="ans">'
+                + html.escape(fact["a"])
+                + "</span></div>"
             )
     if report["unknown"]:
         rows.append('<div class="group">पक्का जवाब नहीं मिला</div>')
