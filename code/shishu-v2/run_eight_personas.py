@@ -341,7 +341,7 @@ async def evaluate_call(row: dict) -> dict:
     name = row["persona"]
     spec = PERSONAS[name]
     call_id = row.get("call_id")
-    # Wait briefly for async _write_doctor_note (frontier Gemini reconciler) to finish
+    # Wait briefly for async _write_doctor_note (post-call prose) to finish
     for _ in range(90):
         call = db.get_call(call_id) if call_id else None
         if call and (call.get("summary_doctor") or "").strip():

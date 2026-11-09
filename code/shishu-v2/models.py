@@ -1,7 +1,7 @@
 """The two models SHISHU calls.
 
 The live call uses LIVE_MODEL. Every other Gemini call (the answer backstop,
-the post-call judge, the old-transcript reader) uses TEXT_MODEL. Override
+the post-call summary, the old-transcript reader) uses TEXT_MODEL. Override
 either with SHISHU_LIVE_MODEL or SHISHU_TEXT_MODEL.
 """
 

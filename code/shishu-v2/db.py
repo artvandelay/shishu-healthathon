@@ -440,7 +440,7 @@ def save_doctor_summary(
     red_flags: list | None = None,
     summary_mother: str | None = None,
 ) -> None:
-    """Write the English doctor note after the call. Optionally update mother text when reconciled."""
+    """Write the doctor note after the call, and mother text when it is provided."""
     with _db_lock:
         cur = conn.cursor()
         if isinstance(findings, dict) and isinstance(red_flags, list):
