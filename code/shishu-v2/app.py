@@ -18,7 +18,6 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(_REPO_ROOT / ".env")
 load_dotenv()
 
-import answer_extractor
 import db
 import gemini_live
 import mother_report
@@ -376,7 +375,7 @@ def get_call(call_id: int, request: Request):
 
 
 @app.get("/api/calls/{call_id}/mother.pdf")
-async def mother_pdf(call_id: int, request: Request):
+def mother_pdf(call_id: int, request: Request):
     call = db.get_call(call_id)
     if call is None:
         raise HTTPException(status_code=404, detail="Call not found")
@@ -387,8 +386,7 @@ async def mother_pdf(call_id: int, request: Request):
     if role != "admin" and not owner:
         raise HTTPException(status_code=403, detail="Not allowed")
     try:
-        answers = await answer_extractor.cached_answers(call)
-        pdf = mother_report.render_pdf(mother_report.build(call, answers))
+        pdf = mother_report.render_pdf(mother_report.build(call))
     except Exception as exc:
         raise HTTPException(status_code=500, detail="Could not build the report") from exc
     name = mother_report.filename(call)

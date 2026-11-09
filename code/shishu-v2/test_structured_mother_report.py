@@ -179,6 +179,100 @@ class StructuredMotherReportTests(unittest.TestCase):
         text = "".join(page.extract_text() or "" for page in reader.pages)
         self.assertIn("SHISHU कॉल रिपोर्ट", text)
 
+    def test_missing_structured_state_does_not_call_a_model(self):
+        import app
+        import answer_extractor
+        import db
+        import models
+        import summarizer
+        from fastapi.testclient import TestClient
+
+        called = []
+
+        def boom(*_args, **_kwargs):
+            called.append("model")
+            raise AssertionError("report rendering called a model")
+
+        async def boom_async(*_args, **_kwargs):
+            boom()
+
+        patched = (
+            (answer_extractor, "_from_llm", boom_async),
+            (answer_extractor, "_from_gemini", boom_async),
+            (answer_extractor, "cached_answers", boom_async),
+            (models, "text_client", boom),
+            (summarizer, "_from_gemini", boom_async),
+        )
+        saved = [(obj, name, getattr(obj, name)) for obj, name, _fn in patched]
+        for obj, name, fn in patched:
+            setattr(obj, name, fn)
+        call = {
+            "id": 1,
+            "started_at": "2026-11-08 00:00:00",
+            "duration_sec": 40,
+            "caller_name": "ReportOwner",
+            "mother_name": "",
+            "summary_mother": "",
+            "transcript": [
+                {"role": "user", "text": "बच्चा ऑपरेशन से हुआ और चार दिन NICU में रहा"}
+            ],
+            "telemetry": {"coverage": ["birth_nicu"], "close_reason": ""},
+            "findings": {
+                "birth_nicu": {
+                    "status": "positive",
+                    "detail": "NICU jaundice",
+                    "is_red_flag": True,
+                }
+            },
+        }
+        try:
+            report = mother_report.build(call)
+            rendered = mother_report.render_html(report)
+            self.assertEqual(report["yes"], [])
+            self.assertEqual(report["groups"], [])
+            self.assertEqual(report["unknown"], [])
+            question = checklist.question_hi("birth_nicu")
+            self.assertTrue(any(question in group["items"] for group in report["unasked"]))
+            self.assertIn("इस कॉल में कोई जवाब दर्ज नहीं हुआ।", rendered)
+            self.assertNotIn("NICU", " ".join(report["yes"]))
+
+            call_id = db.create_call("gemini", caller_name="ReportOwner")
+            db.append_transcript(call_id, "user", "बच्चा ऑपरेशन से हुआ और चार दिन NICU में रहा")
+            db.complete_call(
+                call_id,
+                40,
+                "",
+                "",
+                "",
+                findings=call["findings"],
+                red_flags=["birth_nicu: NICU"],
+            )
+            self.assertIsNone(db.get_call(call_id).get("state"))
+            client = TestClient(app.app)
+            login = client.post(
+                "/api/login",
+                json={"username": "ReportOwner", "passcode": app._passcode()},
+            )
+            self.assertEqual(login.status_code, 200)
+
+            def _pdf(built):
+                self.assertEqual(built["yes"], [])
+                mother_report.render_html(built)
+                return b"%PDF-1.4"
+
+            orig_pdf = mother_report.render_pdf
+            mother_report.render_pdf = _pdf
+            try:
+                response = client.get(f"/api/calls/{call_id}/mother.pdf")
+            finally:
+                mother_report.render_pdf = orig_pdf
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(response.content.startswith(b"%PDF"))
+            self.assertEqual(called, [])
+        finally:
+            for obj, name, fn in saved:
+                setattr(obj, name, fn)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -424,33 +424,6 @@ def _incomplete(call: dict) -> bool:
     return bool(checklist.open_topics(coverage))
 
 
-def _has_hindi(text: str) -> bool:
-    return any("\u0900" <= char <= "\u097f" for char in text)
-
-
-def _answer(answers: dict, topic_id: str) -> str:
-    entry = (answers or {}).get(topic_id) or {}
-    if isinstance(entry, dict):
-        return str(entry.get("answer") or "")
-    return str(entry or "")
-
-
-def _user_text(call: dict) -> str:
-    parts = []
-    for turn in call.get("transcript") or []:
-        if str(turn.get("role") or "") != "user":
-            continue
-        text = str(turn.get("text") or "").strip()
-        if text:
-            parts.append(text)
-    return " ".join(parts).lower()
-
-
-def _covered(call: dict) -> set[str]:
-    telemetry = call.get("telemetry") or {}
-    return {str(topic_id) for topic_id in (telemetry.get("coverage") or [])}
-
-
 def _saved_state(call: dict) -> dict | None:
     state = call.get("state")
     if isinstance(state, dict) and isinstance(state.get("topics"), dict):
@@ -604,26 +577,7 @@ def _instance_note(state: dict, topic_id: str) -> str:
     return "; ".join(bits)
 
 
-def ground_kind(call: dict, topic_id: str, answers: dict) -> str:
-    """A yes, no, or unknown counts only if she said it, or the live call recorded it.
-
-    A model that fills in 'no' for a question she never heard is not an answer.
-    """
-    entry = (answers or {}).get(topic_id) or {}
-    kind = _answer(answers, topic_id)
-    if kind not in {"yes", "no", "unknown"}:
-        return "unknown" if topic_id in _covered(call) else "not_asked"
-    evidence = str(entry.get("evidence") or "").strip().lower() if isinstance(entry, dict) else ""
-    said = _user_text(call)
-    quoted = len(evidence) >= 12 and evidence in said
-    if quoted or topic_id in _covered(call):
-        return kind
-    return "not_asked"
-
-
-def build(call: dict, extracted: dict | None = None) -> dict:
-    extracted = extracted or {}
-    answers = extracted.get("answers") or {}
+def build(call: dict) -> dict:
     when = _ist(str(call.get("started_at") or ""))
     if when:
         date = f"{when.day} {_MONTHS[when.month]} {when.year}"
@@ -653,11 +607,7 @@ def build(call: dict, extracted: dict | None = None) -> dict:
                 st_findings, st_flags, has_children=has_children
             )
     questions = [hindi_text(q) for q in _questions(raw_summary_mother)]
-    show_thalassemia = (
-        _thalassemia_from_state(state)
-        if state
-        else ground_kind(call, "preg_thalassemia", answers) in {"no", "unknown"}
-    )
+    show_thalassemia = _thalassemia_from_state(state) if state else False
     if show_thalassemia and not any("थैलेसीमिया" in q for q in questions):
         questions.append(THALASSEMIA_LINE)
     if state:
@@ -676,30 +626,7 @@ def build(call: dict, extracted: dict | None = None) -> dict:
             if line:
                 yes.append(hindi_text(line))
     else:
-        yes = [
-            str(line).strip()
-            for line in (extracted.get("yes_hindi") or [])
-            if str(line).strip() and _has_hindi(str(line))
-        ]
-        yes = [hindi_text(line) for line in yes]
-        grounded_yes = any(
-            ground_kind(call, topic["id"], answers) == "yes"
-            for topic in checklist.TOPICS
-            if not topic["id"].startswith("intro_")
-        )
-        if not grounded_yes and not _user_text(call).strip():
-            yes = []
-        if not yes and _user_text(call).strip():
-            for topic in checklist.TOPICS:
-                if topic["id"].startswith("intro_"):
-                    continue
-                if ground_kind(call, topic["id"], answers) != "yes":
-                    continue
-                line = checklist.question_hi(topic["id"]).rstrip("?").strip()
-                if line.startswith("क्या "):
-                    line = line[4:]
-                if line:
-                    yes.append(line)
+        yes = []
     groups = []
     unknown = []
     unasked = []
@@ -710,7 +637,7 @@ def build(call: dict, extracted: dict | None = None) -> dict:
         for topic in checklist.TOPICS:
             if topic["group"] != group:
                 continue
-            kind = _structured_kind(state, topic["id"]) if state else ground_kind(call, topic["id"], answers)
+            kind = _structured_kind(state, topic["id"]) if state else "not_asked"
             if kind == "not_applicable":
                 continue
             if kind in {"no", "answered"}:
