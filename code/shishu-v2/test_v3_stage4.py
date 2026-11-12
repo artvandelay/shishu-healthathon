@@ -15,7 +15,7 @@ import app  # noqa: E402
 import db  # noqa: E402
 import gemini_live  # noqa: E402
 import prompts  # noqa: E402
-import test_v3_cursor as cursor_tests  # noqa: E402
+import test_v4_cursor as cursor_tests  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 _HERE = Path(__file__).resolve().parent
@@ -78,19 +78,19 @@ class Stage4AssetTests(unittest.TestCase):
     def test_multi_child_hindi_is_inside_the_question(self):
         kids = [cursor_tests._child(6, "male", 1), cursor_tests._child(2, "female", 2)]
         state = cursor_tests._profile(children=kids)
-        state = cursor_tests._clear_until(state, "gate_birth_neonatal")
+        state = cursor_tests._clear_until(state, "birth_mode_detail")
         spoken = gemini_live._say_hindi(state)
         self.assertIn("आपके किसी भी बच्चे", spoken)
         self.assertNotIn(" Say ", spoken)
-        state = cursor_tests._clear_until(state, "gate_bleeding_joints")
+        state = cursor_tests._clear_until(state, "body_bleeding_bruise")
         bleed = gemini_live._say_hindi(state)
-        self.assertIn("आपके किसी भी बच्चे को चोट", bleed)
+        self.assertIn("मामूली चोट", bleed)
         self.assertNotIn("—", bleed)
         one = cursor_tests._profile(children=[cursor_tests._child(4, "male")])
-        one = cursor_tests._clear_until(one, "gate_birth_neonatal")
+        one = cursor_tests._clear_until(one, "birth_mode_detail")
         alone = gemini_live._say_hindi(one)
         self.assertNotIn("आपके किसी भी बच्चे", alone)
-        self.assertIn("किसी बच्चे", alone)
+        self.assertIn("ऑपरेशन", alone)
 
     def test_ending_fires_once_when_closing_audio_finishes(self):
         state = gemini_live._TurnState()

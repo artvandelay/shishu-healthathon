@@ -1,9 +1,9 @@
-"""Declarative gate-first clinical catalog for SHISHU v3.
+"""Atomic yes/no catalog for SHISHU v4.
 
-Question text comes from docs/requirements-v3.md sections 4-5 and the Nov 4
-topic wording already used in clinic. हाँ on a gate is a concern and opens
-its modules. नहीं moves on. enabled=False drops an item from the live list
-without deleting it.
+Question text is the Devanagari in docs/requirements-v4.md section 4.
+हाँ on a clinical item is a concern. नहीं is clear. Nothing is hidden behind
+another question: opens stays empty. question_multi_hi is the 2+ child
+wording; an empty string means the general question_hi is used as written.
 """
 
 from dataclasses import dataclass
@@ -15,6 +15,7 @@ class QuestionSpec:
     group: str
     kind: str
     question_hi: str
+    question_multi_hi: str
     need_en: str
     nrroid_gate: str
     skip_if: tuple[str, ...] = ()
@@ -31,8 +32,8 @@ def _q(
     need_en: str,
     nrroid: str = "",
     skip: tuple[str, ...] = (),
-    opens: tuple[str, ...] = (),
     follow: tuple[str, ...] = (),
+    multi: str = "",
     enabled: bool = True,
 ) -> QuestionSpec:
     return QuestionSpec(
@@ -40,563 +41,128 @@ def _q(
         group=group,
         kind=kind,
         question_hi=question_hi,
+        question_multi_hi=multi,
         need_en=need_en,
         nrroid_gate=nrroid,
         skip_if=skip,
-        opens=opens,
+        opens=(),
         followups=follow,
         enabled=enabled,
     )
 
 
-# Follow-up prompts are not separate catalog rows. The cursor speaks one at a time.
 FOLLOWUP_HI: dict[str, str] = {
-    "fracture_count_or_bowing": "यह कितनी बार हुआ — हड्डी टूटी, या पैर टेढ़े या मुड़े हुए हैं?",
-    "urine_or_stone_detail": "बहुत ज़्यादा पेशाब और पानी की बात है, या पथरी या गुर्दे की दिक्कत? थोड़ा और बताइए।",
-    "bp_who": "यह नज़दीकी रिश्तेदार को हुआ, जैसे माँ-पिता या भाई-बहन, या दूर के रिश्तेदार को?",
-    "bp_age": "उन्हें यह किस उम्र में हुआ?",
-    "nicu_reason_days": "काँच के बक्से में क्यों रखना पड़ा, और कितने दिन रहे?",
-    "term_how_early": "समय से कितना पहले हुआ?",
-    "admissions_count_reason": "कितनी बार भर्ती होना पड़ा, और किस वजह से?",
-    "transfusion_count": "खून कितनी बार चढ़ाना पड़ा?",
-    "infant_death_age_cause": "उस बच्चे की उम्र क्या थी, और मौत की वजह क्या थी?",
+    'operation_reason': 'ऑपरेशन किस वजह से करना पड़ा था?',
+    'term_how_early': 'बच्चा पूरे समय से कितने हफ्ते या महीने पहले पैदा हुआ था?',
+    'nicu_reason_days': 'काँच के बक्से (NICU) में क्यों रखना पड़ा, और कितने दिन रहे?',
+    'jaundice_days': 'नीली लाइट में कितने दिन रखना पड़ा था?',
+    'sudden_detail': 'यह कब हुआ था और डॉक्टर ने क्या बताया था?',
+    'fits_onset': 'झटके पहली बार किस उम्र में आए थे?',
+    'lost_skill': 'बच्चा पहले क्या कर लेता था जो अब नहीं कर पाता?',
+    'transfusion_count': 'खून कितनी बार चढ़ाना पड़ा है?',
+    'fracture_count_or_bowing': 'हड्डी कितनी बार टूटी, या पैर टेढ़े होने की बात है?',
+    'urine_or_stone_detail': 'बार-बार पेशाब-प्यास की बात है, या पथरी या गुर्दे की दिक्कत?',
+    'admissions_count_reason': 'कितनी बार भर्ती होना पड़ा, और किस वजह से?',
+    'preg_cond_detail': 'बीपी, शुगर या थायरॉइड में से क्या था, और क्या डिलीवरी के बाद भी रहा?',
+    'scan_detail': 'स्कैन में क्या दिक्कत बताई गई थी?',
+    'delivery_detail': 'डिलीवरी के समय क्या दिक्कत आई थी?',
+    'related_how': 'आप दोनों का शादी से पहले क्या रिश्ता था?',
+    'miscarriage_count': 'ऐसा कितनी बार हुआ, और कितने महीने की प्रेग्नेंसी में?',
+    'infant_death_age_cause': 'उस बच्चे की उम्र क्या थी, और आपसे क्या रिश्ता था?',
+    'fam_who': 'परिवार में यह दिक्कत किसको है — आपसे उनका क्या रिश्ता है?',
+    'bp_who': 'यह सगे रिश्तेदार (जैसे माता-पिता, भाई-बहन) को हुआ, या दूर के रिश्तेदार को?',
+    'bp_age': 'उन्हें यह किस उम्र में हुआ था?',
+    'open_concern_detail': 'जी बताइए, डॉक्टर के लिए क्या बात नोट करूँ?',
 }
 
-_CHILD = ("no_children",)
-_PREG_HISTORY = ("unmarried", "ever_pregnant_no")
 
 CATALOG: tuple[QuestionSpec, ...] = (
-    # --- intro (section 5.1) ---
-    _q(
-        "intro_name", "intro", "profile",
-        "नमस्ते, मैं शिशु हूँ। आपका नाम बताइएगा प्लीज़?",
-        "caller name; ask again if only a fragment such as मेरा नाम",
-    ),
-    _q(
-        "intro_married", "intro", "profile",
-        "क्या आपकी शादी हो गई है, या होने वाली है?",
-        "married, about to marry, or unmarried",
-    ),
-    _q(
-        "intro_children", "intro", "profile",
-        "आपके कितने बच्चे हैं, और उनकी उम्र क्या-क्या है?",
-        "how many children and each child's age; hold if count has no ages",
-        skip=("unmarried",),
-    ),
-    _q(
-        "intro_bridge", "intro", "bridge",
-        "अब मैं कुछ आसान सवाल पूछूँगी। समय बचाने के लिए एक सवाल में कई बातें एक साथ होंगी। अगर उनमें से एक भी बात हुई हो तो हाँ कहिए, फिर मैं एक-एक करके पूछूँगी। अगर एक भी नहीं हुई तो नहीं कहिए। ठीक है?",
-        "clubbed questions save time; हाँ if even one thing happened, then one-by-one, नहीं if none",
-    ),
-    # --- 14 wide gates + 3 family sub-gates (section 5.2) ---
-    _q(
-        "gate_birth_neonatal", "birth", "gate",
-        "क्या किसी बच्चे का जन्म ऑपरेशन से या समय से बहुत पहले हुआ था, या जन्म के बाद काँच के बक्से (NICU) या पीलिया की नीली लाइट में रखना पड़ा था?",
-        "operation, very preterm, NICU, or jaundice blue light",
-        "Q03",
-        skip=_CHILD,
-        opens=("birth_mode_detail", "birth_term", "birth_nicu", "birth_sudden"),
-    ),
-    _q(
-        "gate_cord_bcg", "birth", "gate",
-        "क्या जन्म के बाद नाल गिरने में 3 हफ्ते से ज़्यादा लगे, नाल से ज़्यादा खून आया, या BCG के टीके की जगह पर बड़ा फोड़ा या बगल में गाँठ हुई?",
-        "cord delay, cord bleeding, or unusual BCG site",
-        "Q03",
-        skip=_CHILD,
-        opens=("birth_cord_bleed", "birth_cord_3weeks", "birth_bcg"),
-    ),
-    _q(
-        "gate_metabolic_crisis", "illness", "gate",
-        "क्या खाना छूटने पर, हल्की बीमारी में, या कुछ खास खाने पर बच्चा बहुत सुस्त हो जाता है, बार-बार उल्टी करता है, या पेशाब-पॉटी में अजीब बदबू आती है?",
-        "sleepiness, vomiting, or unusual urine or stool smell with fasting, illness, or foods",
-        "Q01",
-        skip=_CHILD,
-        opens=("ill_fasting", "ill_odor"),
-    ),
-    _q(
-        "gate_milestones_neuro", "body", "gate",
-        "क्या बच्चे को कभी झटके (फ़िट्स) आए हैं, या बैठना-चलना-बोलना देर से सीखा, या कोई सीखी हुई बात अब भूल गया है?",
-        "fits, late milestones, or lost a learned skill",
-        "Q02",
-        skip=_CHILD,
-        opens=("body_fits_milestones", "body_regression"),
-    ),
-    _q(
-        "gate_sensory_cleft_heart", "body", "gate",
-        "क्या बच्चे को सुनने या देखने में कोई दिक्कत है, होंठ या तालू कटा था, या होंठ-उंगलियाँ कभी नीली पड़ती हैं?",
-        "hearing or vision difficulty, cleft lip or palate, or blue lips or fingers",
-        "Q02",
-        skip=_CHILD,
-        opens=("birth_hearing_vision", "birth_cleft", "body_blue", "preg_heart"),
-    ),
-    _q(
-        "gate_infections", "illness", "gate",
-        "क्या बच्चे को बार-बार अस्पताल में भर्ती करना पड़ा है, या बार-बार इंफेक्शन के लिए नस में (IV) एंटीबायोटिक दवा लगी है?",
-        "repeated hospital admissions or IV antibiotics",
-        "Q03",
-        skip=_CHILD,
-        opens=("ill_admissions", "ill_iv_antibiotics"),
-    ),
-    _q(
-        "gate_bleeding_joints", "body", "gate",
-        "क्या चोट लगने पर खून देर तक बहता है, आसानी से नील पड़ते हैं, या गिरने पर घुटने-जोड़ में सूजन आती है जो कुछ दिनों में ठीक हो जाती है?",
-        "prolonged bleeding, easy bruising, or joint swelling after a fall",
-        "Q04",
-        skip=_CHILD,
-        opens=("body_bleeding_bruise", "body_joint_swelling", "mod_tooth_bleed", "mod_heavy_periods"),
-    ),
-    _q(
-        "gate_transfusion_anemia", "body", "gate",
-        "क्या बच्चे को कभी खून चढ़ाना पड़ा है, डॉक्टर ने खून कम-ज़्यादा बताया है, या हाथ-पैर में बार-बार तेज़ दर्द के लिए अस्पताल जाना पड़ता है?",
-        "transfusion, abnormal blood count, or repeated limb pain needing hospital",
-        "Q05",
-        skip=_CHILD,
-        opens=("body_transfusion", "body_blood_count", "body_limb_pain"),
-    ),
-    _q(
-        "gate_tummy_lumps", "body", "gate",
-        "क्या बच्चे का पेट धीरे-धीरे बड़ा हो रहा है (लिवर या तिल्ली बढ़ना), या जन्म से शरीर पर सूजन या गाँठें हैं?",
-        "enlarging tummy or swellings or lumps since birth",
-        "Q06",
-        skip=_CHILD,
-        opens=("body_tummy", "body_lumps_birth"),
-    ),
-    _q(
-        "gate_growth_shape", "body", "gate",
-        "क्या बच्चे का कद या वज़न बाकी बच्चों से काफी कम बढ़ रहा है, हाथ-पैर शरीर के मुकाबले छोटे हैं, या कोई उंगली-अंगूठा छोटा या कम है?",
-        "poor growth, short limbs, or a small or missing digit",
-        "Q07",
-        skip=_CHILD,
-        opens=("body_growth", "body_proportion", "body_thumb"),
-    ),
-    _q(
-        "gate_bones_fractures", "body", "gate",
-        "क्या मामूली गिरने पर कभी बच्चे की हड्डी टूटी है, या विटामिन-डी और कैल्शियम देने के बाद भी पैर टेढ़े या मुड़े हुए हैं?",
-        "fracture after a minor fall, or bowed legs after vitamin D and calcium",
-        "Q08",
-        skip=_CHILD,
-        follow=("fracture_count_or_bowing",),
-    ),
-    _q(
-        "gate_urine_kidney", "body", "gate",
-        "क्या बच्चा बार-बार बहुत ज़्यादा पेशाब करता और बहुत पानी पीता है, या कभी पेशाब में पथरी या गुर्दे की दिक्कत बताई गई है?",
-        "excess urine and thirst, or stones or a kidney problem",
-        "Q09",
-        skip=_CHILD,
-        follow=("urine_or_stone_detail",),
-    ),
-    _q(
-        "gate_endocrine_private", "body", "gate",
-        "क्या बच्चे के गुप्त अंग वैसे नहीं दिखते जैसे होने चाहिए, या (10 साल से बड़े बच्चे में) बढ़ती उम्र के बदलाव बहुत जल्दी या बहुत देर से आए हैं?",
-        "atypical genitalia, or puberty much earlier or later in a child 10 or older",
-        "Q10",
-        skip=_CHILD,
-        opens=("body_private_parts", "body_puberty"),
-    ),
-    _q(
-        "gate_pregnancy_thal", "pregnancy", "gate",
-        "क्या किसी प्रेग्नेंसी में बीपी-शुगर-थायरॉइड, स्कैन में खराबी, प्रेग्नेंसी में खून चढ़ना, डिलीवरी में दिक्कत, या आपकी/पति की थैलेसीमिया जाँच में माइनर/ट्रेट बताया गया?",
-        "pregnancy BP, sugar, thyroid, scan, transfusion, delivery trouble, or thalassemia trait",
-        "Antenatal",
-        skip=_PREG_HISTORY,
-        opens=("preg_conditions", "preg_scan", "preg_transfusion", "preg_delivery", "preg_thalassemia"),
-    ),
-    _q(
-        "fam_related", "family", "gate",
-        "क्या आप और पति शादी से पहले रिश्तेदार थे?",
-        "she and her husband were related before marriage",
-        "Q11",
-        skip=("unmarried",),
-    ),
-    _q(
-        "fam_loss_gate", "family", "gate",
-        "क्या कभी गर्भ गिरा, या परिवार में किसी छोटे बच्चे की 1 साल से कम उम्र में मौत हुई?",
-        "miscarriage or a family infant death before 1 year",
-        "Q12",
-        opens=("fam_miscarriage", "fam_infant_death"),
-    ),
-    _q(
-        "fam_conditions_gate", "family", "gate",
-        "क्या परिवार में किसी बच्चे या बड़े को खून चढ़ने, झटके, अंधेपन, बहरेपन, कैंसर, दिल-गुर्दे या कम उम्र में बीपी-लकवे की बीमारी है?",
-        "family bleeding, fits, vision, hearing, cancer, heart, kidney, or early BP or stroke",
-        "Q11",
-        opens=(
-            "fam_fits_delay", "fam_transfusion", "fam_bleeding", "fam_blind", "fam_deaf",
-            "fam_cancer", "fam_heart", "fam_kidney", "fam_bp_stroke", "fam_maternal_side",
-            "fam_lumps", "fam_same_problem",
-        ),
-    ),
-    _q(
-        "close_anything_else", "close", "open_capture",
-        "क्या इसके अलावा डॉक्टर के लिए कुछ और बताना है जो आपके मन में हो?",
-        "anything else she wants the doctor to know",
-    ),
-    # --- modules opened only after a gate concern ---
-    _q(
-        "birth_mode_detail", "birth", "module",
-        "क्या बच्चे का जन्म ऑपरेशन से हुआ था?",
-        "birth by operation",
-        "Q03",
-        skip=_CHILD,
-    ),
-    _q(
-        "birth_term", "birth", "module",
-        "क्या प्रसव समय से बहुत पहले या बहुत बाद हुआ?",
-        "birth much before or after 9 months",
-        "Q03",
-        skip=_CHILD,
-        follow=("term_how_early",),
-    ),
-    _q(
-        "birth_nicu", "birth", "module",
-        "क्या बच्चे को काँच के बक्से या बच्चों के ICU में रखना पड़ा?",
-        "NICU or glass-box stay",
-        "Q03",
-        skip=_CHILD,
-        follow=("nicu_reason_days",),
-    ),
-    _q(
-        "birth_sudden", "birth", "module",
-        "क्या जन्म के बाद अचानक बहुत बीमार होकर इमरजेंसी में ले जाना पड़ा?",
-        "well at birth, then suddenly very ill and taken to emergency",
-        "Q03",
-        skip=_CHILD,
-    ),
-    _q(
-        "birth_cord_bleed", "birth", "module",
-        "क्या नाल गिरने पर ज़्यादा खून बहा?",
-        "heavy bleeding when the cord fell",
-        "Q03",
-        skip=_CHILD,
-    ),
-    _q(
-        "birth_cord_3weeks", "birth", "module",
-        "क्या नाल गिरने में तीन हफ्ते से ज़्यादा लगे?",
-        "cord took more than 3 weeks to fall",
-        "Q03",
-        skip=_CHILD,
-    ),
-    _q(
-        "birth_bcg", "birth", "module",
-        "क्या BCG के टीके की जगह पर बड़ी सूजन, फोड़ा, या बगल में गाँठ हुई?",
-        "big BCG swelling, boil, or armpit lump",
-        "Q03",
-        skip=_CHILD,
-    ),
-    _q(
-        "birth_hearing_vision", "birth", "module",
-        "क्या सुनने या देखने में दिक्कत बताई गई?",
-        "hearing or vision difficulty",
-        "Q02",
-        skip=_CHILD,
-    ),
-    _q(
-        "birth_cleft", "birth", "module",
-        "क्या होंठ या तालू कटा हुआ था?",
-        "cleft lip or palate",
-        "Q02",
-        skip=_CHILD,
-    ),
-    _q(
-        "body_blue", "body", "module",
-        "क्या होंठ या उंगलियाँ नीली पड़ती हैं?",
-        "blue lips or fingers",
-        "Q02",
-        skip=_CHILD,
-    ),
-    _q(
-        "body_fits_milestones", "body", "module",
-        "क्या झटके हुए, या बैठना, चलना, बोलना दूसरे बच्चों से देर से हुआ?",
-        "fits or late sitting, walking, or talking",
-        "Q02",
-        skip=_CHILD,
-    ),
-    _q(
-        "body_regression", "body", "module",
-        "क्या बच्चा कोई सीखी हुई बात अब नहीं कर पाता?",
-        "lost a skill the child already had",
-        "Q02",
-        skip=_CHILD,
-    ),
-    _q(
-        "ill_fasting", "illness", "module",
-        "क्या खाना छूटने पर बहुत सुस्ती, उल्टी या झटके होते हैं?",
-        "very sleepy, repeated vomiting, or fits when a meal is missed",
-        "Q01",
-        skip=_CHILD,
-    ),
-    _q(
-        "ill_odor", "illness", "module",
-        "क्या पेशाब या पाखाना में अजीब बदबू है?",
-        "urine or stool smells unusual",
-        "Q01",
-        skip=_CHILD,
-    ),
-    _q(
-        "ill_admissions", "illness", "module",
-        "क्या बार-बार अस्पताल में भर्ती होना पड़ा?",
-        "admitted to hospital again and again",
-        "Q03",
-        skip=_CHILD,
-        follow=("admissions_count_reason",),
-    ),
-    _q(
-        "ill_iv_antibiotics", "illness", "module",
-        "क्या बार-बार इंफेक्शन के लिए ड्रिप या नस में दवा लगी?",
-        "repeated infections that needed IV antibiotics",
-        "Q03",
-        skip=_CHILD,
-    ),
-    _q(
-        "body_bleeding_bruise", "body", "module",
-        "क्या चोट पर ज़्यादा खून बहता है, या आसानी से नील पड़ जाते हैं?",
-        "prolonged bleeding after injury, or easy bruising",
-        "Q04",
-        skip=_CHILD,
-    ),
-    _q(
-        "body_joint_swelling", "body", "module",
-        "क्या गिरने पर घुटने या जोड़ में सूजन आती है, जो कुछ दिनों में अपने आप ठीक हो जाती है?",
-        "knee or joint swelling after a fall that settles in days",
-        "Q04",
-        skip=_CHILD,
-    ),
-    _q(
-        "mod_tooth_bleed", "body", "module",
-        "क्या दूध का दाँत गिरने पर खून देर तक बहा?",
-        "bleeding when a milk tooth fell; only if a child is 5 or older",
-        "Q04",
-        skip=("no_children", "no_child_5_plus"),
-    ),
-    _q(
-        "mod_heavy_periods", "body", "module",
-        "क्या पीरियड्स में खून बहुत ज़्यादा बहता है?",
-        "heavy periods; only if a girl is 11 or older",
-        "Q04",
-        skip=("no_children", "no_daughter_11_plus"),
-    ),
-    _q(
-        "body_transfusion", "body", "module",
-        "क्या बच्चे को कभी खून चढ़ाना पड़ा?",
-        "child ever needed blood",
-        "Q05",
-        skip=_CHILD,
-        follow=("transfusion_count",),
-    ),
-    _q(
-        "body_blood_count", "body", "module",
-        "क्या डॉक्टर ने कहा कि खून कम या ज़्यादा है?",
-        "doctor said the blood count is low or high",
-        "Q05",
-        skip=_CHILD,
-    ),
-    _q(
-        "body_limb_pain", "body", "module",
-        "क्या हाथ-पैर में बार-बार दर्द होता है, जिसके लिए अस्पताल जाना पड़ता है?",
-        "repeated limb pain that needs hospital",
-        "Q05",
-        skip=_CHILD,
-    ),
-    _q(
-        "body_tummy", "body", "module",
-        "क्या पेट धीरे-धीरे बड़ा हो रहा है?",
-        "tummy slowly getting bigger",
-        "Q06",
-        skip=_CHILD,
-    ),
-    _q(
-        "body_lumps_birth", "body", "module",
-        "क्या जन्म से शरीर पर सूजन या गाँठें हैं?",
-        "swellings or lumps on the body since birth",
-        "Q06",
-        skip=_CHILD,
-    ),
-    _q(
-        "body_growth", "body", "module",
-        "क्या बच्चे का कद या वज़न बाकी बच्चों से काफी कम बढ़ रहा है?",
-        "height or weight growing much less than other children",
-        "Q07",
-        skip=_CHILD,
-    ),
-    _q(
-        "body_proportion", "body", "module",
-        "क्या हाथ-पैर शरीर के मुकाबले बहुत छोटे हैं?",
-        "arms or legs very short compared with the body",
-        "Q07",
-        skip=_CHILD,
-    ),
-    _q(
-        "body_thumb", "body", "module",
-        "क्या अंगूठा या उंगली छोटी है, या नहीं है?",
-        "small or missing thumb or finger",
-        "Q07",
-        skip=_CHILD,
-    ),
-    _q(
-        "body_private_parts", "body", "module",
-        "क्या गुप्त अंग जैसे होने चाहिए वैसे नहीं दिखते?",
-        "private parts do not look as they should",
-        "Q10",
-        skip=_CHILD,
-    ),
-    _q(
-        "body_puberty", "body", "module",
-        "क्या बढ़ती उम्र के बदलाव बहुत जल्दी या बहुत देर से आए हैं?",
-        "puberty changes much earlier or later; only if a child is 10 or older",
-        "Q10",
-        skip=("no_children", "all_under_10"),
-    ),
-    _q(
-        "preg_conditions", "pregnancy", "module",
-        "क्या प्रेग्नेंसी में ब्लड प्रेशर, शुगर या थायरॉइड रहा?",
-        "high BP, sugar, or thyroid in pregnancy",
-        "Antenatal",
-        skip=_PREG_HISTORY,
-    ),
-    _q(
-        "preg_scan", "pregnancy", "module",
-        "क्या प्रेग्नेंसी का स्कैन असामान्य था?",
-        "pregnancy scan was abnormal",
-        "Antenatal",
-        skip=_PREG_HISTORY,
-    ),
-    _q(
-        "preg_transfusion", "pregnancy", "module",
-        "क्या प्रेग्नेंसी में खून चढ़ाना पड़ा?",
-        "blood transfusion in pregnancy",
-        "Antenatal",
-        skip=_PREG_HISTORY,
-    ),
-    _q(
-        "preg_delivery", "pregnancy", "module",
-        "क्या प्रसव में कोई दिक्कत आई?",
-        "trouble at delivery",
-        "Antenatal",
-        skip=_PREG_HISTORY,
-    ),
-    _q(
-        "preg_thalassemia", "pregnancy", "module",
-        "क्या आपकी या पति की थैलेसीमिया जाँच में माइनर या ट्रेट जैसी कोई दिक्कत बताई गई?",
-        "thalassemia trait, minor, or an abnormal result was reported; asked alone when there is no pregnancy history",
-        "Antenatal",
-    ),
-    _q(
-        "preg_heart", "pregnancy", "module",
-        "क्या स्कैन में या जन्म पर दिल में कोई खराबी बताई गई?",
-        "heart problem on the scan or at birth",
-        "Q02",
-        skip=_CHILD,
-    ),
-    _q(
-        "fam_miscarriage", "family", "module",
-        "क्या कभी गर्भ गिरा, या गिरवाना पड़ा?",
-        "miscarriage or abortion",
-        "Q12",
-        skip=("ever_pregnant_no", "unmarried_not_pregnant"),
-    ),
-    _q(
-        "fam_infant_death", "family", "module",
-        "क्या परिवार में कोई बच्चा एक साल से कम उम्र में गुजर गया?",
-        "a baby in the family died before 1 year",
-        "Q12",
-        follow=("infant_death_age_cause",),
-    ),
-    _q(
-        "fam_fits_delay", "family", "module",
-        "क्या परिवार में किसी बच्चे या बड़े को झटके, देर से सीखना, या सीखी बात भूलना है?",
-        "fits, late milestones, or lost skills in any child or adult in the family",
-        "Q11",
-    ),
-    _q(
-        "fam_transfusion", "family", "module",
-        "क्या परिवार में किसी बच्चे या बड़े को बार-बार खून चढ़ाना पड़ता है?",
-        "any child or adult in the family needs blood transfusions",
-        "Q11",
-    ),
-    _q(
-        "fam_bleeding", "family", "module",
-        "क्या परिवार में किसी बच्चे या बड़े को खून ज़्यादा बहने की समस्या है?",
-        "any child or adult in the family bleeds too much",
-        "Q11",
-    ),
-    _q(
-        "fam_blind", "family", "module",
-        "क्या परिवार में किसी बच्चे या बड़े को कम उम्र से अंधापन है?",
-        "blindness in any child or adult in the family, not from old age",
-        "Q11",
-    ),
-    _q(
-        "fam_deaf", "family", "module",
-        "क्या परिवार में किसी बच्चे या बड़े को कम उम्र से कम सुनाई देता है?",
-        "poor hearing in any child or adult in the family, not from old age",
-        "Q11",
-    ),
-    _q(
-        "fam_cancer", "family", "module",
-        "क्या परिवार में किसी बच्चे या बड़े को कैंसर है?",
-        "cancer in any child or adult in the family",
-        "Q11",
-    ),
-    _q(
-        "fam_heart", "family", "module",
-        "क्या परिवार में किसी बच्चे या बड़े को दिल की बीमारी है?",
-        "heart disease in any child or adult in the family",
-        "Q11",
-    ),
-    _q(
-        "fam_kidney", "family", "module",
-        "क्या परिवार में किसी बच्चे या बड़े को गुर्दे की बीमारी है?",
-        "kidney disease in any child or adult in the family",
-        "Q11",
-    ),
-    _q(
-        "fam_bp_stroke", "family", "module",
-        "क्या परिवार में 40-50 साल से कम उम्र के किसी बच्चे या बड़े को बीपी, शुगर, या लकवा है?",
-        "BP, sugar, or stroke in a family member under 40-50; then who and at what age",
-        "Q11",
-        follow=("bp_who", "bp_age"),
-    ),
-    _q(
-        "fam_maternal_side", "family", "module",
-        "क्या माँ की तरफ (माइके में) किसी बच्चे या बड़े को ज़्यादा खून, बार-बार इंफेक्शन, या खुजली वाले सूखे धब्बे हैं?",
-        "on the mother's side: heavy bleeding, repeated infections, or dry itchy patches",
-        "Q11",
-    ),
-    _q(
-        "fam_lumps", "family", "module",
-        "क्या परिवार में किसी बच्चे या बड़े के शरीर पर सूजन या गाँठें हैं?",
-        "swellings or lumps on any child or adult in the family",
-        "Q11",
-    ),
-    _q(
-        "fam_same_problem", "family", "module",
-        "क्या परिवार में किसी बच्चे या बड़े को आपके बच्चे जैसी ही समस्या है?",
-        "someone in the family has the same problem as her child; only after a family concern",
-        "Q11",
-        skip=("no_children", "no_family_concern"),
-    ),
+    _q('intro_name', 'intro', 'profile', 'नमस्ते, मैं शिशु हूँ। आपका नाम बताइएगा प्लीज़?', 'caller name; ask again if only a fragment such as मेरा नाम', skip=(), follow=()),
+    _q('intro_married', 'intro', 'profile', 'क्या आपकी शादी हो गई है, होने वाली है, या अभी नहीं हुई?', 'married, about to marry, or unmarried', skip=(), follow=()),
+    _q('intro_children', 'intro', 'profile', 'आपके कितने बच्चे हैं, और उनकी उम्र क्या-क्या है?', "how many children and each child's age", skip=('unmarried', 'about_to_marry'), follow=()),
+    _q('intro_bridge', 'intro', 'bridge', 'अब मैं एक-एक करके छोटे और आसान सवाल पूछूँगी। आप बोलकर या नीचे हाँ या नहीं का बटन दबाकर जवाब दे सकती हैं, और कुछ समझ न आए तो पूछ सकती हैं। शुरू करें?', 'short yes or no questions; she can speak or tap हाँ or नहीं', skip=(), follow=()),
+    _q('birth_mode_detail', 'birth', "gate", 'क्या बच्चे का जन्म ऑपरेशन (सिजेरियन) से हुआ था?', 'birth by operation', 'Q03', skip=('no_children',), follow=('operation_reason',), multi='क्या आपके किसी भी बच्चे का जन्म ऑपरेशन (सिजेरियन) से हुआ था?'),
+    _q('birth_term', 'birth', "gate", 'क्या बच्चे का जन्म समय से बहुत पहले (9 महीने से काफी पहले) हुआ था?', 'birth much before 9 months', 'Q03', skip=('no_children',), follow=('term_how_early',), multi='क्या आपके किसी भी बच्चे का जन्म समय से बहुत पहले (9 महीने से काफी पहले) हुआ था?'),
+    _q('birth_nicu', 'birth', "gate", 'क्या जन्म के बाद बच्चे को काँच के बक्से या बच्चों के ICU (NICU) में रखना पड़ा था?', 'NICU or glass-box stay after birth', 'Q03', skip=('no_children',), follow=('nicu_reason_days',), multi='क्या जन्म के बाद आपके किसी भी बच्चे को काँच के बक्से या बच्चों के ICU (NICU) में रखना पड़ा था?'),
+    _q('birth_jaundice', 'birth', "gate", 'क्या जन्म के बाद पीलिया के लिए बच्चे को नीली लाइट में रखना पड़ा था?', 'jaundice treated under blue light', 'Q03', skip=('no_children',), follow=('jaundice_days',), multi='क्या जन्म के बाद पीलिया के लिए आपके किसी भी बच्चे को नीली लाइट में रखना पड़ा था?'),
+    _q('birth_sudden', 'birth', "gate", 'क्या जन्म के बाद बच्चा अचानक बहुत बीमार पड़ा और इमरजेंसी में ले जाना पड़ा?', 'suddenly very ill after birth and taken to emergency', 'Q03', skip=('no_children',), follow=('sudden_detail',), multi='क्या जन्म के बाद आपका कोई भी बच्चा अचानक बहुत बीमार पड़ा और इमरजेंसी में ले जाना पड़ा?'),
+    _q('birth_cord_3weeks', 'birth', "gate", 'क्या जन्म के बाद बच्चे की नाल गिरने में 3 हफ्ते से ज़्यादा लगे थे?', 'cord took more than 3 weeks to fall', 'Q03', skip=('no_children',), follow=(), multi='क्या जन्म के बाद आपके किसी भी बच्चे की नाल गिरने में 3 हफ्ते से ज़्यादा लगे थे?'),
+    _q('birth_cord_bleed', 'birth', "gate", 'क्या नाल गिरने पर बहुत ज़्यादा खून आया था?', 'heavy bleeding when the cord fell', 'Q03', skip=('no_children',), follow=(), multi='क्या आपके किसी भी बच्चे की नाल गिरने पर बहुत ज़्यादा खून आया था?'),
+    _q('birth_bcg', 'birth', "gate", 'क्या कंधे के BCG टीके की जगह पर बड़ा फोड़ा, मवाद, या बगल में गाँठ हुई थी?', 'big boil, pus, or armpit lump at the BCG site', 'Q03', skip=('no_children',), follow=(), multi='क्या आपके किसी भी बच्चे को कंधे के BCG टीके की जगह पर बड़ा फोड़ा, मवाद, या बगल में गाँठ हुई थी?'),
+    _q('birth_cleft', 'birth', "gate", 'क्या जन्म से बच्चे का होंठ या तालू कटा हुआ था?', 'cleft lip or palate from birth', 'Q02', skip=('no_children',), follow=(), multi='क्या जन्म से आपके किसी भी बच्चे का होंठ या तालू कटा हुआ था?'),
+    _q('birth_hearing', 'birth', "gate", 'क्या बच्चे को सुनने में कोई दिक्कत है?', 'hearing difficulty', 'Q02', skip=('no_children',), follow=(), multi='क्या आपके किसी भी बच्चे को सुनने में कोई दिक्कत है?'),
+    _q('birth_vision', 'birth', "gate", 'क्या बच्चे को देखने में कोई दिक्कत है?', 'vision difficulty', 'Q02', skip=('no_children',), follow=(), multi='क्या आपके किसी भी बच्चे को देखने में कोई दिक्कत है?'),
+    _q('body_fits', 'body', "gate", 'क्या बच्चे को कभी झटके या दौरे (फ़िट्स) आए हैं?', 'fits or seizures', 'Q02', skip=('no_children',), follow=('fits_onset',), multi='क्या आपके किसी भी बच्चे को कभी झटके या दौरे (फ़िट्स) आए हैं?'),
+    _q('body_milestones', 'body', "gate", 'क्या बच्चे ने बैठना, चलना या बोलना बाकी बच्चों से काफी देर से सीखा?', 'late sitting, walking, or talking', 'Q02', skip=('no_children',), follow=(), multi='क्या आपके किसी भी बच्चे ने बैठना, चलना या बोलना बाकी बच्चों से काफी देर से सीखा?'),
+    _q('body_regression', 'body', "gate", 'क्या बच्चा कोई पहले से सीखी हुई बात (जैसे चलना या बोलना) अब भूल गया है?', 'lost a skill the child had already learned', 'Q02', skip=('no_children',), follow=('lost_skill',), multi='क्या आपका कोई भी बच्चा पहले से सीखी हुई कोई बात (जैसे चलना या बोलना) अब भूल गया है?'),
+    _q('body_blue', 'body', "gate", 'क्या बच्चे के होंठ या उंगलियाँ कभी नीली पड़ती हैं?', 'lips or fingers turn blue', 'Q02', skip=('no_children',), follow=(), multi='क्या आपके किसी भी बच्चे के होंठ या उंगलियाँ कभी नीली पड़ती हैं?'),
+    _q('preg_heart', 'body', "gate", 'क्या स्कैन में या जन्म पर डॉक्टर ने बच्चे के दिल में कोई खराबी बताई थी?', 'heart problem on the scan or at birth', 'Q02', skip=('no_children',), follow=(), multi='क्या स्कैन में या जन्म पर डॉक्टर ने आपके किसी भी बच्चे के दिल में कोई खराबी बताई थी?'),
+    _q('body_bleeding_bruise', 'body', "gate", 'क्या मामूली चोट पर खून देर तक बहता है, या आसानी से नील पड़ जाते हैं?', 'prolonged bleeding after a small injury, or easy bruising', 'Q04', skip=('no_children',), follow=(), multi='क्या आपके किसी भी बच्चे को मामूली चोट पर खून देर तक बहता है, या आसानी से नील पड़ जाते हैं?'),
+    _q('body_joint_swelling', 'body', "gate", 'क्या गिरने पर घुटने या जोड़ में सूजन आती है जो कुछ दिनों में अपने आप ठीक हो जाती है?', 'knee or joint swelling after a fall that settles in a few days', 'Q04', skip=('no_children',), follow=(), multi='क्या आपके किसी भी बच्चे के घुटने या जोड़ में गिरने पर सूजन आती है जो कुछ दिनों में ठीक हो जाती है?'),
+    _q('mod_tooth_bleed', 'body', "gate", 'क्या दूध का दाँत टूटने पर खून बहुत देर तक बहता रहा था?', 'prolonged bleeding when a milk tooth broke; only if a child is 5 or older', 'Q04', skip=('no_children', 'no_child_5_plus'), follow=(), multi='क्या आपके किसी भी बच्चे का दूध का दाँत टूटने पर खून बहुत देर तक बहता रहा था?'),
+    _q('mod_heavy_periods', 'body', "gate", 'क्या आपकी बेटी को पीरियड्स में बहुत ज़्यादा खून आता है?', 'very heavy periods; only if a girl is 11 or older', 'Q04', skip=('no_children', 'no_daughter_11_plus'), follow=(), multi='क्या आपकी किसी बेटी को पीरियड्स में बहुत ज़्यादा खून आता है?'),
+    _q('body_transfusion', 'body', "gate", 'क्या बच्चे को कभी खून चढ़ाना पड़ा है?', 'the child ever needed a blood transfusion', 'Q05', skip=('no_children',), follow=('transfusion_count',), multi='क्या आपके किसी भी बच्चे को कभी खून चढ़ाना पड़ा है?'),
+    _q('body_blood_count', 'body', "gate", 'क्या डॉक्टर ने कभी बच्चे का खून बहुत कम या असामान्य बताया है?', 'a doctor said the blood count was very low or abnormal', 'Q05', skip=('no_children',), follow=(), multi='क्या डॉक्टर ने कभी आपके किसी भी बच्चे का खून बहुत कम या असामान्य बताया है?'),
+    _q('body_limb_pain', 'body', "gate", 'क्या बच्चे के हाथ-पैर में बार-बार इतना तेज़ दर्द होता है कि अस्पताल जाना पड़े?', 'repeated severe limb pain that needs hospital', 'Q05', skip=('no_children',), follow=(), multi='क्या आपके किसी भी बच्चे के हाथ-पैर में बार-बार इतना तेज़ दर्द होता है कि अस्पताल जाना पड़े?'),
+    _q('body_tummy', 'body', "gate", 'क्या बच्चे का पेट धीरे-धीरे बड़ा हो रहा है (लिवर या तिल्ली बढ़ना)?', 'tummy slowly getting bigger', 'Q06', skip=('no_children',), follow=(), multi='क्या आपके किसी भी बच्चे का पेट धीरे-धीरे बड़ा हो रहा है (लिवर या तिल्ली बढ़ना)?'),
+    _q('body_lumps_birth', 'body', "gate", 'क्या जन्म से बच्चे के शरीर पर कोई सूजन या गाँठें हैं?', 'swellings or lumps on the body since birth', 'Q06', skip=('no_children',), follow=(), multi='क्या जन्म से आपके किसी भी बच्चे के शरीर पर कोई सूजन या गाँठें हैं?'),
+    _q('body_growth', 'body', "gate", 'क्या बच्चे का कद या वज़न बाकी बच्चों से काफी कम बढ़ रहा है?', 'height or weight growing much less than other children', 'Q07', skip=('no_children',), follow=(), multi='क्या आपके किसी भी बच्चे का कद या वज़न बाकी बच्चों से काफी कम बढ़ रहा है?'),
+    _q('body_proportion', 'body', "gate", 'क्या बच्चे के हाथ-पैर शरीर के मुकाबले बहुत छोटे हैं?', 'arms or legs very short compared with the body', 'Q07', skip=('no_children',), follow=(), multi='क्या आपके किसी भी बच्चे के हाथ-पैर शरीर के मुकाबले बहुत छोटे हैं?'),
+    _q('body_thumb', 'body', "gate", 'क्या बच्चे की कोई उंगली या अंगूठा छोटा है, या कम है?', 'a small or missing finger or thumb', 'Q07', skip=('no_children',), follow=(), multi='क्या आपके किसी भी बच्चे की कोई उंगली या अंगूठा छोटा है, या कम है?'),
+    _q('gate_bones_fractures', 'body', "gate", 'क्या मामूली गिरने पर बच्चे की हड्डी टूटी है, या दवा के बाद भी पैर टेढ़े हैं?', 'fracture after a minor fall, or bowed legs after treatment', 'Q08', skip=('no_children',), follow=('fracture_count_or_bowing',), multi='क्या मामूली गिरने पर आपके किसी भी बच्चे की हड्डी टूटी है, या दवा के बाद भी पैर टेढ़े हैं?'),
+    _q('gate_urine_kidney', 'body', "gate", 'क्या बच्चा बार-बार बहुत ज़्यादा पेशाब करता और पानी पीता है, या गुर्दे/पथरी की दिक्कत है?', 'excess urine and thirst, or a kidney or stone problem', 'Q09', skip=('no_children',), follow=('urine_or_stone_detail',), multi='क्या आपका कोई भी बच्चा बार-बार बहुत ज़्यादा पेशाब करता और पानी पीता है, या गुर्दे/पथरी की दिक्कत है?'),
+    _q('body_private_parts', 'body', "gate", 'क्या बच्चे के गुप्त अंग वैसे नहीं दिखते जैसे होने चाहिए?', 'private parts do not look as they should', 'Q10', skip=('no_children',), follow=(), multi='क्या आपके किसी भी बच्चे के गुप्त अंग वैसे नहीं दिखते जैसे होने चाहिए?'),
+    _q('body_puberty', 'body', "gate", 'क्या 10 साल से बड़े बच्चे में बढ़ती उम्र के बदलाव बहुत जल्दी या बहुत देर से आए हैं?', 'puberty much earlier or later; only if a child is 10 or older', 'Q10', skip=('no_children', 'all_under_10'), follow=(), multi='क्या 10 साल से बड़े आपके किसी बच्चे में बढ़ती उम्र के बदलाव बहुत जल्दी या बहुत देर से आए हैं?'),
+    _q('ill_fasting', 'illness', "gate", 'क्या खाना छूटने या हल्की बीमारी में बच्चा बहुत सुस्त पड़ जाता है या बार-बार उल्टी करता है?', 'very sleepy or repeated vomiting when a meal is missed or during a mild illness', 'Q01', skip=('no_children',), follow=(), multi='क्या खाना छूटने या हल्की बीमारी में आपका कोई भी बच्चा बहुत सुस्त पड़ जाता है या बार-बार उल्टी करता है?'),
+    _q('ill_odor', 'illness', "gate", 'क्या बच्चे के पेशाब या पॉटी में कभी अजीब बदबू आती है?', 'urine or stool smells unusual', 'Q01', skip=('no_children',), follow=(), multi='क्या आपके किसी भी बच्चे के पेशाब या पॉटी में कभी अजीब बदबू आती है?'),
+    _q('ill_admissions', 'illness', "gate", 'क्या बच्चे को बार-बार अस्पताल में भर्ती करना पड़ा है?', 'admitted to hospital again and again', 'Q03', skip=('no_children',), follow=('admissions_count_reason',), multi='क्या आपके किसी भी बच्चे को बार-बार अस्पताल में भर्ती करना पड़ा है?'),
+    _q('ill_iv_antibiotics', 'illness', "gate", 'क्या बार-बार इंफेक्शन के लिए बच्चे को नस में (IV ड्रिप से) दवा लगी है?', 'repeated infections that needed medicine through a vein', 'Q03', skip=('no_children',), follow=(), multi='क्या बार-बार इंफेक्शन के लिए आपके किसी भी बच्चे को नस में (IV ड्रिप से) दवा लगी है?'),
+    _q('preg_conditions', 'pregnancy', "gate", 'क्या किसी प्रेग्नेंसी में आपको हाई बीपी, शुगर या थायरॉइड रहा था?', 'high BP, sugar, or thyroid in a pregnancy', 'Antenatal', skip=('unmarried', 'about_to_marry', 'ever_pregnant_no'), follow=('preg_cond_detail',), multi=''),
+    _q('preg_scan', 'pregnancy', "gate", 'क्या किसी प्रेग्नेंसी के सोनोग्राफी स्कैन में कोई खराबी बताई गई थी?', 'a pregnancy scan showed a problem', 'Antenatal', skip=('unmarried', 'about_to_marry', 'ever_pregnant_no'), follow=('scan_detail',), multi=''),
+    _q('preg_transfusion', 'pregnancy', "gate", 'क्या किसी प्रेग्नेंसी के दौरान आपको खून चढ़ाना पड़ा था?', 'blood transfusion during a pregnancy', 'Antenatal', skip=('unmarried', 'about_to_marry', 'ever_pregnant_no'), follow=(), multi=''),
+    _q('preg_delivery', 'pregnancy', "gate", 'क्या किसी डिलीवरी के समय कोई बड़ी दिक्कत आई थी?', 'major trouble at a delivery', 'Antenatal', skip=('unmarried', 'about_to_marry', 'ever_pregnant_no'), follow=('delivery_detail',), multi=''),
+    _q('preg_thalassemia', 'pregnancy', "gate", 'क्या आपकी या आपके पति की थैलेसीमिया खून जाँच में कभी माइनर या ट्रेट जैसी कोई दिक्कत बताई गई?', 'thalassemia minor or trait on a blood test', 'Antenatal', skip=(), follow=(), multi=''),
+    _q('fam_related', 'family', "gate", 'क्या आप और आपके पति शादी से पहले आपस में रिश्तेदार थे, जैसे कज़िन या एक ही खानदान से?', 'she and her husband are related, such as cousins', 'Q11', skip=('unmarried',), follow=('related_how',), multi=''),
+    _q('fam_miscarriage', 'family', "gate", 'क्या आपका कभी गर्भ गिरा है (मिसकैरेज), या गिरवाना पड़ा था?', 'miscarriage or an ended pregnancy', 'Q12', skip=('unmarried', 'about_to_marry', 'ever_pregnant_no'), follow=('miscarriage_count',), multi=''),
+    _q('fam_infant_death', 'family', "gate", 'क्या परिवार में किसी छोटे बच्चे की 1 साल से कम उम्र में मौत हुई है?', 'a baby in the family died before 1 year', 'Q12', skip=(), follow=('infant_death_age_cause',), multi=''),
+    _q('fam_fits_delay', 'family', "gate", 'क्या परिवार में किसी बच्चे या बड़े को झटके (फ़िट्स), देर से सीखने, या सीखी बात भूलने की समस्या है?', 'fits, late learning, or lost skills in the family', 'Q11', skip=(), follow=('fam_who',), multi=''),
+    _q('fam_transfusion', 'family', "gate", 'क्या परिवार में किसी बच्चे या बड़े को बार-बार खून चढ़ाना पड़ता है?', 'someone in the family needs blood again and again', 'Q11', skip=(), follow=('fam_who',), multi=''),
+    _q('fam_bleeding', 'family', "gate", 'क्या परिवार में किसी बच्चे या बड़े को चोट पर ज़्यादा खून बहने की समस्या है?', 'someone in the family bleeds too much after injury', 'Q11', skip=(), follow=('fam_who',), multi=''),
+    _q('fam_blind_deaf', 'family', "gate", 'क्या परिवार में किसी बच्चे या बड़े को बचपन या कम उम्र से अंधेपन या बहरेपन की समस्या है?', 'childhood blindness or deafness in the family', 'Q11', skip=(), follow=('fam_who',), multi=''),
+    _q('fam_cancer', 'family', "gate", 'क्या परिवार में किसी बच्चे या बड़े को कैंसर हुआ है?', 'cancer in the family', 'Q11', skip=(), follow=('fam_who',), multi=''),
+    _q('fam_heart_kidney', 'family', "gate", 'क्या परिवार में किसी बच्चे या बड़े को दिल या गुर्दे (किडनी) की गंभीर बीमारी है?', 'serious heart or kidney disease in the family', 'Q11', skip=(), follow=('fam_who',), multi=''),
+    _q('fam_bp_stroke', 'family', "gate", 'क्या परिवार में 40-50 साल से कम उम्र के किसी व्यक्ति को बीपी, शुगर या लकवा हुआ है?', 'BP, sugar, or paralysis before age 40-50 in the family', 'Q11', skip=(), follow=('bp_who', 'bp_age'), multi=''),
+    _q('fam_maternal_side', 'family', "gate", 'क्या आपके मायके की तरफ किसी बच्चे या बड़े को ज़्यादा खून बहने, बार-बार इंफेक्शन, या सूखे खुजली वाले धब्बों की दिक्कत है?', "on her parents' side: heavy bleeding, repeated infections, or dry itchy patches", 'Q11', skip=(), follow=('fam_who',), multi=''),
+    _q('fam_lumps', 'family', "gate", 'क्या परिवार में किसी बच्चे या बड़े के शरीर पर सूजन या गाँठें हैं?', 'swellings or lumps on someone in the family', 'Q11', skip=(), follow=('fam_who',), multi=''),
+    _q('fam_same_problem', 'family', "gate", 'क्या परिवार में किसी और को भी आपके बच्चे जैसी ही दिक्कत है?', 'someone else in the family has the same problem as her child', 'Q11', skip=('no_children', 'no_family_concern'), follow=('fam_who',), multi=''),
+    _q('close_anything_else', 'close', 'open_capture', 'क्या इसके अलावा डॉक्टर के लिए कुछ और बताना है जो आपके मन में हो?', 'anything else she wants the doctor to know', skip=(), follow=("open_concern_detail",)),
 )
 
-_BY_ID: dict[str, QuestionSpec] = {spec.id: spec for spec in CATALOG}
 
+_BY_ID: dict[str, QuestionSpec] = {spec.id: spec for spec in CATALOG}
 _SPINE_KINDS = frozenset({"profile", "bridge", "gate", "open_capture"})
+_CHILD_GROUPS = frozenset({"birth", "body", "illness"})
 
 
 def _validate() -> None:
     ids = [spec.id for spec in CATALOG]
-    dupes = {qid for qid in ids if ids.count(qid) > 1}
+    dupes = sorted({qid for qid in ids if ids.count(qid) > 1})
     if dupes:
-        raise RuntimeError(f"duplicate catalog ids: {sorted(dupes)}")
-    known = set(ids)
+        raise RuntimeError(f"duplicate catalog ids: {dupes}")
+    if len(FOLLOWUP_HI) != 21:
+        raise RuntimeError(f"expected 21 follow-ups, found {len(FOLLOWUP_HI)}")
     for spec in CATALOG:
-        for qid in spec.opens:
-            if qid not in known:
-                raise RuntimeError(f"{spec.id} opens unknown {qid}")
+        if spec.kind not in _SPINE_KINDS:
+            raise RuntimeError(f"{spec.id} has kind {spec.kind}")
+        if spec.opens:
+            raise RuntimeError(f"{spec.id} still opens {spec.opens}")
         for fid in spec.followups:
             if fid not in FOLLOWUP_HI:
                 raise RuntimeError(f"{spec.id} followup {fid} has no Hindi")
-        if spec.kind not in ("profile", "bridge", "gate", "module", "open_capture"):
-            raise RuntimeError(f"{spec.id} has kind {spec.kind}")
+        # fam_same_problem skips when there is no child, but section 4.3 leaves
+        # its question_multi_hi empty: the sentence is already about the family.
+        if spec.group in _CHILD_GROUPS and "no_children" in spec.skip_if and not spec.question_multi_hi.strip():
+            raise RuntimeError(f"{spec.id} needs question_multi_hi")
 
 
 _validate()
@@ -614,14 +180,6 @@ def active_specs() -> list[QuestionSpec]:
 
 
 def spine_ids() -> list[str]:
-    """Ask order for items that are spoken on every applicable call.
+    """Ask order. ever_pregnant is not a row; the cursor inserts it."""
+    return [spec.id for spec in active_specs() if spec.kind in _SPINE_KINDS]
 
-    preg_thalassemia sits just after the pregnancy gate so a caller with no
-    pregnancy history still gets the trait question (हाँ = minor/trait reported),
-    and a caller who already heard it inside the gate does not hear it twice.
-    """
-    ids = [spec.id for spec in active_specs() if spec.kind in _SPINE_KINDS]
-    anchor = "gate_pregnancy_thal"
-    if anchor in ids and "preg_thalassemia" not in ids:
-        ids.insert(ids.index(anchor) + 1, "preg_thalassemia")
-    return ids

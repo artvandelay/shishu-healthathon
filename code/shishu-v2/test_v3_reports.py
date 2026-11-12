@@ -19,7 +19,7 @@ import db  # noqa: E402
 import mother_report  # noqa: E402
 import post_call  # noqa: E402
 import report_service  # noqa: E402
-import test_v3_cursor as cursor_tests  # noqa: E402
+import test_v4_cursor as cursor_tests  # noqa: E402
 from call_cursor import apply_profile, apply_turn  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from pypdf import PdfReader  # noqa: E402
@@ -37,7 +37,7 @@ def _childless_cursor():
     state, hold = apply_profile(state, ever_pregnant=False)
     assert hold is None, hold
     guard = 0
-    while state["phase"] == "asking" and guard < 40:
+    while state["phase"] == "asking" and guard < 90:
         state = apply_turn(state, "clear")
         guard += 1
     return state
@@ -47,13 +47,12 @@ def _bleed_cursor():
     kids = [cursor_tests._child(7, "male", 1), cursor_tests._child(2, "female", 2)]
     state = cursor_tests._profile(name="रेखा", children=kids)
     concerns = {
-        "gate_bleeding_joints": "बड़े वाले को चोट पर खून देर तक बहता है",
+        "body_bleeding_bruise": "बड़े वाले को चोट पर खून देर तक बहता है",
         "body_joint_swelling": "गिरने पर घुटना सूजता है और कुछ दिनों में ठीक हो जाता है",
-        "fam_loss_gate": "परिवार में एक बच्चे की मौत हुई",
         "fam_infant_death": "मामा का बेटा छह महीने में गुजर गया",
     }
     guard = 0
-    while state["phase"] == "asking" and guard < 80:
+    while state["phase"] == "asking" and guard < 90:
         guard += 1
         qid = state["active_qid"]
         if state["pending_followup_idx"] == -1:
@@ -221,10 +220,10 @@ class TokenPrivacyTests(unittest.TestCase):
         self.assertTrue(refilled["share_token"])
         self.assertEqual(db.get_call_by_token(refilled["share_token"])["id"], call_id)
         self.assertIsNone(db.get_call_by_token("not-a-real-token"))
-        db.append_transcript(call_id, "user", "हाँ खून बहता है", qid="gate_bleeding_joints")
+        db.append_transcript(call_id, "user", "हाँ खून बहता है", qid="body_bleeding_bruise")
         db.append_transcript(call_id, "user", "और सूजन", qid="body_joint_swelling")
         turns = db.get_call(call_id)["transcript"]
-        self.assertEqual([turn.get("qid") for turn in turns], ["gate_bleeding_joints", "body_joint_swelling"])
+        self.assertEqual([turn.get("qid") for turn in turns], ["body_bleeding_bruise", "body_joint_swelling"])
         saved = db.save_clinician_review(call_id, "missed_flag", "joint swelling")
         self.assertEqual(saved["rating"], "missed_flag")
         self.assertEqual(db.get_call(call_id)["clinician_review"]["note"], "joint swelling")
