@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import os
+import re
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -29,6 +30,20 @@ USER_COOKIE = "shishu_user"
 _STATIC = Path(__file__).resolve().parent / "static"
 _PUBLIC_PATHS = {"/health", "/login", "/api/login", "/api/logout", "/static/login.html"}
 _COOKIE_MAX_AGE = 60 * 60 * 24 * 14
+_CLINIC_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
+_STATIC_TYPES = {
+    ".css": "text/css",
+    ".html": "text/html",
+    ".jpeg": "image/jpeg",
+    ".jpg": "image/jpeg",
+    ".js": "text/javascript",
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".svg": "image/svg+xml",
+    ".ttf": "font/ttf",
+    ".woff2": "font/woff2",
+}
+_SHARE_EVENTS = frozenset({"share_clicked"})
 
 
 def _passcode() -> str:
@@ -183,6 +198,11 @@ def _page(name: str) -> FileResponse:
     return FileResponse(_STATIC / name, media_type="text/html")
 
 
+def _clinic_slug(value: str) -> str:
+    slug = (value or "").strip().lower()
+    return slug if _CLINIC_RE.fullmatch(slug) else ""
+
+
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
@@ -193,19 +213,20 @@ def login_page() -> FileResponse:
     return _page("login.html")
 
 
-@app.get("/static/login.html")
-def static_login_page() -> FileResponse:
-    return _page("login.html")
-
-
-@app.get("/static/shishu-logo.jpg")
-def shishu_logo() -> FileResponse:
-    return FileResponse(_STATIC / "shishu-logo.jpg", media_type="image/jpeg")
-
-
-@app.get("/static/shishu-logo.png")
-def shishu_logo_png() -> FileResponse:
-    return FileResponse(_STATIC / "shishu-logo.png", media_type="image/png")
+@app.get("/static/{asset}")
+def static_asset(asset: str) -> FileResponse:
+    name = Path(asset).name
+    if name != asset or not name or name.startswith("."):
+        raise HTTPException(status_code=404, detail="Not found")
+    path = (_STATIC / name).resolve()
+    try:
+        path.relative_to(_STATIC.resolve())
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Not found") from exc
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Not found")
+    media = _STATIC_TYPES.get(path.suffix.lower(), "application/octet-stream")
+    return FileResponse(path, media_type=media)
 
 
 @app.get("/")
@@ -429,6 +450,44 @@ async def mother_pdf_by_token(share_token: str):
     return _pdf_response(pdf, name)
 
 
+@app.post("/api/calls/by-token/{share_token}/events")
+async def call_event_by_token(share_token: str, request: Request):
+    call = db.get_call_by_token(share_token)
+    if call is None:
+        raise HTTPException(status_code=404, detail="Call not found")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    event = str(body.get("event") or "").strip()
+    if event not in _SHARE_EVENTS:
+        raise HTTPException(status_code=400, detail="Unknown event")
+    db.append_call_event(int(call["id"]), event)
+    return {"ok": True}
+
+
+@app.post("/api/calls/{call_id}/review")
+async def post_clinician_review(call_id: int, request: Request):
+    _require_admin(request)
+    if db.get_call(call_id) is None:
+        raise HTTPException(status_code=404, detail="Call not found")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    rating = str(body.get("rating") or "").strip()
+    note = str(body.get("note") or "")
+    try:
+        saved = db.save_clinician_review(call_id, rating, note)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Unknown rating") from exc
+    return {"ok": True, "clinician_review": saved}
+
+
 @app.post("/api/calls/by-token/{share_token}/mother.pdf")
 async def rebuild_mother_pdf_by_token(share_token: str):
     call = _call_for_token(share_token)
@@ -495,10 +554,12 @@ async def ws_gemini(ws: WebSocket) -> None:
         await _reject_ws(ws)
         return
     role, username = _ws_identity(ws)
+    clinic = _clinic_slug(ws.query_params.get("clinic") or "")
     await gemini_live.handle_gemini_ws(
         ws,
         caller_name=username,
         user_role=role,
         on_call_completed=_prepare_mother_pdf,
         on_end_accepted=_begin_report,
+        clinic_code=clinic,
     )

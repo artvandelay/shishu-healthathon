@@ -799,6 +799,7 @@ _LIST_COLUMNS = (
     "id", "engine", "mother_name", "child_name", "child_age", "child_gender",
     "status", "started_at", "ended_at", "duration_sec", "red_flags_json",
     "caller_name", "user_role", "model_used", "voice_used",
+    "clinic_code", "clinician_review_json",
 )
 
 

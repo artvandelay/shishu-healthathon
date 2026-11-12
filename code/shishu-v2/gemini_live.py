@@ -1173,14 +1173,10 @@ async def _watchdog_loop(
                 stop.set()
                 return
             if cursor.state.get("phase") == "closing" or telemetry.get("end_requested"):
-                played = (
-                    bool(telemetry.get("closing_heard"))
-                    and not state.bot_speaking
-                    and state.playback_ends_at > 0
-                    and now >= state.playback_ends_at + _CLOSING_AUDIO_GRACE_SEC
-                )
+                played = _closing_audio_finished(telemetry, state, now)
                 waited = now - float(telemetry.get("end_requested_at") or now)
                 if played or waited > _CLOSING_MAX_WAIT_SEC:
+                    await _notify_ending(ws, ws_lock, telemetry)
                     stop.set()
                     return
                 continue
@@ -1437,6 +1433,28 @@ async def _report_is_ready(
         return False
 
 
+def _closing_audio_finished(telemetry: dict, state: _TurnState, now: float) -> bool:
+    return (
+        bool(telemetry.get("closing_heard"))
+        and not state.bot_speaking
+        and state.playback_ends_at > 0
+        and now >= state.playback_ends_at + _CLOSING_AUDIO_GRACE_SEC
+    )
+
+
+async def _notify_ending(
+    ws: WebSocket,
+    ws_lock: asyncio.Lock,
+    telemetry: dict | None,
+) -> None:
+    """Tell the browser the outro is done so the report spinner can show."""
+    if telemetry is not None:
+        if telemetry.get("ending_sent"):
+            return
+        telemetry["ending_sent"] = True
+    await _send_json(ws, ws_lock, {"type": "ending"})
+
+
 async def _finalize(
     ws: WebSocket,
     ws_lock: asyncio.Lock,
@@ -1445,8 +1463,8 @@ async def _finalize(
     recorder: audio_recorder.CallAudioRecorder,
     on_call_completed: Callable[[int], Awaitable[bool] | bool] | None = None,
 ) -> None:
-    # Stop the voice UI before any report work. A duplicate ending is harmless.
-    await _send_json(ws, ws_lock, {"type": "ending"})
+    # Spinner first. PDF work happens after this, and a second send is skipped.
+    await _notify_ending(ws, ws_lock, telemetry)
     filename = ""
     duration = 0
     try:
@@ -1501,6 +1519,7 @@ async def handle_gemini_ws(
     user_role: str = "user",
     on_call_completed: Callable[[int], Awaitable[bool] | bool] | None = None,
     on_end_accepted: Callable[[int, dict], Awaitable[None] | None] | None = None,
+    clinic_code: str = "",
 ) -> None:
     load_dotenv(_ENV_PATH)
     if ws.client_state == WebSocketState.CONNECTING:
@@ -1583,6 +1602,7 @@ async def handle_gemini_ws(
             user_role=user_role,
             model_used=model,
             voice_used=voice,
+            clinic_code=clinic_code or "",
         )
         telemetry = _new_telemetry(
             model,

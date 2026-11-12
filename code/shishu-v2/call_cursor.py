@@ -166,22 +166,38 @@ def prompt_directive(state: dict) -> str:
     idx = state["pending_followup_idx"]
     if isinstance(idx, int) and idx >= 0:
         return _ask(FOLLOWUP_HI[spec.followups[idx]])
-    hi = _question_hi(state, spec)
-    if _is_child_scoped(spec) and len(state["profile"]["children"]) > 1:
-        return _ask(hi) + " Say किसी भी बच्चे so every child is included."
-    return _ask(hi)
+    return _ask(_question_hi(state, spec))
 
 
 def _ask(hindi: str) -> str:
     return f"Ask only this one Hindi question, then wait: {hindi}"
 
 
+def _scope_all_children(text: str) -> str:
+    """Put every-child scope in the Hindi question itself."""
+    if "आपके किसी भी बच्चे" in text:
+        return text
+    if "परिवार में" in text:
+        if "आपके बच्चे" in text:
+            return text.replace("आपके बच्चे", "आपके किसी भी बच्चे", 1)
+        return text
+    if "किसी बच्चे" in text:
+        return text.replace("किसी बच्चे", "आपके किसी भी बच्चे", 1)
+    if "बच्चे" in text:
+        return text.replace("बच्चे", "आपके किसी भी बच्चे", 1)
+    return "आपके किसी भी बच्चे — " + text
+
+
 def _question_hi(state: dict, spec) -> str:
     if spec.id == "preg_thalassemia" and state["profile"]["marital_status"] == "unmarried":
-        return _UNMARRIED_THAL_HI
-    if spec.id == "fam_loss_gate" and _is_skipped(get_spec("fam_miscarriage"), state):
-        return _INFANT_ONLY_HI
-    return spec.question_hi
+        text = _UNMARRIED_THAL_HI
+    elif spec.id == "fam_loss_gate" and _is_skipped(get_spec("fam_miscarriage"), state):
+        text = _INFANT_ONLY_HI
+    else:
+        text = spec.question_hi
+    if _is_child_scoped(spec) and len(state["profile"]["children"]) > 1:
+        text = _scope_all_children(text)
+    return text
 
 
 def _on_profile_step(state: dict) -> bool:
