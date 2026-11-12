@@ -18,6 +18,7 @@ import app as shishu_app  # noqa: E402
 import db  # noqa: E402
 import mother_report  # noqa: E402
 import post_call  # noqa: E402
+import report_service  # noqa: E402
 import test_v3_cursor as cursor_tests  # noqa: E402
 from call_cursor import apply_profile, apply_turn  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
@@ -158,6 +159,52 @@ class CursorReportTests(unittest.TestCase):
         self.assertIn("खून", mother)
         for heading in post_call._HEADINGS:
             self.assertIn(heading, synthesis["doctor_markdown"])
+
+    def test_devanagari_disease_names_and_followups_reach_the_brief(self):
+        scrubbed = post_call._scrub_diagnostic_terms("बच्चे को ड्यूशेन और हीमोफीलिया बताया")
+        self.assertNotIn("ड्यूशेन", scrubbed)
+        self.assertNotIn("हीमोफीलिया", scrubbed)
+        self.assertIn("बताया", scrubbed)
+        self.assertNotIn("पॉम्पे", post_call._scrub_diagnostic_terms("पॉम्पे"))
+        self.assertNotIn("थैलेसीमिया मेजर", post_call._scrub_diagnostic_terms("थैलेसीमिया मेजर की बात"))
+        self.assertIn("थैलेसीमिया", post_call._scrub_diagnostic_terms("थैलेसीमिया जाँच में माइनर"))
+        state = _bleed_cursor()
+        state["answers"]["gate_bones_fractures"] = {
+            "state": "concern",
+            "child_ids": ["child_1"],
+            "notes": "गिरने पर हड्डी टूटी",
+            "followups": {"fracture_count_or_bowing": {"state": "concern", "note": "दो बार"}},
+        }
+        brief = post_call._answered_brief(state)
+        self.assertIn("followups=", brief)
+        self.assertIn("fracture_count_or_bowing", brief)
+        self.assertIn("दो बार", brief)
+        sentence = post_call._concern_sentence(
+            get_spec("gate_bones_fractures"),
+            state["answers"]["gate_bones_fractures"],
+        )
+        self.assertIn("दो बार", sentence)
+
+    def test_v3_build_saves_flags_and_admin_labels(self):
+        bleed_id = _store(_bleed_cursor(), "Pooja")
+        calm_id = _store(_childless_cursor(), "Pooja")
+
+        async def explode(_call):
+            raise ConnectionError("offline")
+
+        with patch("post_call._from_gemini", new=explode):
+            asyncio.run(report_service.mother_pdf(bleed_id))
+            asyncio.run(report_service.mother_pdf(calm_id))
+        bleed = db.get_call(bleed_id)
+        calm = db.get_call(calm_id)
+        self.assertTrue(bleed["red_flags"])
+        self.assertTrue(bleed["summary_doctor"].strip())
+        self.assertTrue(bleed["summary_mother"].strip())
+        self.assertTrue(bleed["mother_name"])
+        self.assertIn("साल", bleed["child_age"])
+        self.assertEqual(calm["red_flags"], [])
+        self.assertTrue(calm["mother_name"])
+        self.assertNotEqual(calm["mother_name"], "Mother not named")
 
 
 class TokenPrivacyTests(unittest.TestCase):

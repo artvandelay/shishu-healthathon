@@ -2,14 +2,16 @@
 
 import html
 import json
-import re
+import os
 import subprocess
+import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import answer_extractor
-import checklist
+if sys.platform == "darwin":
+    os.environ.setdefault("DYLD_FALLBACK_LIBRARY_PATH", "/opt/homebrew/lib")
+
 import triage_catalog
 
 _STATIC = Path(__file__).resolve().parent / "static"
@@ -166,195 +168,6 @@ def _duration(seconds: int) -> str:
     if minutes:
         return f"{minutes} मिनट"
     return f"{secs} सेकंड"
-
-
-_CONS = (
-    ("ksh", "क्ष"), ("kh", "ख"), ("gh", "घ"), ("ng", "ङ"), ("chh", "छ"), ("ch", "च"),
-    ("jh", "झ"), ("j", "ज"), ("ny", "ञ"), ("th", "थ"), ("dh", "ध"), ("ph", "फ"),
-    ("bh", "भ"), ("sh", "श"), ("k", "क"), ("g", "ग"), ("t", "त"), ("d", "द"),
-    ("n", "न"), ("p", "प"), ("b", "ब"), ("m", "म"), ("y", "य"), ("r", "र"),
-    ("l", "ल"), ("v", "व"), ("w", "व"), ("s", "स"), ("h", "ह"), ("f", "फ"),
-)
-_VOW = (
-    ("aa", "ा", "आ"), ("ii", "ी", "ई"), ("ee", "ी", "ई"), ("uu", "ू", "ऊ"),
-    ("oo", "ू", "ऊ"), ("ai", "ै", "ऐ"), ("au", "ौ", "औ"), ("a", "", "अ"),
-    ("i", "ि", "इ"), ("u", "ु", "उ"), ("e", "े", "ए"), ("o", "ो", "ओ"),
-)
-_KEEP_LATIN = {"asha", "anm", "bcg", "icu", "nicu", "bp", "shishu"}
-
-
-def transliterate(word: str) -> str:
-    """Roman Indian name to Devanagari. Shilpa -> शिल्पा, Aarav -> आरव."""
-    s = (word or "").lower()
-    i = 0
-    out: list[str] = []
-    while i < len(s):
-        cons = next((pair for pair in _CONS if s.startswith(pair[0], i)), None)
-        if cons is None:
-            vow = next((item for item in _VOW if s.startswith(item[0], i)), None)
-            if vow is None:
-                out.append(s[i])
-                i += 1
-                continue
-            out.append(vow[2])
-            i += len(vow[0])
-            continue
-        i += len(cons[0])
-        vow = next((item for item in _VOW if s.startswith(item[0], i)), None)
-        if vow is None:
-            nxt = any(s.startswith(pair[0], i) for pair in _CONS)
-            out.append(cons[1] + ("्" if nxt else ""))
-            continue
-        i += len(vow[0])
-        matra = "ा" if vow[0] == "a" and i >= len(s) else vow[1]
-        out.append(cons[1] + matra)
-    return "".join(out)
-
-
-def hindi_text(text: str) -> str:
-    def one(match: re.Match) -> str:
-        word = match.group(0)
-        if word.lower() in _KEEP_LATIN:
-            return word
-        if word.lower() in {"year", "years"}:
-            return "साल"
-        if word.lower() in {"month", "months"}:
-            return "महीने"
-        return transliterate(word)
-
-    return re.sub(r"[A-Za-z]+", one, text or "")
-
-
-def _name(call: dict) -> str:
-    raw = str(call.get("mother_name") or "").strip()
-    raw = re.sub(r"(?i)^mother'?s name is\s+", "", raw).strip(" .")
-    if raw and "not reported" not in raw.lower() and "does not" not in raw.lower():
-        return hindi_text(raw)
-    finding = (call.get("findings") or {}).get("profile_mother_name")
-    if isinstance(finding, dict):
-        detail = re.sub(r"(?i)^mother'?s name is\s+", "", str(finding.get("detail") or "")).strip(" .")
-        if detail and "not reported" not in detail.lower():
-            return hindi_text(detail)
-    return "माँ"
-
-
-def _child(call: dict) -> str:
-    bits = []
-    name = str(call.get("child_name") or "").strip()
-    age = str(call.get("child_age") or "").strip()
-    gender = str(call.get("child_gender") or "").strip().lower()
-    findings = call.get("findings") or {}
-    if not name:
-        entry = findings.get("profile_child_name")
-        if isinstance(entry, dict):
-            name = str(entry.get("detail") or "").strip()
-    if not age:
-        entry = findings.get("profile_child_age")
-        if isinstance(entry, dict):
-            age = str(entry.get("detail") or "").strip()
-    m_age = re.search(r"(\d+\s*(?:years?|months?|साल|महीने))", age, re.I)
-    if m_age and len(age.split()) > 3:
-        age = m_age.group(1)
-    age = re.sub(r"(?i)\byears?\b", "साल", age)
-    age = re.sub(r"(?i)\bmonths?\b", "महीने", age)
-    if not gender:
-        entry = findings.get("profile_child_gender")
-        if isinstance(entry, dict):
-            gender = str(entry.get("detail") or "").lower()
-    if name and "not reported" not in name.lower():
-        bits.append(hindi_text(name.split(".")[0]))
-    if age and "not reported" not in age.lower() and "does not" not in age.lower():
-        bits.append(hindi_text(age))
-    if "female" in gender or gender.startswith("girl") or "beti" in gender:
-        bits.append("बेटी")
-    elif "male" in gender or gender.startswith("boy") or "beta" in gender:
-        bits.append("बेटा")
-    return " · ".join(bits)
-
-
-def _incomplete(call: dict) -> bool:
-    telemetry = call.get("telemetry") or {}
-    reason = str(telemetry.get("close_reason") or "")
-    if reason in {"silence", "time_limit", "emergency", "caller_stop"}:
-        return True
-    if "coverage" not in telemetry:
-        return False
-    coverage = list(telemetry.get("coverage") or [])
-    return bool(checklist.open_topics(coverage))
-
-
-def _answer(answers: dict, topic_id: str) -> str:
-    entry = (answers or {}).get(topic_id) or {}
-    if isinstance(entry, dict):
-        return str(entry.get("answer") or "")
-    return str(entry or "")
-
-
-def build(call: dict, extracted: dict | None = None) -> dict:
-    extracted = extracted or {}
-    answers = extracted.get("answers") or {}
-    content = answer_extractor.report_content(extracted)
-    when = _ist(str(call.get("started_at") or ""))
-    if when:
-        date = f"{when.day} {_MONTHS[when.month]} {when.year}"
-        clock = _clock(when)
-    else:
-        date, clock = "", ""
-    incomplete = _incomplete(call)
-    questions = [hindi_text(question) for question in content["questions"]]
-    yes = [hindi_text(line) for line in content["yes"]]
-    groups = []
-    unknown = []
-    unasked = []
-    not_asked_groups: list[str] = []
-    for group in checklist.DETAIL_GROUPS:
-        nos = []
-        facts = []
-        missed = []
-        for topic in checklist.TOPICS:
-            if topic["group"] != group:
-                continue
-            entry = answers.get(topic["id"]) if isinstance(answers.get(topic["id"]), dict) else {}
-            question = checklist.question_hi(topic["id"])
-            if checklist.is_concern(topic["id"], entry):
-                continue
-            fact = checklist.fact_label(topic["id"], entry)
-            kind = _answer(answers, topic["id"]) or "not_asked"
-            if fact:
-                facts.append({"q": question, "a": fact})
-            elif kind == "no":
-                nos.append(question)
-            elif kind == "unknown" or (
-                kind == "yes" and checklist.report_rule(topic["id"])["polarity"] != "concern"
-            ):
-                unknown.append(question)
-            elif kind == "not_asked" and not topic.get("optional"):
-                missed.append(question)
-        if nos or facts:
-            groups.append({"title": checklist.GROUP_HI[group], "items": nos, "facts": facts})
-        if missed:
-            unasked.append({"title": checklist.GROUP_HI[group], "items": missed})
-            if incomplete:
-                not_asked_groups.append(checklist.GROUP_HI[group])
-    child = _child(call)
-    who = _name(call) + (f" · {child}" if child else "")
-    return {
-        "who": who,
-        "date": date,
-        "time": clock,
-        "duration": _duration(call.get("duration_sec") or 0),
-        "status": "अधूरी कॉल" if incomplete else "पूर्ण कॉल",
-        "incomplete": incomplete,
-        "emergency": str((call.get("telemetry") or {}).get("close_reason") or "") == "emergency",
-        "questions": questions,
-        "universal": THALASSEMIA_LINE,
-        "yes": yes,
-        "groups": groups,
-        "unknown": unknown,
-        "unasked": unasked,
-        "not_asked": not_asked_groups,
-        "started": when,
-    }
 
 
 def _cursor(call: dict) -> dict:
@@ -596,6 +409,8 @@ def _chrome_pdf(document: str) -> bytes:
 def render_pdf(report: dict) -> bytes:
     document = render_html(report)
     try:
+        if sys.platform == "darwin":
+            os.environ.setdefault("DYLD_FALLBACK_LIBRARY_PATH", "/opt/homebrew/lib")
         from weasyprint import HTML
 
         return HTML(string=document, base_url=str(_STATIC)).write_pdf()

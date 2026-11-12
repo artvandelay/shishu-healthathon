@@ -5,7 +5,6 @@ import base64
 import inspect
 import json
 import os
-import re
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -18,17 +17,14 @@ from starlette.websockets import WebSocketState
 
 import audio_recorder
 import db
-import checklist
-import question_flow
+from call_cursor import apply_profile, apply_turn, new_cursor_state, prompt_directive
 from prompts import (
     GEMINI_LIVE_SYSTEM_PROMPT,
     HINDI_MEDICAL_VOCAB,
     clean_assistant_caption,
     clean_user_caption,
+    leaked_caption,
 )
-from summarizer import generate_call_summaries
-
-_background_tasks: set[asyncio.Task] = set()
 
 _ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 load_dotenv(_ENV_PATH)
@@ -36,78 +32,83 @@ load_dotenv(_ENV_PATH)
 _INPUT_RATE = 16000
 _OUTPUT_RATE = 24000
 _WATCHDOG_INTERVAL_SEC = 0.5
-_GREETING = (
-    "Greet the caller now in Hindi: Namaste, main Shishu hoon. Aapka naam bataiyega please?"
-)
+_CHECK_IN_SEC = 15
+_SILENCE_CLOSE_SEC = 30
+_SOFT_LIMIT_SEC = 19 * 60
+_HARD_LIMIT_SEC = 20 * 60
+_CLOSING_AUDIO_GRACE_SEC = 0.8
+_CLOSING_MAX_WAIT_SEC = 25
+_PROFILE_QIDS = frozenset({"intro_name", "intro_married", "intro_children", "ever_pregnant"})
 _WATCHDOG_NUDGE = (
-    "Speak as SHISHU in Hindi only in your same warm female voice (Kore). "
-    "If your previous question was not clearly answered, gently repeat or clarify that single question. "
-    "NEVER say 'Nahi' or 'Haan' yourself, and never answer for the mother."
+    "SYSTEM CUE (from the app, not the mother): she is waiting. "
+    "Speak only the Hindi question you were last given, in your same warm female voice, then wait. "
+    "Never answer for her."
 )
 _MANUAL_NUDGE = _WATCHDOG_NUDGE
-_FINDING_RESULT = "ok"
 
-_RECORD_FINDING_DECL = {
-    "name": "record_finding",
+_SAVE_PROFILE_DECL = {
+    "name": "save_profile",
     "description": (
-        "Save the mother's answer and mark checklist topics as covered. "
-        "Invocation Condition: invoke once after every answer she gives, including nahi and nahi pata. "
-        "The result note lists the next open topics. Never read the result aloud."
+        "Save the profile fact she just gave: name, marital status, children, or ever pregnant. "
+        "Call this only for those questions, before you speak again. Never read this tool aloud."
     ),
     "parameters": {
         "type": "OBJECT",
         "properties": {
-            "domain": {
+            "caller_name": {
                 "type": "STRING",
-                "description": (
-                    "e.g. profile_mother_name, profile_child_name, "
-                    "profile_child_age, profile_child_gender, chief_complaint, "
-                    "birth_nicu, milestones, bleeding_joints, metabolic_fasting, "
-                    "infections, pregnancy, consanguinity, family_infant_death, "
-                    "family_history, or coverage"
-                ),
+                "description": "Her name only. Not the words मेरा नाम.",
             },
-            "status": {
+            "marital_status": {
                 "type": "STRING",
-                "description": "positive, negative, or info",
+                "description": "married, about_to_marry, or unmarried.",
             },
-            "detail": {
-                "type": "STRING",
-                "description": "Concise clinical detail in English",
+            "child_count": {
+                "type": "INTEGER",
+                "description": "How many children she said. 0 if she has none.",
             },
-            "is_red_flag": {
-                "type": "BOOLEAN",
-                "description": (
-                    "True if this is a positive clinical red flag or gate finding"
-                ),
-            },
-            "topic_ids": {
+            "children": {
                 "type": "ARRAY",
-                "items": {"type": "STRING"},
-                "description": "TOPIC CHECKLIST ids this answer covered, or a group name to skip a whole group",
+                "description": "One object per child once she has given each age. Empty when child_count is 0.",
+                "items": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "age_years": {"type": "NUMBER", "description": "Age in years. Six months is 0.5."},
+                        "sex": {"type": "STRING", "description": "male, female, or unknown."},
+                        "name": {"type": "STRING"},
+                        "age_label_hi": {"type": "STRING"},
+                    },
+                    "required": ["age_years"],
+                },
             },
+            "ever_pregnant": {"type": "BOOLEAN"},
         },
-        "required": ["domain", "status", "detail", "is_red_flag", "topic_ids"],
     },
 }
 
-_END_CALL_DECL = {
-    "name": "end_call",
+_RECORD_TURN_DECL = {
+    "name": "record_turn",
     "description": (
-        "Hang up the call. Invocation Condition: invoke after every checklist topic is covered, "
-        "open capture is done, and you have spoken the full closing (reason complete). Two exceptions: if the "
-        "mother reports an emergency danger sign happening now, speak the EMERGENCY line and invoke with reason "
-        "emergency; if she clearly asks to stop the call, speak the CALLER STOP line and invoke with reason "
-        "caller_stop. If the result is not_yet, keep asking the open topics."
+        "Record her answer to the current screening question, then speak only the say field. "
+        "Do not use this for her name, marriage, children, or ever pregnant."
     ),
     "parameters": {
         "type": "OBJECT",
         "properties": {
-            "reason": {
+            "outcome": {
                 "type": "STRING",
-                "description": "One of: complete (default, after the full closing), emergency (danger sign happening now), caller_stop (she clearly asked to stop).",
-            }
+                "description": "clear, concern, unknown, clarify, emergency, or caller_stop.",
+            },
+            "child_ref": {
+                "type": "STRING",
+                "description": "child_1, oldest, youngest, both, or empty when one child or not a child question.",
+            },
+            "note": {
+                "type": "STRING",
+                "description": "Short phrase with the detail she gave, including a follow-up. Empty if she only said नहीं.",
+            },
         },
+        "required": ["outcome"],
     },
 }
 
@@ -147,6 +148,11 @@ class _TurnState:
         self.time_cue_sent = False
         self.speech_end_waiting = False
         self.playback_ends_at = 0.0
+
+
+class _Cursor:
+    def __init__(self) -> None:
+        self.state = new_cursor_state()
 
 
 class _SessionProxy:
@@ -219,7 +225,7 @@ def _live_config(settings: dict, resume_handle: str | None = None) -> types.Live
             sliding_window=types.SlidingWindow()
         ),
         session_resumption=types.SessionResumptionConfig(handle=resume_handle or None),
-        tools=[{"function_declarations": [_RECORD_FINDING_DECL, _END_CALL_DECL]}],
+        tools=[{"function_declarations": [_SAVE_PROFILE_DECL, _RECORD_TURN_DECL]}],
         thinking_config=(
             types.ThinkingConfig(thinking_level="MINIMAL")
             if chosen["model"].startswith("gemini-3.1")
@@ -310,16 +316,6 @@ def _rate_from_mime(mime: str, default: int) -> int:
         if rate > 0:
             return rate
     return default
-
-
-def _as_bool(value: object) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return value != 0
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "y"}
-    return False
 
 
 def _call_args(fc: types.FunctionCall) -> dict:
@@ -429,159 +425,6 @@ async def _send_realtime_safe(
         return False
 
 
-_MARRIAGE_DETAIL_RE = re.compile(
-    r"\b(married|marriage|unmarried|shaadi)\b",
-    re.I,
-)
-_CHILDREN_DETAIL_RE = re.compile(
-    r"\b(children|child|kids|years?\s+old|months?\s+old|saal|mahine|beta|beti|son|daughter)\b",
-    re.I,
-)
-_NO_MORE_USER_RE = re.compile(
-    r"^\s*(?:नहीं|नही|ना|बस|बस इतना ही|और कुछ नहीं|कुछ नहीं|nahi|no|bas|nothing)(?:\s*[.,!?;:।].*|\s+.*)?$",
-    re.I,
-)
-_NO_CHILD_RE = re.compile(
-    r"\b(no\s+child|no\s+children|don'?t\s+have\s+(?:any\s+)?children|do\s+not\s+have\s+(?:any\s+)?children|"
-    r"childless|0\s+children|zero\s+children|"
-    r"unmarried|not\s+married|never\s+married|single|"
-    r"never\s+(?:been\s+)?pregnant|haven'?t\s+been\s+pregnant|"
-    r"have\s+not\s+been\s+pregnant|not\s+pregnant|wasn'?t\s+pregnant|was\s+not\s+pregnant|"
-    r"to\s+be\s+married)\b"
-    r"|बच्चे\s+नहीं|कोई\s+बच्चा\s+नहीं|बच्चा\s+नहीं\s+है|चिल्ड्रन"
-    r"|प्रेग्नेंट\s+नहीं|गर्भवती\s+नहीं|शादी\s+नहीं\s+हुई|शादी\s+होने\s+वाली|अविवाहित",
-    re.I,
-)
-_NO_CHILD_ONLY_RE = re.compile(
-    r"\b(no\s+child|no\s+children|don'?t\s+have\s+(?:any\s+)?children|do\s+not\s+have\s+(?:any\s+)?children|"
-    r"childless|0\s+children|zero\s+children)\b"
-    r"|बच्चे\s+नहीं|कोई\s+बच्चा\s+नहीं|बच्चा\s+नहीं\s+है|डोंट\s+हैव\s+चिल्ड्रन",
-    re.I,
-)
-_UNMARRIED_RE = re.compile(
-    r"\b(unmarried|not\s+married|never\s+married|single|not\s+yet\s+married)\b"
-    r"|शादी\s+नहीं\s+हुई|अविवाहित|नो,\s*इट्स\s+नॉट",
-    re.I,
-)
-_EVER_PREGNANT_NO_RE = re.compile(
-    r"\b(never\s+(?:been\s+)?pregnant|haven'?t\s+(?:ever\s+)?been\s+pregnant|"
-    r"have\s+not\s+(?:ever\s+)?been\s+pregnant|never\s+conceived)\b"
-    r"|कभी\s+प्रेग्नेंट\s+नहीं|कभी\s+गर्भवती\s+नहीं",
-    re.I,
-)
-_NEVER_PREGNANT_RE = re.compile(
-    r"\b(never\s+(?:been\s+)?pregnant|haven'?t\s+been\s+pregnant|have\s+not\s+been\s+pregnant|"
-    r"not\s+pregnant|wasn'?t\s+pregnant|was\s+not\s+pregnant|no\s+pregnancy|"
-    r"not\s+currently\s+pregnant)\b"
-    r"|प्रेग्नेंट\s+नहीं|गर्भवती\s+नहीं",
-    re.I,
-)
-_PREG_DELIVERY_TOPICS = (
-    "preg_conditions",
-    "preg_scan",
-    "preg_heart",
-    "preg_transfusion",
-    "preg_delivery",
-)
-_VALID_DOMAINS = {
-    "profile_mother_name",
-    "profile_child_name",
-    "profile_child_age",
-    "profile_child_gender",
-    "chief_complaint",
-    "birth_nicu",
-    "milestones",
-    "bleeding_joints",
-    "metabolic_fasting",
-    "infections",
-    "pregnancy",
-    "consanguinity",
-    "family_infant_death",
-    "family_history",
-    "coverage",
-}
-_TOPIC_AS_DOMAIN = {
-    "intro_name": "profile_mother_name",
-    "intro_children": "profile_child_age",
-    "profile_children": "profile_child_age",
-    "profile_married": "coverage",
-    "consaguinity": "consanguinity",
-}
-_DOMAIN_AS_TOPIC = {
-    "profile_children": "intro_children",
-    "profile_married": "intro_married",
-    "consaguinity": "fam_related",
-}
-
-
-def _normalize_finding(
-    domain: str,
-    detail: str,
-    raw_topics: list,
-    last_user_text: str = "",
-    status: str = "",
-) -> tuple[str, list]:
-    """A checklist id in domain still counts as covered, without erasing valid clinical domains."""
-    topics = list(raw_topics)
-    if domain in _TOPIC_AS_DOMAIN and domain not in _VALID_DOMAINS:
-        mapped_topic = _DOMAIN_AS_TOPIC.get(domain, domain)
-        if mapped_topic in checklist._BY_ID and mapped_topic not in topics:
-            topics.append(mapped_topic)
-        domain = _TOPIC_AS_DOMAIN[domain]
-    elif domain == "birth_nicu" and not topics:
-        topics.append("birth_nicu")
-    elif domain not in _VALID_DOMAINS and (domain in checklist._BY_ID or domain in checklist.GROUPS):
-        if domain not in topics:
-            topics.append(domain)
-        domain = _TOPIC_AS_DOMAIN.get(domain, "coverage")
-    marriage = "intro_married" in topics or bool(_MARRIAGE_DETAIL_RE.search(detail or ""))
-    children_info = "intro_children" in topics or bool(_CHILDREN_DETAIL_RE.search(detail or ""))
-    if domain == "profile_mother_name" and "intro_name" not in topics:
-        if marriage:
-            domain = "coverage"
-            if "intro_married" not in topics:
-                topics.append("intro_married")
-        elif children_info:
-            domain = "profile_child_age"
-            if "intro_children" not in topics:
-                topics.append("intro_children")
-    combined_text = f"{detail} {last_user_text}"
-    user_no = bool(_NO_MORE_USER_RE.match((last_user_text or "").strip()))
-    unmarried_now = (
-        "intro_married" in topics
-        and (status == "negative" or user_no or bool(_UNMARRIED_RE.search(combined_text)))
-    )
-    no_child_now = bool(_NO_CHILD_ONLY_RE.search(combined_text)) or (
-        "intro_children" in topics and status == "negative"
-    )
-    never_preg_now = bool(_NEVER_PREGNANT_RE.search(combined_text))
-    ever_preg_no = bool(_EVER_PREGNANT_NO_RE.search(combined_text))
-    allow_group_skip = unmarried_now or no_child_now or never_preg_now
-    if not allow_group_skip:
-        topics = [t for t in topics if str(t).strip() not in checklist.GROUPS]
-    else:
-        if unmarried_now:
-            for item in ("intro_children", "birth", "body", "illness", *_PREG_DELIVERY_TOPICS, "fam_related"):
-                if item not in topics:
-                    topics.append(item)
-        if no_child_now:
-            for grp in ("birth", "body", "illness"):
-                if grp not in topics:
-                    topics.append(grp)
-            for pt in _PREG_DELIVERY_TOPICS:
-                if pt not in topics:
-                    topics.append(pt)
-        if never_preg_now:
-            for pt in _PREG_DELIVERY_TOPICS:
-                if pt not in topics:
-                    topics.append(pt)
-            if ever_preg_no and "fam_miscarriage" not in topics:
-                topics.append("fam_miscarriage")
-            if domain == "pregnancy" or any(str(t).startswith("preg_") for t in topics):
-                if "pregnancy" not in topics:
-                    topics.append("pregnancy")
-    return domain, topics
-
 
 async def _emit(
     ws: WebSocket,
@@ -639,24 +482,32 @@ async def _forward_transcript(
     call_id: int,
     role: str,
     transcription: types.Transcription | None,
+    cursor: _Cursor,
+    telemetry: dict,
 ) -> str:
     if transcription is None:
         return ""
-    text = transcription.text or ""
+    raw = transcription.text or ""
     if role == "assistant":
-        text = clean_assistant_caption(text)
+        text = clean_assistant_caption(raw)
+        if leaked_caption(raw, text):
+            telemetry["prompt_leaks"] = int(telemetry.get("prompt_leaks") or 0) + 1
     elif role == "user":
-        text = clean_user_caption(text)
+        text = clean_user_caption(raw)
+    else:
+        text = raw
     if not text:
         return ""
-    db.append_transcript(call_id, role, text)
+    qid = str(cursor.state.get("active_qid") or "")
+    db.append_transcript(call_id, role, text, qid=qid)
     await _send_json(ws, lock, {"type": "transcript", "role": role, "text": text})
     return text
 
 
 def _report_snapshot(call_id: int) -> dict:
-    """Immutable transcript and findings for extraction. No later caller turn is included."""
+    """Immutable transcript and cursor for synthesis. No later caller turn is included."""
     call = db.get_call(call_id) or {}
+    cursor = call.get("cursor_state") or {}
     snapshot = {
         "id": int(call_id),
         "transcript": call.get("transcript") or [],
@@ -665,6 +516,9 @@ def _report_snapshot(call_id: int) -> dict:
         "status": call.get("status") or "",
         "started_at": call.get("started_at") or "",
         "duration_sec": call.get("duration_sec") or 0,
+        "cursor_state": cursor,
+        "cursor_json": cursor,
+        "share_token": call.get("share_token") or "",
     }
     return json.loads(json.dumps(snapshot))
 
@@ -700,6 +554,225 @@ async def _schedule_end_report(
         telemetry["extraction_schedule_failed"] = True
 
 
+def _just_name(value: str) -> str:
+    cleaned = " ".join((value or "").split())
+    folded = cleaned.casefold()
+    for prefix in (
+        "मेरा नाम है",
+        "मेरा नाम",
+        "जी मेरा नाम है",
+        "नाम है",
+        "my name is",
+        "mera naam hai",
+        "mera naam",
+    ):
+        if folded.startswith(prefix):
+            cleaned = cleaned[len(prefix):].strip(" .,।")
+            break
+    return cleaned.strip()
+
+
+def _marital(value: object) -> str:
+    raw = str(value or "").strip()
+    text = raw.lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "married": "married",
+        "yes": "married",
+        "shaadi": "married",
+        "unmarried": "unmarried",
+        "single": "unmarried",
+        "about_to_marry": "about_to_marry",
+        "engaged": "about_to_marry",
+        "about_to_be_married": "about_to_marry",
+    }
+    if text in aliases:
+        return aliases[text]
+    if "नहीं" in raw and "शादी" in raw:
+        return "unmarried"
+    if "होने वाली" in raw:
+        return "about_to_marry"
+    if "शादी" in raw:
+        return "married"
+    return ""
+
+
+def _as_children(value: object) -> list | None:
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return []
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(value, list):
+        return None
+    kids = []
+    for item in value:
+        if isinstance(item, str):
+            try:
+                item = json.loads(item)
+            except json.JSONDecodeError:
+                continue
+        if not isinstance(item, dict):
+            continue
+        try:
+            age = float(item.get("age_years"))
+        except (TypeError, ValueError):
+            continue
+        sex = str(item.get("sex") or "unknown").strip().lower()
+        if sex in {"male", "m", "boy", "son", "beta", "बेटा"}:
+            sex = "male"
+        elif sex in {"female", "f", "girl", "daughter", "beti", "बेटी"}:
+            sex = "female"
+        elif sex not in {"male", "female", "unknown"}:
+            sex = "unknown"
+        kids.append({
+            "age_years": age,
+            "sex": sex,
+            "name": item.get("name"),
+            "age_label_hi": item.get("age_label_hi"),
+        })
+    return kids
+
+
+def _optional_bool(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if value is None or value == "":
+        return None
+    text = str(value).strip().lower()
+    if text in {"true", "yes", "1", "haan"}:
+        return True
+    if text in {"false", "no", "0", "nahi"}:
+        return False
+    return None
+
+
+def _say_hindi(state: dict) -> str:
+    if state.get("phase") != "asking":
+        return _closing_hi(state)
+    text = prompt_directive(state)
+    marker = "then wait: "
+    if marker in text:
+        text = text.split(marker, 1)[1]
+    if " Say " in text:
+        text = text.split(" Say ", 1)[0]
+    return text.strip()
+
+
+def _closing_hi(state: dict) -> str:
+    name = str((state.get("profile") or {}).get("caller_name") or "").strip()
+    who = f"{name} जी, " if name else ""
+    reason = state.get("close_reason") or "complete"
+    if reason == "emergency":
+        return (
+            f"{who}यह तुरंत दिखाने वाली बात है। अभी बच्चे को नज़दीकी अस्पताल ले जाइए, "
+            "या 108 पर कॉल कीजिए। अब तक की जानकारी मैंने डॉक्टर के लिए नोट कर ली है। नमस्ते।"
+        )
+    if reason == "caller_stop":
+        return (
+            f"कोई बात नहीं, {who}अब तक की जानकारी मैंने नोट कर ली है। "
+            "जब समय मिले, दोबारा कॉल करके बाकी सवाल पूरे कर लीजिए। नमस्ते।"
+        )
+    if reason == "silence":
+        return (
+            "लगता है आप अभी बात नहीं कर पा रही हैं। कोई बात नहीं। "
+            "अब तक आपने जो समय दिया, उसके लिए बहुत धन्यवाद। अभी कुछ सवाल बाकी हैं, "
+            "इसलिए यह जानकारी अधूरी है। जब समय मिले, दोबारा कॉल करके इसे पूरा कर लीजिए। नमस्ते।"
+        )
+    if reason == "time_limit":
+        return (
+            f"{who}आज हमारी बात काफी लंबी हो गई। इतना समय देने के लिए बहुत धन्यवाद। "
+            "अभी कुछ सवाल बाकी हैं, इसलिए यह जानकारी अधूरी है। "
+            "जब समय मिले, दोबारा कॉल करके इसे पूरा कर लीजिए। नमस्ते।"
+        )
+    concerns = any(
+        isinstance(entry, dict) and entry.get("state") == "concern"
+        for entry in (state.get("answers") or {}).values()
+    )
+    if concerns:
+        return (
+            f"{who}इतना ध्यान से बताने के लिए बहुत धन्यवाद। आपने जो बताया, "
+            "उसमें से कुछ बातों की जाँच डॉक्टर या स्वास्थ्य कार्यकर्ता से करवाना अच्छा रहेगा। "
+            "आपकी रिपोर्ट तैयार हो रही है। यह रिपोर्ट आप अपनी ASHA, ANM या डॉक्टर को दिखा सकती हैं। नमस्ते।"
+        )
+    return (
+        f"{who}इतना ध्यान से बताने के लिए बहुत धन्यवाद। "
+        "अगर आगे इनमें से कुछ भी दिखे, तो अपने स्वास्थ्य कार्यकर्ता से बात करें। "
+        "आपकी रिपोर्ट तैयार हो रही है। यह रिपोर्ट आप अपनी ASHA, ANM या डॉक्टर को दिखा सकती हैं। नमस्ते।"
+    )
+
+
+def _tool_body(state: dict) -> dict:
+    body = {"result": "ok", "say": _say_hindi(state)}
+    if state.get("phase") == "closing":
+        body["stop"] = True
+    else:
+        body["wait"] = True
+    return body
+
+
+def _profile_kwargs(qid: str, args: dict) -> dict:
+    kwargs: dict = {}
+    if qid == "intro_name":
+        name = _just_name(str(args.get("caller_name") or ""))
+        if name:
+            kwargs["caller_name"] = name
+    elif qid == "intro_married":
+        status = _marital(args.get("marital_status"))
+        if status:
+            kwargs["marital_status"] = status
+    elif qid == "intro_children":
+        if "child_count" in args and args.get("child_count") not in (None, ""):
+            try:
+                kwargs["child_count"] = int(args.get("child_count"))
+            except (TypeError, ValueError):
+                pass
+        if "children" in args and args.get("children") is not None:
+            kids = _as_children(args.get("children"))
+            if kids is not None:
+                kwargs["children"] = kids
+        if kwargs.get("child_count") == 0 and "children" not in kwargs:
+            kwargs["children"] = []
+    elif qid == "ever_pregnant":
+        flag = _optional_bool(args.get("ever_pregnant"))
+        if flag is not None:
+            kwargs["ever_pregnant"] = flag
+    return kwargs
+
+
+async def _mark_closing(
+    cursor: _Cursor,
+    reason: str,
+    ws: WebSocket,
+    ws_lock: asyncio.Lock,
+    call_id: int,
+    telemetry: dict,
+    on_end_accepted: Callable[[int, dict], Awaitable[None] | None] | None,
+) -> None:
+    state = cursor.state
+    if state.get("phase") != "closing":
+        state["phase"] = "closing"
+        state["close_reason"] = reason
+    elif not state.get("close_reason"):
+        state["close_reason"] = reason
+    cursor.state = state
+    try:
+        db.save_cursor_state(call_id, state)
+    except Exception:
+        pass
+    if _accept_end(telemetry):
+        await _schedule_end_report(
+            ws,
+            ws_lock,
+            call_id,
+            telemetry,
+            str(state.get("close_reason") or reason),
+            on_end_accepted,
+        )
+
+
 async def _answer_function_calls(
     session,
     send_lock: asyncio.Lock,
@@ -710,15 +783,11 @@ async def _answer_function_calls(
     calls: list,
     seen: set[str],
     cancelled: set[str],
-    last_user_text: str = "",
-    last_bot_text: str = "",
+    cursor: _Cursor,
     on_end_accepted: Callable[[int, dict], Awaitable[None] | None] | None = None,
 ) -> None:
     responses: list[types.FunctionResponse] = []
     logged: list[str] = []
-    db_records: list[tuple[str, str, str, bool]] = []
-    ws_messages: list[dict] = []
-    schedule_reason = ""
     for fc in calls:
         fc_id = getattr(fc, "id", None) or ""
         if fc_id and (fc_id in cancelled or fc_id in seen):
@@ -728,163 +797,73 @@ async def _answer_function_calls(
         if fc_id:
             seen.add(fc_id)
         name = getattr(fc, "name", None) or ""
-        if name == "end_call":
-            coverage = telemetry.setdefault("coverage", [])
-            end_reason = str(_call_args(fc).get("reason") or "complete").strip().lower()
-            if end_reason not in ("complete", "emergency", "caller_stop"):
-                end_reason = "complete"
-            if end_reason == "complete" and telemetry.get("emergency_seen") and checklist.open_topics(coverage):
-                end_reason = "emergency"
-            if end_reason in ("emergency", "caller_stop"):
-                telemetry["close_reason"] = end_reason
-                if end_reason == "emergency" and not telemetry.get("emergency_detail"):
-                    telemetry["emergency_detail"] = (last_user_text or "")[:300]
-                if _accept_end(telemetry):
-                    schedule_reason = end_reason
-                ws_messages.append({"type": "ending"})
-                body = {"result": "ok"}
-                logged.append(f"end_call_{end_reason}")
-            else:
-                if telemetry.get("open_capture_asked_more"):
-                    checklist.mark(coverage, ["close_anything_else"])
+        args = _call_args(fc)
+        qid = str(cursor.state.get("active_qid") or "")
+        try:
+            if name == "save_profile":
+                kwargs = _profile_kwargs(qid, args)
+                if qid in _PROFILE_QIDS and kwargs:
+                    new_state, _hold = apply_profile(cursor.state, **kwargs)
+                    cursor.state = new_state
+                    db.save_cursor_state(call_id, new_state)
+                body = _tool_body(cursor.state)
+                logged.append("save_profile")
+            elif name == "record_turn":
+                outcome = str(args.get("outcome") or "").strip().lower().replace(" ", "_")
+                outcome = {
+                    "yes": "concern",
+                    "haan": "concern",
+                    "positive": "concern",
+                    "no": "clear",
+                    "nahi": "clear",
+                    "negative": "clear",
+                    "dont_know": "unknown",
+                    "don't_know": "unknown",
+                    "confused": "clarify",
+                    "stop": "caller_stop",
+                }.get(outcome, outcome)
+                if qid in _PROFILE_QIDS:
+                    body = _tool_body(cursor.state)
+                    logged.append("record_turn_held")
                 else:
-                    remaining = [t["id"] for t in checklist.open_topics(coverage)]
-                    if remaining == ["close_anything_else"] and _NO_MORE_USER_RE.match((last_user_text or "").strip()):
-                        checklist.mark(coverage, ["close_anything_else"])
-                ok, note = checklist.can_end(coverage)
-                refusals = int(telemetry.get("end_refusals") or 0)
-                if not ok and not telemetry.get("force_close"):
-                    telemetry["end_refusals"] = refusals + 1
-                    body = {"result": "not_yet", "note": note}
-                    logged.append("end_call_refused")
-                else:
-                    if _accept_end(telemetry):
-                        schedule_reason = end_reason
-                    ws_messages.append({"type": "ending"})
-                    body = {"result": "ok"}
-                    logged.append("end_call")
-        elif name == "record_finding":
-            args = _call_args(fc)
-            domain = str(args.get("domain") or "")
-            status = str(args.get("status") or "")
-            detail = str(args.get("detail") or "")
-            is_red_flag = _as_bool(args.get("is_red_flag", False))
-            raw_topics = list(args.get("topic_ids") or [])
-            if isinstance(args.get("topic_ids"), str):
-                raw_topics = [args["topic_ids"]]
-            domain, raw_topics = _normalize_finding(
-                domain, detail, raw_topics, last_user_text, status
-            )
-            confused = question_flow.is_confused_reply(last_user_text)
-            if confused:
-                raw_topics = []
-            coverage = telemetry.setdefault("coverage", [])
-            name_check = domain == "profile_mother_name" or "intro_name" in raw_topics
-            name_invalid = name_check and (
-                status == "negative"
-                or not checklist.is_valid_name_detail(detail, last_user_text)
-            )
-            if name_invalid:
-                raw_topics = [t for t in raw_topics if t != "intro_name"]
-            ages_missing = (
-                "intro_children" in raw_topics
-                and status != "negative"
-                and not telemetry.get("children_ages_asked")
-                and not checklist.has_child_age_detail(detail, last_user_text)
-            )
-            if ages_missing:
-                telemetry["children_ages_asked"] = True
-                raw_topics = [t for t in raw_topics if t != "intro_children"]
-            preterm_nicu_hold = (
-                "birth_term" in raw_topics
-                and "birth_nicu" in raw_topics
-                and status == "positive"
-                and not telemetry.get("preterm_nicu_asked")
-                and not re.search(r"\b(nicu|icu|box|phototherapy|light|jaundice)\b|बॉक्स|लाइट|पीलिया", f"{detail} {last_user_text}", re.I)
-            )
-            if preterm_nicu_hold:
-                telemetry["preterm_nicu_asked"] = True
-                raw_topics = [t for t in raw_topics if t not in ("birth_term", "birth_nicu")]
-            open_capture_hold = False
-            if (
-                "close_anything_else" in raw_topics
-                and not telemetry.get("open_capture_asked_more")
-                and domain == "chief_complaint"
-                and status in ("positive", "info")
-                and (last_user_text or "").strip()
-                and not _NO_MORE_USER_RE.match((last_user_text or "").strip())
-            ):
-                telemetry["open_capture_asked_more"] = True
-                raw_topics = [t for t in raw_topics if t != "close_anything_else"]
-                open_capture_hold = True
-            section_hold = ""
-            drill_hold = ""
-            first_open = checklist.open_topics(coverage)
-            if not confused and last_bot_text and first_open:
-                cur = first_open[0]["id"]
-                cur_group = first_open[0]["group"]
-                checked = telemetry.setdefault("section_checked", [])
-                if cur in question_flow.SECTION_FIRST and cur in raw_topics and cur not in checked:
-                    checked.append(cur)
-                    if not question_flow.bot_asked(cur, last_bot_text):
-                        raw_topics = [
-                            t for t in raw_topics
-                            if t != cur and not (t in checklist._BY_ID and checklist._BY_ID[t]["group"] == cur_group)
-                        ]
-                        section_hold = cur
-            if not confused and status != "negative" and question_flow.is_bare_yes(last_user_text):
-                asked = telemetry.setdefault("drill_asked", [])
-                for tid in list(raw_topics):
-                    if tid in question_flow.DRILLS and tid not in asked:
-                        asked.append(tid)
-                        raw_topics = [t for t in raw_topics if t != tid]
-                        drill_hold = drill_hold or tid
-            checklist.mark(coverage, raw_topics)
-            if domain and domain != "coverage" and not (name_invalid and domain == "profile_mother_name") and not confused and not section_hold:
-                db_records.append((domain, status, detail, is_red_flag))
-                ws_messages.append(
-                    {
-                        "type": "finding",
-                        "domain": domain,
-                        "status": status,
-                        "detail": detail,
-                        "is_red_flag": is_red_flag,
-                    }
-                )
-            label = checklist.progress_label(coverage)
-            telemetry["progress_group"] = label
-            ws_messages.append({"type": "progress", "group": label})
-            if confused:
-                note = question_flow.CONFUSED_NOTE
-            elif name_invalid:
-                note = checklist.NAME_MISSING_NOTE
-            elif ages_missing:
-                note = checklist.CHILDREN_AGES_MISSING_NOTE
-            elif preterm_nicu_hold:
-                note = checklist.PRETERM_NICU_FOLLOWUP_NOTE
-            elif open_capture_hold:
-                note = (
-                    "Saved her concern for the doctor. Acknowledge it warmly in Hindi and ask ONLY "
-                    "'Aur kuch batana chahengi?' then STOP speaking and wait for her reply. "
-                    "Do NOT speak the closing yet. Keep your same warm female voice (Kore)."
-                )
-            elif section_hold:
-                note = question_flow.section_note(section_hold)
-            elif drill_hold:
-                note = question_flow.drill_note(drill_hold)
+                    new_state = apply_turn(
+                        cursor.state,
+                        outcome,
+                        child_ref=str(args.get("child_ref") or ""),
+                        note=str(args.get("note") or ""),
+                    )
+                    cursor.state = new_state
+                    db.save_cursor_state(call_id, new_state)
+                    if new_state.get("phase") == "closing":
+                        await _mark_closing(
+                            cursor,
+                            str(new_state.get("close_reason") or outcome),
+                            ws,
+                            ws_lock,
+                            call_id,
+                            telemetry,
+                            on_end_accepted,
+                        )
+                    body = _tool_body(cursor.state)
+                    logged.append(f"record_turn_{outcome}")
             else:
-                note = checklist.tool_note(coverage, telemetry.setdefault("bridged_groups", []))
-            body = {"result": "ok", "note": note}
-            logged.append(domain or "record_finding")
-        else:
-            body = {"result": "ignored"}
-            logged.append(name or "ignored")
+                body = {"result": "ignored", "say": _say_hindi(cursor.state), "wait": True}
+                logged.append(name or "ignored")
+                telemetry["tool_errors"] = int(telemetry.get("tool_errors") or 0) + 1
+        except Exception:
+            telemetry["tool_errors"] = int(telemetry.get("tool_errors") or 0) + 1
+            body = {"result": "error", "say": _say_hindi(cursor.state), "wait": True}
+            logged.append(f"{name or 'tool'}_error")
+        if cursor.state.get("phase") == "closing":
+            body["stop"] = True
+            body.pop("wait", None)
+            body["say"] = _closing_hi(cursor.state)
         if not fc_id:
             continue
         responses.append(
             types.FunctionResponse(
                 id=fc_id,
-                name=name or "record_finding",
+                name=name or "record_turn",
                 response=body,
             )
         )
@@ -895,24 +874,17 @@ async def _answer_function_calls(
                 await session.send_tool_response(function_responses=responses)
         except Exception:
             send_failed = True
-    for domain, status, detail, is_red_flag in db_records:
-        db.record_finding_db(call_id, domain, status, detail, is_red_flag)
-    for payload in ws_messages:
-        await _send_json(ws, ws_lock, payload)
     for detail in logged:
-        telemetry["tool_calls"] += 1
+        telemetry["tool_calls"] = int(telemetry.get("tool_calls") or 0) + 1
         await _emit(ws, ws_lock, call_id, telemetry, "tool_call", detail)
     if send_failed:
+        telemetry["tool_errors"] = int(telemetry.get("tool_errors") or 0) + 1
         await _report_error(
             ws,
             ws_lock,
             call_id,
             telemetry,
             "Could not send the tool response to Gemini",
-        )
-    if schedule_reason:
-        await _schedule_end_report(
-            ws, ws_lock, call_id, telemetry, schedule_reason, on_end_accepted
         )
 
 
@@ -944,6 +916,8 @@ async def _on_bot_audio(
     dur = len(pcm) / max(1, 2 * rate)
     state.playback_ends_at = max(time.time(), state.playback_ends_at) + dur
     recorder.add_bot_pcm(pcm, rate)
+    if telemetry.get("end_requested"):
+        telemetry["closing_heard"] = True
     await _send_json(
         ws,
         ws_lock,
@@ -973,6 +947,7 @@ async def _handle_server_message(
     recorder: audio_recorder.CallAudioRecorder,
     seen: set[str],
     cancelled: set[str],
+    cursor: _Cursor,
     on_end_accepted: Callable[[int, dict], Awaitable[None] | None] | None = None,
 ) -> bool:
     """Handle one Live server message. Return False when the session should stop."""
@@ -998,15 +973,14 @@ async def _handle_server_message(
                 call_id,
                 "user",
                 server_content.input_transcription,
+                cursor,
+                telemetry,
             )
         if user_text:
             if state.bot_text_since_user:
                 state.last_bot_text = state.bot_text_since_user
                 state.bot_text_since_user = ""
             state.last_user_text = user_text
-            if question_flow.is_emergency_text(user_text):
-                telemetry["emergency_seen"] = True
-                telemetry["emergency_detail"] = user_text[:300]
             _arm_user_turn(state, telemetry)
             await _emit(
                 ws, ws_lock, call_id, telemetry, "user_transcript", user_text
@@ -1017,6 +991,8 @@ async def _handle_server_message(
             call_id,
             "assistant",
             server_content.output_transcription,
+            cursor,
+            telemetry,
         )
         if bot_text:
             state.bot_text_since_user = (state.bot_text_since_user + " " + bot_text).strip()[-600:]
@@ -1065,8 +1041,7 @@ async def _handle_server_message(
             calls,
             seen,
             cancelled,
-            state.last_user_text,
-            last_bot_text=state.last_bot_text,
+            cursor,
             on_end_accepted=on_end_accepted,
         )
         if not telemetry.get("end_requested"):
@@ -1100,6 +1075,7 @@ async def _gemini_loop(
     telemetry: dict,
     state: _TurnState,
     recorder: audio_recorder.CallAudioRecorder,
+    cursor: _Cursor,
     reconnect,
     on_end_accepted: Callable[[int, dict], Awaitable[None] | None] | None = None,
 ) -> None:
@@ -1123,6 +1099,7 @@ async def _gemini_loop(
                     recorder,
                     seen,
                     cancelled,
+                    cursor,
                     on_end_accepted,
                 )
                 if not keep_going:
@@ -1174,7 +1151,9 @@ async def _watchdog_loop(
     call_id: int,
     telemetry: dict,
     state: _TurnState,
+    cursor: _Cursor,
     watchdog_timeout_sec: float,
+    on_end_accepted: Callable[[int, dict], Awaitable[None] | None] | None = None,
 ) -> None:
     try:
         while not stop.is_set():
@@ -1186,38 +1165,51 @@ async def _watchdog_loop(
             if stop.is_set():
                 return
             now = time.time()
-            if now - state.call_started_ts >= checklist.HARD_LIMIT_SEC:
-                telemetry["close_reason"] = telemetry.get("close_reason") or "time_limit"
+            if now - state.call_started_ts >= _HARD_LIMIT_SEC:
+                if cursor.state.get("phase") != "closing":
+                    await _mark_closing(
+                        cursor, "time_limit", ws, ws_lock, call_id, telemetry, on_end_accepted
+                    )
                 stop.set()
                 return
-            if telemetry.get("end_requested"):
-                if time.time() - float(telemetry.get("end_requested_at") or 0) > 30:
+            if cursor.state.get("phase") == "closing" or telemetry.get("end_requested"):
+                played = (
+                    bool(telemetry.get("closing_heard"))
+                    and not state.bot_speaking
+                    and state.playback_ends_at > 0
+                    and now >= state.playback_ends_at + _CLOSING_AUDIO_GRACE_SEC
+                )
+                waited = now - float(telemetry.get("end_requested_at") or now)
+                if played or waited > _CLOSING_MAX_WAIT_SEC:
                     stop.set()
                     return
                 continue
-            if telemetry.get("force_close"):
-                if now - float(telemetry.get("force_close_at") or 0) > checklist.FORCE_END_GRACE_SEC:
-                    telemetry["end_requested"] = True
-                    telemetry["end_requested_at"] = now
-                    await _send_json(ws, ws_lock, {"type": "ending"})
-                continue
             cue = ""
             reason = ""
-            if now - state.call_started_ts >= checklist.SOFT_LIMIT_SEC and not state.time_cue_sent:
-                cue, reason = checklist.TIME_CLOSE_CUE, "time_limit"
+            if now - state.call_started_ts >= _SOFT_LIMIT_SEC and not state.time_cue_sent:
+                reason = "time_limit"
                 state.time_cue_sent = True
             elif state.quiet_from > 0 and not state.bot_speaking and not state.awaiting_bot_reply:
                 quiet = now - state.quiet_from
-                if quiet >= checklist.SILENCE_CLOSE_SEC:
-                    cue, reason = checklist.SILENCE_CLOSE_CUE, "silence"
-                elif quiet >= checklist.CHECK_IN_SEC and not state.checked_in:
-                    cue = checklist.CHECK_IN_CUE
+                if quiet >= _SILENCE_CLOSE_SEC:
+                    reason = "silence"
+                elif quiet >= _CHECK_IN_SEC and not state.checked_in:
+                    cue = (
+                        "SYSTEM CUE (from the app, not the mother): she has been quiet for 15 seconds. "
+                        "Ask in Hindi if she can hear you, then repeat the same question in simpler words. "
+                        "Do not call a tool."
+                    )
+            if reason:
+                await _mark_closing(
+                    cursor, reason, ws, ws_lock, call_id, telemetry, on_end_accepted
+                )
+                cue = (
+                    "SYSTEM CUE (from the app, not the mother): speak only this Hindi, then stop. "
+                    "Do not call a tool.\n"
+                    + _closing_hi(cursor.state)
+                )
             if cue:
-                if reason:
-                    telemetry["force_close"] = True
-                    telemetry["force_close_at"] = now
-                    telemetry["close_reason"] = reason
-                else:
+                if not reason:
                     state.checked_in = True
                 ok = await _send_realtime_safe(
                     session, send_lock, state, stop, text=cue
@@ -1245,20 +1237,20 @@ async def _watchdog_loop(
                 if state.speech_end_waiting
                 else watchdog_timeout_sec
             )
-            if state.nudges_for_current_turn >= 2:
-                if time.time() - state.last_user_turn_ts >= effective_timeout:
-                    state.awaiting_bot_reply = False
-                    state.speech_end_waiting = False
-                    if state.quiet_from <= 0:
-                        state.quiet_from = time.time()
+            if state.nudges_for_current_turn >= 6:
                 continue
             if time.time() - state.last_user_turn_ts < effective_timeout:
                 continue
             state.nudges_for_current_turn += 1
             telemetry["watchdog_nudges"] += 1
             state.last_user_turn_ts = time.time()
+            nudge = (
+                "SYSTEM CUE (from the app, not the mother): speak only this Hindi now, then wait. "
+                "Do not call a tool.\n"
+                + _say_hindi(cursor.state)
+            )
             ok = await _send_realtime_safe(
-                session, send_lock, state, stop, text=_WATCHDOG_NUDGE
+                session, send_lock, state, stop, text=nudge
             )
             if not ok:
                 await _report_error(
@@ -1278,7 +1270,7 @@ async def _watchdog_loop(
                 call_id,
                 telemetry,
                 "watchdog_nudge",
-                _WATCHDOG_NUDGE,
+                nudge,
             )
     except asyncio.CancelledError:
         raise
@@ -1293,6 +1285,7 @@ async def _browser_loop(
     call_id: int,
     telemetry: dict,
     state: _TurnState,
+    cursor: _Cursor,
     recorder: audio_recorder.CallAudioRecorder,
 ) -> None:
     try:
@@ -1397,7 +1390,8 @@ async def _browser_loop(
                 text = str(payload.get("text") or "").strip()
                 if not text:
                     continue
-                db.append_transcript(call_id, "user", text)
+                qid = str(cursor.state.get("active_qid") or "")
+                db.append_transcript(call_id, "user", text, qid=qid)
                 await _send_json(
                     ws,
                     ws_lock,
@@ -1428,50 +1422,6 @@ async def _browser_loop(
         raise
 
 
-def _spawn_doctor_note(
-    call_id: int,
-    transcript: list,
-    findings: dict,
-    red_flags: list,
-    telemetry: dict | None,
-) -> None:
-    task = asyncio.create_task(
-        _write_doctor_note(call_id, transcript, findings, red_flags, telemetry)
-    )
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
-
-
-async def _write_doctor_note(
-    call_id: int,
-    transcript: list,
-    findings: dict,
-    red_flags: list,
-    telemetry: dict | None,
-) -> None:
-    try:
-        result = await generate_call_summaries(transcript, findings, red_flags)
-    except Exception:
-        return
-    if not isinstance(result, dict):
-        return
-    summary_doctor = str(result.get("summary_doctor") or "")
-    merged_findings = result.get("findings") if isinstance(result.get("findings"), dict) else findings
-    merged_flags = result.get("red_flags") if isinstance(result.get("red_flags"), list) else red_flags
-    if telemetry is not None:
-        doctor_note, _mother_note = checklist.incomplete_notes(
-            telemetry.get("coverage") or [],
-            str(telemetry.get("close_reason") or ""),
-            str(telemetry.get("emergency_detail") or ""),
-        )
-        if doctor_note:
-            summary_doctor = doctor_note + "\n\n" + summary_doctor
-    try:
-        db.save_doctor_summary(call_id, summary_doctor, merged_findings, list(merged_flags))
-    except Exception:
-        return
-
-
 async def _report_is_ready(
     on_call_completed: Callable[[int], Awaitable[bool] | bool] | None,
     call_id: int,
@@ -1500,7 +1450,7 @@ async def _finalize(
     filename = ""
     duration = 0
     try:
-        filename, duration = recorder.save()
+        filename, duration = await asyncio.to_thread(recorder.save)
     except Exception:
         filename, duration = "", 0
 
@@ -1511,25 +1461,15 @@ async def _finalize(
         except Exception:
             pass
 
-    call = db.get_call(call_id) or {}
-    transcript = list(call.get("transcript") or [])
-    findings = dict(call.get("findings") or {})
-    red_flags = list(call.get("red_flags") or [])
-    db.complete_call(
-        call_id,
-        int(duration),
-        filename,
-        "",
-        "",
-        findings=findings,
-        red_flags=red_flags,
-    )
+    db.complete_call(call_id, int(duration), filename, "", "")
     ready = await _report_is_ready(on_call_completed, call_id)
-    if ready:
-        _spawn_doctor_note(call_id, transcript, findings, red_flags, telemetry)
-        await _send_json(ws, ws_lock, {"type": "call_completed", "call_id": call_id})
-    else:
-        await _send_json(ws, ws_lock, {"type": "report_failed", "call_id": call_id})
+    call = db.get_call(call_id) or {}
+    done = {
+        "type": "call_completed" if ready else "report_failed",
+        "call_id": call_id,
+        "share_token": call.get("share_token") or "",
+    }
+    await _send_json(ws, ws_lock, done)
 
 
 async def _stop_tasks(*tasks: asyncio.Task | None) -> None:
@@ -1572,6 +1512,7 @@ async def handle_gemini_ws(
     send_lock = asyncio.Lock()
     stop = asyncio.Event()
     state = _TurnState()
+    cursor = _Cursor()
     call_id: int | None = None
     telemetry: dict | None = None
     recorder: audio_recorder.CallAudioRecorder | None = None
@@ -1651,6 +1592,8 @@ async def handle_gemini_ws(
             connect_ms,
         )
         recorder = audio_recorder.CallAudioRecorder(call_id)
+        db.save_cursor_state(call_id, cursor.state)
+        share_token = str((db.get_call(call_id) or {}).get("share_token") or "")
         await _send_json(
             ws,
             ws_lock,
@@ -1661,6 +1604,7 @@ async def handle_gemini_ws(
                 "voice": voice,
                 "user_role": user_role,
                 "caller_name": caller_name,
+                "share_token": share_token,
                 "out_sample_rate": _OUTPUT_RATE,
             },
         )
@@ -1684,6 +1628,7 @@ async def handle_gemini_ws(
                 telemetry,
                 state,
                 recorder,
+                cursor,
                 _reconnect,
                 on_end_accepted,
             )
@@ -1698,12 +1643,20 @@ async def handle_gemini_ws(
                 call_id,
                 telemetry,
                 state,
+                cursor,
                 chosen["watchdog_timeout_sec"],
+                on_end_accepted,
             )
         )
         try:
             async with send_lock:
-                await session.send_realtime_input(text=_GREETING)
+                await session.send_realtime_input(
+                    text=(
+                        "SYSTEM CUE (from the app, not the mother): speak only this Hindi, then wait. "
+                        "Do not call a tool yet.\n"
+                        + _say_hindi(cursor.state)
+                    )
+                )
         except Exception:
             stop.set()
             await _report_error(
@@ -1725,6 +1678,7 @@ async def handle_gemini_ws(
                 call_id,
                 telemetry,
                 state,
+                cursor,
                 recorder,
             )
         )

@@ -11,7 +11,6 @@ import tempfile
 import time
 from pathlib import Path
 
-import answer_extractor
 import db
 import mother_report
 import post_call
@@ -77,7 +76,21 @@ def _failed(task: asyncio.Task) -> bool:
 
 
 def _event(call_id: int, event_type: str, meta: dict | None = None) -> None:
-    answer_extractor._event(call_id, event_type, meta)
+    """Timing only. Detail stays empty so a transcript cannot land here."""
+    clean: dict = {}
+    for key, value in (meta or {}).items():
+        if key not in {"model", "error_class", "ms", "bytes", "reason"}:
+            continue
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int) and not isinstance(value, bool):
+            clean[key] = value
+        elif isinstance(value, str) and len(value) <= 80 and " " not in value:
+            clean[key] = value
+    try:
+        db.append_call_event(int(call_id), event_type, "", clean)
+    except Exception:
+        return
 
 
 def _ms(started: float) -> int:
@@ -99,11 +112,7 @@ async def begin_answers(call_id: int, snapshot: dict) -> None:
         if task is not None and not _failed(task):
             return
         frozen = _freeze(call_id, snapshot)
-        if post_call.has_cursor(frozen):
-            job = post_call.synthesize_call(frozen)
-        else:
-            job = answer_extractor.cached_answers(frozen)
-        _answers[call_id] = asyncio.create_task(job)
+        _answers[call_id] = asyncio.create_task(post_call.synthesize_call(frozen))
 
 
 async def _answers_task(call_id: int) -> asyncio.Task:
@@ -112,11 +121,7 @@ async def _answers_task(call_id: int) -> asyncio.Task:
         if task is not None and not _failed(task):
             return task
         call = db.get_call(call_id) or {"id": int(call_id)}
-        if post_call.has_cursor(call):
-            job = post_call.synthesize_call(call)
-        else:
-            job = answer_extractor.cached_answers(call)
-        task = asyncio.create_task(job)
+        task = asyncio.create_task(post_call.synthesize_call(call))
         _answers[call_id] = task
         return task
 
@@ -145,17 +150,24 @@ async def _build(call_id: int) -> tuple[bytes, str]:
         call = await asyncio.to_thread(db.get_call, call_id)
         if call is None:
             raise LookupError(f"Call {call_id} was not found")
-        if post_call.is_synthesis(extracted) or post_call.has_cursor(call):
-            synthesis = extracted if post_call.is_synthesis(extracted) else post_call.deterministic_fallback(call)
-            report = mother_report.build_v3(call, synthesis)
-            await asyncio.to_thread(
-                db.save_report_text,
-                call_id,
-                synthesis.get("doctor_markdown") or "",
-                post_call.mother_summary_text(synthesis),
-            )
+        if post_call.is_synthesis(extracted):
+            synthesis = extracted
         else:
-            report = mother_report.build(call, extracted)
+            synthesis = post_call.deterministic_fallback(call)
+        report = mother_report.build_v3(call, synthesis)
+        mother_name = str(synthesis.get("mother_name_hi") or "").strip()
+        if mother_name == "माँ":
+            mother_name = ""
+        child_age = str(synthesis.get("children_label_hi") or "").strip()
+        await asyncio.to_thread(
+            db.save_report_text,
+            call_id,
+            synthesis.get("doctor_markdown") or "",
+            post_call.mother_summary_text(synthesis),
+            list(synthesis.get("red_flags") or []),
+            mother_name,
+            child_age,
+        )
         pdf = await asyncio.to_thread(mother_report.render_pdf, report)
         if not pdf.startswith(b"%PDF"):
             raise ValueError("Renderer did not return a PDF")

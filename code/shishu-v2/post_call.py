@@ -58,7 +58,11 @@ _ROUTINE_HI = (
 )
 
 _DISEASE = re.compile(
-    r"\b(?:Duchenne|Pompe|Wiskott[\s-]*Aldrich|Hemophilia|Haemophilia|Gaucher|SCID|SMA|MPS)\b",
+    r"(?:"
+    r"\b(?:Duchenne|Pompe|Wiskott[\s-]*Aldrich|Hemophilia|Haemophilia|Gaucher|SCID|SMA|MPS)\b"
+    r"|ड्यूशेन|हीमोफीलिया|पॉम्पे|गॉशर|इम्यूनोडेफिशिएंसी|म्यूकोपॉलीसेकेराइडोसिस"
+    r"|थैलेसीमिया मेजर"
+    r")",
     re.IGNORECASE,
 )
 _DEVANAGARI = re.compile(r"[\u0900-\u097F]")
@@ -117,8 +121,30 @@ def _children_label(profile: dict) -> str:
     return " · ".join(bit for bit in bits if bit)
 
 
-def _concern_sentence(spec, entry: dict) -> str:
+def _followup_bits(entry: dict) -> str:
+    followups = entry.get("followups") or {}
+    if not isinstance(followups, dict):
+        return ""
+    bits = []
+    for key, value in followups.items():
+        if isinstance(value, dict):
+            note = str(value.get("note") or "").strip()
+            state = str(value.get("state") or "").strip()
+            piece = " ".join(part for part in (state, note) if part)
+            bits.append(f"{key}: {piece}" if piece else str(key))
+        elif value:
+            bits.append(f"{key}: {value}")
+    return "; ".join(bits)
+
+
+def _detail_text(entry: dict) -> str:
     note = str(entry.get("notes") or "").strip()
+    extra = _followup_bits(entry)
+    return " — ".join(part for part in (note, extra) if part)
+
+
+def _concern_sentence(spec, entry: dict) -> str:
+    note = _detail_text(entry)
     body = spec.question_hi.strip().rstrip("?")
     if body.startswith("क्या "):
         body = body[4:]
@@ -199,16 +225,18 @@ def deterministic_fallback(call: dict) -> dict:
             else "Screening call with no positive gate."
         ),
     ])
+    if reason == "emergency":
+        sections[_HEADINGS[1]].append("Active emergency. Caller was told to go to the nearest hospital or call 108.")
     if concerns:
         for spec, entry in concerns:
-            note = str(entry.get("notes") or "").strip()
+            note = _detail_text(entry)
             gate = spec.nrroid_gate or spec.id
             line = f"{gate} {spec.id}: {spec.need_en}."
             if note:
                 line += f" Mother's words: {note}."
             sections[_HEADINGS[1]].append(line)
             sections[_section_for(spec)].append(f"Concern. {spec.need_en}." + (f" {note}" if note else ""))
-    else:
+    elif reason != "emergency":
         sections[_HEADINGS[1]].append("No positive gate alerts.")
     for spec in clears:
         sections[_section_for(spec)].append(f"Clear. {spec.need_en}.")
@@ -229,6 +257,8 @@ def deterministic_fallback(call: dict) -> dict:
         f"{spec.nrroid_gate or spec.id} {spec.id}: {spec.need_en}"
         for spec, _entry in concerns
     ]
+    if reason == "emergency":
+        flags.append("emergency: active danger sign now; hospital or 108")
     return _finish({
         "mother_name_hi": name,
         "children_label_hi": _children_label(profile),
@@ -333,6 +363,7 @@ def _answered_brief(state: dict) -> str:
     lines = []
     for spec, entry, status in _rows(state):
         notes = str(entry.get("notes") or "").replace("\n", " ")
+        followups = _followup_bits(entry).replace("\n", " ")
         children = ",".join(entry.get("child_ids") or [])
         lines.append(
             "\t".join((
@@ -342,6 +373,7 @@ def _answered_brief(state: dict) -> str:
                 spec.nrroid_gate,
                 spec.need_en,
                 f"notes={notes}",
+                f"followups={followups}",
                 f"children={children}",
                 spec.question_hi,
             ))

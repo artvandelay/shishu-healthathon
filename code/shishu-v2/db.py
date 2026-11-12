@@ -497,13 +497,40 @@ def save_doctor_summary(
         conn.commit()
 
 
+def _cursor_labels(state: dict) -> tuple[str, str]:
+    """Admin list labels: mother name, and the children's ages and sexes."""
+    profile = (state or {}).get("profile") if isinstance(state, dict) else {}
+    if not isinstance(profile, dict):
+        profile = {}
+    name = str(profile.get("caller_name") or "").strip()
+    sex_hi = {"male": "बेटा", "female": "बेटी"}
+    bits = []
+    for child in profile.get("children") or []:
+        if not isinstance(child, dict):
+            continue
+        age = str(child.get("age_label_hi") or "").strip()
+        sex = sex_hi.get(child.get("sex") or "", "")
+        child_name = str(child.get("name") or "").strip()
+        label = " ".join(part for part in (child_name, age, sex) if part)
+        if label:
+            bits.append(label)
+    return name, " · ".join(bits)
+
+
 def save_cursor_state(call_id: int, state: dict) -> None:
+    name, child_age = _cursor_labels(state or {})
+    sets = ["cursor_json = ?"]
+    values: list[Any] = [json.dumps(state or {}, ensure_ascii=False)]
+    if name:
+        sets.append("mother_name = ?")
+        values.append(name)
+    if child_age:
+        sets.append("child_age = ?")
+        values.append(child_age)
+    values.append(int(call_id))
     with _db_lock:
         cur = conn.cursor()
-        cur.execute(
-            "UPDATE calls SET cursor_json = ? WHERE id = ?",
-            (json.dumps(state or {}, ensure_ascii=False), call_id),
-        )
+        cur.execute(f"UPDATE calls SET {', '.join(sets)} WHERE id = ?", values)
         conn.commit()
 
 
@@ -538,19 +565,31 @@ def save_report_text(
     call_id: int,
     summary_doctor: str | None = None,
     summary_mother: str | None = None,
+    red_flags: list | None = None,
+    mother_name: str | None = None,
+    child_age: str | None = None,
 ) -> None:
     """Write report text without changing call status or the other summary."""
     sets: list[str] = []
-    values: list[str] = []
+    values: list[Any] = []
     if summary_doctor is not None:
         sets.append("summary_doctor = ?")
         values.append(summary_doctor)
     if summary_mother is not None:
         sets.append("summary_mother = ?")
         values.append(summary_mother)
+    if red_flags is not None:
+        sets.append("red_flags_json = ?")
+        values.append(json.dumps(list(red_flags), ensure_ascii=False))
+    if mother_name:
+        sets.append("mother_name = ?")
+        values.append(mother_name)
+    if child_age:
+        sets.append("child_age = ?")
+        values.append(child_age)
     if not sets:
         return
-    values.append(str(call_id))
+    values.append(int(call_id))
     with _db_lock:
         cur = conn.cursor()
         cur.execute(f"UPDATE calls SET {', '.join(sets)} WHERE id = ?", values)
