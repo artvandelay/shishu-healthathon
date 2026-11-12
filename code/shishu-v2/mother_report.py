@@ -1,6 +1,7 @@
 """Hindi mother PDF. Built only after the call is saved."""
 
 import html
+import json
 import re
 import subprocess
 import tempfile
@@ -9,6 +10,7 @@ from pathlib import Path
 
 import answer_extractor
 import checklist
+import triage_catalog
 
 _STATIC = Path(__file__).resolve().parent / "static"
 _FONT = _STATIC / "fonts" / "NotoSansDevanagari.ttf"
@@ -32,6 +34,15 @@ _MONTHS = (
 THALASSEMIA_LINE = (
     "अगली प्रेग्नेंसी से पहले माँ और पिता दोनों की थैलेसीमिया जाँच (स्क्रीनिंग) करवा लें।"
 )
+_GROUP_HI = {
+    "birth": "जन्म और नवजात",
+    "body": "बढ़त और शरीर",
+    "illness": "बीमारी",
+    "pregnancy": "प्रेग्नेंसी",
+    "family": "परिवार",
+    "close": "अंत",
+}
+_INCOMPLETE_REASONS = frozenset({"silence", "time_limit", "emergency", "caller_stop"})
 _CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
 _CSS = """
@@ -346,6 +357,104 @@ def build(call: dict, extracted: dict | None = None) -> dict:
     }
 
 
+def _cursor(call: dict) -> dict:
+    state = call.get("cursor_state")
+    if isinstance(state, dict) and state.get("active_qid"):
+        return state
+    raw = call.get("cursor_json") or ""
+    if isinstance(raw, dict) and raw.get("active_qid"):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        if isinstance(data, dict) and data.get("active_qid"):
+            return data
+    return {}
+
+
+def _page2_from_cursor(state: dict, incomplete: bool) -> tuple[list, list, list]:
+    """Clear, unknown, and unanswered rows. not_applicable is omitted."""
+    answers = state.get("answers") or {}
+    buckets: dict[str, list[str]] = {}
+    order: list[str] = []
+    unknown: list[str] = []
+    missed: dict[str, list[str]] = {}
+    missed_order: list[str] = []
+    for spec in triage_catalog.active_specs():
+        if spec.kind in ("profile", "bridge"):
+            continue
+        entry = answers.get(spec.id)
+        if isinstance(entry, dict) and entry.get("state") == "not_applicable":
+            continue
+        if isinstance(entry, dict):
+            status = entry.get("state") or ""
+        elif incomplete and spec.kind in ("gate", "open_capture"):
+            status = "not_asked"
+        else:
+            continue
+        if status in ("", "concern", "not_applicable"):
+            continue
+        title = _GROUP_HI.get(spec.group, spec.group)
+        if status == "clear":
+            if title not in buckets:
+                order.append(title)
+                buckets[title] = []
+            buckets[title].append(spec.question_hi)
+        elif status == "unknown":
+            unknown.append(spec.question_hi)
+        elif status == "not_asked" and incomplete:
+            if title not in missed:
+                missed_order.append(title)
+                missed[title] = []
+            missed[title].append(spec.question_hi)
+    groups = [{"title": title, "items": buckets[title], "facts": []} for title in order]
+    unasked = [{"title": title, "items": missed[title]} for title in missed_order]
+    return groups, unknown, unasked
+
+
+def build_v3(call: dict, synthesis: dict) -> dict:
+    """Mother PDF from a v3 cursor plus one synthesis payload.
+
+    Hindi lines are used as written. This path does not transliterate.
+    """
+    state = _cursor(call)
+    when = _ist(str(call.get("started_at") or ""))
+    if when:
+        date = f"{when.day} {_MONTHS[when.month]} {when.year}"
+        clock = _clock(when)
+    else:
+        date, clock = "", ""
+    reason = str(state.get("close_reason") or (call.get("telemetry") or {}).get("close_reason") or "")
+    incomplete = reason in _INCOMPLETE_REASONS or (reason != "complete" and state.get("phase") != "closing")
+    if reason == "complete":
+        incomplete = False
+    groups, unknown, unasked = _page2_from_cursor(state, incomplete)
+    name = str(synthesis.get("mother_name_hi") or "").strip() or "माँ"
+    children = str(synthesis.get("children_label_hi") or "").strip()
+    who = name + (f" · {children}" if children else "")
+    call_id = int(call.get("id") or 0)
+    return {
+        "who": who,
+        "ref": f"SHISHU-{call_id}" if call_id else "",
+        "date": date,
+        "time": clock,
+        "duration": _duration(call.get("duration_sec") or 0),
+        "status": "अधूरी कॉल" if incomplete else "पूर्ण कॉल",
+        "incomplete": incomplete,
+        "emergency": reason == "emergency",
+        "questions": [str(question) for question in (synthesis.get("mother_questions_hi") or []) if str(question).strip()],
+        "universal": THALASSEMIA_LINE,
+        "yes": [str(line) for line in (synthesis.get("yes_summaries_hi") or []) if str(line).strip()],
+        "groups": groups,
+        "unknown": unknown,
+        "unasked": unasked,
+        "not_asked": [group["title"] for group in unasked] if incomplete else [],
+        "started": when,
+    }
+
+
 def filename(call: dict) -> str:
     when = _ist(str(call.get("started_at") or ""))
     if when is None:
@@ -424,7 +533,13 @@ def render_html(report: dict) -> str:
                 )
     meta = " · ".join(
         bit
-        for bit in (report["date"], report["time"], report["duration"], report["status"])
+        for bit in (
+            report.get("ref"),
+            report["date"],
+            report["time"],
+            report["duration"],
+            report["status"],
+        )
         if bit
     )
     css = _CSS.replace("__FONT__", _FONT.as_uri())

@@ -30,9 +30,12 @@ _BARE_NAMES = frozenset({
 })
 _OLDEST = frozenset({"oldest", "बड़े वाले", "bade wale", "बड़े"})
 _YOUNGEST = frozenset({"youngest", "छोटे वाले", "chhote wale", "छोटे"})
+_ALL_CHILDREN = frozenset({"both", "all", "दोनों", "सभी"})
 
 _INFANT_ONLY_HI = "क्या परिवार में किसी छोटे बच्चे की 1 साल से कम उम्र में मौत हुई?"
-_UNMARRIED_THAL_HI = "क्या आपकी कभी थैलेसीमिया की जाँच हुई है?"
+# हाँ = a trait, minor, or other abnormal result was reported. The universal
+# "get tested before the next pregnancy" line stays on Page 1 of the PDF.
+_UNMARRIED_THAL_HI = "क्या आपकी थैलेसीमिया जाँच में कभी कोई दिक्कत बताई गई?"
 _EVER_PREGNANT_HI = "क्या आप कभी गर्भवती हुई हैं?"
 _WHICH_CHILD_HI = "यह किस बच्चे की बात है — बड़े वाले या छोटे वाले?"
 
@@ -62,11 +65,16 @@ def apply_profile(
     marital_status: str | None = None,
     children: list | None = None,
     ever_pregnant: bool | None = None,
+    child_count: int | None = None,
 ) -> tuple[dict, str | None]:
     """Store one profile step and move on when it is complete.
 
     Returns the new state and a hold token when the current step is not
     acceptable yet: name_fragment, marital_status, children_ages, ever_pregnant.
+
+    child_count is the number she stated. child_count > 0 with an empty list,
+    a short list, or any missing age_years holds for children_ages and does
+    not mark her childless.
     """
     state = copy.deepcopy(state)
     if caller_name is not None and not _valid_name(caller_name):
@@ -77,10 +85,12 @@ def apply_profile(
         if marital_status not in _MARITAL:
             return state, "marital_status"
         state["profile"]["marital_status"] = marital_status
-    if children is not None:
-        if _missing_ages(children):
+    if children is not None or (isinstance(child_count, int) and child_count > 0):
+        incoming = list(children) if children is not None else []
+        stated = child_count if isinstance(child_count, int) and child_count >= 0 else len(incoming)
+        if (stated > 0 and len(incoming) < stated) or _missing_ages(incoming):
             return state, "children_ages"
-        state["profile"]["children"] = [_normalize_child(child, i) for i, child in enumerate(children, start=1)]
+        state["profile"]["children"] = [_normalize_child(child, i) for i, child in enumerate(incoming, start=1)]
     if state["profile"]["children"]:
         state["profile"]["ever_pregnant"] = True
     elif ever_pregnant is not None:
@@ -115,7 +125,7 @@ def apply_turn(state: dict, outcome: str, *, child_ref: str = "", note: str = ""
         return state
 
     if state["pending_followup_idx"] == -1:
-        return _resolve_which_child(state, child_ref, note)
+        return _resolve_which_child(state, child_ref, note, outcome)
 
     if isinstance(state["pending_followup_idx"], int) and state["pending_followup_idx"] >= 0:
         return _resolve_followup(state, outcome, note)
@@ -324,10 +334,17 @@ def _needs_which_child(state: dict, spec, child_ref: str) -> bool:
     return _is_child_scoped(spec) and len(state["profile"]["children"]) > 1 and not (child_ref or "").strip()
 
 
+def _is_all_children(child_ref: str) -> bool:
+    token = (child_ref or "").strip().casefold()
+    return bool(token) and token in {item.casefold() for item in _ALL_CHILDREN}
+
+
 def _child_ids_for(state: dict, spec, child_ref: str) -> list[str]:
     if not _is_child_scoped(spec):
         return []
     children = state["profile"]["children"]
+    if _is_all_children(child_ref):
+        return [child["id"] for child in children]
     if (child_ref or "").strip():
         return [_resolve_child(state, child_ref)]
     if len(children) == 1:
@@ -369,13 +386,20 @@ def _enqueue_opens(state: dict, spec) -> None:
     state["module_queue"] = fresh + list(state["module_queue"])
 
 
-def _resolve_which_child(state: dict, child_ref: str, note: str) -> dict:
-    if not (child_ref or "").strip():
-        return state
+def _resolve_which_child(state: dict, child_ref: str, note: str, outcome: str = "") -> dict:
     qid = state["active_qid"]
     spec = get_spec(qid)
     answer = state["answers"].get(qid) or _blank("concern")
-    answer["child_ids"] = [_resolve_child(state, child_ref)]
+    ref = (child_ref or "").strip()
+    if not ref:
+        # "पता नहीं" must leave the which-child prompt. An empty ref with any
+        # other outcome stays here so we do not guess a child.
+        if outcome != "unknown":
+            return state
+    elif _is_all_children(ref):
+        answer["child_ids"] = [child["id"] for child in state["profile"]["children"]]
+    else:
+        answer["child_ids"] = [_resolve_child(state, ref)]
     if note:
         answer["notes"] = note
     state["answers"][qid] = answer

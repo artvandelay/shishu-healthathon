@@ -467,8 +467,8 @@ CATALOG: tuple[QuestionSpec, ...] = (
     ),
     _q(
         "preg_thalassemia", "pregnancy", "module",
-        "क्या माँ और पिता दोनों की थैलेसीमिया जाँच हुई थी?",
-        "thalassemia test for mother and father; asked alone when there is no pregnancy history",
+        "क्या आपकी या पति की थैलेसीमिया जाँच में माइनर या ट्रेट जैसी कोई दिक्कत बताई गई?",
+        "thalassemia trait, minor, or an abnormal result was reported; asked alone when there is no pregnancy history",
         "Antenatal",
     ),
     _q(
@@ -607,8 +607,8 @@ def spine_ids() -> list[str]:
     """Ask order for items that are spoken on every applicable call.
 
     preg_thalassemia sits just after the pregnancy gate so a caller with no
-    pregnancy history still gets the carrier question, and a caller who already
-    heard it inside the gate does not hear it twice.
+    pregnancy history still gets the trait question (हाँ = minor/trait reported),
+    and a caller who already heard it inside the gate does not hear it twice.
     """
     ids = [spec.id for spec in active_specs() if spec.kind in _SPINE_KINDS]
     anchor = "gate_pregnancy_thal"

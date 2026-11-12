@@ -167,6 +167,8 @@ app = FastAPI(lifespan=_lifespan)
 @app.middleware("http")
 async def _require_login(request: Request, call_next):
     path = request.url.path
+    if path.startswith("/api/calls/by-token/"):
+        return await call_next(request)
     if path in _PUBLIC_PATHS or _authorized(request.cookies.get(COOKIE_NAME)):
         return await call_next(request)
     if path.startswith("/api/"):
@@ -405,6 +407,37 @@ async def mother_pdf(call_id: int, request: Request):
     if ready is None:
         raise HTTPException(status_code=409, detail="Report is not ready")
     pdf, name = ready
+    return _pdf_response(pdf, name)
+
+
+def _call_for_token(share_token: str) -> dict:
+    call = db.get_call_by_token(share_token)
+    if call is None:
+        raise HTTPException(status_code=404, detail="Call not found")
+    if str(call.get("status") or "") == "active":
+        raise HTTPException(status_code=409, detail="Call is still running")
+    return call
+
+
+@app.get("/api/calls/by-token/{share_token}/mother.pdf")
+async def mother_pdf_by_token(share_token: str):
+    call = _call_for_token(share_token)
+    ready = report_service.ready_pdf(int(call["id"]))
+    if ready is None:
+        raise HTTPException(status_code=409, detail="Report is not ready")
+    pdf, name = ready
+    return _pdf_response(pdf, name)
+
+
+@app.post("/api/calls/by-token/{share_token}/mother.pdf")
+async def rebuild_mother_pdf_by_token(share_token: str):
+    call = _call_for_token(share_token)
+    try:
+        pdf, name = await report_service.mother_pdf(int(call["id"]))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Call not found") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Could not build the report") from exc
     return _pdf_response(pdf, name)
 
 

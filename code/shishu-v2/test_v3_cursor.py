@@ -110,6 +110,21 @@ class CatalogTests(unittest.TestCase):
         self.assertTrue(get_spec("gate_bleeding_joints").question_hi.startswith("क्या"))
         self.assertEqual(get_spec("intro_name").question_hi, "नमस्ते, मैं शिशु हूँ। आपका नाम बताइएगा प्लीज़?")
 
+    def test_thalassemia_yes_means_an_abnormal_result(self):
+        question = get_spec("preg_thalassemia").question_hi
+        self.assertIn("माइनर", question)
+        self.assertIn("ट्रेट", question)
+        self.assertIn("दिक्कत", question)
+        self.assertNotIn("जाँच हुई थी", question)
+        state = _profile(marital="unmarried")
+        state = _clear_until(state, "preg_thalassemia")
+        spoken = prompt_directive(state)
+        self.assertIn("दिक्कत", spoken)
+        self.assertIn("थैलेसीमिया", spoken)
+        self.assertNotIn("पति", spoken)
+        self.assertNotIn("करवा लें", spoken)
+        self.assertNotIn("हुई है", spoken)
+
 
 class ProfileTests(unittest.TestCase):
     def test_name_fragment_and_missing_ages_hold(self):
@@ -127,6 +142,31 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(hold, "children_ages")
         self.assertEqual(state["active_qid"], "intro_children")
         self.assertEqual(state["profile"]["children"], [])
+
+    def test_stated_child_count_without_ages_does_not_mark_childless(self):
+        state, hold = apply_profile(new_cursor_state(), caller_name="पूजा")
+        state, hold = apply_profile(state, marital_status="married")
+        self.assertEqual(state["active_qid"], "intro_children")
+        state, hold = apply_profile(state, children=[], child_count=2)
+        self.assertEqual(hold, "children_ages")
+        self.assertEqual(state["profile"]["children"], [])
+        self.assertIsNone(state["profile"]["ever_pregnant"])
+        self.assertEqual(state["active_qid"], "intro_children")
+        state, hold = apply_profile(state, child_count=2)
+        self.assertEqual(hold, "children_ages")
+        self.assertEqual(state["active_qid"], "intro_children")
+        state, hold = apply_profile(state, children=[_child(4, "male")], child_count=2)
+        self.assertEqual(hold, "children_ages")
+        self.assertEqual(state["profile"]["children"], [])
+        state, hold = apply_profile(
+            state,
+            children=[_child(6, "male", 1), _child(2, "female", 2)],
+            child_count=2,
+        )
+        self.assertIsNone(hold)
+        self.assertEqual(len(state["profile"]["children"]), 2)
+        self.assertTrue(state["profile"]["ever_pregnant"])
+        self.assertEqual(state["active_qid"], "intro_bridge")
 
     def test_children_set_ever_pregnant(self):
         state = _profile(children=[_child(4, "male")])
@@ -246,6 +286,35 @@ class TrajectoryTests(unittest.TestCase):
         self.assertEqual(state["answers"]["gate_bleeding_joints"]["child_ids"], ["child_2"])
         self.assertEqual(state["answers"]["gate_bleeding_joints"]["state"], "concern")
         self.assertEqual(state["active_qid"], "body_bleeding_bruise")
+
+    def test_which_child_accepts_all_and_unknown_does_not_stick(self):
+        kids = [_child(6, "male", 1), _child(2, "female", 2)]
+        for ref in ("both", "all", "दोनों", "सभी", "Both"):
+            state = _profile(children=kids)
+            state = _clear_until(state, "gate_bleeding_joints")
+            state = apply_turn(state, "concern", child_ref=ref)
+            self.assertEqual(
+                state["answers"]["gate_bleeding_joints"]["child_ids"],
+                ["child_1", "child_2"],
+                ref,
+            )
+            self.assertNotEqual(state["pending_followup_idx"], -1, ref)
+            self.assertEqual(state["active_qid"], "body_bleeding_bruise", ref)
+
+        state = _profile(children=kids)
+        state = _clear_until(state, "gate_bones_fractures")
+        state = apply_turn(state, "concern")
+        self.assertEqual(state["pending_followup_idx"], -1)
+        stuck = apply_turn(state, "concern")
+        self.assertEqual(stuck["pending_followup_idx"], -1)
+        state = apply_turn(state, "unknown")
+        self.assertEqual(state["pending_followup_idx"], 0)
+        self.assertEqual(state["active_qid"], "gate_bones_fractures")
+        self.assertEqual(state["answers"]["gate_bones_fractures"]["state"], "concern")
+        self.assertIn("हड्डी", prompt_directive(state))
+        state = apply_turn(state, "clear", note="पैर टेढ़े नहीं")
+        self.assertEqual(state["active_qid"], "gate_urine_kidney")
+        self.assertNotEqual(state["pending_followup_idx"], -1)
 
     def test_clarify_does_not_advance(self):
         state = _profile(children=[_child(8, "male")])

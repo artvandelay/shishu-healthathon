@@ -33,7 +33,13 @@ _CALL_EXTRA_COLUMNS = (
     ("telemetry_json", "TEXT DEFAULT '{}'"),
     ("events_json", "TEXT DEFAULT '[]'"),
     ("answers_json", "TEXT DEFAULT ''"),
+    ("cursor_json", "TEXT DEFAULT ''"),
+    ("share_token", "TEXT DEFAULT ''"),
+    ("clinic_code", "TEXT DEFAULT ''"),
+    ("clinician_review_json", "TEXT DEFAULT '{}'"),
 )
+
+_CLINICIAN_RATINGS = frozenset({"useful", "missed_flag", "false_alarm"})
 
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 conn.row_factory = sqlite3.Row
@@ -217,22 +223,38 @@ def create_call(
     user_role: str = "user",
     model_used: str = "",
     voice_used: str = "",
+    clinic_code: str = "",
 ) -> int:
     mother = ""
+    share_token = secrets.token_urlsafe(18)
     with _db_lock:
         cur = conn.cursor()
         cur.execute(
             """
-            INSERT INTO calls (engine, status, caller_name, user_role, model_used, voice_used, mother_name)
-            VALUES (?, 'active', ?, ?, ?, ?, ?)
+            INSERT INTO calls (
+                engine, status, caller_name, user_role, model_used, voice_used,
+                mother_name, share_token, clinic_code
+            )
+            VALUES (?, 'active', ?, ?, ?, ?, ?, ?, ?)
             """,
-            (engine, caller_name or "", user_role or "user", model_used or "", voice_used or "", mother),
+            (
+                engine,
+                caller_name or "",
+                user_role or "user",
+                model_used or "",
+                voice_used or "",
+                mother,
+                share_token,
+                clinic_code or "",
+            ),
         )
         conn.commit()
         return int(cur.lastrowid)
 
 
-def append_transcript(call_id: int, role: str, text: str, exact: bool = False) -> None:
+def append_transcript(
+    call_id: int, role: str, text: str, exact: bool = False, qid: str = ""
+) -> None:
     if not text:
         return
     with _db_lock:
@@ -246,7 +268,12 @@ def append_transcript(call_id: int, role: str, text: str, exact: bool = False) -
         except Exception:
             transcript = []
 
-        if transcript and transcript[-1].get("role") == role:
+        same_turn = (
+            transcript
+            and transcript[-1].get("role") == role
+            and (transcript[-1].get("qid") or "") == (qid or "")
+        )
+        if same_turn:
             prev_text = transcript[-1].get("text", "")
             if exact:
                 transcript[-1]["text"] = prev_text + text
@@ -255,8 +282,13 @@ def append_transcript(call_id: int, role: str, text: str, exact: bool = False) -
             else:
                 transcript[-1]["text"] = prev_text + text
             transcript[-1]["ts"] = time.time()
+            if qid:
+                transcript[-1]["qid"] = qid
         else:
-            transcript.append({"role": role, "text": text, "ts": time.time()})
+            entry = {"role": role, "text": text, "ts": time.time()}
+            if qid:
+                entry["qid"] = qid
+            transcript.append(entry)
 
         cur.execute(
             "UPDATE calls SET transcript_json = ? WHERE id = ?",
@@ -465,6 +497,66 @@ def save_doctor_summary(
         conn.commit()
 
 
+def save_cursor_state(call_id: int, state: dict) -> None:
+    with _db_lock:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE calls SET cursor_json = ? WHERE id = ?",
+            (json.dumps(state or {}, ensure_ascii=False), call_id),
+        )
+        conn.commit()
+
+
+def get_call_by_token(share_token: str) -> dict | None:
+    token = (share_token or "").strip()
+    if len(token) < 8:
+        return None
+    with _db_lock:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM calls WHERE share_token = ?", (token,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        return _row_to_call_dict(row)
+
+
+def save_clinician_review(call_id: int, rating: str, note: str = "") -> dict:
+    if rating not in _CLINICIAN_RATINGS:
+        raise ValueError(f"unknown clinician rating {rating!r}")
+    payload = {"rating": rating, "note": note or ""}
+    with _db_lock:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE calls SET clinician_review_json = ? WHERE id = ?",
+            (json.dumps(payload, ensure_ascii=False), call_id),
+        )
+        conn.commit()
+    return payload
+
+
+def save_report_text(
+    call_id: int,
+    summary_doctor: str | None = None,
+    summary_mother: str | None = None,
+) -> None:
+    """Write report text without changing call status or the other summary."""
+    sets: list[str] = []
+    values: list[str] = []
+    if summary_doctor is not None:
+        sets.append("summary_doctor = ?")
+        values.append(summary_doctor)
+    if summary_mother is not None:
+        sets.append("summary_mother = ?")
+        values.append(summary_mother)
+    if not sets:
+        return
+    values.append(str(call_id))
+    with _db_lock:
+        cur = conn.cursor()
+        cur.execute(f"UPDATE calls SET {', '.join(sets)} WHERE id = ?", values)
+        conn.commit()
+
+
 def get_answers(call_id: int) -> dict | None:
     with _db_lock:
         cur = conn.cursor()
@@ -633,6 +725,15 @@ def _row_to_call_dict(row: sqlite3.Row) -> dict[str, Any]:
         d["events"] = json.loads(d.get("events_json") or "[]")
     except Exception:
         d["events"] = []
+    try:
+        raw_cursor = d.get("cursor_json") or ""
+        d["cursor_state"] = json.loads(raw_cursor) if str(raw_cursor).strip() else {}
+    except Exception:
+        d["cursor_state"] = {}
+    try:
+        d["clinician_review"] = json.loads(d.get("clinician_review_json") or "{}")
+    except Exception:
+        d["clinician_review"] = {}
     return d
 
 
@@ -643,6 +744,15 @@ def get_call(call_id: int) -> dict | None:
         row = cur.fetchone()
         if not row:
             return None
+        if not str(row["share_token"] or "").strip():
+            token = secrets.token_urlsafe(18)
+            cur.execute(
+                "UPDATE calls SET share_token = ? WHERE id = ?",
+                (token, call_id),
+            )
+            conn.commit()
+            cur.execute("SELECT * FROM calls WHERE id = ?", (call_id,))
+            row = cur.fetchone()
         return _row_to_call_dict(row)
 
 

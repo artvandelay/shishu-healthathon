@@ -14,6 +14,7 @@ from pathlib import Path
 import answer_extractor
 import db
 import mother_report
+import post_call
 
 _REPORTS = Path(db.DATA_DIR) / "mother-pdfs"
 _answers: dict[int, asyncio.Task] = {}
@@ -98,7 +99,11 @@ async def begin_answers(call_id: int, snapshot: dict) -> None:
         if task is not None and not _failed(task):
             return
         frozen = _freeze(call_id, snapshot)
-        _answers[call_id] = asyncio.create_task(answer_extractor.cached_answers(frozen))
+        if post_call.has_cursor(frozen):
+            job = post_call.synthesize_call(frozen)
+        else:
+            job = answer_extractor.cached_answers(frozen)
+        _answers[call_id] = asyncio.create_task(job)
 
 
 async def _answers_task(call_id: int) -> asyncio.Task:
@@ -107,7 +112,11 @@ async def _answers_task(call_id: int) -> asyncio.Task:
         if task is not None and not _failed(task):
             return task
         call = db.get_call(call_id) or {"id": int(call_id)}
-        task = asyncio.create_task(answer_extractor.cached_answers(call))
+        if post_call.has_cursor(call):
+            job = post_call.synthesize_call(call)
+        else:
+            job = answer_extractor.cached_answers(call)
+        task = asyncio.create_task(job)
         _answers[call_id] = task
         return task
 
@@ -136,7 +145,17 @@ async def _build(call_id: int) -> tuple[bytes, str]:
         call = await asyncio.to_thread(db.get_call, call_id)
         if call is None:
             raise LookupError(f"Call {call_id} was not found")
-        report = mother_report.build(call, extracted)
+        if post_call.is_synthesis(extracted) or post_call.has_cursor(call):
+            synthesis = extracted if post_call.is_synthesis(extracted) else post_call.deterministic_fallback(call)
+            report = mother_report.build_v3(call, synthesis)
+            await asyncio.to_thread(
+                db.save_report_text,
+                call_id,
+                synthesis.get("doctor_markdown") or "",
+                post_call.mother_summary_text(synthesis),
+            )
+        else:
+            report = mother_report.build(call, extracted)
         pdf = await asyncio.to_thread(mother_report.render_pdf, report)
         if not pdf.startswith(b"%PDF"):
             raise ValueError("Renderer did not return a PDF")
