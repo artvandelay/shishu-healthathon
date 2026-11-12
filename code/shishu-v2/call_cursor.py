@@ -38,6 +38,36 @@ _INFANT_ONLY_HI = "क्या परिवार में किसी छो
 _UNMARRIED_THAL_HI = "क्या आपकी थैलेसीमिया जाँच में कभी कोई दिक्कत बताई गई?"
 _EVER_PREGNANT_HI = "क्या आप कभी गर्भवती हुई हैं?"
 _WHICH_CHILD_HI = "यह किस बच्चे की बात है — बड़े वाले या छोटे वाले?"
+_CLOSE_MORE_HI = "मैंने यह बात नोट कर ली। इसके अलावा कुछ और बताना चाहेंगी?"
+_SCOPE = "आपके किसी भी बच्चे"
+# Childless questions have no बच्चा/बच्चे noun. Insert the scope with the
+# postposition that keeps the rest of the sentence grammatical.
+_CHILDLESS_SCOPE = (
+    ("क्या डॉक्टर ने कहा कि ", "क्या डॉक्टर ने कहा कि आपके किसी भी बच्चे का "),
+    ("क्या प्रसव ", "क्या आपके किसी भी बच्चे का प्रसव "),
+    ("क्या जन्म के बाद ", "क्या आपके किसी भी बच्चे को जन्म के बाद "),
+    ("क्या जन्म से शरीर पर ", "क्या आपके किसी भी बच्चे के शरीर पर जन्म से "),
+    ("क्या नाल ", "क्या आपके किसी भी बच्चे की नाल "),
+    ("क्या BCG ", "क्या आपके किसी भी बच्चे को BCG "),
+    ("क्या सुनने ", "क्या आपके किसी भी बच्चे को सुनने "),
+    ("क्या होंठ या तालू ", "क्या आपके किसी भी बच्चे का होंठ या तालू "),
+    ("क्या होंठ या उंगलियाँ ", "क्या आपके किसी भी बच्चे के होंठ या उंगलियाँ "),
+    ("क्या झटके हुए", "क्या आपके किसी भी बच्चे को झटके हुए"),
+    ("क्या खाना छूटने ", "क्या आपके किसी भी बच्चे को खाना छूटने "),
+    ("क्या पेशाब ", "क्या आपके किसी भी बच्चे के पेशाब "),
+    ("क्या बार-बार अस्पताल ", "क्या आपके किसी भी बच्चे को बार-बार अस्पताल "),
+    ("क्या बार-बार इंफेक्शन ", "क्या आपके किसी भी बच्चे को बार-बार इंफेक्शन "),
+    ("क्या चोट ", "क्या आपके किसी भी बच्चे को चोट "),
+    ("क्या गिरने ", "क्या आपके किसी भी बच्चे को गिरने "),
+    ("क्या दूध ", "क्या आपके किसी भी बच्चे के दूध "),
+    ("क्या पीरियड्स ", "क्या आपके किसी भी बच्चे के पीरियड्स "),
+    ("क्या हाथ-पैर ", "क्या आपके किसी भी बच्चे के हाथ-पैर "),
+    ("क्या पेट ", "क्या आपके किसी भी बच्चे का पेट "),
+    ("क्या अंगूठा ", "क्या आपके किसी भी बच्चे का अंगूठा "),
+    ("क्या गुप्त ", "क्या आपके किसी भी बच्चे के गुप्त "),
+    ("क्या बढ़ती ", "क्या आपके किसी भी बच्चे में बढ़ती "),
+    ("क्या स्कैन ", "क्या आपके किसी भी बच्चे के स्कैन "),
+)
 
 
 def new_cursor_state() -> dict:
@@ -123,6 +153,8 @@ def apply_turn(state: dict, outcome: str, *, child_ref: str = "", note: str = ""
         return state
     if state["active_qid"] == "ever_pregnant":
         return state
+    if state["active_qid"] == "close_anything_else" and state["pending_followup_idx"] is None:
+        return _resolve_close(state, outcome, note)
 
     if state["pending_followup_idx"] == -1:
         return _resolve_which_child(state, child_ref, note, outcome)
@@ -166,6 +198,10 @@ def prompt_directive(state: dict) -> str:
     idx = state["pending_followup_idx"]
     if isinstance(idx, int) and idx >= 0:
         return _ask(FOLLOWUP_HI[spec.followups[idx]])
+    if qid == "close_anything_else":
+        answer = state["answers"].get(qid) or {}
+        if answer.get("state") == "concern":
+            return _ask(_CLOSE_MORE_HI)
     return _ask(_question_hi(state, spec))
 
 
@@ -174,18 +210,91 @@ def _ask(hindi: str) -> str:
 
 
 def _scope_all_children(text: str) -> str:
-    """Put every-child scope in the Hindi question itself."""
-    if "आपके किसी भी बच्चे" in text:
+    """Phrase the question for every child, without a dash prefix.
+
+    बच्चे / बच्चों / बच्चा keep their case. A clause with no child noun
+    (birth_term, birth_sudden, gate_bleeding_joints, and the same shape)
+    gets आपके किसी भी बच्चे inside the sentence.
+    """
+    if _SCOPE in text:
         return text
     if "परिवार में" in text:
         if "आपके बच्चे" in text:
-            return text.replace("आपके बच्चे", "आपके किसी भी बच्चे", 1)
+            return text.replace("आपके बच्चे", _SCOPE, 1)
         return text
     if "किसी बच्चे" in text:
-        return text.replace("किसी बच्चे", "आपके किसी भी बच्चे", 1)
-    if "बच्चे" in text:
-        return text.replace("बच्चे", "आपके किसी भी बच्चे", 1)
-    return "आपके किसी भी बच्चे — " + text
+        return text.replace("किसी बच्चे", _SCOPE, 1)
+    inflected = _scope_inflected(text)
+    if inflected is not None:
+        return inflected
+    if "बच्चा" in text:
+        scoped = text.replace("बच्चा", f"{_SCOPE} में से कोई", 1)
+        return scoped.replace("कोई कोई", "कोई, कोई")
+    return _scope_childless(text)
+
+
+def _scope_inflected(text: str) -> str | None:
+    """Replace the child's बच्चे + postposition. Leave बाकी/दूसरे/बड़े बच्चे."""
+    token = "बच्चे "
+    start = 0
+    while True:
+        at = text.find(token, start)
+        if at < 0:
+            return None
+        rest = text[at + len(token):]
+        post = ""
+        for ending in ("को", "का", "की", "के", "में"):
+            if rest.startswith(ending):
+                post = ending
+                break
+        before = text[:at]
+        if not post or before.endswith(("बड़े ", "दूसरे ", "बाकी ")):
+            start = at + len(token)
+            continue
+        return f"{before}{_SCOPE} {post}{rest[len(post):]}"
+
+
+def _scope_childless(text: str) -> str:
+    for old, new in _CHILDLESS_SCOPE:
+        if text.startswith(old):
+            return new + text[len(old):]
+    if text.startswith("क्या "):
+        return f"क्या {_SCOPE} में " + text[len("क्या "):]
+    return f"{_SCOPE} में " + text
+
+
+def _join_notes(existing: str, extra: str) -> str:
+    old = " ".join((existing or "").split())
+    new = " ".join((extra or "").split())
+    if old and new:
+        return f"{old}; {new}"
+    return new or old
+
+
+def _resolve_close(state: dict, outcome: str, note: str) -> dict:
+    """Stay on the open question while she still has something to add.
+
+    concern appends her note and asks once more. clear or unknown ends the call.
+    A concern already stored is kept when she later says nothing else.
+    """
+    if outcome == "concern":
+        prior = state["answers"].get("close_anything_else") or _blank("concern")
+        state["answers"]["close_anything_else"] = _blank(
+            "concern",
+            note=_join_notes(prior.get("notes") or "", note),
+            child_ids=prior.get("child_ids") or [],
+            followups=prior.get("followups") or {},
+        )
+        state["close_rounds"] = int(state.get("close_rounds") or 0) + 1
+        return state
+    if outcome in ("clear", "unknown"):
+        prior = state["answers"].get("close_anything_else")
+        if not prior or prior.get("state") != "concern":
+            _write_answer(state, "close_anything_else", outcome, note, [])
+        _recompute(state)
+        _advance(state)
+        return state
+    return state
 
 
 def _question_hi(state: dict, spec) -> str:

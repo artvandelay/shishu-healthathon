@@ -128,14 +128,16 @@ h2 { margin: 16px 0 6px; font-size: 13pt; }
 .universal .why { display: block; font-size: 10pt; color: #565F75; margin-bottom: 4px; }
 .page2 { break-before: page; }
 .page2 h1 { margin-top: 0; }
-.group { margin: 12px 0 2px; font-size: 11pt; font-weight: 700; color: #DAA550; break-after: avoid; }
+.group { margin: 8px 0 1px; font-size: 11pt; font-weight: 700; color: #DAA550; break-after: avoid; }
 .no-row {
   display: flex;
   justify-content: space-between;
-  gap: 12px;
-  padding: 4px 0;
+  gap: 8px;
+  padding: 1px 0;
+  margin: 0;
   border-bottom: 1px solid #E0E2E5;
   break-inside: avoid;
+  line-height: 1.35;
 }
 .ans { flex: 0 0 auto; color: #565F75; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }

@@ -148,6 +148,7 @@ class _TurnState:
         self.time_cue_sent = False
         self.speech_end_waiting = False
         self.playback_ends_at = 0.0
+        self.spoken_qid = ""
 
 
 class _Cursor:
@@ -649,6 +650,48 @@ def _optional_bool(value: object) -> bool | None:
     return None
 
 
+def _current_step(state: dict) -> str:
+    """Identity of the question she should hear before an answer can be saved."""
+    phase = str(state.get("phase") or "asking")
+    if phase != "asking":
+        return "closing:" + str(state.get("close_reason") or "complete")
+    qid = str(state.get("active_qid") or "")
+    idx = state.get("pending_followup_idx")
+    step = qid if idx is None else f"{qid}:{idx}"
+    if qid == "close_anything_else" and int(state.get("close_rounds") or 0):
+        step = f"{step}:more:{int(state.get('close_rounds') or 0)}"
+    return step
+
+
+def _question_already_spoken(turn: _TurnState, cursor_state: dict) -> bool:
+    step = _current_step(cursor_state)
+    return bool(step) and turn.spoken_qid == step
+
+
+def _speak_cue_text(state: dict, kind: str = "speak") -> str:
+    """Text cue that makes the live model speak now, instead of waiting out the watchdog."""
+    if state.get("phase") != "asking" or kind == "close":
+        return (
+            "SYSTEM CUE (from the app, not the mother): speak only this Hindi, then stop. "
+            "Do not call a tool.\n"
+            + _closing_hi(state)
+        )
+    hindi = _say_hindi(state)
+    if kind == "clarify":
+        return (
+            "SYSTEM CUE (from the app, not the mother): she did not understand. "
+            "Say one short simpler Hindi sentence that explains the question, "
+            "then ask the Hindi below in simpler words. Do not repeat it with the same words. "
+            "Then wait. Do not call a tool.\n"
+            + hindi
+        )
+    return (
+        "SYSTEM CUE (from the app, not the mother): speak only this Hindi now, then wait. "
+        "Do not call a tool.\n"
+        + hindi
+    )
+
+
 def _say_hindi(state: dict) -> str:
     if state.get("phase") != "asking":
         return _closing_hi(state)
@@ -784,10 +827,13 @@ async def _answer_function_calls(
     seen: set[str],
     cancelled: set[str],
     cursor: _Cursor,
+    turn: _TurnState,
     on_end_accepted: Callable[[int, dict], Awaitable[None] | None] | None = None,
 ) -> None:
     responses: list[types.FunctionResponse] = []
     logged: list[str] = []
+    clarify_applied = False
+    handled = False
     for fc in calls:
         fc_id = getattr(fc, "id", None) or ""
         if fc_id and (fc_id in cancelled or fc_id in seen):
@@ -808,6 +854,8 @@ async def _answer_function_calls(
                     db.save_cursor_state(call_id, new_state)
                 body = _tool_body(cursor.state)
                 logged.append("save_profile")
+                handled = True
+                clarify_applied = False
             elif name == "record_turn":
                 outcome = str(args.get("outcome") or "").strip().lower().replace(" ", "_")
                 outcome = {
@@ -822,9 +870,13 @@ async def _answer_function_calls(
                     "confused": "clarify",
                     "stop": "caller_stop",
                 }.get(outcome, outcome)
-                if qid in _PROFILE_QIDS:
+                heard = _question_already_spoken(turn, cursor.state)
+                if qid in _PROFILE_QIDS or not heard:
                     body = _tool_body(cursor.state)
+                    body["result"] = "held"
+                    body["reason"] = "profile" if qid in _PROFILE_QIDS else "not_spoken"
                     logged.append("record_turn_held")
+                    clarify_applied = False
                 else:
                     new_state = apply_turn(
                         cursor.state,
@@ -845,7 +897,13 @@ async def _answer_function_calls(
                             on_end_accepted,
                         )
                     body = _tool_body(cursor.state)
+                    if outcome == "clarify":
+                        body["clarify"] = True
+                        clarify_applied = True
+                    else:
+                        clarify_applied = False
                     logged.append(f"record_turn_{outcome}")
+                handled = True
             else:
                 body = {"result": "ignored", "say": _say_hindi(cursor.state), "wait": True}
                 logged.append(name or "ignored")
@@ -854,6 +912,8 @@ async def _answer_function_calls(
             telemetry["tool_errors"] = int(telemetry.get("tool_errors") or 0) + 1
             body = {"result": "error", "say": _say_hindi(cursor.state), "wait": True}
             logged.append(f"{name or 'tool'}_error")
+            clarify_applied = False
+            handled = True
         if cursor.state.get("phase") == "closing":
             body["stop"] = True
             body.pop("wait", None)
@@ -886,6 +946,24 @@ async def _answer_function_calls(
             telemetry,
             "Could not send the tool response to Gemini",
         )
+    if handled:
+        kind = "speak"
+        if cursor.state.get("phase") != "asking":
+            kind = "close"
+        elif clarify_applied:
+            kind = "clarify"
+        try:
+            async with send_lock:
+                await session.send_realtime_input(text=_speak_cue_text(cursor.state, kind))
+        except Exception:
+            telemetry["tool_errors"] = int(telemetry.get("tool_errors") or 0) + 1
+            await _report_error(
+                ws,
+                ws_lock,
+                call_id,
+                telemetry,
+                "Could not prompt Gemini to speak",
+            )
 
 
 async def _on_bot_audio(
@@ -897,6 +975,7 @@ async def _on_bot_audio(
     recorder: audio_recorder.CallAudioRecorder,
     pcm: bytes,
     rate: int,
+    cursor: _Cursor,
 ) -> None:
     telemetry["audio_chunks_out"] += 1
     first = not state.bot_replied_since_user
@@ -909,6 +988,7 @@ async def _on_bot_audio(
                 latency_ms = 0
             telemetry["turn_latencies_ms"].append(latency_ms)
         state.nudges_for_current_turn = 0
+        state.spoken_qid = _current_step(cursor.state)
     state.awaiting_bot_reply = False
     state.speech_end_waiting = False
     state.bot_replied_since_user = True
@@ -929,7 +1009,9 @@ async def _on_bot_audio(
     )
     if first:
         detail = f"{latency_ms}ms" if latency_ms is not None else ""
-        meta = {"latency_ms": latency_ms} if latency_ms is not None else None
+        meta = {"spoken_qid": state.spoken_qid}
+        if latency_ms is not None:
+            meta["latency_ms"] = latency_ms
         await _emit(
             ws, ws_lock, call_id, telemetry, "bot_first_audio", detail, meta
         )
@@ -1021,6 +1103,7 @@ async def _handle_server_message(
                 recorder,
                 pcm,
                 rate,
+                cursor,
             )
         function_call = getattr(part, "function_call", None)
         if function_call is not None:
@@ -1042,6 +1125,7 @@ async def _handle_server_message(
             seen,
             cancelled,
             cursor,
+            state,
             on_end_accepted=on_end_accepted,
         )
         if not telemetry.get("end_requested"):
@@ -1226,6 +1310,10 @@ async def _watchdog_loop(
                 continue
             if not state.awaiting_bot_reply or state.bot_speaking:
                 continue
+            if state.speech_end_waiting and _question_already_spoken(state, cursor.state):
+                state.awaiting_bot_reply = False
+                state.speech_end_waiting = False
+                continue
             if state.bot_replied_since_user or state.last_user_turn_ts <= 0:
                 continue
             effective_timeout = (
@@ -1346,16 +1434,22 @@ async def _browser_loop(
             elif kind == "speech_end":
                 _cancel_silence_close(state, telemetry)
                 now_ts = time.time()
-                if not state.bot_speaking and now_ts >= state.playback_ends_at - 0.1:
-                    if not state.awaiting_bot_reply:
-                        _arm_waiting_reply(
-                            state, speech_end_waiting=True, now_ts=now_ts
-                        )
-                    state.quiet_from = max(now_ts, state.playback_ends_at)
-                try:
-                    db.append_call_event(call_id, "speech_end", "")
-                except Exception:
-                    pass
+                if _question_already_spoken(state, cursor.state):
+                    try:
+                        db.append_call_event(call_id, "speech_end", "already_spoken")
+                    except Exception:
+                        pass
+                else:
+                    if not state.bot_speaking and now_ts >= state.playback_ends_at - 0.1:
+                        if not state.awaiting_bot_reply:
+                            _arm_waiting_reply(
+                                state, speech_end_waiting=True, now_ts=now_ts
+                            )
+                        state.quiet_from = max(now_ts, state.playback_ends_at)
+                    try:
+                        db.append_call_event(call_id, "speech_end", "")
+                    except Exception:
+                        pass
             elif kind == "nudge":
                 if state.awaiting_bot_reply:
                     state.last_user_turn_ts = time.time()

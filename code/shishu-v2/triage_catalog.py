@@ -55,6 +55,11 @@ FOLLOWUP_HI: dict[str, str] = {
     "urine_or_stone_detail": "बहुत ज़्यादा पेशाब और पानी की बात है, या पथरी या गुर्दे की दिक्कत? थोड़ा और बताइए।",
     "bp_who": "यह नज़दीकी रिश्तेदार को हुआ, जैसे माँ-पिता या भाई-बहन, या दूर के रिश्तेदार को?",
     "bp_age": "उन्हें यह किस उम्र में हुआ?",
+    "nicu_reason_days": "काँच के बक्से में क्यों रखना पड़ा, और कितने दिन रहे?",
+    "term_how_early": "समय से कितना पहले हुआ?",
+    "admissions_count_reason": "कितनी बार भर्ती होना पड़ा, और किस वजह से?",
+    "transfusion_count": "खून कितनी बार चढ़ाना पड़ा?",
+    "infant_death_age_cause": "उस बच्चे की उम्र क्या थी, और मौत की वजह क्या थी?",
 }
 
 _CHILD = ("no_children",)
@@ -80,8 +85,8 @@ CATALOG: tuple[QuestionSpec, ...] = (
     ),
     _q(
         "intro_bridge", "intro", "bridge",
-        "मैं आपके बच्चे, प्रेग्नेंसी और परिवार के बारे में कुछ आसान सवाल पूछूँगी। आप छोटा या लंबा जैसे चाहें जवाब दे सकती हैं, और कुछ समझ न आए तो बेझिझक पूछ सकती हैं। ठीक है?",
-        "explain the call; she may answer short or long and ask anything",
+        "अब मैं कुछ आसान सवाल पूछूँगी। समय बचाने के लिए एक सवाल में कई बातें एक साथ होंगी। अगर उनमें से एक भी बात हुई हो तो हाँ कहिए, फिर मैं एक-एक करके पूछूँगी। अगर एक भी नहीं हुई तो नहीं कहिए। ठीक है?",
+        "clubbed questions save time; हाँ if even one thing happened, then one-by-one, नहीं if none",
     ),
     # --- 14 wide gates + 3 family sub-gates (section 5.2) ---
     _q(
@@ -240,6 +245,7 @@ CATALOG: tuple[QuestionSpec, ...] = (
         "birth much before or after 9 months",
         "Q03",
         skip=_CHILD,
+        follow=("term_how_early",),
     ),
     _q(
         "birth_nicu", "birth", "module",
@@ -247,6 +253,7 @@ CATALOG: tuple[QuestionSpec, ...] = (
         "NICU or glass-box stay",
         "Q03",
         skip=_CHILD,
+        follow=("nicu_reason_days",),
     ),
     _q(
         "birth_sudden", "birth", "module",
@@ -331,6 +338,7 @@ CATALOG: tuple[QuestionSpec, ...] = (
         "admitted to hospital again and again",
         "Q03",
         skip=_CHILD,
+        follow=("admissions_count_reason",),
     ),
     _q(
         "ill_iv_antibiotics", "illness", "module",
@@ -373,6 +381,7 @@ CATALOG: tuple[QuestionSpec, ...] = (
         "child ever needed blood",
         "Q05",
         skip=_CHILD,
+        follow=("transfusion_count",),
     ),
     _q(
         "body_blood_count", "body", "module",
@@ -490,6 +499,7 @@ CATALOG: tuple[QuestionSpec, ...] = (
         "क्या परिवार में कोई बच्चा एक साल से कम उम्र में गुजर गया?",
         "a baby in the family died before 1 year",
         "Q12",
+        follow=("infant_death_age_cause",),
     ),
     _q(
         "fam_fits_delay", "family", "module",

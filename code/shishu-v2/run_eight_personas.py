@@ -273,6 +273,8 @@ def _check(call_id: int, persona: str) -> dict:
     telemetry = call.get("telemetry") or {}
     if int(telemetry.get("tool_errors") or 0):
         problems.append(f"tool_errors={telemetry.get('tool_errors')}")
+    if int(telemetry.get("watchdog_nudges") or 0):
+        problems.append(f"watchdog_nudges={telemetry.get('watchdog_nudges')}")
     if int(telemetry.get("prompt_leaks") or 0):
         problems.append(f"prompt_leaks={telemetry.get('prompt_leaks')}")
     assistant = " ".join(

@@ -189,7 +189,10 @@ async def _require_login(request: Request, call_next):
     if path.startswith("/api/"):
         return JSONResponse({"ok": False}, status_code=401)
     if path in {"/", "/admin"}:
-        nxt = quote(path, safe="/")
+        target = path
+        if request.url.query:
+            target = f"{path}?{request.url.query}"
+        nxt = quote(target, safe="/")
         return RedirectResponse(url=f"/login?next={nxt}", status_code=302)
     return await call_next(request)
 
