@@ -728,6 +728,7 @@ def _question_state_payload(cursor_state: dict) -> dict:
         "qid": str(cursor_state.get("active_qid") or ""),
         "group": _question_group(cursor_state),
         "expect_yes_no": expect_yes_no(cursor_state),
+        "prompt_chars": len(_say_hindi(cursor_state)),
     }
 
 
@@ -825,6 +826,30 @@ def _closing_hi(state: dict) -> str:
         "अगर आगे इनमें से कुछ भी दिखे, तो अपने स्वास्थ्य कार्यकर्ता से बात करें। "
         "आपकी रिपोर्ट तैयार हो रही है। यह रिपोर्ट आप अपनी ASHA, ANM या डॉक्टर को दिखा सकती हैं। नमस्ते।"
     )
+
+
+async def _complete_closing_transcript(
+    ws: WebSocket,
+    ws_lock: asyncio.Lock,
+    call_id: int,
+    state: dict,
+) -> None:
+    """Keep a spoken emergency outro in the record when live captions stop early."""
+    line = _closing_hi(state).strip()
+    if len(line) < 20:
+        return
+    call = db.get_call(call_id) or {}
+    last = ""
+    for turn in reversed(call.get("transcript") or []):
+        if turn.get("role") == "assistant":
+            last = str(turn.get("text") or "").strip()
+            break
+    head = line[:12]
+    if len(last) > 80 and (head in last or last[:12] in line):
+        return
+    qid = str(state.get("active_qid") or "")
+    db.append_transcript(call_id, "assistant", line, qid=qid)
+    await _send_json(ws, ws_lock, {"type": "transcript", "role": "assistant", "text": line})
 
 
 def _tool_body(state: dict) -> dict:
@@ -1385,6 +1410,12 @@ async def _handle_server_message(
                     stop.set()
                 return False
         state.bot_speaking = False
+        if (
+            cursor.state.get("phase") == "closing"
+            and state.bot_replied_since_user
+            and not state.awaiting_bot_reply
+        ):
+            await _complete_closing_transcript(ws, ws_lock, call_id, cursor.state)
         if not state.awaiting_bot_reply:
             state.quiet_from = max(time.time(), state.playback_ends_at)
         if not state.awaiting_bot_reply or telemetry.get("end_requested"):
@@ -1768,6 +1799,8 @@ async def _browser_loop(
                 if not expect_yes_no(cursor.state):
                     continue
                 if payload.get("step") != _current_step(cursor.state):
+                    continue
+                if not _question_already_spoken(state, cursor.state):
                     continue
                 if state.bot_speaking:
                     state.ignore_bot_audio = True

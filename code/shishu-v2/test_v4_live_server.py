@@ -254,6 +254,7 @@ class LiveTurnTests(unittest.TestCase):
         self.assertEqual(states[0]["qid"], "intro_name")
         self.assertEqual(states[0]["group"], "intro")
         self.assertFalse(states[0]["expect_yes_no"])
+        self.assertGreater(states[0]["prompt_chars"], 0)
         self.assertEqual(states[0]["step"], "intro_name")
 
     def test_empty_profile_save_holds_and_a_later_correction_is_applied(self):
@@ -327,6 +328,7 @@ class LiveTurnTests(unittest.TestCase):
             self.assertEqual(states[0]["step"], gemini_live._current_step(cursor.state))
             self.assertNotEqual(states[0]["qid"], "birth_jaundice")
             self.assertTrue(states[0]["expect_yes_no"])
+            self.assertGreater(states[0]["prompt_chars"], 0)
             await turn.speak_fallback
             self.assertEqual(_kinds(session), ["tool", "realtime"])
             return cursor.state["active_qid"]
@@ -488,6 +490,37 @@ class LiveTurnTests(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_quick_reply_before_the_question_is_spoken_is_ignored(self):
+        async def run():
+            state = cursor_tests._clear_until(
+                cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
+                "birth_nicu",
+            )
+            cursor = gemini_live._Cursor()
+            cursor.state = state
+            step = gemini_live._current_step(state)
+            turn = gemini_live._TurnState()
+            session = _FakeSession()
+            ws = _FakeSocket([{"type": "quick_reply", "outcome": "clear", "step": step}])
+            await gemini_live._browser_loop(
+                session,
+                asyncio.Lock(),
+                ws,
+                asyncio.Lock(),
+                asyncio.Event(),
+                db.create_call("gemini"),
+                self._telemetry(),
+                turn,
+                cursor,
+                _Recorder(),
+            )
+            self.assertEqual(cursor.state["active_qid"], "birth_nicu")
+            self.assertNotIn("birth_nicu", cursor.state["answers"])
+            self.assertEqual(_kinds(session), [])
+            self.assertFalse(any(item.get("type") == "clear" for item in ws.sent))
+
+        asyncio.run(run())
+
     def test_quick_reply_drops_audio_that_was_already_in_progress(self):
         async def run():
             state = cursor_tests._clear_until(
@@ -500,7 +533,7 @@ class LiveTurnTests(unittest.TestCase):
             turn = gemini_live._TurnState()
             turn.bot_speaking = True
             turn.playback_ends_at = time.time() + 5
-            turn.spoken_qid = "still-asking"
+            turn.spoken_qid = step
             turn.pending_speak_step = step
             turn.user_turn_step = step
             ws = _FakeSocket([{"type": "quick_reply", "outcome": "clear", "step": step}])
@@ -535,7 +568,7 @@ class LiveTurnTests(unittest.TestCase):
                 cursor,
             )
             self.assertEqual(ws.sent, sent)
-            self.assertEqual(turn.spoken_qid, "still-asking")
+            self.assertEqual(turn.spoken_qid, step)
             self.assertFalse(turn.bot_replied_since_user)
 
         asyncio.run(run())
@@ -550,6 +583,7 @@ class LiveTurnTests(unittest.TestCase):
             cursor.state = state
             step = gemini_live._current_step(state)
             turn = gemini_live._TurnState()
+            turn.spoken_qid = step
             turn.bot_speaking = True
             turn.playback_ends_at = time.time() + 5
             ws = _FakeSocket([{"type": "quick_reply", "outcome": "clear", "step": step}])
@@ -791,6 +825,7 @@ class LiveTurnTests(unittest.TestCase):
             cursor.state = state
             step = gemini_live._current_step(state)
             turn = gemini_live._TurnState()
+            turn.spoken_qid = step
             session = _FakeSession()
             ws = _FakeSocket([
                 {"type": "quick_reply", "outcome": "clear", "step": "stale"},
@@ -826,6 +861,8 @@ class LiveTurnTests(unittest.TestCase):
             states = [item for item in ws.sent if item.get("type") == "question_state"]
             self.assertEqual(len(states), 1)
             self.assertEqual(states[0]["qid"], "birth_jaundice")
+            self.assertGreater(states[0]["prompt_chars"], 0)
+            self.assertTrue(states[0]["expect_yes_no"])
             self.assertIn({"type": "clear"}, ws.sent)
 
         async def close():
@@ -838,6 +875,7 @@ class LiveTurnTests(unittest.TestCase):
             cursor.state = state
             step = gemini_live._current_step(state)
             turn = gemini_live._TurnState()
+            turn.spoken_qid = step
             session = _FakeSession()
             ws = _FakeSocket([
                 {"type": "quick_reply", "outcome": "clear", "step": step},

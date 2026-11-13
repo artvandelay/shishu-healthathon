@@ -83,7 +83,11 @@
       let phase = "idle";
       let questionStep = "";
       let expectYesNo = false;
+      let quickReplyReady = false;
       let quickReplyPending = false;
+      let promptChars = 0;
+      let stepFirstPlayTime = 0;
+      let quickRevealTimer = 0;
       let engine = "gemini";
       let captureRate = 16000;
       let ws = null;
@@ -358,30 +362,41 @@
       }
 
       function syncQuickButtons() {
-        const show = phase === "live" && expectYesNo;
+        const show = phase === "live" && expectYesNo && quickReplyReady;
         noBtn.hidden = !show;
         yesBtn.hidden = !show;
         noBtn.disabled = !show || quickReplyPending;
         yesBtn.disabled = !show || quickReplyPending;
       }
 
+      function clearQuickRevealTimer() {
+        if (quickRevealTimer) clearTimeout(quickRevealTimer);
+        quickRevealTimer = 0;
+      }
+
+      function resetQuickState() {
+        questionStep = "";
+        expectYesNo = false;
+        quickReplyReady = false;
+        quickReplyPending = false;
+        clearQuickRevealTimer();
+        syncQuickButtons();
+      }
+
       function leaveLiveChrome() {
         stopNudgeWatch();
         clearThinkingWatch();
         avatarWrap.classList.remove("speaking", "thinking", "reconnecting");
+        nudgeBtn.classList.remove("hot");
         nudgeBtn.hidden = true;
-        nudgeBtn.classList.remove("hot"); nudgeBtn.hidden = true;
         userSpeaking = false;
         speechEndAt = 0;
         resetMicLevel();
-        questionStep = "";
-        expectYesNo = false;
-        quickReplyPending = false;
-        syncQuickButtons();
+        resetQuickState();
       }
 
       function sendQuickReply(outcome) {
-        if (phase !== "live" || !expectYesNo || quickReplyPending || !questionStep || !ws || ws.readyState !== WebSocket.OPEN) return;
+        if (phase !== "live" || !expectYesNo || !quickReplyReady || quickReplyPending || !questionStep || !ws || ws.readyState !== WebSocket.OPEN) return;
         quickReplyPending = true;
         syncQuickButtons();
         flushPlayback();
@@ -489,6 +504,18 @@
         activeSources.add(src);
         avatarWrap.classList.add("speaking");
         setStatus({ hi: "SHISHU बोल रही है…", en: "SHISHU is speaking" });
+        if (expectYesNo && !quickReplyReady && !quickRevealTimer) {
+          if (!stepFirstPlayTime) stepFirstPlayTime = Date.now();
+          const estMs = Math.max(1200, Math.min(4500, Math.round((promptChars / 14) * 1000)));
+          const halfwayMs = Math.round(estMs * 0.5);
+          quickRevealTimer = setTimeout(function () {
+            quickRevealTimer = 0;
+            if (phase === "live" && expectYesNo) {
+              quickReplyReady = true;
+              syncQuickButtons();
+            }
+          }, halfwayMs);
+        }
         src.onended = function () {
           activeSources.delete(src);
           if (activeSources.size === 0 && phase === "live") {
@@ -496,6 +523,11 @@
             if (!avatarWrap.classList.contains("reconnecting")) {
               setStatus({ hi: "सुन रही हूँ…", en: "Listening" });
             }
+          }
+          if (activeSources.size === 0 && phase === "live" && expectYesNo && !quickReplyReady) {
+            clearQuickRevealTimer();
+            quickReplyReady = true;
+            syncQuickButtons();
           }
         };
       }
@@ -694,7 +726,11 @@
         } else if (msg.type === "question_state") {
           questionStep = String(msg.step || "");
           expectYesNo = Boolean(msg.expect_yes_no);
+          promptChars = Number(msg.prompt_chars) || 0;
+          quickReplyReady = false;
           quickReplyPending = false;
+          stepFirstPlayTime = 0;
+          clearQuickRevealTimer();
           if (msg.group) {
             flowGroup = String(msg.group);
             renderHud();
@@ -728,10 +764,7 @@
           leaveLiveChrome();
           avatarWrap.classList.remove("live", "speaking");
           phase = "error";
-          questionStep = "";
-          expectYesNo = false;
-          quickReplyPending = false;
-          syncQuickButtons();
+          resetQuickState();
           releaseWakeLock();
           setStatus({ hi: "कॉल शुरू करने के लिए नीचे दबाएँ", en: "Tap below to start the call" });
           showConsentRow();
@@ -829,10 +862,7 @@
       }
 
       async function startCall(micPromise) {
-        questionStep = "";
-        expectYesNo = false;
-        quickReplyPending = false;
-        syncQuickButtons();
+        resetQuickState();
         clearError();
         captionRole = "";
         captionText = "";
@@ -894,10 +924,7 @@
           leaveLiveChrome();
           avatarWrap.classList.remove("live", "speaking");
           phase = "error";
-          questionStep = "";
-          expectYesNo = false;
-          quickReplyPending = false;
-          syncQuickButtons();
+          resetQuickState();
           releaseWakeLock();
           setStatus({ hi: "कॉल शुरू करने के लिए नीचे दबाएँ", en: "Tap below to start the call" });
           showConsentRow();
@@ -915,10 +942,7 @@
         leaveLiveChrome();
         avatarWrap.classList.remove("live", "speaking");
         phase = "preparing";
-        questionStep = "";
-        expectYesNo = false;
-        quickReplyPending = false;
-        syncQuickButtons();
+        resetQuickState();
         setStatus("");
         stageEl.classList.add("working");
         avatarWrap.classList.add("working");
@@ -955,10 +979,7 @@
 
       function endCall() {
         if (phase !== "live" && phase !== "connecting") return;
-        questionStep = "";
-        expectYesNo = false;
-        quickReplyPending = false;
-        syncQuickButtons();
+        resetQuickState();
         const sock = ws;
         const open = sock && sock.readyState === WebSocket.OPEN;
         closeAudioContext();
@@ -1091,10 +1112,7 @@
         if (summaryTimer) clearTimeout(summaryTimer);
         summaryTimer = 0;
         phase = "done";
-        questionStep = "";
-        expectYesNo = false;
-        quickReplyPending = false;
-        syncQuickButtons();
+        resetQuickState();
         releaseWakeLock();
         stopCapture();
         flushPlayback();
@@ -1125,10 +1143,7 @@
         stopTimer();
         leaveLiveChrome();
         phase = "idle";
-        questionStep = "";
-        expectYesNo = false;
-        quickReplyPending = false;
-        syncQuickButtons();
+        resetQuickState();
         releaseWakeLock();
         hangupArmed = false;
         reportPending = false;

@@ -1,16 +1,20 @@
-"""Eight live Gemini calls against the v3 cursor. Run inside tmux.
+"""Four live Gemini calls against the v4 cursor. Run inside tmux.
 
-Exits 0 only when every persona has a stereo WAV, both summaries, red flags,
-and a 2-page PDF, with no tool errors and no spoken instruction leaks.
+The filename stays `run_eight_personas.py` so existing docs keep working.
+Default suite is the four focused personas. Exits 0 only when every selected
+persona has a stereo WAV, both summaries, the expected red-flag band, and a
+valid Mother PDF, with no tool errors, no watchdog nudges, and no leaks.
 """
 
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
 import sys
 import time
+import urllib.request
 import wave
 from pathlib import Path
 
@@ -25,17 +29,18 @@ load_dotenv(ROOT / ".env")
 load_dotenv()
 
 import db  # noqa: E402
+import gemini_live  # noqa: E402
 import uvicorn  # noqa: E402
+from call_cursor import expect_yes_no  # noqa: E402
 from pypdf import PdfReader  # noqa: E402
-from triage_catalog import FOLLOWUP_HI, active_specs  # noqa: E402
+from triage_catalog import FOLLOWUP_HI, active_specs, get_spec  # noqa: E402
 import app as shishu_app  # noqa: E402
-
-import io
-import urllib.request
 
 HOST = "127.0.0.1"
 PORT = 8791
 BASE = f"http://{HOST}:{PORT}"
+CALL_DEADLINE_SEC = 1200
+RECV_TIMEOUT_SEC = 300
 
 _LEAKS = (
     "save_profile",
@@ -58,6 +63,9 @@ _LEAKS = (
     "इम्यूनोडेफिशिएंसी",
     "म्यूकोपॉलीसेकेराइडोसिस",
 )
+_MARRIED = "हाँ, शादी हो गई है।"
+_BRIDGE = "ठीक है।"
+_RETRACT = "नहीं, गलती से हाँ बोला, कुछ नहीं हुआ था।"
 
 
 def _questions() -> list[tuple[str, str]]:
@@ -72,18 +80,42 @@ def _questions() -> list[tuple[str, str]]:
 QUESTIONS = _questions()
 
 
-def _classify(text: str) -> str:
-    if "आपका नाम" in text:
+def _route(state: dict) -> str:
+    """Cursor step is the routing key. Transcript text is not."""
+    qid = str(state.get("active_qid") or "")
+    if not qid:
+        return ""
+    idx = state.get("pending_followup_idx")
+    if idx == -1:
+        return f"{qid}:which_child"
+    if isinstance(idx, int) and idx >= 0:
+        try:
+            followups = get_spec(qid).followups
+        except KeyError:
+            followups = ()
+        if idx < len(followups):
+            return followups[idx]
+        return f"{qid}:{idx}"
+    return qid
+
+
+def _classify(text: str, state: dict | None = None) -> str:
+    """Prefer the live cursor. Fall back to the spoken question only if it is empty."""
+    if state:
+        routed = _route(state)
+        if routed:
+            return routed
+    if "आपका नाम" in text or "पूरा नाम" in text:
         return "intro_name"
-    if "क्या आपकी शादी" in text:
+    if "शादी हो गई" in text or "होने वाली" in text:
         return "intro_married"
-    if "कितने बच्चे" in text:
+    if "कितने बच्चे" in text or "उन सभी बच्चों" in text:
         return "intro_children"
     if "कभी गर्भवती" in text:
         return "ever_pregnant"
     if "किस बच्चे" in text:
         return "which_child"
-    if "आसान सवाल" in text:
+    if "आसान सवाल" in text or "शुरू करें" in text:
         return "intro_bridge"
     if "इसके अलावा" in text or "कुछ और बताना" in text:
         return "close_anything_else"
@@ -94,160 +126,224 @@ def _classify(text: str) -> str:
     return ""
 
 
-def _closing(text: str, phase: str) -> bool:
-    if phase == "closing":
-        return True
-    if "108" in text and ("अस्पताल" in text or "कॉल" in text):
-        return True
-    if "रिपोर्ट तैयार" in text or "रिपोर्ट हो रही" in text:
-        return True
-    return False
+def _fallback(state: dict) -> tuple[str, str]:
+    if expect_yes_no(state):
+        return ("quick", "clear")
+    if state.get("pending_followup_idx") == -1:
+        return ("text", _RETRACT)
+    if isinstance(state.get("pending_followup_idx"), int):
+        return ("text", "पता नहीं।")
+    return ("text", "नहीं।")
 
 
 class Persona:
-    def __init__(self, pid: str, lines: dict[str, str], *, first_gate: str = "", stop_after: str = ""):
+    def __init__(
+        self,
+        pid: str,
+        name: str,
+        lines: dict[str, tuple[str, str]],
+        *,
+        flags: tuple[int, int],
+        close: str,
+        check,
+    ):
         self.pid = pid
+        self.name = name
         self.lines = lines
-        self.first_gate = first_gate
-        self.stop_after = stop_after
+        self.flags = flags
+        self.close = close
+        self.check = check
         self.counts: dict[str, int] = {}
-        self.gate_seen = False
-        self.stop_next = False
 
-    def reply(self, text: str, state: dict) -> str | None:
-        if _closing(text, str(state.get("phase") or "")):
+    def answer(self, text: str, state: dict) -> tuple[str, str] | None:
+        if str(state.get("phase") or "") != "asking":
             return None
-        key = _classify(text) or str(state.get("active_qid") or "")
-        if not key:
-            key = "unknown"
+        key = _classify(text, state) or "unknown"
         self.counts[key] = self.counts.get(key, 0) + 1
         if self.counts[key] > 4:
             raise RuntimeError(f"stuck on {key}: {text[:180]}")
-        if self.stop_next:
-            return "अभी बंद कर दो। बाद में बात करेंगे।"
-        if key == "intro_name":
-            return self.lines["intro_name"]
-        if key == "intro_married":
-            return self.lines["intro_married"]
-        if key == "intro_children":
-            return self.lines["intro_children"]
-        if key == "ever_pregnant":
-            return self.lines.get("ever_pregnant", "नहीं, कभी गर्भवती नहीं हुई।")
-        if key == "intro_bridge":
-            return "ठीक है।"
-        if key == "which_child":
-            return self.lines.get("which_child", "बड़े वाले को।")
-        if key == "close_anything_else":
-            return "नहीं, बस इतना ही।"
-        if self.first_gate and key.startswith("gate_") and not self.gate_seen:
-            self.gate_seen = True
-            if self.stop_after == "emergency":
-                return self.first_gate
-        if key in self.lines:
-            line = self.lines[key]
-            if self.stop_after == "next" and key.startswith("gate_"):
-                self.stop_next = True
-            return line
-        if self.counts[key] == 1 and key == "gate_birth_neonatal" and self.lines.get("_clarify"):
-            return "क्या? समझ नहीं आया।"
-        if key in FOLLOWUP_HI:
-            return self.lines.get(key, self.lines.get("_followup", "दो बार हुआ।"))
-        return "नहीं।"
+        mode, payload = self.lines.get(key, _fallback(state))
+        if mode == "quick" and not expect_yes_no(state):
+            return ("text", "नहीं।")
+        return (mode, payload)
+
+
+def _line(text: str) -> tuple[str, str]:
+    return ("text", text)
+
+
+def _profile(name: str, children: str, extra: dict[str, tuple[str, str]]) -> dict[str, tuple[str, str]]:
+    lines = {
+        "intro_name": _line(f"मेरा नाम {name} है।"),
+        "intro_married": _line(_MARRIED),
+        "intro_children": _line(children),
+        "intro_bridge": _line(_BRIDGE),
+    }
+    lines.update(extra)
+    return lines
+
+
+def _notes(entry: dict) -> str:
+    bits = [str(entry.get("notes") or "")]
+    followups = entry.get("followups") or {}
+    if isinstance(followups, dict):
+        for item in followups.values():
+            if isinstance(item, dict):
+                bits.append(str(item.get("note") or ""))
+    return " ".join(bit for bit in bits if bit)
+
+
+def _has(text: str, *needles: str) -> bool:
+    return any(needle in text for needle in needles)
+
+
+def _answer(call: dict, qid: str) -> dict:
+    answers = (call.get("cursor_state") or {}).get("answers") or {}
+    entry = answers.get(qid) or {}
+    return entry if isinstance(entry, dict) else {}
+
+
+def _check_p1(call: dict, problems: list[str]) -> None:
+    nicu = _answer(call, "birth_nicu")
+    bleed = _answer(call, "body_bleeding_bruise")
+    joint = _answer(call, "body_joint_swelling")
+    if nicu.get("state") != "concern":
+        problems.append(f"birth_nicu={nicu.get('state')}")
+    if bleed.get("state") != "concern":
+        problems.append(f"body_bleeding_bruise={bleed.get('state')}")
+    if joint.get("state") != "concern":
+        problems.append(f"body_joint_swelling={joint.get('state')}")
+    nicu_text = _notes(nicu)
+    if not _has(nicu_text, "तकलीफ", "साँस", "सांस"):
+        problems.append(f"nicu reason missing: {nicu_text}")
+    if not _has(nicu_text, "4", "चार"):
+        problems.append(f"nicu days missing: {nicu_text}")
+
+
+def _check_p2(call: dict, problems: list[str]) -> None:
+    answers = (call.get("cursor_state") or {}).get("answers") or {}
+    concerns = [
+        qid for qid, entry in answers.items()
+        if isinstance(entry, dict) and entry.get("state") == "concern"
+    ]
+    if concerns:
+        problems.append("unexpected concerns: " + ", ".join(concerns))
+
+
+def _check_p3(call: dict, problems: list[str]) -> None:
+    for qid in ("birth_mode_detail", "birth_term", "birth_nicu"):
+        state = _answer(call, qid).get("state")
+        if state != "clear":
+            problems.append(f"{qid}={state}")
+    cursor = call.get("cursor_state") or {}
+    if cursor.get("active_qid") not in {"birth_jaundice", "birth_sudden", ""} and cursor.get("phase") != "closing":
+        problems.append(f"emergency did not stop at {cursor.get('active_qid')}")
+
+
+def _middle_child(profile: dict) -> dict | None:
+    children = list(profile.get("children") or [])
+    if len(children) != 3:
+        return None
+    ordered = sorted(children, key=lambda child: float(child.get("age_years") or 0), reverse=True)
+    return ordered[1]
+
+
+def _check_p4(persona: Persona, call: dict, problems: list[str]) -> None:
+    jaundice = _answer(call, "birth_jaundice")
+    bcg = _answer(call, "birth_bcg")
+    transfusion = _answer(call, "fam_transfusion")
+    bp = _answer(call, "fam_bp_stroke")
+    same = _answer(call, "fam_same_problem")
+    if jaundice.get("state") != "concern":
+        problems.append(f"birth_jaundice={jaundice.get('state')}")
+    if bcg.get("state") != "clear":
+        problems.append(f"birth_bcg={bcg.get('state')}")
+    if persona.counts.get("birth_bcg:which_child", 0) != 1:
+        problems.append(f"birth_bcg loop count={persona.counts.get('birth_bcg:which_child', 0)}")
+    if transfusion.get("state") != "concern":
+        problems.append(f"fam_transfusion={transfusion.get('state')}")
+    if bp.get("state") != "concern":
+        problems.append(f"fam_bp_stroke={bp.get('state')}")
+    if same.get("state") != "clear":
+        problems.append(f"fam_same_problem={same.get('state')}")
+    profile = (call.get("cursor_state") or {}).get("profile") or {}
+    middle = _middle_child(profile)
+    if middle is None:
+        problems.append(f"children={profile.get('children')}")
+    elif middle.get("id") not in (jaundice.get("child_ids") or []):
+        problems.append(f"jaundice child {jaundice.get('child_ids')} middle {middle}")
+    if not _has(_notes(jaundice), "3", "तीन"):
+        problems.append(f"jaundice days missing: {_notes(jaundice)}")
+    if "मामा" not in _notes(transfusion):
+        problems.append(f"fam_who missing: {_notes(transfusion)}")
+    bp_text = _notes(bp)
+    if "पिता" not in bp_text:
+        problems.append(f"bp_who missing: {bp_text}")
+    if not _has(bp_text, "42", "बयालीस"):
+        problems.append(f"bp_age missing: {bp_text}")
 
 
 def _personas() -> list[Persona]:
+    p4 = Persona(
+        "p4_multi_child_multi_family",
+        "कविता",
+        _profile(
+            "कविता",
+            "तीन बच्चे हैं। 11 साल की बड़ी बेटी, 6 साल का बीच वाला बेटा, 2 साल का छोटा बेटा।",
+            {
+                "birth_jaundice": _line("हाँ।"),
+                "birth_jaundice:which_child": _line("बीच वाले बेटे को।"),
+                "jaundice_days": _line("3 दिन।"),
+                "birth_bcg": _line("हाँ।"),
+                "birth_bcg:which_child": _line(_RETRACT),
+                "fam_transfusion": _line("हाँ।"),
+                "fam_who": _line("मेरे सगे मामा के बेटे को।"),
+                "fam_bp_stroke": _line("हाँ।"),
+                "bp_who": _line("मेरे पिताजी को, सगे रिश्तेदार।"),
+                "bp_age": _line("42 साल की उम्र में।"),
+            },
+        ),
+        flags=(2, 4),
+        close="complete",
+        check=_check_p2,
+    )
+    p4.check = lambda call, problems, persona=p4: _check_p4(persona, call, problems)
     return [
         Persona(
-            "p1_scid_bcg",
-            {
-                "intro_name": "मेरा नाम पूजा है।",
-                "intro_married": "हाँ, शादी हो गई है।",
-                "intro_children": "एक बेटा है, दो साल का।",
-                "gate_cord_bcg": "हाँ, BCG की जगह पर बड़ा फोड़ा हुआ और बगल में गाँठ थी।",
-                "birth_cord_bleed": "हाँ, नाल से खून ज़्यादा आया था।",
-                "birth_cord_3weeks": "हाँ, नाल गिरने में तीन हफ्ते से ज़्यादा लगे।",
-                "birth_bcg": "हाँ, टीके की जगह पर बड़ा फोड़ा और बगल में गाँठ हुई।",
-            },
+            "p1_red_flags",
+            "रेखा",
+            _profile("रेखा", "एक बेटा है, 7 साल का।", {
+                "birth_nicu": _line("हाँ।"),
+                "nicu_reason": _line("साँस की तकलीफ।"),
+                "nicu_days": _line("चार दिन।"),
+                "body_bleeding_bruise": _line("हाँ, मामूली चोट पर खून देर तक बहता है।"),
+                "body_joint_swelling": _line("हाँ, गिरने पर घुटने में सूजन आती है।"),
+            }),
+            flags=(2, 4),
+            close="complete",
+            check=_check_p1,
         ),
         Persona(
-            "p2_hemophilia",
-            {
-                "intro_name": "मेरा नाम रेखा है।",
-                "intro_married": "हाँ, शादी हो गई है।",
-                "intro_children": "एक बेटा है, सात साल का।",
-                "gate_bleeding_joints": "हाँ, चोट पर खून देर तक बहता है और आसानी से नील पड़ते हैं।",
-                "body_bleeding_bruise": "हाँ, चोट पर खून देर तक बहता है।",
-                "body_joint_swelling": "हाँ, गिरने पर घुटने में सूजन आती है और कुछ दिनों में ठीक हो जाती है।",
-                "mod_tooth_bleed": "हाँ, दूध का दाँत गिरने पर खून बहुत देर तक बहा।",
-            },
+            "p2_no_red_flags",
+            "सीमा",
+            _profile("सीमा", "एक बेटी है, 4 साल की।", {}),
+            flags=(0, 0),
+            close="complete",
+            check=_check_p2,
         ),
         Persona(
-            "p3_thal_3kids",
-            {
-                "intro_name": "मेरा नाम कविता है।",
-                "intro_married": "हाँ, शादी हो गई है।",
-                "intro_children": "तीन बच्चे हैं। बड़ी बेटी ग्यारह साल की, बीच वाला बेटा सात साल का, और छोटा बेटा दो साल का।",
-                "which_child": "बड़ी वाली बेटी को।",
-                "gate_pregnancy_thal": "हाँ, मेरी थैलेसीमिया जाँच में माइनर बताया गया।",
-                "preg_thalassemia": "हाँ, मेरी जाँच में थैलेसीमिया माइनर बताया गया।",
-                "preg_conditions": "नहीं।",
-                "preg_scan": "नहीं।",
-                "preg_transfusion": "नहीं।",
-                "preg_delivery": "नहीं।",
-            },
+            "p3_emergency_midway",
+            "आशा",
+            _profile("आशा", "एक बेटा है, 2 साल का।", {
+                "birth_jaundice": _line(
+                    "बच्चा अभी साँस नहीं ले पा रहा है और होंठ नीले हो रहे हैं, यह इमरजेंसी है!"
+                ),
+            }),
+            flags=(1, 4),
+            close="emergency",
+            check=_check_p3,
         ),
-        Persona(
-            "p4_unmarried",
-            {
-                "intro_name": "मेरा नाम नीलम है।",
-                "intro_married": "नहीं, शादी नहीं हुई है।",
-                "intro_children": "मेरे कोई बच्चे नहीं हैं।",
-                "fam_loss_gate": "हाँ, परिवार में एक छोटे बच्चे की एक साल से कम उम्र में मौत हुई।",
-                "fam_infant_death": "हाँ, छह महीने का था।",
-            },
-        ),
-        Persona(
-            "p5_childless",
-            {
-                "intro_name": "मेरा नाम सीमा है।",
-                "intro_married": "हाँ, शादी हो गई है।",
-                "intro_children": "मेरे कोई बच्चे नहीं हैं।",
-                "ever_pregnant": "नहीं, मैं कभी गर्भवती नहीं हुई।",
-                "fam_related": "हाँ, हम शादी से पहले रिश्तेदार थे।",
-            },
-        ),
-        Persona(
-            "p6_confused_clarify",
-            {
-                "intro_name": "मेरा नाम मीरा है।",
-                "intro_married": "हाँ, शादी हो गई है।",
-                "intro_children": "एक बेटी है, चार साल की।",
-                "_clarify": "1",
-                "gate_infections": "हाँ, बार-बार अस्पताल में भर्ती करना पड़ा और नस में एंटीबायोटिक लगी।",
-                "ill_admissions": "हाँ, छह महीने में तीन बार भर्ती हुआ।",
-                "ill_iv_antibiotics": "हाँ, नस में एंटीबायोटिक लगी थी।",
-            },
-        ),
-        Persona(
-            "p7_emergency_108",
-            {
-                "intro_name": "मेरा नाम आशा है।",
-                "intro_married": "हाँ, शादी हो गई है।",
-                "intro_children": "एक बेटा है, एक साल का।",
-            },
-            first_gate="बच्चा अभी साँस नहीं ले पा रहा है, होंठ नीले हैं। यह इमरजेंसी है।",
-            stop_after="emergency",
-        ),
-        Persona(
-            "p8_caller_stop",
-            {
-                "intro_name": "मेरा नाम रीना है।",
-                "intro_married": "हाँ, शादी हो गई है।",
-                "intro_children": "एक बेटा है, पाँच साल का।",
-                "gate_birth_neonatal": "हाँ, जन्म के बाद काँच के बक्से में रखना पड़ा था।",
-            },
-            stop_after="next",
-        ),
+        p4,
     ]
 
 
@@ -267,9 +363,16 @@ def _login() -> str:
     return pair
 
 
-def _check(call_id: int, persona: str) -> dict:
+def _pdf_text(path: Path) -> tuple[int, str]:
+    raw = path.read_bytes()
+    reader = PdfReader(io.BytesIO(raw))
+    text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    return len(reader.pages), text
+
+
+def _check(call_id: int, persona: Persona) -> dict:
     call = db.get_call(call_id) or {}
-    problems = []
+    problems: list[str] = []
     telemetry = call.get("telemetry") or {}
     if int(telemetry.get("tool_errors") or 0):
         problems.append(f"tool_errors={telemetry.get('tool_errors')}")
@@ -281,19 +384,24 @@ def _check(call_id: int, persona: str) -> dict:
         str(turn.get("text") or "")
         for turn in (call.get("transcript") or [])
         if turn.get("role") == "assistant"
-    ).lower()
+    )
+    folded = assistant.lower()
     for leak in _LEAKS:
-        if leak.lower() in assistant:
+        if leak.lower() in folded:
             problems.append(f"spoken leak {leak}")
     if not str(call.get("summary_doctor") or "").strip():
         problems.append("empty summary_doctor")
     if not str(call.get("summary_mother") or "").strip():
         problems.append("empty summary_mother")
     flags = call.get("red_flags") or []
-    if not flags:
-        problems.append("empty red_flags")
+    count = len(flags) if isinstance(flags, list) else -1
+    low, high = persona.flags
+    if count < low or count > high:
+        problems.append(f"red_flags={count} expected {low}-{high}")
     if not str(call.get("mother_name") or "").strip():
         problems.append("mother not named")
+    elif persona.name not in str(call.get("mother_name")):
+        problems.append(f"mother_name={call.get('mother_name')}")
     audio = Path(db.DATA_DIR) / "audio" / str(call.get("audio_path") or "")
     if not audio.is_file():
         problems.append("missing wav")
@@ -305,21 +413,33 @@ def _check(call_id: int, persona: str) -> dict:
     if not pdf_path.is_file() or not pdf_path.read_bytes().startswith(b"%PDF"):
         problems.append("missing pdf")
     else:
-        pages = len(PdfReader(io.BytesIO(pdf_path.read_bytes())).pages)
-        if pages < 2:
+        pages, text = _pdf_text(pdf_path)
+        if persona.close == "emergency":
+            if "108" not in assistant:
+                problems.append("assistant transcript missing 108")
+            if "108" not in text and "अधूरी" not in text:
+                problems.append("emergency pdf missing banner")
+        elif pages < 2:
             problems.append(f"pdf pages {pages}")
     cursor = call.get("cursor_state") or {}
+    if cursor.get("close_reason") != persona.close:
+        problems.append(f"close_reason={cursor.get('close_reason')} expected {persona.close}")
+    try:
+        persona.check(call, problems)
+    except Exception as exc:
+        problems.append(f"check {type(exc).__name__}: {exc}")
     return {
-        "persona": persona,
+        "persona": persona.pid,
         "call_id": call_id,
         "ok": not problems,
         "problems": problems,
         "close_reason": cursor.get("close_reason"),
         "phase": cursor.get("phase"),
-        "flags": len(flags) if isinstance(flags, list) else 0,
+        "flags": count,
         "mother_name": call.get("mother_name"),
         "child_age": call.get("child_age"),
         "share_token": call.get("share_token"),
+        "asks": persona.counts,
     }
 
 
@@ -337,10 +457,11 @@ async def _one(persona: Persona, cookie: str) -> dict:
         ) as ws:
             call_id = 0
             buf = ""
-            deadline = time.monotonic() + 480
+            question: dict = {}
+            heard_audio = False
+            deadline = time.monotonic() + CALL_DEADLINE_SEC
             while time.monotonic() < deadline:
-                timeout = 150 if persona.counts else 90
-                raw = await asyncio.wait_for(ws.recv(), timeout=timeout)
+                raw = await asyncio.wait_for(ws.recv(), timeout=RECV_TIMEOUT_SEC)
                 msg = json.loads(raw)
                 kind = msg.get("type")
                 if kind == "session_started":
@@ -348,24 +469,40 @@ async def _one(persona: Persona, cookie: str) -> dict:
                     if not msg.get("share_token"):
                         return {"persona": persona.pid, "call_id": call_id, "ok": False, "problems": ["no share_token"]}
                     print(f"call {call_id} token {msg.get('share_token')}", flush=True)
+                elif kind == "question_state":
+                    question = msg
+                    heard_audio = False
                 elif kind == "transcript" and msg.get("role") == "assistant":
                     buf = (buf + " " + str(msg.get("text") or "")).strip()
                 elif kind == "telemetry":
                     event = (msg.get("last_event") or {}).get("type")
-                    if event == "turn_complete" and buf and call_id:
+                    if event == "bot_first_audio":
+                        heard_audio = True
+                    elif event == "turn_complete" and heard_audio and call_id:
+                        heard_audio = False
                         state = (db.get_call(call_id) or {}).get("cursor_state") or {}
-                        reply = persona.reply(buf, state)
+                        reply = persona.answer(buf, state)
                         heard = buf[:80].replace("\n", " ")
                         buf = ""
-                        if reply:
-                            print(f"  [{state.get('active_qid')}] {heard} -> {reply[:60]}", flush=True)
-                            await ws.send(json.dumps({"type": "text", "text": reply}, ensure_ascii=False))
-                        else:
+                        if reply is None:
                             print(f"  closing heard: {heard}", flush=True)
+                            continue
+                        mode, payload = reply
+                        step = gemini_live._current_step(state)
+                        print(f"  [{_route(state) or step}] {mode} {payload[:70]}", flush=True)
+                        if mode == "quick":
+                            tap_step = step or str(question.get("step") or "")
+                            await ws.send(json.dumps({
+                                "type": "quick_reply",
+                                "outcome": payload,
+                                "step": tap_step,
+                            }, ensure_ascii=False))
+                        else:
+                            await ws.send(json.dumps({"type": "text", "text": payload}, ensure_ascii=False))
                 elif kind == "call_completed":
                     if not msg.get("share_token"):
                         return {"persona": persona.pid, "call_id": call_id, "ok": False, "problems": ["completed without share_token"]}
-                    result = _check(int(msg.get("call_id") or call_id), persona.pid)
+                    result = _check(int(msg.get("call_id") or call_id), persona)
                     print(("PASS " if result["ok"] else "FAIL ") + persona.pid + " " + ", ".join(result["problems"]), flush=True)
                     return result
                 elif kind in {"report_failed", "error"}:
@@ -410,6 +547,9 @@ async def _main() -> int:
         cookie = await asyncio.to_thread(_login)
         wanted = set(sys.argv[1:])
         personas = [item for item in _personas() if not wanted or item.pid in wanted]
+        if not personas:
+            print("no matching persona", flush=True)
+            return 1
         for persona in personas:
             results.append(await _one(persona, cookie))
     finally:
@@ -420,7 +560,7 @@ async def _main() -> int:
     passed = sum(1 for item in results if item.get("ok"))
     print(f"\n{passed}/{len(results)} PASS", flush=True)
     print(out, flush=True)
-    return 0 if passed == len(results) and (len(results) == 8 or bool(sys.argv[1:])) else 1
+    return 0 if results and passed == len(results) else 1
 
 
 if __name__ == "__main__":

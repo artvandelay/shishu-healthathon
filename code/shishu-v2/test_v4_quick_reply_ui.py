@@ -22,6 +22,8 @@ import app  # noqa: E402
 import db  # noqa: E402
 import gemini_live  # noqa: E402
 import report_service  # noqa: E402
+import test_v4_cursor as cursor_tests  # noqa: E402
+from call_cursor import apply_profile, apply_turn, new_cursor_state  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 _HERE = Path(__file__).resolve().parent
@@ -194,7 +196,7 @@ class QuickReplyScreenTests(unittest.TestCase):
         dashboard = admin_js.text
 
         sync = _function_body(script, "syncQuickButtons")
-        self.assertIn('phase === "live" && expectYesNo', sync)
+        self.assertIn('phase === "live" && expectYesNo && quickReplyReady', sync)
         self.assertIn("noBtn.hidden = !show", sync)
         self.assertIn("yesBtn.hidden = !show", sync)
         self.assertIn("noBtn.disabled = !show || quickReplyPending", sync)
@@ -203,10 +205,38 @@ class QuickReplyScreenTests(unittest.TestCase):
         state = script.split('msg.type === "question_state"', 1)[1].split('msg.type === "ending"', 1)[0]
         self.assertIn('questionStep = String(msg.step || "");', state)
         self.assertIn("expectYesNo = Boolean(msg.expect_yes_no);", state)
+        self.assertIn("promptChars = Number(msg.prompt_chars) || 0;", state)
+        self.assertIn("quickReplyReady = false;", state)
         self.assertIn("quickReplyPending = false;", state)
+        self.assertIn("stepFirstPlayTime = 0;", state)
+        self.assertIn("clearQuickRevealTimer();", state)
         self.assertIn("flowGroup = String(msg.group);", state)
         self.assertIn("renderHud();", state)
         self.assertIn("syncQuickButtons();", state)
+        self.assertNotIn("noBtn.hidden = false", state)
+        self.assertNotIn("yesBtn.hidden = false", state)
+
+        reset = _function_body(script, "resetQuickState")
+        self.assertIn('questionStep = "";', reset)
+        self.assertIn("expectYesNo = false;", reset)
+        self.assertIn("quickReplyReady = false;", reset)
+        self.assertIn("quickReplyPending = false;", reset)
+        self.assertIn("clearQuickRevealTimer();", reset)
+        self.assertIn("syncQuickButtons();", reset)
+        stripped = [line.strip() for line in script.splitlines()]
+        self.assertEqual(stripped.count('questionStep = "";'), 1)
+        self.assertEqual(stripped.count("expectYesNo = false;"), 1)
+        self.assertEqual(stripped.count("quickReplyPending = false;"), 2)
+
+        play = _function_body(script, "playPcm")
+        self.assertIn("!quickReplyReady && !quickRevealTimer", play)
+        self.assertIn("const halfwayMs = Math.round(estMs * 0.5);", play)
+        self.assertIn(
+            'activeSources.size === 0 && phase === "live" && expectYesNo && !quickReplyReady',
+            play,
+        )
+        self.assertLess(play.index("src.start(nextPlayTime)"), play.index("halfwayMs"))
+        self.assertLess(play.index("halfwayMs"), play.index("quickReplyReady = true"))
 
         reply = _function_body(script, "sendQuickReply")
         send_at = reply.index("ws.send")
@@ -216,18 +246,26 @@ class QuickReplyScreenTests(unittest.TestCase):
         self.assertIn('{ type: "quick_reply", outcome: outcome, step: questionStep }', reply)
         self.assertIn('phase !== "live"', reply)
         self.assertIn("!expectYesNo", reply)
+        self.assertIn("!quickReplyReady", reply)
         self.assertIn("quickReplyPending", reply)
         self.assertIn("!questionStep", reply)
         self.assertIn("WebSocket.OPEN", reply)
         self.assertIn('sendQuickReply("clear")', script)
         self.assertIn('sendQuickReply("concern")', script)
 
-        for name in ("leaveLiveChrome", "beginPreparing", "endCall", "showThanks", "resetForNewCall", "startCall"):
+        for name in (
+            "leaveLiveChrome",
+            "onSocketClose",
+            "beginPreparing",
+            "endCall",
+            "showThanks",
+            "resetForNewCall",
+            "startCall",
+        ):
             body = _function_body(script, name)
-            self.assertIn('questionStep = "";', body, name)
-            self.assertIn("expectYesNo = false;", body, name)
-            self.assertIn("quickReplyPending = false;", body, name)
-            self.assertIn("syncQuickButtons();", body, name)
+            self.assertIn("resetQuickState();", body, name)
+            self.assertNotIn('questionStep = "";', body, name)
+            self.assertNotIn("expectYesNo = false;", body, name)
 
         self.assertIn("renderFindings(call.findings, call.cursor_state)", dashboard)
         self.assertIn("function renderFindings(findings, cursorState)", dashboard)
@@ -396,6 +434,7 @@ class QuickReplySocketTests(unittest.TestCase):
                         lambda msg: msg.get("type") == "question_state" and msg.get("qid") == "intro_name"
                     )
                     self.assertFalse(intro["expect_yes_no"])
+                    self.assertGreater(intro["prompt_chars"], 0)
                     self.assertEqual(intro["step"], "intro_name")
                     ws.send_json({
                         "type": "quick_reply",
@@ -411,7 +450,10 @@ class QuickReplySocketTests(unittest.TestCase):
                         lambda msg: msg.get("type") == "question_state" and msg.get("qid") == "intro_bridge"
                     )
                     self.assertTrue(bridge["expect_yes_no"])
+                    self.assertGreater(bridge["prompt_chars"], 0)
                     self.assertEqual(bridge["group"], "intro")
+                    session.push(_audio_message())
+                    wait_for(lambda msg: msg.get("type") == "audio")
                     ws.send_json({
                         "type": "quick_reply",
                         "outcome": "clear",
@@ -423,6 +465,9 @@ class QuickReplySocketTests(unittest.TestCase):
                     )
                     self.assertEqual(gate["step"], "birth_mode_detail")
                     self.assertEqual(gate["group"], "birth")
+                    self.assertGreater(gate["prompt_chars"], 0)
+                    session.push(_audio_message())
+                    wait_for(lambda msg: msg.get("type") == "audio")
                     ws.send_json({
                         "type": "quick_reply",
                         "outcome": "concern",
@@ -432,6 +477,7 @@ class QuickReplySocketTests(unittest.TestCase):
                         lambda msg: msg.get("type") == "question_state" and msg.get("step") == "birth_mode_detail:-1"
                     )
                     self.assertFalse(which["expect_yes_no"])
+                    self.assertGreater(which["prompt_chars"], 0)
                     self.assertEqual(which["qid"], "birth_mode_detail")
                     session.push(_audio_message())
                     wait_for(lambda msg: msg.get("type") == "audio")
@@ -451,6 +497,7 @@ class QuickReplySocketTests(unittest.TestCase):
                         lambda msg: msg.get("type") == "question_state" and msg.get("step") == "birth_mode_detail:0"
                     )
                     self.assertFalse(follow["expect_yes_no"])
+                    self.assertGreater(follow["prompt_chars"], 0)
                     self.assertEqual(follow["qid"], "birth_mode_detail")
                 finally:
                     ws.close()
@@ -481,6 +528,45 @@ class QuickReplySocketTests(unittest.TestCase):
         self.assertEqual(saved["answers"]["birth_mode_detail"]["child_ids"], ["child_1"])
         self.assertEqual(saved["pending_followup_idx"], 0)
         self.assertEqual(saved["active_qid"], "birth_mode_detail")
+        for item in states:
+            self.assertGreater(item["prompt_chars"], 0)
+
+    def test_prompt_chars_and_yes_no_follow_the_step_kind(self):
+        def payload(state):
+            body = gemini_live._question_state_payload(state)
+            self.assertGreater(body["prompt_chars"], 0)
+            return body
+
+        state = new_cursor_state()
+        intro = payload(state)
+        self.assertEqual(intro["qid"], "intro_name")
+        self.assertFalse(intro["expect_yes_no"])
+
+        state, hold = apply_profile(state, caller_name="रेखा")
+        self.assertIsNone(hold)
+        married = payload(state)
+        self.assertEqual(married["qid"], "intro_married")
+        self.assertFalse(married["expect_yes_no"])
+
+        state, hold = apply_profile(state, marital_status="married")
+        self.assertIsNone(hold)
+        children = payload(state)
+        self.assertEqual(children["qid"], "intro_children")
+        self.assertFalse(children["expect_yes_no"])
+
+        kids = [cursor_tests._child(8, "male", 1), cursor_tests._child(2, "female", 2)]
+        state = cursor_tests._clear_until(cursor_tests._profile(children=kids), "birth_mode_detail")
+        gate = payload(state)
+        self.assertTrue(gate["expect_yes_no"])
+        state = apply_turn(state, "concern")
+        which = payload(state)
+        self.assertEqual(which["step"], "birth_mode_detail:-1")
+        self.assertFalse(which["expect_yes_no"])
+        state = apply_turn(state, "concern", child_ref="child_1")
+        follow = payload(state)
+        self.assertEqual(follow["step"], "birth_mode_detail:0")
+        self.assertFalse(follow["expect_yes_no"])
+        self.assertEqual(follow["qid"], "birth_mode_detail")
 
 
 if __name__ == "__main__":
