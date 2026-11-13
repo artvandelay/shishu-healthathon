@@ -200,14 +200,19 @@ class ClarifyAndDeadAirTests(unittest.TestCase):
                 cursor,
                 turn,
             )
+            self.assertEqual([item[0] for item in session.sent], ["tool"])
+            body = session.sent[0][1][0].response
+            self.assertNotIn("wait", body)
+            self.assertFalse(turn.bot_replied_since_user)
+            self.assertEqual(gemini_live._TOOL_SPEAK_FALLBACK_SEC, 0.9)
+            await turn.speak_fallback
             return session
 
         session = asyncio.run(run())
         self.assertEqual(cursor.state["active_qid"], "birth_cord_3weeks")
-        self.assertEqual(session.sent[0][0], "tool")
         self.assertEqual(session.sent[0][1][0].response["result"], "held")
         self.assertEqual(session.sent[0][1][0].response["reason"], "not_spoken")
-        self.assertEqual(session.sent[1][0], "realtime")
+        self.assertEqual([item[0] for item in session.sent], ["tool", "realtime"])
         self.assertIn("नाल", session.sent[1][1]["text"])
         self.assertIn("speak only this Hindi now", session.sent[1][1]["text"])
 
@@ -239,16 +244,19 @@ class ClarifyAndDeadAirTests(unittest.TestCase):
                 cursor,
                 turn,
             )
+            self.assertEqual([item[0] for item in session.sent], ["tool"])
+            for response in session.sent[0][1]:
+                self.assertNotIn("wait", response.response)
+            self.assertFalse(turn.bot_replied_since_user)
+            await turn.speak_fallback
             return session
 
         session = asyncio.run(run())
         self.assertEqual(cursor.state["active_qid"], "ill_fasting")
         self.assertEqual(session.sent[0][1][0].response["result"], "ok")
         self.assertEqual(session.sent[0][1][1].response["result"], "held")
-        self.assertEqual(session.sent[1][0], "realtime")
         self.assertIn("सुस्त", session.sent[1][1]["text"])
-        kinds = [item[0] for item in session.sent]
-        self.assertEqual(kinds, ["tool", "realtime"])
+        self.assertEqual([item[0] for item in session.sent], ["tool", "realtime"])
 
     def test_clarify_sets_the_flag_and_does_not_advance(self):
         state = cursor_tests._profile(children=[cursor_tests._child(4, "male")])
@@ -274,6 +282,11 @@ class ClarifyAndDeadAirTests(unittest.TestCase):
                 cursor,
                 turn,
             )
+            self.assertEqual([item[0] for item in session.sent], ["tool"])
+            body = session.sent[0][1][0].response
+            self.assertNotIn("wait", body)
+            self.assertFalse(turn.bot_replied_since_user)
+            await turn.speak_fallback
             return session
 
         session = asyncio.run(run())

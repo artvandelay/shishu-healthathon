@@ -17,7 +17,15 @@ from starlette.websockets import WebSocketState
 
 import audio_recorder
 import db
-from call_cursor import apply_profile, apply_turn, new_cursor_state, prompt_directive
+from call_cursor import (
+    _join_notes,
+    apply_profile,
+    apply_turn,
+    expect_yes_no,
+    new_cursor_state,
+    prompt_directive,
+)
+from triage_catalog import get_spec
 from prompts import (
     GEMINI_LIVE_SYSTEM_PROMPT,
     HINDI_MEDICAL_VOCAB,
@@ -39,6 +47,9 @@ _HARD_LIMIT_SEC = 20 * 60
 _CLOSING_AUDIO_GRACE_SEC = 0.8
 _CLOSING_MAX_WAIT_SEC = 25
 _PROFILE_QIDS = frozenset({"intro_name", "intro_married", "intro_children", "ever_pregnant"})
+_PROFILE_TURN_QIDS = frozenset({"intro_name", "intro_married", "intro_children"})
+_TOOL_SPEAK_FALLBACK_SEC = 0.9
+_TRAILING_NOTE_SEC = 2.5
 _WATCHDOG_NUDGE = (
     "SYSTEM CUE (from the app, not the mother): she is waiting. "
     "Speak only the Hindi question you were last given, in your same warm female voice, then wait. "
@@ -49,8 +60,8 @@ _MANUAL_NUDGE = _WATCHDOG_NUDGE
 _SAVE_PROFILE_DECL = {
     "name": "save_profile",
     "description": (
-        "Save the profile fact she just gave: name, marital status, children, or ever pregnant. "
-        "Call this only for those questions, before you speak again. Never read this tool aloud."
+        "Save a profile fact on any turn: name, marital status, children, or ever pregnant. "
+        "Also call this when she corrects an earlier profile answer. Never read this tool aloud."
     ),
     "parameters": {
         "type": "OBJECT",
@@ -89,23 +100,30 @@ _SAVE_PROFILE_DECL = {
 _RECORD_TURN_DECL = {
     "name": "record_turn",
     "description": (
-        "Record her answer to the current screening question, then speak only the say field. "
-        "Do not use this for her name, marriage, children, or ever pregnant."
+        "Record her answer to the current screening question, including ever pregnant, "
+        "then speak only the say field. Do not use this for her name, marriage, or children."
     ),
     "parameters": {
         "type": "OBJECT",
         "properties": {
             "outcome": {
                 "type": "STRING",
-                "description": "clear, concern, unknown, clarify, emergency, or caller_stop.",
+                "description": "clear, concern, unknown, clarify, retract, emergency, or caller_stop.",
             },
             "child_ref": {
                 "type": "STRING",
-                "description": "child_1, oldest, youngest, both, or empty when one child or not a child question.",
+                "description": (
+                    "child_1 through child_n, an age such as 5 साल, oldest, middle, youngest, "
+                    "both, or empty when one child or not a child question."
+                ),
             },
             "note": {
                 "type": "STRING",
                 "description": "Short phrase with the detail she gave, including a follow-up. Empty if she only said नहीं.",
+            },
+            "followup_answered": {
+                "type": "BOOLEAN",
+                "description": "True when her हाँ sentence already included the follow-up detail.",
             },
         },
         "required": ["outcome"],
@@ -149,6 +167,9 @@ class _TurnState:
         self.speech_end_waiting = False
         self.playback_ends_at = 0.0
         self.spoken_qid = ""
+        self.last_advance_ts = 0.0
+        self.last_advance_qid = ""
+        self.speak_fallback: asyncio.Task | None = None
 
 
 class _Cursor:
@@ -166,12 +187,17 @@ class _SessionProxy:
 
 def _session_settings(settings: dict) -> dict:
     start_low = settings.get("vad_start_sensitivity") == "LOW"
-    end_low = settings.get("vad_end_sensitivity") == "LOW"
+    end_raw = settings.get("vad_end_sensitivity")
+    if end_raw in (None, ""):
+        end_raw = "LOW"
+    end_low = end_raw == "LOW"
+    silence_raw = settings.get("vad_silence_ms")
+    silence_ms = 1000 if silence_raw in (None, "") else int(float(silence_raw))
     return {
         "model": settings.get("gemini_model") or "gemini-3.1-flash-live-preview",
         "voice": "Kore",
         "prefix_padding_ms": int(float(settings.get("vad_prefix_padding_ms") or 300)),
-        "silence_duration_ms": int(float(settings.get("vad_silence_ms") or 750)),
+        "silence_duration_ms": silence_ms,
         "start_sens": (
             types.StartSensitivity.START_SENSITIVITY_LOW
             if start_low
@@ -574,24 +600,33 @@ def _just_name(value: str) -> str:
 
 
 def _marital(value: object) -> str:
-    raw = str(value or "").strip()
+    if value is None or value == "":
+        return ""
+    raw = str(value).strip()
     text = raw.lower().replace("-", "_").replace(" ", "_")
     aliases = {
         "married": "married",
         "yes": "married",
+        "true": "married",
         "shaadi": "married",
         "unmarried": "unmarried",
         "single": "unmarried",
+        "no": "unmarried",
+        "nahi": "unmarried",
+        "nahin": "unmarried",
+        "false": "unmarried",
         "about_to_marry": "about_to_marry",
         "engaged": "about_to_marry",
         "about_to_be_married": "about_to_marry",
     }
     if text in aliases:
         return aliases[text]
-    if "नहीं" in raw and "शादी" in raw:
-        return "unmarried"
     if "होने वाली" in raw:
         return "about_to_marry"
+    if "शादी हो गई" in raw or "शादी हो गयी" in raw:
+        return "married"
+    if any(bit in raw for bit in ("नहीं", "नही", "अविवाहित", "कुंवारी")):
+        return "unmarried"
     if "शादी" in raw:
         return "married"
     return ""
@@ -658,9 +693,50 @@ def _current_step(state: dict) -> str:
     qid = str(state.get("active_qid") or "")
     idx = state.get("pending_followup_idx")
     step = qid if idx is None else f"{qid}:{idx}"
-    if qid == "close_anything_else" and int(state.get("close_rounds") or 0):
-        step = f"{step}:more:{int(state.get('close_rounds') or 0)}"
+    rounds = int(state.get("close_rounds") or 0)
+    if qid == "close_anything_else" and rounds:
+        step = f"{step}:more:{rounds}"
+    hold = str(state.get("hold_reason") or "").strip()
+    if hold:
+        step = f"{step}:hold:{hold}"
+    attempts = int(state.get("step_attempts") or 0)
+    if attempts:
+        step = f"{step}:try:{attempts}"
     return step
+
+
+def _question_group(state: dict) -> str:
+    qid = str(state.get("active_qid") or "")
+    if qid == "ever_pregnant":
+        return "pregnancy"
+    if not qid:
+        return ""
+    try:
+        return get_spec(qid).group
+    except KeyError:
+        return ""
+
+
+def _question_state_payload(cursor_state: dict) -> dict:
+    return {
+        "type": "question_state",
+        "step": _current_step(cursor_state),
+        "qid": str(cursor_state.get("active_qid") or ""),
+        "group": _question_group(cursor_state),
+        "expect_yes_no": expect_yes_no(cursor_state),
+    }
+
+
+_GREETING_CUE = (
+    "SYSTEM CUE (from the app, not the mother): speak only this Hindi, then wait. "
+    "Do not call a tool yet.\n"
+)
+
+
+async def _send_greeting(session, send_lock, ws, ws_lock, cursor: _Cursor) -> None:
+    async with send_lock:
+        await session.send_realtime_input(text=_GREETING_CUE + _say_hindi(cursor.state))
+    await _send_json(ws, ws_lock, _question_state_payload(cursor.state))
 
 
 def _question_already_spoken(turn: _TurnState, cursor_state: dict) -> bool:
@@ -751,38 +827,137 @@ def _tool_body(state: dict) -> dict:
     body = {"result": "ok", "say": _say_hindi(state)}
     if state.get("phase") == "closing":
         body["stop"] = True
-    else:
-        body["wait"] = True
     return body
 
 
-def _profile_kwargs(qid: str, args: dict) -> dict:
+def _profile_kwargs(_qid: str, args: dict) -> dict:
+    """Pull every profile field she gave, on any question."""
     kwargs: dict = {}
-    if qid == "intro_name":
-        name = _just_name(str(args.get("caller_name") or ""))
-        if name:
-            kwargs["caller_name"] = name
-    elif qid == "intro_married":
-        status = _marital(args.get("marital_status"))
-        if status:
-            kwargs["marital_status"] = status
-    elif qid == "intro_children":
-        if "child_count" in args and args.get("child_count") not in (None, ""):
-            try:
-                kwargs["child_count"] = int(args.get("child_count"))
-            except (TypeError, ValueError):
-                pass
-        if "children" in args and args.get("children") is not None:
-            kids = _as_children(args.get("children"))
-            if kids is not None:
-                kwargs["children"] = kids
-        if kwargs.get("child_count") == 0 and "children" not in kwargs:
-            kwargs["children"] = []
-    elif qid == "ever_pregnant":
-        flag = _optional_bool(args.get("ever_pregnant"))
-        if flag is not None:
-            kwargs["ever_pregnant"] = flag
+    name = _just_name(str(args.get("caller_name") or ""))
+    if name:
+        kwargs["caller_name"] = name
+    status = _marital(args.get("marital_status"))
+    if status:
+        kwargs["marital_status"] = status
+    if "child_count" in args and args.get("child_count") not in (None, ""):
+        try:
+            kwargs["child_count"] = int(args.get("child_count"))
+        except (TypeError, ValueError):
+            pass
+    if "children" in args and args.get("children") is not None:
+        kids = _as_children(args.get("children"))
+        if kids is not None:
+            kwargs["children"] = kids
+    if kwargs.get("child_count") == 0 and "children" not in kwargs:
+        kwargs["children"] = []
+    flag = _optional_bool(args.get("ever_pregnant"))
+    if flag is not None:
+        kwargs["ever_pregnant"] = flag
     return kwargs
+
+
+def _consume_task_error(task: asyncio.Task) -> None:
+    if task.cancelled():
+        return
+    try:
+        task.exception()
+    except Exception:
+        return
+
+
+def _cancel_speak_fallback(turn: _TurnState) -> None:
+    task = turn.speak_fallback
+    turn.speak_fallback = None
+    if task is None:
+        return
+    if not task.done():
+        task.cancel()
+    task.add_done_callback(_consume_task_error)
+
+
+def _keep_trailing_note(cursor: _Cursor, turn: _TurnState, args: dict, call_id: int) -> None:
+    """Keep the second half of a split answer that arrives before the next question is spoken."""
+    qid = turn.last_advance_qid
+    if not qid or time.time() - float(turn.last_advance_ts or 0) >= _TRAILING_NOTE_SEC:
+        return
+    answers = cursor.state.setdefault("answers", {})
+    answer = answers.get(qid)
+    if not isinstance(answer, dict) or answer.get("state") != "concern":
+        return
+    notes = str(answer.get("notes") or "")
+    user_text = " ".join(str(turn.last_user_text or "").split())
+    note = " ".join(str(args.get("note") or "").split())
+    extra = user_text if user_text and user_text not in notes else ""
+    if not extra and note and note not in notes:
+        extra = note
+    if not extra:
+        return
+    answer["notes"] = _join_notes(notes, extra)
+    answers[qid] = answer
+    try:
+        db.save_cursor_state(call_id, cursor.state)
+    except Exception:
+        pass
+
+
+async def _fallback_speak_after_tool(
+    session,
+    send_lock: asyncio.Lock,
+    ws: WebSocket,
+    ws_lock: asyncio.Lock,
+    call_id: int,
+    telemetry: dict,
+    cursor: _Cursor,
+    turn: _TurnState,
+    stop: asyncio.Event | None,
+    *,
+    step_after_tool: str,
+    kind: str,
+    delay_sec: float,
+) -> None:
+    """Speak the tool's next line only when Gemini stayed silent after the tool result."""
+    try:
+        if delay_sec > 0:
+            if stop is None:
+                await asyncio.sleep(delay_sec)
+            else:
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=delay_sec)
+                    return
+                except asyncio.TimeoutError:
+                    pass
+        if stop is not None and stop.is_set():
+            return
+        if turn.bot_replied_since_user or turn.bot_speaking:
+            return
+        if _current_step(cursor.state) != step_after_tool:
+            return
+        text = _speak_cue_text(cursor.state, kind)
+        if stop is None:
+            async with send_lock:
+                await session.send_realtime_input(text=text)
+            return
+        ok = await _send_realtime_safe(session, send_lock, turn, stop, text=text)
+        if not ok:
+            telemetry["tool_errors"] = int(telemetry.get("tool_errors") or 0) + 1
+            await _report_error(
+                ws,
+                ws_lock,
+                call_id,
+                telemetry,
+                "Could not prompt Gemini to speak",
+            )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        telemetry["tool_errors"] = int(telemetry.get("tool_errors") or 0) + 1
+        await _report_error(
+            ws,
+            ws_lock,
+            call_id,
+            telemetry,
+            "Could not prompt Gemini to speak",
+        )
 
 
 async def _mark_closing(
@@ -829,11 +1004,13 @@ async def _answer_function_calls(
     cursor: _Cursor,
     turn: _TurnState,
     on_end_accepted: Callable[[int, dict], Awaitable[None] | None] | None = None,
+    stop: asyncio.Event | None = None,
 ) -> None:
     responses: list[types.FunctionResponse] = []
     logged: list[str] = []
     clarify_applied = False
     handled = False
+    step_before = _current_step(cursor.state)
     for fc in calls:
         fc_id = getattr(fc, "id", None) or ""
         if fc_id and (fc_id in cancelled or fc_id in seen):
@@ -848,7 +1025,7 @@ async def _answer_function_calls(
         try:
             if name == "save_profile":
                 kwargs = _profile_kwargs(qid, args)
-                if qid in _PROFILE_QIDS and kwargs:
+                if kwargs or qid in _PROFILE_QIDS:
                     new_state, _hold = apply_profile(cursor.state, **kwargs)
                     cursor.state = new_state
                     db.save_cursor_state(call_id, new_state)
@@ -869,23 +1046,33 @@ async def _answer_function_calls(
                     "don't_know": "unknown",
                     "confused": "clarify",
                     "stop": "caller_stop",
+                    "retracted": "retract",
+                    "take_back": "retract",
                 }.get(outcome, outcome)
                 heard = _question_already_spoken(turn, cursor.state)
-                if qid in _PROFILE_QIDS or not heard:
+                if qid in _PROFILE_TURN_QIDS or not heard:
+                    if qid not in _PROFILE_TURN_QIDS:
+                        _keep_trailing_note(cursor, turn, args, call_id)
                     body = _tool_body(cursor.state)
                     body["result"] = "held"
-                    body["reason"] = "profile" if qid in _PROFILE_QIDS else "not_spoken"
+                    body["reason"] = "profile" if qid in _PROFILE_TURN_QIDS else "not_spoken"
                     logged.append("record_turn_held")
                     clarify_applied = False
                 else:
+                    before_qid = qid
                     new_state = apply_turn(
                         cursor.state,
                         outcome,
                         child_ref=str(args.get("child_ref") or ""),
                         note=str(args.get("note") or ""),
+                        followup_answered=bool(_optional_bool(args.get("followup_answered"))),
                     )
                     cursor.state = new_state
                     db.save_cursor_state(call_id, new_state)
+                    after_qid = str(new_state.get("active_qid") or "")
+                    if after_qid != before_qid:
+                        turn.last_advance_ts = time.time()
+                        turn.last_advance_qid = str(new_state.get("last_answered_qid") or before_qid)
                     if new_state.get("phase") == "closing":
                         await _mark_closing(
                             cursor,
@@ -905,12 +1092,12 @@ async def _answer_function_calls(
                     logged.append(f"record_turn_{outcome}")
                 handled = True
             else:
-                body = {"result": "ignored", "say": _say_hindi(cursor.state), "wait": True}
+                body = {"result": "ignored", "say": _say_hindi(cursor.state)}
                 logged.append(name or "ignored")
                 telemetry["tool_errors"] = int(telemetry.get("tool_errors") or 0) + 1
         except Exception:
             telemetry["tool_errors"] = int(telemetry.get("tool_errors") or 0) + 1
-            body = {"result": "error", "say": _say_hindi(cursor.state), "wait": True}
+            body = {"result": "error", "say": _say_hindi(cursor.state)}
             logged.append(f"{name or 'tool'}_error")
             clarify_applied = False
             handled = True
@@ -946,23 +1133,48 @@ async def _answer_function_calls(
             telemetry,
             "Could not send the tool response to Gemini",
         )
+    if _current_step(cursor.state) != step_before:
+        await _send_json(ws, ws_lock, _question_state_payload(cursor.state))
     if handled:
         kind = "speak"
         if cursor.state.get("phase") != "asking":
             kind = "close"
         elif clarify_applied:
             kind = "clarify"
-        try:
-            async with send_lock:
-                await session.send_realtime_input(text=_speak_cue_text(cursor.state, kind))
-        except Exception:
-            telemetry["tool_errors"] = int(telemetry.get("tool_errors") or 0) + 1
-            await _report_error(
+        delay = 0.0 if send_failed else _TOOL_SPEAK_FALLBACK_SEC
+        step_after_tool = _current_step(cursor.state)
+        if delay <= 0:
+            await _fallback_speak_after_tool(
+                session,
+                send_lock,
                 ws,
                 ws_lock,
                 call_id,
                 telemetry,
-                "Could not prompt Gemini to speak",
+                cursor,
+                turn,
+                stop,
+                step_after_tool=step_after_tool,
+                kind=kind,
+                delay_sec=0,
+            )
+        else:
+            _cancel_speak_fallback(turn)
+            turn.speak_fallback = asyncio.create_task(
+                _fallback_speak_after_tool(
+                    session,
+                    send_lock,
+                    ws,
+                    ws_lock,
+                    call_id,
+                    telemetry,
+                    cursor,
+                    turn,
+                    stop,
+                    step_after_tool=step_after_tool,
+                    kind=kind,
+                    delay_sec=delay,
+                )
             )
 
 
@@ -1031,6 +1243,7 @@ async def _handle_server_message(
     cancelled: set[str],
     cursor: _Cursor,
     on_end_accepted: Callable[[int, dict], Awaitable[None] | None] | None = None,
+    stop: asyncio.Event | None = None,
 ) -> bool:
     """Handle one Live server message. Return False when the session should stop."""
     cancellation = getattr(response, "tool_call_cancellation", None)
@@ -1127,6 +1340,7 @@ async def _handle_server_message(
             cursor,
             state,
             on_end_accepted=on_end_accepted,
+            stop=stop,
         )
         if not telemetry.get("end_requested"):
             _arm_waiting_reply(state, speech_end_waiting=False)
@@ -1185,6 +1399,7 @@ async def _gemini_loop(
                     cancelled,
                     cursor,
                     on_end_accepted,
+                    stop,
                 )
                 if not keep_going:
                     stop.set()
@@ -1371,6 +1586,7 @@ async def _browser_loop(
     state: _TurnState,
     cursor: _Cursor,
     recorder: audio_recorder.CallAudioRecorder,
+    on_end_accepted: Callable[[int, dict], Awaitable[None] | None] | None = None,
 ) -> None:
     try:
         while not stop.is_set():
@@ -1434,22 +1650,20 @@ async def _browser_loop(
             elif kind == "speech_end":
                 _cancel_silence_close(state, telemetry)
                 now_ts = time.time()
-                if _question_already_spoken(state, cursor.state):
-                    try:
-                        db.append_call_event(call_id, "speech_end", "already_spoken")
-                    except Exception:
-                        pass
-                else:
-                    if not state.bot_speaking and now_ts >= state.playback_ends_at - 0.1:
-                        if not state.awaiting_bot_reply:
-                            _arm_waiting_reply(
-                                state, speech_end_waiting=True, now_ts=now_ts
-                            )
-                        state.quiet_from = max(now_ts, state.playback_ends_at)
-                    try:
-                        db.append_call_event(call_id, "speech_end", "")
-                    except Exception:
-                        pass
+                already = _question_already_spoken(state, cursor.state)
+                playback_done = (
+                    not state.bot_speaking and now_ts >= state.playback_ends_at - 0.1
+                )
+                if playback_done and not already and not state.awaiting_bot_reply:
+                    _arm_waiting_reply(state, speech_end_waiting=True, now_ts=now_ts)
+                if playback_done:
+                    state.quiet_from = max(now_ts, state.playback_ends_at)
+                try:
+                    db.append_call_event(
+                        call_id, "speech_end", "already_spoken" if already else ""
+                    )
+                except Exception:
+                    pass
             elif kind == "nudge":
                 if state.awaiting_bot_reply:
                     state.last_user_turn_ts = time.time()
@@ -1505,6 +1719,65 @@ async def _browser_loop(
                 await _emit(
                     ws, ws_lock, call_id, telemetry, "user_transcript", text
                 )
+            elif kind == "quick_reply":
+                if telemetry.get("end_requested") or cursor.state.get("phase") != "asking":
+                    continue
+                outcome = str(payload.get("outcome") or "").strip().lower()
+                if outcome not in ("clear", "concern"):
+                    continue
+                if not expect_yes_no(cursor.state):
+                    continue
+                if payload.get("step") != _current_step(cursor.state):
+                    continue
+                said = "नहीं।" if outcome == "clear" else "हाँ।"
+                qid = str(cursor.state.get("active_qid") or "")
+                db.append_transcript(call_id, "user", said, qid=qid)
+                await _send_json(
+                    ws, ws_lock, {"type": "transcript", "role": "user", "text": said}
+                )
+                state.last_user_text = said
+                await _emit(ws, ws_lock, call_id, telemetry, "user_transcript", said)
+                tool_name = "quick_reply_clear" if outcome == "clear" else "quick_reply_concern"
+                telemetry["tool_calls"] = int(telemetry.get("tool_calls") or 0) + 1
+                await _emit(ws, ws_lock, call_id, telemetry, "tool_call", tool_name)
+                cursor.state = apply_turn(cursor.state, outcome)
+                try:
+                    db.save_cursor_state(call_id, cursor.state)
+                except Exception:
+                    pass
+                await _send_json(ws, ws_lock, {"type": "clear"})
+                await _send_json(ws, ws_lock, _question_state_payload(cursor.state))
+                if cursor.state.get("phase") == "closing":
+                    await _mark_closing(
+                        cursor,
+                        str(cursor.state.get("close_reason") or "complete"),
+                        ws,
+                        ws_lock,
+                        call_id,
+                        telemetry,
+                        on_end_accepted,
+                    )
+                    cue_kind = "close"
+                else:
+                    _arm_waiting_reply(state, speech_end_waiting=False)
+                    state.quiet_from = 0.0
+                    cue_kind = "speak"
+                _cancel_speak_fallback(state)
+                ok = await _send_realtime_safe(
+                    session,
+                    send_lock,
+                    state,
+                    stop,
+                    text=_speak_cue_text(cursor.state, cue_kind),
+                )
+                if not ok:
+                    await _report_error(
+                        ws,
+                        ws_lock,
+                        call_id,
+                        telemetry,
+                        "Could not speak the next question",
+                    )
             elif kind == "hangup":
                 stop.set()
                 return
@@ -1763,14 +2036,7 @@ async def handle_gemini_ws(
             )
         )
         try:
-            async with send_lock:
-                await session.send_realtime_input(
-                    text=(
-                        "SYSTEM CUE (from the app, not the mother): speak only this Hindi, then wait. "
-                        "Do not call a tool yet.\n"
-                        + _say_hindi(cursor.state)
-                    )
-                )
+            await _send_greeting(session, send_lock, ws, ws_lock, cursor)
         except Exception:
             stop.set()
             await _report_error(
@@ -1781,6 +2047,7 @@ async def handle_gemini_ws(
                 "Gemini Live greeting failed",
             )
             return
+        await _send_json(ws, ws_lock, _question_state_payload(cursor.state))
 
         browser_task = asyncio.create_task(
             _browser_loop(
@@ -1794,6 +2061,7 @@ async def handle_gemini_ws(
                 state,
                 cursor,
                 recorder,
+                on_end_accepted,
             )
         )
         done, pending = await asyncio.wait(
@@ -1806,6 +2074,7 @@ async def handle_gemini_ws(
         await asyncio.gather(*done, *pending, return_exceptions=True)
     finally:
         stop.set()
+        _cancel_speak_fallback(state)
         await _stop_tasks(gemini_task, browser_task, watchdog_task)
         if session_ctx is not None:
             try:

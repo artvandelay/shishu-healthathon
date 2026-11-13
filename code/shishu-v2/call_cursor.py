@@ -9,6 +9,7 @@ unknown and the cursor moves on.
 from __future__ import annotations
 
 import copy
+import re
 
 from triage_catalog import FOLLOWUP_HI, active_specs, get_spec, spine_ids
 
@@ -20,6 +21,9 @@ _OUTCOMES = frozenset({
 _MARITAL = frozenset({"married", "about_to_marry", "unmarried"})
 _NOT_MARRIED = frozenset({"unmarried", "about_to_marry"})
 _ANSWERED = frozenset({"clear", "concern", "unknown"})
+_DEMOGRAPHIC_SKIP = frozenset({
+    "unmarried", "about_to_marry", "no_children", "ever_pregnant_no",
+})
 _EARLY = frozenset({"intro_name", "intro_married", "intro_children"})
 _NO_YES = _EARLY
 _BARE_NAMES = frozenset({
@@ -28,7 +32,35 @@ _BARE_NAMES = frozenset({
 })
 _ALL_CHILDREN = frozenset({"both", "all", "दोनों", "सभी", "सबको", "तीनों", "चारों"})
 _OLDEST = frozenset({"oldest", "बड़े", "बड़ा", "बड़ी", "बड़े वाले", "पहले", "पहला"})
-_MIDDLE = frozenset({"middle", "बीच", "बीच वाले", "बीच वाला", "बीच वाली", "मंझले"})
+_MIDDLE = frozenset({
+    "middle", "बीच", "बीच वाले", "बीच वाला", "बीच वाली", "मंझले", "मंझला", "मंझली", "मंझल",
+})
+_MIDDLE_STEMS = ("middle", "बीच", "मंझल")
+_NUMBER_WORDS = (
+    ("ग्यारह", "11"),
+    ("बारह", "12"),
+    ("ढाई", "2.5"),
+    ("डेढ़", "1.5"),
+    ("आधे", "0.5"),
+    ("आधा", "0.5"),
+    ("पाँच", "5"),
+    ("पांच", "5"),
+    ("चार", "4"),
+    ("तीन", "3"),
+    ("सात", "7"),
+    ("आठ", "8"),
+    ("नौ", "9"),
+    ("दस", "10"),
+    ("छः", "6"),
+    ("छह", "6"),
+    ("एक", "1"),
+    ("दो", "2"),
+)
+_DEVANAGARI = "0-9A-Za-z_\u0900-\u097F"
+_AGE_RE = re.compile(
+    rf"(\d+(?:\.\d+)?)\s*(महीने|महीना|months|month|साल|वर्ष|years|year|yr)(?![{_DEVANAGARI}])",
+    re.IGNORECASE,
+)
 _SECOND = frozenset({"दूसरे", "दूसरा"})
 _THIRD = frozenset({"तीसरे", "तीसरा"})
 _YOUNGEST = frozenset({
@@ -273,10 +305,21 @@ def _is_retract(state: dict, outcome: str, child_ref: str) -> bool:
     )
 
 
+def _close_concern_kept(state: dict) -> bool:
+    prior = state["answers"].get("close_anything_else") or {}
+    return prior.get("state") == "concern" and bool(str(prior.get("notes") or "").strip())
+
+
 def _retract(state: dict) -> dict:
     qid = state["active_qid"]
     if qid == "ever_pregnant":
         state["profile"]["ever_pregnant"] = False
+    if qid == "close_anything_else" and _close_concern_kept(state):
+        state["pending_followup_idx"] = None
+        state["step_attempts"] = 0
+        _recompute(state)
+        _advance(state)
+        return state
     state["answers"][qid] = _blank("clear")
     state["pending_followup_idx"] = None
     state["step_attempts"] = 0
@@ -328,6 +371,11 @@ def _resolve_close_detail(state: dict, outcome: str, note: str) -> dict:
         state["close_rounds"] = int(state.get("close_rounds") or 0) + 1
         return state
     if outcome in ("clear", "unknown") and not text:
+        if _close_concern_kept(state):
+            state["pending_followup_idx"] = None
+            state["step_attempts"] = 0
+            _advance(state)
+            return state
         _write_answer(state, "close_anything_else", outcome, "", [])
         _advance(state)
         return state
@@ -555,23 +603,73 @@ def _which_child_hi(children: list) -> str:
     return f"यह किस बच्चे की बात है — {listed}?"
 
 
-def _age_from_ref(ref: str) -> float | None:
-    text = ref.strip().casefold()
-    months = False
-    for suffix in ("महीने", "महीना", "months", "month"):
-        if text.endswith(suffix):
-            text = text[: -len(suffix)].strip()
-            months = True
-            break
-    if not months:
-        for suffix in ("साल", "वर्ष", "years", "year", "yr"):
-            if text.endswith(suffix):
-                text = text[: -len(suffix)].strip()
-                break
-    if not text or any(ch != "." and not ch.isdigit() for ch in text):
+def _digits_for_number_words(text: str) -> str:
+    for word, digits in _NUMBER_WORDS:
+        text = re.sub(
+            rf"(?<![{_DEVANAGARI}]){re.escape(word)}(?![{_DEVANAGARI}])",
+            digits,
+            text,
+        )
+    return text
+
+
+def _ref_tokens(ref: str) -> list[str]:
+    """Split on spaces and punctuation. Keep Devanagari vowel signs on the word."""
+    return [part for part in re.split(rf"[^{_DEVANAGARI}]+", ref.casefold()) if part]
+
+
+def _hit(tokens: list[str], words: frozenset[str], prefixes: tuple[str, ...] = ()) -> bool:
+    for tok in tokens:
+        if tok in words:
+            return True
+        for prefix in prefixes:
+            if tok.startswith(prefix):
+                return True
+    return False
+
+
+def _pool_for_sex(ordered: list, tokens: list[str]) -> list:
+    male = _hit(tokens, _MALE)
+    female = _hit(tokens, _FEMALE)
+    if male == female:
+        return ordered
+    want = "male" if male else "female"
+    subset = [child for child in ordered if child.get("sex") == want]
+    return subset or ordered
+
+
+def _ordinal_id(pool: list, tokens: list[str]) -> str | None:
+    if not pool:
         return None
-    value = float(text)
-    return value / 12 if months else value
+    if _hit(tokens, _MIDDLE, _MIDDLE_STEMS):
+        return pool[len(pool) // 2]["id"]
+    if _hit(tokens, _OLDEST):
+        return pool[0]["id"]
+    if _hit(tokens, _SECOND) and len(pool) >= 2:
+        return pool[1]["id"]
+    if _hit(tokens, _THIRD) and len(pool) >= 3:
+        return pool[2]["id"]
+    if _hit(tokens, _YOUNGEST):
+        return pool[-1]["id"]
+    return None
+
+
+def _age_from_ref(ref: str) -> float | None:
+    """Age in years. Number and unit may sit anywhere in a longer phrase."""
+    text = " ".join((ref or "").strip().casefold().split())
+    if not text:
+        return None
+    text = _digits_for_number_words(text)
+    match = _AGE_RE.search(text)
+    if match:
+        value = float(match.group(1))
+        unit = match.group(2).casefold()
+        if unit.startswith("मही") or unit.startswith("month"):
+            return value / 12
+        return value
+    if re.fullmatch(r"\d+(?:\.\d+)?", text):
+        return float(text)
+    return None
 
 
 def _resolve_child_ids(state: dict, child_ref: str) -> list[str]:
@@ -593,26 +691,33 @@ def _resolve_child_ids(state: dict, child_ref: str) -> list[str]:
     ]
     if len(named) == 1:
         return [named[0]["id"]]
+    tokens = _ref_tokens(ref)
+    if any(tok in _ALL_CHILDREN for tok in tokens):
+        return [child["id"] for child in ordered]
+    for tok in tokens:
+        if tok in by_id:
+            return [tok]
+    named_tokens = [
+        child for child in children
+        if (child.get("name") or "").strip().casefold() in tokens
+    ]
+    if len(named_tokens) == 1:
+        return [named_tokens[0]["id"]]
     age = _age_from_ref(ref)
     if age is not None:
-        matched = [child["id"] for child in ordered if abs(float(child["age_years"]) - age) < 0.05]
+        matched = [
+            child["id"] for child in ordered if abs(float(child["age_years"]) - age) < 0.05
+        ]
         if matched:
             return matched
-    if token in _OLDEST and ordered:
-        return [ordered[0]["id"]]
-    if token in _MIDDLE and ordered:
-        return [ordered[len(ordered) // 2]["id"]]
-    if token in _SECOND and len(ordered) >= 2:
-        return [ordered[1]["id"]]
-    if token in _THIRD and len(ordered) >= 3:
-        return [ordered[2]["id"]]
-    if token in _YOUNGEST and ordered:
-        return [ordered[-1]["id"]]
+    picked = _ordinal_id(_pool_for_sex(ordered, tokens), tokens)
+    if picked:
+        return [picked]
     males = [child for child in children if child.get("sex") == "male"]
     females = [child for child in children if child.get("sex") == "female"]
-    if token in _MALE and len(males) == 1:
+    if _hit(tokens, _MALE) and len(males) == 1:
         return [males[0]["id"]]
-    if token in _FEMALE and len(females) == 1:
+    if _hit(tokens, _FEMALE) and len(females) == 1:
         return [females[0]["id"]]
     return []
 
@@ -680,8 +785,10 @@ def _blank(status: str, note: str = "", child_ids: list | None = None, followups
 def _recompute(state: dict) -> None:
     for spec in active_specs():
         answer = state["answers"].get(spec.id)
-        if _is_skipped(spec, state):
-            if answer and answer.get("state") in _ANSWERED:
+        hits = _skip_hits(spec, state)
+        if hits:
+            demographic = any(hit in _DEMOGRAPHIC_SKIP for hit in hits)
+            if answer and answer.get("state") in _ANSWERED and not demographic:
                 continue
             state["answers"][spec.id] = _blank("not_applicable")
         elif answer and answer.get("state") == "not_applicable":
