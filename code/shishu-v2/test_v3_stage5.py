@@ -110,26 +110,36 @@ class CatalogTests(unittest.TestCase):
 
     def test_module_followups_ask_the_detail_before_moving_on(self):
         expected = {
-            "birth_nicu": "nicu_reason_days",
-            "birth_term": "term_how_early",
-            "ill_admissions": "admissions_count_reason",
-            "body_transfusion": "transfusion_count",
-            "fam_infant_death": "infant_death_age_cause",
+            "birth_nicu": ("nicu_reason", "nicu_days"),
+            "birth_term": ("term_how_early",),
+            "ill_admissions": ("admissions_count", "admissions_reason"),
+            "body_transfusion": ("transfusion_count",),
+            "fam_miscarriage": ("miscarriage_count", "miscarriage_month"),
+            "fam_infant_death": ("infant_death_age", "infant_death_cause"),
         }
-        for qid, fid in expected.items():
-            self.assertEqual(get_spec(qid).followups, (fid,), qid)
-            self.assertTrue(FOLLOWUP_HI[fid].strip(), fid)
+        for qid, follow in expected.items():
+            self.assertEqual(get_spec(qid).followups, follow, qid)
+            for fid in follow:
+                self.assertTrue(FOLLOWUP_HI[fid].strip(), fid)
         state = cursor_tests._profile(children=[cursor_tests._child(4, "male")])
         state = cursor_tests._clear_until(state, "birth_nicu")
         state = apply_turn(state, "concern", note="सांस की वजह से")
         self.assertEqual(state["pending_followup_idx"], 0)
+        self.assertIn("किस वजह से", prompt_directive(state))
+        state = apply_turn(state, "concern", note="सांस")
+        self.assertEqual(state["pending_followup_idx"], 1)
         self.assertIn("कितने दिन", prompt_directive(state))
-        state = apply_turn(state, "concern", note="तीन दिन")
-        self.assertNotEqual(state["pending_followup_idx"], 0)
         self.assertEqual(
-            state["answers"]["birth_nicu"]["followups"]["nicu_reason_days"]["note"],
+            state["answers"]["birth_nicu"]["followups"]["nicu_reason"]["note"],
+            "सांस",
+        )
+        state = apply_turn(state, "concern", note="तीन दिन")
+        self.assertIsNone(state["pending_followup_idx"])
+        self.assertEqual(
+            state["answers"]["birth_nicu"]["followups"]["nicu_days"]["note"],
             "तीन दिन",
         )
+        self.assertNotEqual(state["active_qid"], "birth_nicu")
 
 
 class CloseTests(unittest.TestCase):
@@ -204,7 +214,7 @@ class ClarifyAndDeadAirTests(unittest.TestCase):
             body = session.sent[0][1][0].response
             self.assertNotIn("wait", body)
             self.assertFalse(turn.bot_replied_since_user)
-            self.assertEqual(gemini_live._TOOL_SPEAK_FALLBACK_SEC, 0.9)
+            self.assertEqual(gemini_live._TOOL_SPEAK_FALLBACK_SEC, 2.5)
             await turn.speak_fallback
             return session
 

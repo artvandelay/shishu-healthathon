@@ -1,7 +1,8 @@
 """Wall-clock stereo WAV for one call. Channel 1 is the mother, channel 2 is SHISHU.
 
-save() is synchronous and does the mix off the event-loop thread. The live
-session calls it with asyncio.to_thread.
+save() is synchronous and does the resample and the mix off the event-loop
+thread. The live session calls it with asyncio.to_thread. _remember only
+stores the raw chunk.
 """
 
 import os
@@ -92,8 +93,8 @@ class CallAudioRecorder:
         self.call_id = call_id
         self.output_dir = output_dir
         os.makedirs(self.output_dir, exist_ok=True)
-        self._user: list[tuple[int, array]] = []
-        self._bot: list[tuple[int, array]] = []
+        self._user: list[tuple[float, bytes, int]] = []
+        self._bot: list[tuple[float, bytes, int]] = []
         self._lock = threading.Lock()
         self._closed = False
         self._started = time.monotonic()
@@ -107,31 +108,42 @@ class CallAudioRecorder:
         end = self._ended if self._ended is not None else time.monotonic()
         return max(0, int(round(end - self._started)))
 
-    def _remember(self, bucket: list[tuple[int, array]], pcm_bytes: bytes, sample_rate: int) -> None:
+    def _remember(self, bucket: list[tuple[float, bytes, int]], pcm_bytes: bytes, sample_rate: int) -> None:
         if self._closed or not pcm_bytes:
             return
-        resampled = _resample_int16_mono(pcm_bytes, sample_rate, TARGET_RATE)
-        if len(resampled) % 2 != 0:
-            resampled = resampled[:-1]
-        if not resampled:
-            return
-        samples = array("h")
-        samples.frombytes(resampled)
-        if not samples:
-            return
+        elapsed = time.monotonic() - self._started
+        pcm = bytes(pcm_bytes)
+        rate = int(sample_rate)
         with self._lock:
             if self._closed:
                 return
-            start = int(round((time.monotonic() - self._started) * TARGET_RATE))
-            if start < 0:
-                start = 0
-            bucket.append((start, samples))
+            if elapsed < 0:
+                elapsed = 0.0
+            bucket.append((float(elapsed), pcm, rate))
 
     def add_user_pcm(self, pcm_bytes: bytes, sample_rate: int) -> None:
         self._remember(self._user, pcm_bytes, sample_rate)
 
     def add_bot_pcm(self, pcm_bytes: bytes, sample_rate: int = 24000) -> None:
         self._remember(self._bot, pcm_bytes, sample_rate)
+
+    def _placed(self, raw: list[tuple[float, bytes, int]]) -> list[tuple[int, array]]:
+        placed: list[tuple[int, array]] = []
+        for elapsed, pcm, rate in raw:
+            resampled = _resample_int16_mono(pcm, rate, TARGET_RATE)
+            if len(resampled) % 2 != 0:
+                resampled = resampled[:-1]
+            if not resampled:
+                continue
+            samples = array("h")
+            samples.frombytes(resampled)
+            if not samples:
+                continue
+            start = int(round(float(elapsed) * TARGET_RATE))
+            if start < 0:
+                start = 0
+            placed.append((start, samples))
+        return placed
 
     def save(self) -> tuple[str, int]:
         self.mark_ended()
@@ -141,8 +153,8 @@ class CallAudioRecorder:
             bot_chunks = list(self._bot)
             elapsed = self.wall_seconds()
 
-        user = _timeline(user_chunks)
-        bot = _timeline(bot_chunks)
+        user = _timeline(self._placed(user_chunks))
+        bot = _timeline(self._placed(bot_chunks))
         frames = max(elapsed * TARGET_RATE, len(user), len(bot), 1)
         if len(user) < frames:
             user.extend([0] * (frames - len(user)))

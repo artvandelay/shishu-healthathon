@@ -24,10 +24,10 @@ Real staging calls exposed 5 structural flaws in v3 (`next`) that v4 eliminates 
      - **Pre-Answered Detail Absorption**: If the mother states the child and/or follow-up detail in her initial `"हाँ"` sentence, `apply_turn` absorbs `child_ref` and `followup_answered=True` without re-asking what she already said.
 4. **Full N-child support (including middle children — `बीच वाले`)**:
    - v3 hardcoded 2 children (*"बड़े वाले या छोटे वाले?"*) and broke on 3 children (`2y, 5y, 8y`).
-   - **v4 Rule**: Both `question_hi` (1 child) and `question_multi_hi` (2+ children) live explicitly in `triage_catalog.py` (zero brittle Hindi regex stitching). `_which_child_hi(children)` dynamically lists **all** children by age/sex/name in descending age order, and `_resolve_child_ids` resolves `child_id`, exact age (`5 साल`), ordinals (`बड़े/पहले`, **`बीच वाले/मंझले/दूसरे`**, `छोटे/तीसरे/आखिरी`), unique sex (`बेटा`/`बेटी`), name, and `दोनों/सभी`.
+   - **v4 Rule**: Both `question_hi` (1 child) and `question_multi_hi` (2+ children) live explicitly in `triage_catalog.py` (zero brittle Hindi regex stitching). `_which_child_hi(children)` dynamically lists **all** children by age/sex/name in descending age order. With 2+ children the live model receives `children_roster` and must pass an exact `id` (`child_1`..`child_n`) or `"all"`. `_resolve_child_ids` is closed-world: that exact id, an exact stored name, an exact ordinal token (`बड़े`/`बीच वाले`/`मंझले`/`दूसरे`/`तीसरे`/`छोटे`), a unique sex token (`बेटा`/`बेटी`), or `दोनों`/`सभी`. No age regex.
 5. **Clean Live Voice Turn-Taking (zero self-interruptions, pause-safe VAD)**:
    - v3 put `"wait": True` in `FunctionResponse` (stalling audio in Call #3) and then fired `send_realtime_input` 1ms after `send_tool_response` (causing 26 self-interruptions in Call #8).
-   - **v4 Rule**: `FunctionResponse` omits `"wait": True` and carries a direct speak directive; a fallback `SYSTEM CUE` fires **only** if `bot_first_audio` has not arrived after `0.9s`. VAD uses `vad_silence_ms = 1000` + `vad_end_sensitivity = "LOW"` so mid-sentence pauses aren't chopped in half, and `speech_end` always refreshes `quiet_from` so 15s check-in / 30s silence close never dies.
+   - **v4 Rule**: `FunctionResponse` omits `"wait": True` and carries a direct speak directive. A silent tool turn speaks on Gemini's `turn_complete` (same step, bot has not started audio, call still open). A `2.5s` `SYSTEM CUE` remains only as a dead-socket safety net. A `quick_reply` during bot speech drops the rest of that sentence, and a late `record_turn` for the same spoken answer is held as `stale_turn`. VAD uses `vad_silence_ms = 1000` + `vad_end_sensitivity = "LOW"` so mid-sentence pauses aren't chopped in half, and `speech_end` always refreshes `quiet_from` so 15s check-in / 30s silence close never dies.
 
 ---
 
@@ -93,7 +93,8 @@ Profile fields in `state["profile"]`:
 |---|---|
 | `operation_reason` | ऑपरेशन किस वजह से करना पड़ा था? |
 | `term_how_early` | बच्चा पूरे समय से कितने हफ्ते या महीने पहले पैदा हुआ था? |
-| `nicu_reason_days` | काँच के बक्से (NICU) में क्यों रखना पड़ा, और कितने दिन रहे? |
+| `nicu_reason` | काँच के बक्से (NICU) में किस वजह से रखना पड़ा था? |
+| `nicu_days` | वहाँ कितने दिन रखना पड़ा था? |
 | `jaundice_days` | नीली लाइट में कितने दिन रखना पड़ा था? |
 | `sudden_detail` | यह कब हुआ था और डॉक्टर ने क्या बताया था? |
 | `fits_onset` | झटके पहली बार किस उम्र में आए थे? |
@@ -101,13 +102,16 @@ Profile fields in `state["profile"]`:
 | `transfusion_count` | खून कितनी बार चढ़ाना पड़ा है? |
 | `fracture_count_or_bowing` | हड्डी कितनी बार टूटी, या पैर टेढ़े होने की बात है? |
 | `urine_or_stone_detail` | बार-बार पेशाब-प्यास की बात है, या पथरी या गुर्दे की दिक्कत? |
-| `admissions_count_reason` | कितनी बार भर्ती होना पड़ा, और किस वजह से? |
+| `admissions_count` | बच्चे को कितनी बार अस्पताल में भर्ती करना पड़ा है? |
+| `admissions_reason` | किस बीमारी या वजह से भर्ती करना पड़ा था? |
 | `preg_cond_detail` | बीपी, शुगर या थायरॉइड में से क्या था, और क्या डिलीवरी के बाद भी रहा? |
 | `scan_detail` | स्कैन में क्या दिक्कत बताई गई थी? |
 | `delivery_detail` | डिलीवरी के समय क्या दिक्कत आई थी? |
 | `related_how` | आप दोनों का शादी से पहले क्या रिश्ता था? |
-| `miscarriage_count` | ऐसा कितनी बार हुआ, और कितने महीने की प्रेग्नेंसी में? |
-| `infant_death_age_cause` | उस बच्चे की उम्र क्या थी, और आपसे क्या रिश्ता था? |
+| `miscarriage_count` | गर्भ कितनी बार गिरा था? |
+| `miscarriage_month` | यह कितने महीने की प्रेग्नेंसी में हुआ था? |
+| `infant_death_age` | उस बच्चे की उम्र कितनी थी, और आपसे क्या रिश्ता था? |
+| `infant_death_cause` | क्या मौत की कोई वजह पता चली थी? |
 | `fam_who` | परिवार में यह दिक्कत किसको है — आपसे उनका क्या रिश्ता है? |
 | `bp_who` | यह सगे रिश्तेदार (जैसे माता-पिता, भाई-बहन) को हुआ, या दूर के रिश्तेदार को? |
 | `bp_age` | उन्हें यह किस उम्र में हुआ था? |
@@ -128,7 +132,7 @@ Profile fields in `state["profile"]`:
 |---|---|---|---|---|---|---|---|
 | 1 | `birth_mode_detail` | `birth` | `Q03` | `no_children` | क्या बच्चे का जन्म ऑपरेशन (सिजेरियन) से हुआ था? | क्या आपके किसी भी बच्चे का जन्म ऑपरेशन (सिजेरियन) से हुआ था? | `operation_reason` |
 | 2 | `birth_term` | `birth` | `Q03` | `no_children` | क्या बच्चे का जन्म समय से बहुत पहले (9 महीने से काफी पहले) हुआ था? | क्या आपके किसी भी बच्चे का जन्म समय से बहुत पहले (9 महीने से काफी पहले) हुआ था? | `term_how_early` |
-| 3 | `birth_nicu` | `birth` | `Q03` | `no_children` | क्या जन्म के बाद बच्चे को काँच के बक्से या बच्चों के ICU (NICU) में रखना पड़ा था? | क्या जन्म के बाद आपके किसी भी बच्चे को काँच के बक्से या बच्चों के ICU (NICU) में रखना पड़ा था? | `nicu_reason_days` |
+| 3 | `birth_nicu` | `birth` | `Q03` | `no_children` | क्या जन्म के बाद बच्चे को काँच के बक्से या बच्चों के ICU (NICU) में रखना पड़ा था? | क्या जन्म के बाद आपके किसी भी बच्चे को काँच के बक्से या बच्चों के ICU (NICU) में रखना पड़ा था? | `nicu_reason`, `nicu_days` |
 | 4 | `birth_jaundice` | `birth` | `Q03` | `no_children` | क्या जन्म के बाद पीलिया के लिए बच्चे को नीली लाइट में रखना पड़ा था? | क्या जन्म के बाद पीलिया के लिए आपके किसी भी बच्चे को नीली लाइट में रखना पड़ा था? | `jaundice_days` |
 | 5 | `birth_sudden` | `birth` | `Q03` | `no_children` | क्या जन्म के बाद बच्चा अचानक बहुत बीमार पड़ा और इमरजेंसी में ले जाना पड़ा? | क्या जन्म के बाद आपका कोई भी बच्चा अचानक बहुत बीमार पड़ा और इमरजेंसी में ले जाना पड़ा? | `sudden_detail` |
 | 6 | `birth_cord_3weeks` | `birth` | `Q03` | `no_children` | क्या जन्म के बाद बच्चे की नाल गिरने में 3 हफ्ते से ज़्यादा लगे थे? | क्या जन्म के बाद आपके किसी भी बच्चे की नाल गिरने में 3 हफ्ते से ज़्यादा लगे थे? | `()` |
@@ -160,7 +164,7 @@ Profile fields in `state["profile"]`:
 | 32 | `body_puberty` | `body` | `Q10` | `no_children`, `all_under_10` | क्या 10 साल से बड़े बच्चे में बढ़ती उम्र के बदलाव बहुत जल्दी या बहुत देर से आए हैं? | क्या 10 साल से बड़े आपके किसी बच्चे में बढ़ती उम्र के बदलाव बहुत जल्दी या बहुत देर से आए हैं? | `()` |
 | 33 | `ill_fasting` | `illness` | `Q01` | `no_children` | क्या खाना छूटने या हल्की बीमारी में बच्चा बहुत सुस्त पड़ जाता है या बार-बार उल्टी करता है? | क्या खाना छूटने या हल्की बीमारी में आपका कोई भी बच्चा बहुत सुस्त पड़ जाता है या बार-बार उल्टी करता है? | `()` |
 | 34 | `ill_odor` | `illness` | `Q01` | `no_children` | क्या बच्चे के पेशाब या पॉटी में कभी अजीब बदबू आती है? | क्या आपके किसी भी बच्चे के पेशाब या पॉटी में कभी अजीब बदबू आती है? | `()` |
-| 35 | `ill_admissions` | `illness` | `Q03` | `no_children` | क्या बच्चे को बार-बार अस्पताल में भर्ती करना पड़ा है? | क्या आपके किसी भी बच्चे को बार-बार अस्पताल में भर्ती करना पड़ा है? | `admissions_count_reason` |
+| 35 | `ill_admissions` | `illness` | `Q03` | `no_children` | क्या बच्चे को बार-बार अस्पताल में भर्ती करना पड़ा है? | क्या आपके किसी भी बच्चे को बार-बार अस्पताल में भर्ती करना पड़ा है? | `admissions_count`, `admissions_reason` |
 | 36 | `ill_iv_antibiotics` | `illness` | `Q03` | `no_children` | क्या बार-बार इंफेक्शन के लिए बच्चे को नस में (IV ड्रिप से) दवा लगी है? | क्या बार-बार इंफेक्शन के लिए आपके किसी भी बच्चे को नस में (IV ड्रिप से) दवा लगी है? | `()` |
 | 37 | `preg_conditions` | `pregnancy` | `Antenatal` | `unmarried`, `about_to_marry`, `ever_pregnant_no` | क्या किसी प्रेग्नेंसी में आपको हाई बीपी, शुगर या थायरॉइड रहा था? | *(empty)* | `preg_cond_detail` |
 | 38 | `preg_scan` | `pregnancy` | `Antenatal` | `unmarried`, `about_to_marry`, `ever_pregnant_no` | क्या किसी प्रेग्नेंसी के सोनोग्राफी स्कैन में कोई खराबी बताई गई थी? | *(empty)* | `scan_detail` |
@@ -168,8 +172,8 @@ Profile fields in `state["profile"]`:
 | 40 | `preg_delivery` | `pregnancy` | `Antenatal` | `unmarried`, `about_to_marry`, `ever_pregnant_no` | क्या किसी डिलीवरी के समय कोई बड़ी दिक्कत आई थी? | *(empty)* | `delivery_detail` |
 | 41 | `preg_thalassemia` | `pregnancy` | `Antenatal` | `()` | क्या आपकी या आपके पति की थैलेसीमिया खून जाँच में कभी माइनर या ट्रेट जैसी कोई दिक्कत बताई गई? | *(empty — dynamic per Sec 3)* | `()` |
 | 42 | `fam_related` | `family` | `Q11` | `unmarried` | क्या आप और आपके पति शादी से पहले आपस में रिश्तेदार थे, जैसे कज़िन या एक ही खानदान से? | *(empty — dynamic per Sec 3)* | `related_how` |
-| 43 | `fam_miscarriage` | `family` | `Q12` | `unmarried`, `about_to_marry`, `ever_pregnant_no` | क्या आपका कभी गर्भ गिरा है (मिसकैरेज), या गिरवाना पड़ा था? | *(empty)* | `miscarriage_count` |
-| 44 | `fam_infant_death` | `family` | `Q12` | `()` | क्या परिवार में किसी छोटे बच्चे की 1 साल से कम उम्र में मौत हुई है? | *(empty)* | `infant_death_age_cause` |
+| 43 | `fam_miscarriage` | `family` | `Q12` | `unmarried`, `about_to_marry`, `ever_pregnant_no` | क्या आपका कभी गर्भ गिरा है (मिसकैरेज), या गिरवाना पड़ा था? | *(empty)* | `miscarriage_count`, `miscarriage_month` |
+| 44 | `fam_infant_death` | `family` | `Q12` | `()` | क्या परिवार में किसी छोटे बच्चे की 1 साल से कम उम्र में मौत हुई है? | *(empty)* | `infant_death_age`, `infant_death_cause` |
 | 45 | `fam_fits_delay` | `family` | `Q11` | `()` | क्या परिवार में किसी बच्चे या बड़े को झटके (फ़िट्स), देर से सीखने, या सीखी बात भूलने की समस्या है? | *(empty)* | `fam_who` |
 | 46 | `fam_transfusion` | `family` | `Q11` | `()` | क्या परिवार में किसी बच्चे या बड़े को बार-बार खून चढ़ाना पड़ता है? | *(empty)* | `fam_who` |
 | 47 | `fam_bleeding` | `family` | `Q11` | `()` | क्या परिवार में किसी बच्चे या बड़े को चोट पर ज़्यादा खून बहने की समस्या है? | *(empty)* | `fam_who` |
@@ -225,18 +229,19 @@ Profile fields in `state["profile"]`:
    - **Retraction (`outcome == "retract"`, OR `pending_followup_idx == -1` with `outcome == "clear"` and empty `child_ref`)**:
      - Overwrites `state["answers"][active_qid]` to `_blank("clear")`, clears `pending_followup_idx = None` and `step_attempts = 0`, runs `_recompute(state)`, and `_advance(state)`.
    - **Multi-child resolution (`_resolve_child_ids(state, child_ref)`)**:
-     - Supports `1..N` children sorted oldest-to-youngest (`ordered = sorted(children, key=lambda c: float(c["age_years"]), reverse=True)`):
+     - Closed world, no regex. The whole reference (whitespace-normalized) must match exactly. Children are sorted oldest-to-youngest (`ordered = sorted(children, key=lambda c: float(c["age_years"]), reverse=True)`).
        - `"all" / "both" / "दोनों" / "सभी" / "सबको" / "तीनों" / "चारों"` -> all child IDs.
-       - Exact `child_id` (`child_1`..`child_n`) or exact stored `child["name"]`.
-       - Age match (`"5"`, `"5 साल"`, `"6 महीने"`) -> matching child(ren) by `age_years`.
-       - Ordinals: `"oldest" / "बड़े" / "बड़ा" / "बड़ी" / "बड़े वाले" / "पहले" / "पहला"` -> `ordered[0]`; `"middle" / "बीच" / "बीच वाले" / "बीच वाला" / "बीच वाली" / "मंझले"` -> `ordered[len(ordered)//2]` (and when `len == 2`, `"दूसरे"/"छोटे"` -> `ordered[1]`; when `len >= 3`, `"दूसरे"/"दूसरा"` -> `ordered[1]`, `"तीसरे"/"तीसरा"` -> `ordered[2]`); `"youngest" / "छोटे" / "छोटा" / "छोटी" / "छोटे वाले" / "आखिरी" / "सबसे छोटा"` -> `ordered[-1]`.
-       - Unique sex match (`"बेटा" / "लड़का" / "boy"` when only 1 male; `"बेटी" / "लड़की" / "girl"` when only 1 female).
+       - Exact `child_id` (`child_1`..`child_n`) or exact stored `child["name"]` (casefolded).
+       - Exact ordinal token: `"oldest" / "बड़े" / "बड़ा" / "बड़ी" / "बड़े वाले" / "पहले" / "पहला"` -> `ordered[0]`; `"middle" / "बीच" / "बीच वाले" / "बीच वाला" / "बीच वाली" / "मंझले" / "मंझला" / "मंझली" / "मंझल"` -> `ordered[len(ordered)//2]`; `"दूसरे" / "दूसरा"` -> `ordered[1]` when `len >= 2`; `"तीसरे" / "तीसरा"` -> `ordered[2]` when `len >= 3`; `"youngest" / "छोटे" / "छोटा" / "छोटी" / "छोटे वाले" / "आखिरी" / "सबसे छोटा"` -> `ordered[-1]`.
+       - Unique sex token (`"बेटा" / "लड़का" / "boy"` when only 1 male; `"बेटी" / "लड़की" / "girl"` when only 1 female).
+     - `children_roster(state)` (only when `len(children) > 1`) is `[{"id", "rank", "age_label_hi", "sex", "name"}]` oldest-to-youngest, with `rank` `oldest` / `middle` / `youngest`. The live tool result includes it as `"children"`, and Gemini must pass that exact `id` or `"all"`.
      - Dynamic `_which_child_hi(children)` lists every child in `ordered` by `age_label_hi` (plus `बेटा/बेटी` or `name`), adding `(बीच वाले)` on the middle child when `len == 3`, e.g. `"यह किस बच्चे की बात है — 8 साल वाले, 5 साल वाले (बीच वाले), या 2 साल वाले?"`.
    - **FormBharo Bounded Retry Cap (`MAX_STEP_ATTEMPTS = 2`)**:
      - If `pending_followup_idx == -1` (`which_child`) receives an unresolvable reply (not retracted, not `unknown`, no matched child), increments `step_attempts`. On `step_attempts >= 2`, leaves `child_ids = []`, records `note` if any, and moves to `followups[0]` or `_advance(state)`.
      - If `pending_followup_idx >= 0` receives an empty/clarify non-answer twice (`step_attempts >= 2`), records `{"state": "unknown", "note": ""}` for that follow-up and advances to the next follow-up or question.
    - **Pre-Answered Follow-up Skip**:
-     - When `outcome == "concern"` on a main question and `(followup_answered is True and note.strip())` and `len(spec.followups) == 1`, stores `note` directly into `followups[spec.followups[0]]` so SHISHU does not re-ask a detail she just stated.
+     - When `outcome == "concern"` on a main question and `followup_answered` is True and `note.strip()` and `spec.followups`, store `note` on `followups[spec.followups[0]]`.
+     - If `len(spec.followups) > 1` and which-child is not pending, set `pending_followup_idx = 1` so the remaining follow-up is still asked. A single pre-answered follow-up advances. If which-child is still pending, `_after_child_known` skips the filled first follow-up and asks the next one.
    - **`close_anything_else` (`open_capture`)**:
      - If `outcome == "concern"` and `not note.strip()` (e.g. she tapped the `हाँ` button or said bare `"हाँ"`): sets `pending_followup_idx = 0` using follow-up `"open_concern_detail"` (`"जी बताइए, डॉक्टर के लिए क्या बात नोट करूँ?"`). When she speaks the concern note on that follow-up, stores it on `close_anything_else["notes"]` with `state = "concern"`, resets `pending_followup_idx = None`, increments `close_rounds`, and asks `"मैंने यह बात नोट कर ली। इसके अलावा कुछ और बताना चाहेंगी?"`.
      - If `outcome == "concern"` WITH `note.strip()`: appends `note` to `close_anything_else["notes"]`, increments `close_rounds`, and asks `"मैंने यह बात नोट कर ली। इसके अलावा कुछ और बताना चाहेंगी?"`.
@@ -249,13 +254,14 @@ Profile fields in `state["profile"]`:
 ## 6. Live Voice & Quick-Reply WebSocket Contract (`gemini_live.py` + `static/call.html` + `static/call.js`)
 
 ### 6.1 Clean Turn-Taking in `gemini_live.py`
-1. **No `"wait": True` & No 1ms Self-Interruption**:
-   - `_tool_body(state)` returns `{"result": "ok", "say": _say_hindi(state)}` (with `"stop": True` on closing, `"clarify": True` on clarify — **never** `"wait": True`).
-   - After `session.send_tool_response(...)`, do **not** immediately call `session.send_realtime_input(...)`. Instead, schedule an async check `0.9s` later: send `_speak_cue_text(...)` **only if** `not turn.bot_replied_since_user and _current_step(cursor.state) == step_after_tool and not stop.is_set()`.
+1. **No `"wait": True` & speak on `turn_complete`**:
+   - `_tool_body(state)` returns `{"result": "ok", "say": _say_hindi(state)}` (with `"stop": True` on closing, `"clarify": True` on clarify, and `"children": children_roster(state)` when there are 2+ children — **never** `"wait": True`).
+   - After a handled tool call, store `pending_speak_step` and `pending_speak_kind`. Do **not** send `send_realtime_input` in the same breath as `send_tool_response`. When `server_content.turn_complete` is true, if `pending_speak_step` is still `_current_step`, the bot has not spoken since the user, and the call is not stopping: cancel the fallback, clear `pending_speak_step`, and send `_speak_cue_text` immediately.
+   - `_TOOL_SPEAK_FALLBACK_SEC = 2.5` is only a dead-socket safety net if that `turn_complete` never arrives. Real bot audio and an accepted `quick_reply` clear `pending_speak_step`.
 2. **Pause-Safe VAD & Reliable Silence Check-In**:
    - Default `vad_silence_ms = "1000"` and `vad_end_sensitivity = "LOW"` in `db.py` + `gemini_live.py`.
    - On browser `{"type": "speech_end"}`: **always** set `state.quiet_from = max(now_ts, state.playback_ends_at)` when `not state.bot_speaking` (even when `_question_already_spoken` is `True`), so an untranscribed soft reply still triggers the 15s check-in instead of silent dead air.
-   - If a trailing user transcript arrives `<2.5s` after a follow-up just advanced `active_qid` and before `bot_first_audio` on the new `active_qid`, append that trailing text to `cursor.state["answers"][last_answered_qid]["notes"]` when `record_turn` is held (`not_spoken`), preserving split 2-part answers.
+   - PCM resampling for the stereo WAV happens inside `CallAudioRecorder.save()` (already on `asyncio.to_thread`). `_remember` only stores `(elapsed_sec, pcm_bytes, sample_rate)`.
 3. **Anytime `save_profile`**:
    - `_profile_kwargs(qid, args)` parses **any** non-empty field (`caller_name`, `marital_status`, `child_count`, `children`, `ever_pregnant`) regardless of `qid`, and `_marital()` maps `"no" / "nahi" / "नहीं" / "अभी नहीं" / "अविवाहित" / "कुंवारी"` -> `"unmarried"`.
 
@@ -269,9 +275,10 @@ Profile fields in `state["profile"]`:
     1. Ignore if `telemetry.get("end_requested")` or `cursor.state.get("phase") != "asking"`.
     2. Validate `payload.get("step") == _current_step(cursor.state)` and `expect_yes_no(cursor.state)` is `True` (idempotent: stale/double taps are safely ignored).
     3. Record transcript (`"नहीं।"` for `"clear"`, `"हाँ।"` for `"concern"`), emit `user_transcript` and `tool_call` (`quick_reply_clear` / `quick_reply_concern`).
-    4. Apply turn (`apply_turn(cursor.state, outcome)`), save cursor state, send `{"type": "clear"}` + new `{"type": "question_state", ...}` to browser.
+    4. Apply turn (`apply_turn(cursor.state, outcome)`), save cursor state, send `{"type": "clear"}` + new `{"type": "question_state", ...}` to browser. Clear `user_turn_step` and `pending_speak_step`, and remember `last_quick_reply_step`. If the bot is mid-sentence, set `ignore_bot_audio` and drop later bot audio until `interrupted` or `turn_complete` (do not stamp `spoken_qid`).
     5. If `cursor.state["phase"] == "closing"`, call `_mark_closing(...)`.
     6. Send `_speak_cue_text(cursor.state, "close" if closing else "speak")` to Gemini Live so any in-progress bot speech is interrupted and SHISHU immediately speaks the next question (or closing).
+    7. A later `record_turn` is held `{"result": "held", "reason": "stale_turn"}` when `user_turn_step` is a different step, or when it is empty while `last_quick_reply_step` is set (spoken `"नहीं"` plus the tap must not advance two questions). A fresh user transcript on the new step clears `last_quick_reply_step`.
 
 ### 6.3 Call Screen Flanking Buttons (`static/call.html` + `static/call.js`)
 - Inside `#stage`, wrap the main call button in `<div id="call-dock" class="call-dock">`:

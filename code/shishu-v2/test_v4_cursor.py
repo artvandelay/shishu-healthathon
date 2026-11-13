@@ -1,5 +1,6 @@
 """Offline trajectories for the v4 atomic catalog and FormBharo cursor."""
 
+import ast
 import json
 import re
 import unittest
@@ -131,7 +132,7 @@ def _spec_tables():
 class CatalogTests(unittest.TestCase):
     def test_catalog_matches_section_4_verbatim(self):
         followups, intros, clinical = _spec_tables()
-        self.assertEqual(len(followups), 21)
+        self.assertEqual(len(followups), 25)
         self.assertEqual(FOLLOWUP_HI, dict(followups))
         self.assertEqual([row[0] for row in intros], [
             "intro_name", "intro_married", "intro_children", "intro_bridge", "close_anything_else",
@@ -350,15 +351,13 @@ class ChildResolutionTests(unittest.TestCase):
         self.assertEqual(retracted["step_attempts"], 0)
         self.assertNotEqual(retracted["active_qid"], "body_bleeding_bruise")
 
-    def test_child_ref_resolves_age_ordinal_sex_name_and_everyone(self):
+    def test_child_ref_resolves_exact_id_name_ordinal_sex_and_everyone(self):
         state = _profile(children=self._three())
         ordered = ["child_2", "child_3", "child_1"]
         for ref in ("all", "both", "दोनों", "सभी", "तीनों", "Both"):
             self.assertEqual(call_cursor._resolve_child_ids(state, ref), ordered, ref)
         self.assertEqual(call_cursor._resolve_child_ids(state, "child_1"), ["child_1"])
         self.assertEqual(call_cursor._resolve_child_ids(state, "रिया"), ["child_2"])
-        self.assertEqual(call_cursor._resolve_child_ids(state, "5"), ["child_3"])
-        self.assertEqual(call_cursor._resolve_child_ids(state, "5 साल"), ["child_3"])
         self.assertEqual(call_cursor._resolve_child_ids(state, "बड़े"), ["child_2"])
         self.assertEqual(call_cursor._resolve_child_ids(state, "पहले"), ["child_2"])
         self.assertEqual(call_cursor._resolve_child_ids(state, "बीच वाले"), ["child_3"])
@@ -369,8 +368,42 @@ class ChildResolutionTests(unittest.TestCase):
         self.assertEqual(call_cursor._resolve_child_ids(state, "आखिरी"), ["child_1"])
         self.assertEqual(call_cursor._resolve_child_ids(state, "बेटी"), ["child_2"])
         self.assertEqual(call_cursor._resolve_child_ids(state, "बेटा"), [])
+        for phrase in ("5", "5 साल", "6 महीने", "बीच वाले का", "पाँच साल", "oldest child"):
+            self.assertEqual(call_cursor._resolve_child_ids(state, phrase), [], phrase)
         months = _profile(children=[_child(4, "male", 1), _child(0.5, "female", 2)])
-        self.assertEqual(call_cursor._resolve_child_ids(months, "6 महीने"), ["child_2"])
+        self.assertEqual(call_cursor._resolve_child_ids(months, "6 महीने"), [])
+        self.assertEqual(call_cursor._resolve_child_ids(months, "child_2"), ["child_2"])
+
+    def test_cursor_has_no_regex_and_roster_is_oldest_first(self):
+        source = Path(call_cursor.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                names = [node.module or ""]
+            else:
+                continue
+            self.assertFalse(any(name == "re" or name.startswith("re.") for name in names))
+        for name in (
+            "_NUMBER_WORDS",
+            "_AGE_RE",
+            "_age_from_ref",
+            "_digits_for_number_words",
+            "_ref_tokens",
+            "_hit",
+            "_pool_for_sex",
+            "_ordinal_id",
+        ):
+            self.assertFalse(hasattr(call_cursor, name), name)
+        state = _profile(children=self._three())
+        roster = call_cursor.children_roster(state)
+        self.assertEqual([row["id"] for row in roster], ["child_2", "child_3", "child_1"])
+        self.assertEqual([row["rank"] for row in roster], ["oldest", "middle", "youngest"])
+        self.assertEqual(roster[0]["name"], "रिया")
+        self.assertEqual(roster[0]["sex"], "female")
+        self.assertEqual(roster[1]["age_label_hi"], "5 साल")
+        self.assertEqual(call_cursor.children_roster(_profile(children=[_child(4, "male")])), [])
 
     def test_two_attempts_leave_a_stuck_which_child_and_followup(self):
         kids = [_child(6, "male", 1), _child(2, "female", 2)]
@@ -391,7 +424,15 @@ class ChildResolutionTests(unittest.TestCase):
         self.assertEqual(state["step_attempts"], 1)
         state = apply_turn(state, "concern", note="")
         self.assertEqual(
-            state["answers"]["birth_nicu"]["followups"]["nicu_reason_days"],
+            state["answers"]["birth_nicu"]["followups"]["nicu_reason"],
+            {"state": "unknown", "note": ""},
+        )
+        self.assertEqual(state["active_qid"], "birth_nicu")
+        self.assertEqual(state["pending_followup_idx"], 1)
+        state = apply_turn(state, "clarify")
+        state = apply_turn(state, "concern", note="")
+        self.assertEqual(
+            state["answers"]["birth_nicu"]["followups"]["nicu_days"],
             {"state": "unknown", "note": ""},
         )
         self.assertNotEqual(state["active_qid"], "birth_nicu")
@@ -413,20 +454,46 @@ class ChildResolutionTests(unittest.TestCase):
         self.assertEqual(bleeding["answers"]["body_bleeding_bruise"]["child_ids"], [])
 
     def test_preanswered_followup_is_not_asked_again(self):
-        state = _clear_until(_profile(children=[_child(4, "male")]), "birth_nicu")
-        state = apply_turn(
-            state,
-            "concern",
-            note="तीन दिन, सांस की वजह से",
-            followup_answered=True,
-        )
+        state = _clear_until(_profile(children=[_child(4, "male")]), "birth_jaundice")
+        state = apply_turn(state, "concern", note="दो दिन", followup_answered=True)
         self.assertIsNone(state["pending_followup_idx"])
-        self.assertEqual(state["active_qid"], "birth_jaundice")
+        self.assertNotEqual(state["active_qid"], "birth_jaundice")
         self.assertEqual(
-            state["answers"]["birth_nicu"]["followups"]["nicu_reason_days"]["note"],
-            "तीन दिन, सांस की वजह से",
+            state["answers"]["birth_jaundice"]["followups"]["jaundice_days"]["note"],
+            "दो दिन",
         )
-        self.assertEqual(state["answers"]["birth_nicu"]["child_ids"], ["child_1"])
+
+    def test_two_step_followups_keep_the_second_fact(self):
+        steps = {
+            "birth_nicu": ("nicu_reason", "nicu_days", "कितने दिन"),
+            "ill_admissions": ("admissions_count", "admissions_reason", "किस बीमारी"),
+            "fam_miscarriage": ("miscarriage_count", "miscarriage_month", "कितने महीने"),
+            "fam_infant_death": ("infant_death_age", "infant_death_cause", "मौत की कोई वजह"),
+        }
+        state = _profile(children=[_child(4, "male")])
+        for qid, (first, second, second_prompt) in steps.items():
+            state = _clear_until(state, qid)
+            state = apply_turn(state, "concern", note="पहली बात", followup_answered=True)
+            self.assertEqual(state["active_qid"], qid, qid)
+            self.assertEqual(state["pending_followup_idx"], 1, qid)
+            self.assertEqual(state["answers"][qid]["followups"][first]["note"], "पहली बात")
+            self.assertNotIn(second, state["answers"][qid]["followups"])
+            self.assertIn(second_prompt, prompt_directive(state))
+            state = apply_turn(state, "concern", note="दूसरी बात")
+            self.assertIsNone(state["pending_followup_idx"], qid)
+            self.assertEqual(state["answers"][qid]["followups"][second]["note"], "दूसरी बात")
+            self.assertEqual(state["answers"][qid]["followups"][first]["note"], "पहली बात")
+            self.assertNotEqual(state["active_qid"], qid)
+
+        kids = [_child(6, "male", 1), _child(2, "female", 2)]
+        multi = _clear_until(_profile(children=kids), "birth_nicu")
+        multi = apply_turn(multi, "concern", note="सांस", followup_answered=True)
+        self.assertEqual(multi["pending_followup_idx"], -1)
+        self.assertEqual(multi["answers"]["birth_nicu"]["followups"]["nicu_reason"]["note"], "सांस")
+        multi = apply_turn(multi, "concern", child_ref="child_1")
+        self.assertEqual(multi["answers"]["birth_nicu"]["child_ids"], ["child_1"])
+        self.assertEqual(multi["pending_followup_idx"], 1)
+        self.assertIn("कितने दिन", prompt_directive(multi))
 
     def test_retract_on_a_followup_clears_the_concern(self):
         state = _clear_until(_profile(children=[_child(4, "male")]), "birth_nicu")

@@ -54,7 +54,8 @@ def _q(
 FOLLOWUP_HI: dict[str, str] = {
     'operation_reason': 'ऑपरेशन किस वजह से करना पड़ा था?',
     'term_how_early': 'बच्चा पूरे समय से कितने हफ्ते या महीने पहले पैदा हुआ था?',
-    'nicu_reason_days': 'काँच के बक्से (NICU) में क्यों रखना पड़ा, और कितने दिन रहे?',
+    'nicu_reason': 'काँच के बक्से (NICU) में किस वजह से रखना पड़ा था?',
+    'nicu_days': 'वहाँ कितने दिन रखना पड़ा था?',
     'jaundice_days': 'नीली लाइट में कितने दिन रखना पड़ा था?',
     'sudden_detail': 'यह कब हुआ था और डॉक्टर ने क्या बताया था?',
     'fits_onset': 'झटके पहली बार किस उम्र में आए थे?',
@@ -62,13 +63,16 @@ FOLLOWUP_HI: dict[str, str] = {
     'transfusion_count': 'खून कितनी बार चढ़ाना पड़ा है?',
     'fracture_count_or_bowing': 'हड्डी कितनी बार टूटी, या पैर टेढ़े होने की बात है?',
     'urine_or_stone_detail': 'बार-बार पेशाब-प्यास की बात है, या पथरी या गुर्दे की दिक्कत?',
-    'admissions_count_reason': 'कितनी बार भर्ती होना पड़ा, और किस वजह से?',
+    'admissions_count': 'बच्चे को कितनी बार अस्पताल में भर्ती करना पड़ा है?',
+    'admissions_reason': 'किस बीमारी या वजह से भर्ती करना पड़ा था?',
     'preg_cond_detail': 'बीपी, शुगर या थायरॉइड में से क्या था, और क्या डिलीवरी के बाद भी रहा?',
     'scan_detail': 'स्कैन में क्या दिक्कत बताई गई थी?',
     'delivery_detail': 'डिलीवरी के समय क्या दिक्कत आई थी?',
     'related_how': 'आप दोनों का शादी से पहले क्या रिश्ता था?',
-    'miscarriage_count': 'ऐसा कितनी बार हुआ, और कितने महीने की प्रेग्नेंसी में?',
-    'infant_death_age_cause': 'उस बच्चे की उम्र क्या थी, और आपसे क्या रिश्ता था?',
+    'miscarriage_count': 'गर्भ कितनी बार गिरा था?',
+    'miscarriage_month': 'यह कितने महीने की प्रेग्नेंसी में हुआ था?',
+    'infant_death_age': 'उस बच्चे की उम्र कितनी थी, और आपसे क्या रिश्ता था?',
+    'infant_death_cause': 'क्या मौत की कोई वजह पता चली थी?',
     'fam_who': 'परिवार में यह दिक्कत किसको है — आपसे उनका क्या रिश्ता है?',
     'bp_who': 'यह सगे रिश्तेदार (जैसे माता-पिता, भाई-बहन) को हुआ, या दूर के रिश्तेदार को?',
     'bp_age': 'उन्हें यह किस उम्र में हुआ था?',
@@ -83,7 +87,7 @@ CATALOG: tuple[QuestionSpec, ...] = (
     _q('intro_bridge', 'intro', 'bridge', 'अब मैं एक-एक करके छोटे और आसान सवाल पूछूँगी। आप बोलकर या नीचे हाँ या नहीं का बटन दबाकर जवाब दे सकती हैं, और कुछ समझ न आए तो पूछ सकती हैं। शुरू करें?', 'short yes or no questions; she can speak or tap हाँ or नहीं', skip=(), follow=()),
     _q('birth_mode_detail', 'birth', "gate", 'क्या बच्चे का जन्म ऑपरेशन (सिजेरियन) से हुआ था?', 'birth by operation', 'Q03', skip=('no_children',), follow=('operation_reason',), multi='क्या आपके किसी भी बच्चे का जन्म ऑपरेशन (सिजेरियन) से हुआ था?'),
     _q('birth_term', 'birth', "gate", 'क्या बच्चे का जन्म समय से बहुत पहले (9 महीने से काफी पहले) हुआ था?', 'birth much before 9 months', 'Q03', skip=('no_children',), follow=('term_how_early',), multi='क्या आपके किसी भी बच्चे का जन्म समय से बहुत पहले (9 महीने से काफी पहले) हुआ था?'),
-    _q('birth_nicu', 'birth', "gate", 'क्या जन्म के बाद बच्चे को काँच के बक्से या बच्चों के ICU (NICU) में रखना पड़ा था?', 'NICU or glass-box stay after birth', 'Q03', skip=('no_children',), follow=('nicu_reason_days',), multi='क्या जन्म के बाद आपके किसी भी बच्चे को काँच के बक्से या बच्चों के ICU (NICU) में रखना पड़ा था?'),
+    _q('birth_nicu', 'birth', "gate", 'क्या जन्म के बाद बच्चे को काँच के बक्से या बच्चों के ICU (NICU) में रखना पड़ा था?', 'NICU or glass-box stay after birth', 'Q03', skip=('no_children',), follow=('nicu_reason', 'nicu_days'), multi='क्या जन्म के बाद आपके किसी भी बच्चे को काँच के बक्से या बच्चों के ICU (NICU) में रखना पड़ा था?'),
     _q('birth_jaundice', 'birth', "gate", 'क्या जन्म के बाद पीलिया के लिए बच्चे को नीली लाइट में रखना पड़ा था?', 'jaundice treated under blue light', 'Q03', skip=('no_children',), follow=('jaundice_days',), multi='क्या जन्म के बाद पीलिया के लिए आपके किसी भी बच्चे को नीली लाइट में रखना पड़ा था?'),
     _q('birth_sudden', 'birth', "gate", 'क्या जन्म के बाद बच्चा अचानक बहुत बीमार पड़ा और इमरजेंसी में ले जाना पड़ा?', 'suddenly very ill after birth and taken to emergency', 'Q03', skip=('no_children',), follow=('sudden_detail',), multi='क्या जन्म के बाद आपका कोई भी बच्चा अचानक बहुत बीमार पड़ा और इमरजेंसी में ले जाना पड़ा?'),
     _q('birth_cord_3weeks', 'birth', "gate", 'क्या जन्म के बाद बच्चे की नाल गिरने में 3 हफ्ते से ज़्यादा लगे थे?', 'cord took more than 3 weeks to fall', 'Q03', skip=('no_children',), follow=(), multi='क्या जन्म के बाद आपके किसी भी बच्चे की नाल गिरने में 3 हफ्ते से ज़्यादा लगे थे?'),
@@ -115,7 +119,7 @@ CATALOG: tuple[QuestionSpec, ...] = (
     _q('body_puberty', 'body', "gate", 'क्या 10 साल से बड़े बच्चे में बढ़ती उम्र के बदलाव बहुत जल्दी या बहुत देर से आए हैं?', 'puberty much earlier or later; only if a child is 10 or older', 'Q10', skip=('no_children', 'all_under_10'), follow=(), multi='क्या 10 साल से बड़े आपके किसी बच्चे में बढ़ती उम्र के बदलाव बहुत जल्दी या बहुत देर से आए हैं?'),
     _q('ill_fasting', 'illness', "gate", 'क्या खाना छूटने या हल्की बीमारी में बच्चा बहुत सुस्त पड़ जाता है या बार-बार उल्टी करता है?', 'very sleepy or repeated vomiting when a meal is missed or during a mild illness', 'Q01', skip=('no_children',), follow=(), multi='क्या खाना छूटने या हल्की बीमारी में आपका कोई भी बच्चा बहुत सुस्त पड़ जाता है या बार-बार उल्टी करता है?'),
     _q('ill_odor', 'illness', "gate", 'क्या बच्चे के पेशाब या पॉटी में कभी अजीब बदबू आती है?', 'urine or stool smells unusual', 'Q01', skip=('no_children',), follow=(), multi='क्या आपके किसी भी बच्चे के पेशाब या पॉटी में कभी अजीब बदबू आती है?'),
-    _q('ill_admissions', 'illness', "gate", 'क्या बच्चे को बार-बार अस्पताल में भर्ती करना पड़ा है?', 'admitted to hospital again and again', 'Q03', skip=('no_children',), follow=('admissions_count_reason',), multi='क्या आपके किसी भी बच्चे को बार-बार अस्पताल में भर्ती करना पड़ा है?'),
+    _q('ill_admissions', 'illness', "gate", 'क्या बच्चे को बार-बार अस्पताल में भर्ती करना पड़ा है?', 'admitted to hospital again and again', 'Q03', skip=('no_children',), follow=('admissions_count', 'admissions_reason'), multi='क्या आपके किसी भी बच्चे को बार-बार अस्पताल में भर्ती करना पड़ा है?'),
     _q('ill_iv_antibiotics', 'illness', "gate", 'क्या बार-बार इंफेक्शन के लिए बच्चे को नस में (IV ड्रिप से) दवा लगी है?', 'repeated infections that needed medicine through a vein', 'Q03', skip=('no_children',), follow=(), multi='क्या बार-बार इंफेक्शन के लिए आपके किसी भी बच्चे को नस में (IV ड्रिप से) दवा लगी है?'),
     _q('preg_conditions', 'pregnancy', "gate", 'क्या किसी प्रेग्नेंसी में आपको हाई बीपी, शुगर या थायरॉइड रहा था?', 'high BP, sugar, or thyroid in a pregnancy', 'Antenatal', skip=('unmarried', 'about_to_marry', 'ever_pregnant_no'), follow=('preg_cond_detail',), multi=''),
     _q('preg_scan', 'pregnancy', "gate", 'क्या किसी प्रेग्नेंसी के सोनोग्राफी स्कैन में कोई खराबी बताई गई थी?', 'a pregnancy scan showed a problem', 'Antenatal', skip=('unmarried', 'about_to_marry', 'ever_pregnant_no'), follow=('scan_detail',), multi=''),
@@ -123,8 +127,8 @@ CATALOG: tuple[QuestionSpec, ...] = (
     _q('preg_delivery', 'pregnancy', "gate", 'क्या किसी डिलीवरी के समय कोई बड़ी दिक्कत आई थी?', 'major trouble at a delivery', 'Antenatal', skip=('unmarried', 'about_to_marry', 'ever_pregnant_no'), follow=('delivery_detail',), multi=''),
     _q('preg_thalassemia', 'pregnancy', "gate", 'क्या आपकी या आपके पति की थैलेसीमिया खून जाँच में कभी माइनर या ट्रेट जैसी कोई दिक्कत बताई गई?', 'thalassemia minor or trait on a blood test', 'Antenatal', skip=(), follow=(), multi=''),
     _q('fam_related', 'family', "gate", 'क्या आप और आपके पति शादी से पहले आपस में रिश्तेदार थे, जैसे कज़िन या एक ही खानदान से?', 'she and her husband are related, such as cousins', 'Q11', skip=('unmarried',), follow=('related_how',), multi=''),
-    _q('fam_miscarriage', 'family', "gate", 'क्या आपका कभी गर्भ गिरा है (मिसकैरेज), या गिरवाना पड़ा था?', 'miscarriage or an ended pregnancy', 'Q12', skip=('unmarried', 'about_to_marry', 'ever_pregnant_no'), follow=('miscarriage_count',), multi=''),
-    _q('fam_infant_death', 'family', "gate", 'क्या परिवार में किसी छोटे बच्चे की 1 साल से कम उम्र में मौत हुई है?', 'a baby in the family died before 1 year', 'Q12', skip=(), follow=('infant_death_age_cause',), multi=''),
+    _q('fam_miscarriage', 'family', "gate", 'क्या आपका कभी गर्भ गिरा है (मिसकैरेज), या गिरवाना पड़ा था?', 'miscarriage or an ended pregnancy', 'Q12', skip=('unmarried', 'about_to_marry', 'ever_pregnant_no'), follow=('miscarriage_count', 'miscarriage_month'), multi=''),
+    _q('fam_infant_death', 'family', "gate", 'क्या परिवार में किसी छोटे बच्चे की 1 साल से कम उम्र में मौत हुई है?', 'a baby in the family died before 1 year', 'Q12', skip=(), follow=('infant_death_age', 'infant_death_cause'), multi=''),
     _q('fam_fits_delay', 'family', "gate", 'क्या परिवार में किसी बच्चे या बड़े को झटके (फ़िट्स), देर से सीखने, या सीखी बात भूलने की समस्या है?', 'fits, late learning, or lost skills in the family', 'Q11', skip=(), follow=('fam_who',), multi=''),
     _q('fam_transfusion', 'family', "gate", 'क्या परिवार में किसी बच्चे या बड़े को बार-बार खून चढ़ाना पड़ता है?', 'someone in the family needs blood again and again', 'Q11', skip=(), follow=('fam_who',), multi=''),
     _q('fam_bleeding', 'family', "gate", 'क्या परिवार में किसी बच्चे या बड़े को चोट पर ज़्यादा खून बहने की समस्या है?', 'someone in the family bleeds too much after injury', 'Q11', skip=(), follow=('fam_who',), multi=''),
@@ -149,8 +153,8 @@ def _validate() -> None:
     dupes = sorted({qid for qid in ids if ids.count(qid) > 1})
     if dupes:
         raise RuntimeError(f"duplicate catalog ids: {dupes}")
-    if len(FOLLOWUP_HI) != 21:
-        raise RuntimeError(f"expected 21 follow-ups, found {len(FOLLOWUP_HI)}")
+    if len(FOLLOWUP_HI) != 25:
+        raise RuntimeError(f"expected 25 follow-ups, found {len(FOLLOWUP_HI)}")
     for spec in CATALOG:
         if spec.kind not in _SPINE_KINDS:
             raise RuntimeError(f"{spec.id} has kind {spec.kind}")

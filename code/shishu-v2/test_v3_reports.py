@@ -174,10 +174,23 @@ class CursorReportTests(unittest.TestCase):
             "notes": "गिरने पर हड्डी टूटी",
             "followups": {"fracture_count_or_bowing": {"state": "concern", "note": "दो बार"}},
         }
+        state["answers"]["birth_nicu"] = {
+            "state": "concern",
+            "child_ids": ["child_1"],
+            "notes": "NICU",
+            "followups": {
+                "nicu_reason": {"state": "concern", "note": "सांस"},
+                "nicu_days": {"state": "concern", "note": "तीन दिन"},
+            },
+        }
         brief = post_call._answered_brief(state)
         self.assertIn("followups=", brief)
         self.assertIn("fracture_count_or_bowing", brief)
         self.assertIn("दो बार", brief)
+        self.assertIn("nicu_reason", brief)
+        self.assertIn("nicu_days", brief)
+        self.assertIn("सांस", brief)
+        self.assertIn("तीन दिन", brief)
         sentence = post_call._concern_sentence(
             get_spec("gate_bones_fractures"),
             state["answers"]["gate_bones_fractures"],

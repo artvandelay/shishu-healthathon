@@ -9,7 +9,6 @@ unknown and the cursor moves on.
 from __future__ import annotations
 
 import copy
-import re
 
 from triage_catalog import FOLLOWUP_HI, active_specs, get_spec, spine_ids
 
@@ -35,32 +34,6 @@ _OLDEST = frozenset({"oldest", "बड़े", "बड़ा", "बड़ी", "
 _MIDDLE = frozenset({
     "middle", "बीच", "बीच वाले", "बीच वाला", "बीच वाली", "मंझले", "मंझला", "मंझली", "मंझल",
 })
-_MIDDLE_STEMS = ("middle", "बीच", "मंझल")
-_NUMBER_WORDS = (
-    ("ग्यारह", "11"),
-    ("बारह", "12"),
-    ("ढाई", "2.5"),
-    ("डेढ़", "1.5"),
-    ("आधे", "0.5"),
-    ("आधा", "0.5"),
-    ("पाँच", "5"),
-    ("पांच", "5"),
-    ("चार", "4"),
-    ("तीन", "3"),
-    ("सात", "7"),
-    ("आठ", "8"),
-    ("नौ", "9"),
-    ("दस", "10"),
-    ("छः", "6"),
-    ("छह", "6"),
-    ("एक", "1"),
-    ("दो", "2"),
-)
-_DEVANAGARI = "0-9A-Za-z_\u0900-\u097F"
-_AGE_RE = re.compile(
-    rf"(\d+(?:\.\d+)?)\s*(महीने|महीना|months|month|साल|वर्ष|years|year|yr)(?![{_DEVANAGARI}])",
-    re.IGNORECASE,
-)
 _SECOND = frozenset({"दूसरे", "दूसरा"})
 _THIRD = frozenset({"तीसरे", "तीसरा"})
 _YOUNGEST = frozenset({
@@ -261,7 +234,7 @@ def _question_hi(state: dict, spec) -> str:
 def _resolve_main(state, spec, outcome, child_ref, note, followup_answered) -> dict:
     child_ids = _child_ids_for(state, spec, child_ref)
     followups = None
-    if outcome == "concern" and followup_answered and note.strip() and len(spec.followups) == 1:
+    if outcome == "concern" and followup_answered and note.strip() and spec.followups:
         followups = {spec.followups[0]: {"state": "concern", "note": note.strip()}}
     _write_answer(state, spec.id, outcome, note, child_ids, followups)
     _recompute(state)
@@ -274,6 +247,10 @@ def _resolve_main(state, spec, outcome, child_ref, note, followup_answered) -> d
         return state
     if spec.followups and followups is None:
         state["pending_followup_idx"] = 0
+        state["step_attempts"] = 0
+        return state
+    if followups is not None and len(spec.followups) > 1:
+        state["pending_followup_idx"] = 1
         state["step_attempts"] = 0
         return state
     _advance(state)
@@ -603,77 +580,33 @@ def _which_child_hi(children: list) -> str:
     return f"यह किस बच्चे की बात है — {listed}?"
 
 
-def _digits_for_number_words(text: str) -> str:
-    for word, digits in _NUMBER_WORDS:
-        text = re.sub(
-            rf"(?<![{_DEVANAGARI}]){re.escape(word)}(?![{_DEVANAGARI}])",
-            digits,
-            text,
-        )
-    return text
-
-
-def _ref_tokens(ref: str) -> list[str]:
-    """Split on spaces and punctuation. Keep Devanagari vowel signs on the word."""
-    return [part for part in re.split(rf"[^{_DEVANAGARI}]+", ref.casefold()) if part]
-
-
-def _hit(tokens: list[str], words: frozenset[str], prefixes: tuple[str, ...] = ()) -> bool:
-    for tok in tokens:
-        if tok in words:
-            return True
-        for prefix in prefixes:
-            if tok.startswith(prefix):
-                return True
-    return False
-
-
-def _pool_for_sex(ordered: list, tokens: list[str]) -> list:
-    male = _hit(tokens, _MALE)
-    female = _hit(tokens, _FEMALE)
-    if male == female:
-        return ordered
-    want = "male" if male else "female"
-    subset = [child for child in ordered if child.get("sex") == want]
-    return subset or ordered
-
-
-def _ordinal_id(pool: list, tokens: list[str]) -> str | None:
-    if not pool:
-        return None
-    if _hit(tokens, _MIDDLE, _MIDDLE_STEMS):
-        return pool[len(pool) // 2]["id"]
-    if _hit(tokens, _OLDEST):
-        return pool[0]["id"]
-    if _hit(tokens, _SECOND) and len(pool) >= 2:
-        return pool[1]["id"]
-    if _hit(tokens, _THIRD) and len(pool) >= 3:
-        return pool[2]["id"]
-    if _hit(tokens, _YOUNGEST):
-        return pool[-1]["id"]
-    return None
-
-
-def _age_from_ref(ref: str) -> float | None:
-    """Age in years. Number and unit may sit anywhere in a longer phrase."""
-    text = " ".join((ref or "").strip().casefold().split())
-    if not text:
-        return None
-    text = _digits_for_number_words(text)
-    match = _AGE_RE.search(text)
-    if match:
-        value = float(match.group(1))
-        unit = match.group(2).casefold()
-        if unit.startswith("मही") or unit.startswith("month"):
-            return value / 12
-        return value
-    if re.fullmatch(r"\d+(?:\.\d+)?", text):
-        return float(text)
-    return None
+def children_roster(state: dict) -> list[dict]:
+    """Oldest-first ids for the live model. Empty when she has fewer than two children."""
+    children = (state.get("profile") or {}).get("children") or []
+    if len(children) <= 1:
+        return []
+    ordered = _ordered_children(children)
+    last = len(ordered) - 1
+    roster = []
+    for index, child in enumerate(ordered):
+        if index == 0:
+            rank = "oldest"
+        elif index == last:
+            rank = "youngest"
+        else:
+            rank = "middle"
+        roster.append({
+            "id": child["id"],
+            "rank": rank,
+            "age_label_hi": child["age_label_hi"],
+            "sex": child["sex"],
+            "name": child["name"],
+        })
+    return roster
 
 
 def _resolve_child_ids(state: dict, child_ref: str) -> list[str]:
-    """Child ids for a reference, oldest first when the reference means everyone."""
+    """Exact child ids only. The whole reference must match one closed-world token."""
     ref = " ".join((child_ref or "").strip().split())
     if not ref:
         return []
@@ -686,38 +619,30 @@ def _resolve_child_ids(state: dict, child_ref: str) -> list[str]:
     if ref in by_id:
         return [ref]
     named = [
-        child for child in children
-        if (child.get("name") or "").strip() and (child.get("name") or "").strip().casefold() == token
+        child["id"]
+        for child in children
+        if (child.get("name") or "").strip()
+        and (child.get("name") or "").strip().casefold() == token
     ]
     if len(named) == 1:
-        return [named[0]["id"]]
-    tokens = _ref_tokens(ref)
-    if any(tok in _ALL_CHILDREN for tok in tokens):
-        return [child["id"] for child in ordered]
-    for tok in tokens:
-        if tok in by_id:
-            return [tok]
-    named_tokens = [
-        child for child in children
-        if (child.get("name") or "").strip().casefold() in tokens
-    ]
-    if len(named_tokens) == 1:
-        return [named_tokens[0]["id"]]
-    age = _age_from_ref(ref)
-    if age is not None:
-        matched = [
-            child["id"] for child in ordered if abs(float(child["age_years"]) - age) < 0.05
-        ]
-        if matched:
-            return matched
-    picked = _ordinal_id(_pool_for_sex(ordered, tokens), tokens)
-    if picked:
-        return [picked]
+        return named
+    if not ordered:
+        return []
+    if token in _OLDEST:
+        return [ordered[0]["id"]]
+    if token in _MIDDLE:
+        return [ordered[len(ordered) // 2]["id"]]
+    if token in _SECOND and len(ordered) >= 2:
+        return [ordered[1]["id"]]
+    if token in _THIRD and len(ordered) >= 3:
+        return [ordered[2]["id"]]
+    if token in _YOUNGEST:
+        return [ordered[-1]["id"]]
     males = [child for child in children if child.get("sex") == "male"]
     females = [child for child in children if child.get("sex") == "female"]
-    if _hit(tokens, _MALE) and len(males) == 1:
+    if token in _MALE and len(males) == 1:
         return [males[0]["id"]]
-    if _hit(tokens, _FEMALE) and len(females) == 1:
+    if token in _FEMALE and len(females) == 1:
         return [females[0]["id"]]
     return []
 
