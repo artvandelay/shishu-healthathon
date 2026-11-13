@@ -36,9 +36,10 @@ class _FakeSocket:
 
 
 class _FakeSession:
-    def __init__(self, fail_tool=False):
+    def __init__(self, fail_tool=False, fail_realtime=False):
         self.sent = []
         self.fail_tool = fail_tool
+        self.fail_realtime = fail_realtime
 
     async def send_tool_response(self, function_responses):
         self.sent.append(("tool", function_responses))
@@ -47,6 +48,8 @@ class _FakeSession:
 
     async def send_realtime_input(self, **kwargs):
         self.sent.append(("realtime", kwargs))
+        if self.fail_realtime:
+            raise RuntimeError("realtime send failed")
 
 
 class _Call:
@@ -75,7 +78,7 @@ async def _drop_fallback(turn):
     await asyncio.gather(task, return_exceptions=True)
 
 
-def _server_message(*, turn_complete=False, user_text="", tool_calls=None):
+def _server_message(*, turn_complete=False, user_text="", bot_text="", tool_calls=None):
     tool_call = None
     if tool_calls:
         tool_call = SimpleNamespace(function_calls=tool_calls)
@@ -84,7 +87,7 @@ def _server_message(*, turn_complete=False, user_text="", tool_calls=None):
         server_content=SimpleNamespace(
             interrupted=False,
             input_transcription=SimpleNamespace(text=user_text) if user_text else None,
-            output_transcription=None,
+            output_transcription=SimpleNamespace(text=bot_text) if bot_text else None,
             model_turn=None,
             turn_complete=turn_complete,
         ),
@@ -456,6 +459,33 @@ class LiveTurnTests(unittest.TestCase):
             self.assertEqual(cursor.state["active_qid"], "birth_sudden")
             self.assertFalse(turn.bot_replied_since_user)
 
+            broken_turn = gemini_live._TurnState()
+            broken_turn.pending_speak_step = gemini_live._current_step(cursor.state)
+            broken_turn.pending_speak_kind = "speak"
+            broken_ws = _FakeSocket()
+            broken_telemetry = self._telemetry()
+            stop = asyncio.Event()
+            keep_going = await gemini_live._handle_server_message(
+                _server_message(turn_complete=True),
+                _FakeSession(fail_realtime=True),
+                asyncio.Lock(),
+                broken_ws,
+                asyncio.Lock(),
+                call_id,
+                broken_telemetry,
+                broken_turn,
+                _Recorder(),
+                set(),
+                set(),
+                cursor,
+                stop=stop,
+            )
+            self.assertFalse(keep_going)
+            self.assertTrue(stop.is_set())
+            self.assertEqual(broken_telemetry["tool_errors"], 1)
+            errors = [item["message"] for item in broken_ws.sent if item.get("type") == "error"]
+            self.assertEqual(errors, ["Could not prompt Gemini to speak"])
+
         asyncio.run(run())
 
     def test_quick_reply_drops_audio_that_was_already_in_progress(self):
@@ -510,12 +540,107 @@ class LiveTurnTests(unittest.TestCase):
 
         asyncio.run(run())
 
-    def test_spoken_and_tapped_no_is_held_as_stale_turn(self):
+    def test_quick_reply_drops_stale_bot_captions_until_turn_complete(self):
         async def run():
             state = cursor_tests._clear_until(
                 cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
                 "birth_nicu",
             )
+            cursor = gemini_live._Cursor()
+            cursor.state = state
+            step = gemini_live._current_step(state)
+            turn = gemini_live._TurnState()
+            turn.bot_speaking = True
+            turn.playback_ends_at = time.time() + 5
+            ws = _FakeSocket([{"type": "quick_reply", "outcome": "clear", "step": step}])
+            call_id = db.create_call("gemini")
+            await gemini_live._browser_loop(
+                _FakeSession(),
+                asyncio.Lock(),
+                ws,
+                asyncio.Lock(),
+                asyncio.Event(),
+                call_id,
+                self._telemetry(),
+                turn,
+                cursor,
+                _Recorder(),
+            )
+            self.assertTrue(turn.ignore_bot_audio)
+            self.assertEqual(cursor.state["active_qid"], "birth_jaundice")
+
+            await gemini_live._handle_server_message(
+                _server_message(bot_text="पुराना सवाल जो बीच में कटा"),
+                _FakeSession(),
+                asyncio.Lock(),
+                ws,
+                asyncio.Lock(),
+                call_id,
+                self._telemetry(),
+                turn,
+                _Recorder(),
+                set(),
+                set(),
+                cursor,
+                stop=asyncio.Event(),
+            )
+            assistant_ws = [
+                item for item in ws.sent
+                if item.get("type") == "transcript" and item.get("role") == "assistant"
+            ]
+            self.assertEqual(assistant_ws, [])
+            stored = (db.get_call(call_id) or {})["transcript"]
+            self.assertEqual([row for row in stored if row["role"] == "assistant"], [])
+
+            await gemini_live._handle_server_message(
+                _server_message(turn_complete=True),
+                _FakeSession(),
+                asyncio.Lock(),
+                ws,
+                asyncio.Lock(),
+                call_id,
+                self._telemetry(),
+                turn,
+                _Recorder(),
+                set(),
+                set(),
+                cursor,
+                stop=asyncio.Event(),
+            )
+            self.assertFalse(turn.ignore_bot_audio)
+
+            await gemini_live._handle_server_message(
+                _server_message(bot_text="क्या जन्म के बाद पीलिया के लिए नीली लाइट में रखना पड़ा था?"),
+                _FakeSession(),
+                asyncio.Lock(),
+                ws,
+                asyncio.Lock(),
+                call_id,
+                self._telemetry(),
+                turn,
+                _Recorder(),
+                set(),
+                set(),
+                cursor,
+                stop=asyncio.Event(),
+            )
+            assistant_ws = [
+                item for item in ws.sent
+                if item.get("type") == "transcript" and item.get("role") == "assistant"
+            ]
+            self.assertEqual(len(assistant_ws), 1)
+            self.assertIn("नीली लाइट", assistant_ws[0]["text"])
+            stored = (db.get_call(call_id) or {})["transcript"]
+            assistant_db = [row for row in stored if row["role"] == "assistant"]
+            self.assertEqual(len(assistant_db), 1)
+            self.assertEqual(assistant_db[0]["qid"], "birth_jaundice")
+
+        asyncio.run(run())
+
+    def test_spoken_and_tapped_no_is_held_as_stale_turn(self):
+        async def run():
+            kids = [cursor_tests._child(6, "male", 1), cursor_tests._child(2, "female", 2)]
+            state = cursor_tests._clear_until(cursor_tests._profile(children=kids), "birth_nicu")
             cursor = gemini_live._Cursor()
             cursor.state = state
             step = gemini_live._current_step(state)
@@ -540,6 +665,7 @@ class LiveTurnTests(unittest.TestCase):
             self.assertEqual(cursor.state["answers"]["birth_nicu"]["state"], "clear")
             self.assertEqual(turn.user_turn_step, "")
             self.assertEqual(turn.last_quick_reply_step, step)
+            self.assertGreater(turn.last_quick_reply_ts, 0.0)
             late = _FakeSession()
             await self._turn(
                 late,
@@ -551,10 +677,80 @@ class LiveTurnTests(unittest.TestCase):
             body = late.sent[0][1][0].response
             self.assertEqual(body["result"], "held")
             self.assertEqual(body["reason"], "stale_turn")
+            self.assertEqual(body["children"], call_cursor.children_roster(cursor.state))
             self.assertEqual(cursor.state["active_qid"], "birth_jaundice")
             await _drop_fallback(turn)
 
-            turn.spoken_qid = gemini_live._current_step(cursor.state)
+            # Delayed ASR from Q1 before Q2's audio is heard: still pinned to Q1.
+            await gemini_live._handle_server_message(
+                _server_message(user_text="नहीं"),
+                _FakeSession(),
+                asyncio.Lock(),
+                ws,
+                asyncio.Lock(),
+                call_id,
+                self._telemetry(),
+                turn,
+                _Recorder(),
+                set(),
+                set(),
+                cursor,
+                stop=asyncio.Event(),
+            )
+            self.assertEqual(turn.user_turn_step, step)
+            self.assertEqual(turn.last_quick_reply_step, step)
+            before_spoken = _FakeSession()
+            await self._turn(
+                before_spoken,
+                cursor,
+                turn,
+                [_Call("record_turn", {"outcome": "clear"}, "fc-asr-early")],
+            )
+            early_body = before_spoken.sent[0][1][0].response
+            self.assertEqual(early_body["result"], "held")
+            self.assertEqual(early_body["reason"], "stale_turn")
+            self.assertEqual(early_body["children"], call_cursor.children_roster(cursor.state))
+            self.assertEqual(cursor.state["active_qid"], "birth_jaundice")
+            await _drop_fallback(turn)
+
+            # Even after Q2's first audio stamps spoken_qid, ASR within <1.2s stays on Q1.
+            next_step = gemini_live._current_step(cursor.state)
+            turn.spoken_qid = next_step
+            turn.ignore_bot_audio = False
+            turn.last_quick_reply_ts = time.time() - 0.5
+            await gemini_live._handle_server_message(
+                _server_message(user_text="नहीं"),
+                _FakeSession(),
+                asyncio.Lock(),
+                ws,
+                asyncio.Lock(),
+                call_id,
+                self._telemetry(),
+                turn,
+                _Recorder(),
+                set(),
+                set(),
+                cursor,
+                stop=asyncio.Event(),
+            )
+            self.assertEqual(turn.user_turn_step, step)
+            self.assertEqual(turn.last_quick_reply_step, step)
+            within_window = _FakeSession()
+            await self._turn(
+                within_window,
+                cursor,
+                turn,
+                [_Call("record_turn", {"outcome": "clear"}, "fc-asr-window")],
+            )
+            window_body = within_window.sent[0][1][0].response
+            self.assertEqual(window_body["result"], "held")
+            self.assertEqual(window_body["reason"], "stale_turn")
+            self.assertEqual(window_body["children"], call_cursor.children_roster(cursor.state))
+            self.assertEqual(cursor.state["active_qid"], "birth_jaundice")
+            await _drop_fallback(turn)
+
+            # Fresh answer >= 1.2s after tap on spoken Q2 advances Q2 -> Q3 cleanly.
+            turn.last_quick_reply_ts = time.time() - 1.5
             fresh = _FakeSession()
             await gemini_live._handle_server_message(
                 _server_message(user_text="नहीं"),
@@ -572,7 +768,7 @@ class LiveTurnTests(unittest.TestCase):
                 stop=asyncio.Event(),
             )
             self.assertEqual(turn.last_quick_reply_step, "")
-            self.assertEqual(turn.user_turn_step, gemini_live._current_step(cursor.state))
+            self.assertEqual(turn.user_turn_step, next_step)
             await self._turn(
                 fresh,
                 cursor,

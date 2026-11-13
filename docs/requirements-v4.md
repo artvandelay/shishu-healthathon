@@ -24,10 +24,10 @@ Real staging calls exposed 5 structural flaws in v3 (`next`) that v4 eliminates 
      - **Pre-Answered Detail Absorption**: If the mother states the child and/or follow-up detail in her initial `"हाँ"` sentence, `apply_turn` absorbs `child_ref` and `followup_answered=True` without re-asking what she already said.
 4. **Full N-child support (including middle children — `बीच वाले`)**:
    - v3 hardcoded 2 children (*"बड़े वाले या छोटे वाले?"*) and broke on 3 children (`2y, 5y, 8y`).
-   - **v4 Rule**: Both `question_hi` (1 child) and `question_multi_hi` (2+ children) live explicitly in `triage_catalog.py` (zero brittle Hindi regex stitching). `_which_child_hi(children)` dynamically lists **all** children by age/sex/name in descending age order. With 2+ children the live model receives `children_roster` and must pass an exact `id` (`child_1`..`child_n`) or `"all"`. `_resolve_child_ids` is closed-world: that exact id, an exact stored name, an exact ordinal token (`बड़े`/`बीच वाले`/`मंझले`/`दूसरे`/`तीसरे`/`छोटे`), a unique sex token (`बेटा`/`बेटी`), or `दोनों`/`सभी`. No age regex.
+   - **v4 Rule**: `triage_catalog.py` stores explicit `question_hi` (1 child) and `question_multi_hi` (2+ children) text with zero Hindi regex assembly. `_which_child_hi(children)` lists all children by age, sex, or name from oldest to youngest. When a profile has two or more children, the tool result includes `children_roster`, and Gemini passes an exact `id` (`child_1`..`child_n`) or `"all"`. `_resolve_child_ids` matches only that exact `id`, a stored name, a closed-world ordinal token, a unique sex token, or `"all"`.
 5. **Clean Live Voice Turn-Taking (zero self-interruptions, pause-safe VAD)**:
    - v3 put `"wait": True` in `FunctionResponse` (stalling audio in Call #3) and then fired `send_realtime_input` 1ms after `send_tool_response` (causing 26 self-interruptions in Call #8).
-   - **v4 Rule**: `FunctionResponse` omits `"wait": True` and carries a direct speak directive. A silent tool turn speaks on Gemini's `turn_complete` (same step, bot has not started audio, call still open). A `2.5s` `SYSTEM CUE` remains only as a dead-socket safety net. A `quick_reply` during bot speech drops the rest of that sentence, and a late `record_turn` for the same spoken answer is held as `stale_turn`. VAD uses `vad_silence_ms = 1000` + `vad_end_sensitivity = "LOW"` so mid-sentence pauses aren't chopped in half, and `speech_end` always refreshes `quiet_from` so 15s check-in / 30s silence close never dies.
+   - **v4 Rule**: `FunctionResponse` omits `"wait": True` and carries a direct speak directive. When a tool turn finishes without bot audio, `gemini_live.py` sends the speak cue on `server_content.turn_complete`. A `2.5s` fallback timer acts only as a safety net when `turn_complete` never arrives. An accepted `quick_reply` drops leftover audio and captions from the interrupted sentence, and holds any late `record_turn` as `stale_turn`. `vad_silence_ms = 1000` and `vad_end_sensitivity = "LOW"` preserve mid-sentence pauses, and `speech_end` refreshes `quiet_from` for the 15s check-in and 30s close.
 
 ---
 
@@ -229,19 +229,21 @@ Profile fields in `state["profile"]`:
    - **Retraction (`outcome == "retract"`, OR `pending_followup_idx == -1` with `outcome == "clear"` and empty `child_ref`)**:
      - Overwrites `state["answers"][active_qid]` to `_blank("clear")`, clears `pending_followup_idx = None` and `step_attempts = 0`, runs `_recompute(state)`, and `_advance(state)`.
    - **Multi-child resolution (`_resolve_child_ids(state, child_ref)`)**:
-     - Closed world, no regex. The whole reference (whitespace-normalized) must match exactly. Children are sorted oldest-to-youngest (`ordered = sorted(children, key=lambda c: float(c["age_years"]), reverse=True)`).
-       - `"all" / "both" / "दोनों" / "सभी" / "सबको" / "तीनों" / "चारों"` -> all child IDs.
-       - Exact `child_id` (`child_1`..`child_n`) or exact stored `child["name"]` (casefolded).
-       - Exact ordinal token: `"oldest" / "बड़े" / "बड़ा" / "बड़ी" / "बड़े वाले" / "पहले" / "पहला"` -> `ordered[0]`; `"middle" / "बीच" / "बीच वाले" / "बीच वाला" / "बीच वाली" / "मंझले" / "मंझला" / "मंझली" / "मंझल"` -> `ordered[len(ordered)//2]`; `"दूसरे" / "दूसरा"` -> `ordered[1]` when `len >= 2`; `"तीसरे" / "तीसरा"` -> `ordered[2]` when `len >= 3`; `"youngest" / "छोटे" / "छोटा" / "छोटी" / "छोटे वाले" / "आखिरी" / "सबसे छोटा"` -> `ordered[-1]`.
-       - Unique sex token (`"बेटा" / "लड़का" / "boy"` when only 1 male; `"बेटी" / "लड़की" / "girl"` when only 1 female).
-     - `children_roster(state)` (only when `len(children) > 1`) is `[{"id", "rank", "age_label_hi", "sex", "name"}]` oldest-to-youngest, with `rank` `oldest` / `middle` / `youngest`. The live tool result includes it as `"children"`, and Gemini must pass that exact `id` or `"all"`.
-     - Dynamic `_which_child_hi(children)` lists every child in `ordered` by `age_label_hi` (plus `बेटा/बेटी` or `name`), adding `(बीच वाले)` on the middle child when `len == 3`, e.g. `"यह किस बच्चे की बात है — 8 साल वाले, 5 साल वाले (बीच वाले), या 2 साल वाले?"`.
+     - `_resolve_child_ids` uses closed-world exact matching without regular expressions. It normalizes whitespace on `child_ref` and sorts children from oldest to youngest (`ordered = sorted(children, key=lambda c: float(c["age_years"]), reverse=True)`).
+       - `"all" / "both" / "दोनों" / "सभी" / "सबको" / "तीनों" / "चारों"` returns all child IDs in `ordered`.
+       - Exact `child_id` (`child_1`..`child_n`) or exact casefolded `child["name"]` returns that child ID.
+       - Exact ordinal tokens map to `ordered`: `"oldest" / "बड़े" / "बड़ा" / "बड़ी" / "बड़े वाले" / "पहले" / "पहला"` -> `ordered[0]`, `"middle" / "बीच" / "बीच वाले" / "बीच वाला" / "बीच वाली" / "मंझले" / "मंझला" / "मंझली" / "मंझल"` -> `ordered[len(ordered)//2]`, `"दूसरे" / "दूसरा"` -> `ordered[1]` (for 2+ children), `"तीसरे" / "तीसरा"` -> `ordered[2]` (for 3+ children), and `"youngest" / "छोटे" / "छोटा" / "छोटी" / "छोटे वाले" / "आखिरी" / "सबसे छोटा"` -> `ordered[-1]`.
+       - Exact sex tokens (`"बेटा" / "लड़का" / "boy"` or `"बेटी" / "लड़की" / "girl"`) match when only one child has that sex.
+     - When the profile has two or more children, `children_roster(state)` returns `[{"id", "rank", "age_label_hi", "sex", "name"}]` from oldest to youngest (`rank` is `oldest`, `middle`, or `youngest`). `_tool_body(state)` sends this list as `"children"`, and Gemini passes an exact `id` or `"all"`.
+     - `_which_child_hi(children)` lists each child in `ordered` by `age_label_hi` (plus `बेटा`/`बेटी` or `name`) and adds `(बीच वाले)` on the middle child of three, for example `"यह किस बच्चे की बात है — 8 साल वाले, 5 साल वाले (बीच वाले), या 2 साल वाले?"`.
    - **FormBharo Bounded Retry Cap (`MAX_STEP_ATTEMPTS = 2`)**:
      - If `pending_followup_idx == -1` (`which_child`) receives an unresolvable reply (not retracted, not `unknown`, no matched child), increments `step_attempts`. On `step_attempts >= 2`, leaves `child_ids = []`, records `note` if any, and moves to `followups[0]` or `_advance(state)`.
      - If `pending_followup_idx >= 0` receives an empty/clarify non-answer twice (`step_attempts >= 2`), records `{"state": "unknown", "note": ""}` for that follow-up and advances to the next follow-up or question.
    - **Pre-Answered Follow-up Skip**:
-     - When `outcome == "concern"` on a main question and `followup_answered` is True and `note.strip()` and `spec.followups`, store `note` on `followups[spec.followups[0]]`.
-     - If `len(spec.followups) > 1` and which-child is not pending, set `pending_followup_idx = 1` so the remaining follow-up is still asked. A single pre-answered follow-up advances. If which-child is still pending, `_after_child_known` skips the filled first follow-up and asks the next one.
+     - When a main question has `outcome == "concern"`, `followup_answered` is `True`, `note.strip()` is non-empty, and `spec.followups` is non-empty, `_resolve_main` stores `note` in `followups[spec.followups[0]]`.
+     - If `len(spec.followups) == 1` and which-child is not pending, the cursor advances to the next question.
+     - If `len(spec.followups) > 1` and which-child is not pending, `_resolve_main` sets `pending_followup_idx = 1` so the cursor asks the second follow-up.
+     - If which-child is pending (`pending_followup_idx == -1`), `_after_child_known` skips the filled first follow-up and asks the next unfilled follow-up.
    - **`close_anything_else` (`open_capture`)**:
      - If `outcome == "concern"` and `not note.strip()` (e.g. she tapped the `हाँ` button or said bare `"हाँ"`): sets `pending_followup_idx = 0` using follow-up `"open_concern_detail"` (`"जी बताइए, डॉक्टर के लिए क्या बात नोट करूँ?"`). When she speaks the concern note on that follow-up, stores it on `close_anything_else["notes"]` with `state = "concern"`, resets `pending_followup_idx = None`, increments `close_rounds`, and asks `"मैंने यह बात नोट कर ली। इसके अलावा कुछ और बताना चाहेंगी?"`.
      - If `outcome == "concern"` WITH `note.strip()`: appends `note` to `close_anything_else["notes"]`, increments `close_rounds`, and asks `"मैंने यह बात नोट कर ली। इसके अलावा कुछ और बताना चाहेंगी?"`.
@@ -254,31 +256,32 @@ Profile fields in `state["profile"]`:
 ## 6. Live Voice & Quick-Reply WebSocket Contract (`gemini_live.py` + `static/call.html` + `static/call.js`)
 
 ### 6.1 Clean Turn-Taking in `gemini_live.py`
-1. **No `"wait": True` & speak on `turn_complete`**:
-   - `_tool_body(state)` returns `{"result": "ok", "say": _say_hindi(state)}` (with `"stop": True` on closing, `"clarify": True` on clarify, and `"children": children_roster(state)` when there are 2+ children — **never** `"wait": True`).
-   - After a handled tool call, store `pending_speak_step` and `pending_speak_kind`. Do **not** send `send_realtime_input` in the same breath as `send_tool_response`. When `server_content.turn_complete` is true, if `pending_speak_step` is still `_current_step`, the bot has not spoken since the user, and the call is not stopping: cancel the fallback, clear `pending_speak_step`, and send `_speak_cue_text` immediately.
-   - `_TOOL_SPEAK_FALLBACK_SEC = 2.5` is only a dead-socket safety net if that `turn_complete` never arrives. Real bot audio and an accepted `quick_reply` clear `pending_speak_step`.
-2. **Pause-Safe VAD & Reliable Silence Check-In**:
-   - Default `vad_silence_ms = "1000"` and `vad_end_sensitivity = "LOW"` in `db.py` + `gemini_live.py`.
-   - On browser `{"type": "speech_end"}`: **always** set `state.quiet_from = max(now_ts, state.playback_ends_at)` when `not state.bot_speaking` (even when `_question_already_spoken` is `True`), so an untranscribed soft reply still triggers the 15s check-in instead of silent dead air.
-   - PCM resampling for the stereo WAV happens inside `CallAudioRecorder.save()` (already on `asyncio.to_thread`). `_remember` only stores `(elapsed_sec, pcm_bytes, sample_rate)`.
+1. **No `"wait": True` and causal speak on `turn_complete`**:
+   - `_tool_body(state)` returns `{"result": "ok", "say": _say_hindi(state)}` and never sets `"wait": True`. It adds `"stop": True` on closing, `"clarify": True` on clarify, and `"children": children_roster(state)` when two or more children exist.
+   - When `_answer_function_calls` handles a tool call, it stores `pending_speak_step` and `pending_speak_kind` and waits for `server_content.turn_complete`.
+   - When `server_content.turn_complete` arrives on that same step before any bot audio, `_handle_server_message` cancels the fallback task, clears `pending_speak_step`, and sends `_speak_cue_text`.
+   - `_TOOL_SPEAK_FALLBACK_SEC = 2.5` acts only as a dead-socket safety net when `turn_complete` never arrives. Bot audio and an accepted `quick_reply` both clear `pending_speak_step`.
+2. **Pause-Safe VAD and Reliable Silence Check-In**:
+   - `db.py` and `gemini_live.py` set `vad_silence_ms = "1000"` and `vad_end_sensitivity = "LOW"` by default.
+   - When browser `{"type": "speech_end"}` arrives and the bot is not speaking, `_browser_loop` sets `state.quiet_from = max(now_ts, state.playback_ends_at)` so the 15s check-in still runs.
+   - `CallAudioRecorder._remember` records `(elapsed, pcm, rate)` under `self._lock` in O(1) time. `CallAudioRecorder.save()` performs PCM resampling off the event loop inside `asyncio.to_thread`.
 3. **Anytime `save_profile`**:
    - `_profile_kwargs(qid, args)` parses **any** non-empty field (`caller_name`, `marital_status`, `child_count`, `children`, `ever_pregnant`) regardless of `qid`, and `_marital()` maps `"no" / "nahi" / "नहीं" / "अभी नहीं" / "अविवाहित" / "कुंवारी"` -> `"unmarried"`.
 
 ### 6.2 WebSocket Quick-Reply Protocol
 - **Server -> Browser (`question_state`)**:
-  - Sent immediately after greeting cue and whenever `_current_step(cursor.state)` changes (after `save_profile`, `record_turn`, `quick_reply`, or closing):
+  - `gemini_live.py` sends `question_state` after the greeting cue and whenever `_current_step(cursor.state)` changes:
     `{"type": "question_state", "step": _current_step(cursor.state), "qid": active_qid, "group": group, "expect_yes_no": expect_yes_no(cursor.state)}`
 - **Browser -> Server (`quick_reply`)**:
   - Payload: `{"type": "quick_reply", "outcome": "clear" | "concern", "step": currentStep}`
   - Server handling:
-    1. Ignore if `telemetry.get("end_requested")` or `cursor.state.get("phase") != "asking"`.
-    2. Validate `payload.get("step") == _current_step(cursor.state)` and `expect_yes_no(cursor.state)` is `True` (idempotent: stale/double taps are safely ignored).
-    3. Record transcript (`"नहीं।"` for `"clear"`, `"हाँ।"` for `"concern"`), emit `user_transcript` and `tool_call` (`quick_reply_clear` / `quick_reply_concern`).
-    4. Apply turn (`apply_turn(cursor.state, outcome)`), save cursor state, send `{"type": "clear"}` + new `{"type": "question_state", ...}` to browser. Clear `user_turn_step` and `pending_speak_step`, and remember `last_quick_reply_step`. If the bot is mid-sentence, set `ignore_bot_audio` and drop later bot audio until `interrupted` or `turn_complete` (do not stamp `spoken_qid`).
-    5. If `cursor.state["phase"] == "closing"`, call `_mark_closing(...)`.
-    6. Send `_speak_cue_text(cursor.state, "close" if closing else "speak")` to Gemini Live so any in-progress bot speech is interrupted and SHISHU immediately speaks the next question (or closing).
-    7. A later `record_turn` is held `{"result": "held", "reason": "stale_turn"}` when `user_turn_step` is a different step, or when it is empty while `last_quick_reply_step` is set (spoken `"नहीं"` plus the tap must not advance two questions). A fresh user transcript on the new step clears `last_quick_reply_step`.
+    1. If `telemetry.get("end_requested")` is true or `cursor.state.get("phase") != "asking"`, ignore the message.
+    2. Make sure that `payload.get("step") == _current_step(cursor.state)` and `expect_yes_no(cursor.state)` is `True`, or ignore the duplicate tap.
+    3. Record the transcript (`"नहीं।"` or `"हाँ।"`), and emit `user_transcript` and `tool_call` (`quick_reply_clear` or `quick_reply_concern`).
+    4. If `state.bot_speaking` is `True`, set `state.ignore_bot_audio = True` so `_on_bot_audio` and `output_transcription` drop leftover bot output until `interrupted` or `turn_complete`.
+    5. Clear `user_turn_step` and `pending_speak_step`, record `last_quick_reply_step` and `last_quick_reply_ts`, apply the turn, and send `{"type": "clear"}` plus `question_state`.
+    6. If `cursor.state["phase"] == "closing"`, call `_mark_closing(...)`. Then send `_speak_cue_text` (`"close"` or `"speak"`) to Gemini Live.
+    7. If `user_text` arrives before the new step is spoken, during `ignore_bot_audio`, or within `1.2s` of `last_quick_reply_ts`, keep `user_turn_step = last_quick_reply_step`. When `user_turn_step` does not match `_current_step(cursor.state)` (or is empty after a tap), hold `record_turn` with `reason = "stale_turn"`.
 
 ### 6.3 Call Screen Flanking Buttons (`static/call.html` + `static/call.js`)
 - Inside `#stage`, wrap the main call button in `<div id="call-dock" class="call-dock">`:

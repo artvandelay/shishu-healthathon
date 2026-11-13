@@ -75,8 +75,8 @@ When she answers, call exactly one tool before you speak again. Then speak ONLY 
 - If on any turn she corrects her marital status or her children, call save_profile with the corrected field. मेरी शादी नहीं हुई है means marital_status unmarried.
 - On every screening answer, including ever pregnant, call record_turn.
   outcome is clear for नहीं, concern for हाँ or a matching story, unknown for पता नहीं, outcome clarify when she did not understand or asked the meaning, retract when she explicitly takes back a हाँ she just said (नहीं गलती से बोला, कुछ नहीं हुआ था, or नॉर्मल था). Never use retract for a plain नहीं to इसके अलावा कुछ और? emergency when a danger sign is happening right now, caller_stop when she asks to end the call.
-  Set followup_answered true and put that detail in note when her first हाँ sentence already answered the first follow-up. If say asks another detail, ask that next.
-  When the tool result includes children, child_ref is always the exact id from that list (child_1 through child_n) or all. Do not pass an age, a name, or an ordinal. Empty when there is one child or the question is not about a child. note is her detail in a short phrase. Do not invent.
+  If her first हाँ sentence already gives the first follow-up detail, set followup_answered true and put that detail in note.
+  When the tool result includes children, set child_ref to the exact id from that list (child_1 through child_n) or all. Never pass an age, a name, or an ordinal. Leave child_ref empty when there is one child or the question is not about a child. Put her detail in note as a short phrase, and do not invent anything.
 - A danger sign RIGHT NOW means not breathing, breathing very fast, blue lips now, unconscious, fits that do not stop, bleeding that does not stop, or she says it is an emergency. Call record_turn with outcome emergency. A past event is not an emergency.
 - अभी बंद कर दो or बाद में बात करेंगे is caller_stop. रुको or एक मिनट is not a stop. Wait.
 - If say is the same question again and clarify is not true, she has not answered it yet. Ask it once more. Do not move on.

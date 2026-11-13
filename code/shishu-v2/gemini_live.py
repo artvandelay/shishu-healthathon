@@ -112,8 +112,9 @@ _RECORD_TURN_DECL = {
             "child_ref": {
                 "type": "STRING",
                 "description": (
-                    "Exact id from the children list in the tool result (child_1 through child_n), "
-                    "or all. Empty when there is one child or the question is not about a child."
+                    "When the tool result includes children, pass the exact id from that list "
+                    "(child_1 through child_n) or all. Leave child_ref empty when there is one "
+                    "child or the question is not about a child."
                 ),
             },
             "note": {
@@ -172,6 +173,7 @@ class _TurnState:
         self.pending_speak_step = ""
         self.pending_speak_kind = "speak"
         self.last_quick_reply_step = ""
+        self.last_quick_reply_ts = 0.0
 
 
 class _Cursor:
@@ -1031,15 +1033,15 @@ async def _answer_function_calls(
                     "take_back": "retract",
                 }.get(outcome, outcome)
                 current_step = _current_step(cursor.state)
-                stale_turn = bool(turn.user_turn_step) and turn.user_turn_step != current_step
-                if not stale_turn and not turn.user_turn_step and turn.last_quick_reply_step:
-                    stale_turn = True
+                stale_turn = (
+                    turn.user_turn_step != current_step
+                    if turn.user_turn_step
+                    else bool(turn.last_quick_reply_step)
+                )
                 if stale_turn:
-                    body = {
-                        "result": "held",
-                        "reason": "stale_turn",
-                        "say": _say_hindi(cursor.state),
-                    }
+                    body = _tool_body(cursor.state)
+                    body["result"] = "held"
+                    body["reason"] = "stale_turn"
                     logged.append("record_turn_held")
                     clarify_applied = False
                 else:
@@ -1269,21 +1271,30 @@ async def _handle_server_message(
                 state.last_bot_text = state.bot_text_since_user
                 state.bot_text_since_user = ""
             state.last_user_text = user_text
-            state.user_turn_step = _current_step(cursor.state)
-            state.last_quick_reply_step = ""
+            if state.last_quick_reply_step and (
+                not _question_already_spoken(state, cursor.state)
+                or state.ignore_bot_audio
+                or time.time() - state.last_quick_reply_ts < 1.2
+            ):
+                state.user_turn_step = state.last_quick_reply_step
+            else:
+                state.user_turn_step = _current_step(cursor.state)
+                state.last_quick_reply_step = ""
             _arm_user_turn(state, telemetry)
             await _emit(
                 ws, ws_lock, call_id, telemetry, "user_transcript", user_text
             )
-        bot_text = await _forward_transcript(
-            ws,
-            ws_lock,
-            call_id,
-            "assistant",
-            server_content.output_transcription,
-            cursor,
-            telemetry,
-        )
+        bot_text = ""
+        if not state.ignore_bot_audio:
+            bot_text = await _forward_transcript(
+                ws,
+                ws_lock,
+                call_id,
+                "assistant",
+                server_content.output_transcription,
+                cursor,
+                telemetry,
+            )
         if bot_text:
             state.bot_text_since_user = (state.bot_text_since_user + " " + bot_text).strip()[-600:]
 
@@ -1354,13 +1365,25 @@ async def _handle_server_message(
         ):
             state.pending_speak_step = ""
             _cancel_speak_fallback(state)
-            await _send_realtime_safe(
+            ok = await _send_realtime_safe(
                 session,
                 send_lock,
                 state,
                 stop if stop is not None else asyncio.Event(),
                 text=_speak_cue_text(cursor.state, speak_kind),
             )
+            if not ok:
+                telemetry["tool_errors"] = int(telemetry.get("tool_errors") or 0) + 1
+                await _report_error(
+                    ws,
+                    ws_lock,
+                    call_id,
+                    telemetry,
+                    "Could not prompt Gemini to speak",
+                )
+                if stop is not None:
+                    stop.set()
+                return False
         state.bot_speaking = False
         if not state.awaiting_bot_reply:
             state.quiet_from = max(time.time(), state.playback_ends_at)
@@ -1753,6 +1776,7 @@ async def _browser_loop(
                 state.user_turn_step = ""
                 state.pending_speak_step = ""
                 state.last_quick_reply_step = str(payload.get("step") or "")
+                state.last_quick_reply_ts = time.time()
                 said = "नहीं।" if outcome == "clear" else "हाँ।"
                 qid = str(cursor.state.get("active_qid") or "")
                 db.append_transcript(call_id, "user", said, qid=qid)

@@ -111,15 +111,13 @@ class CallAudioRecorder:
     def _remember(self, bucket: list[tuple[float, bytes, int]], pcm_bytes: bytes, sample_rate: int) -> None:
         if self._closed or not pcm_bytes:
             return
-        elapsed = time.monotonic() - self._started
         pcm = bytes(pcm_bytes)
         rate = int(sample_rate)
         with self._lock:
             if self._closed:
                 return
-            if elapsed < 0:
-                elapsed = 0.0
-            bucket.append((float(elapsed), pcm, rate))
+            elapsed = max(0.0, time.monotonic() - self._started)
+            bucket.append((elapsed, pcm, rate))
 
     def add_user_pcm(self, pcm_bytes: bytes, sample_rate: int) -> None:
         self._remember(self._user, pcm_bytes, sample_rate)
@@ -139,7 +137,7 @@ class CallAudioRecorder:
             samples.frombytes(resampled)
             if not samples:
                 continue
-            start = int(round(float(elapsed) * TARGET_RATE))
+            start = int(round(elapsed * TARGET_RATE))
             if start < 0:
                 start = 0
             placed.append((start, samples))

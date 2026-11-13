@@ -581,7 +581,7 @@ def _which_child_hi(children: list) -> str:
 
 
 def children_roster(state: dict) -> list[dict]:
-    """Oldest-first ids for the live model. Empty when she has fewer than two children."""
+    """Return oldest-first child records when the profile has two or more children."""
     children = (state.get("profile") or {}).get("children") or []
     if len(children) <= 1:
         return []
@@ -606,7 +606,7 @@ def children_roster(state: dict) -> list[dict]:
 
 
 def _resolve_child_ids(state: dict, child_ref: str) -> list[str]:
-    """Exact child ids only. The whole reference must match one closed-world token."""
+    """Return matching child ids when child_ref equals one closed-world token."""
     ref = " ".join((child_ref or "").strip().split())
     if not ref:
         return []
@@ -621,8 +621,8 @@ def _resolve_child_ids(state: dict, child_ref: str) -> list[str]:
     named = [
         child["id"]
         for child in children
-        if (child.get("name") or "").strip()
-        and (child.get("name") or "").strip().casefold() == token
+        if (raw_name := (child.get("name") or "").strip())
+        and raw_name.casefold() == token
     ]
     if len(named) == 1:
         return named
