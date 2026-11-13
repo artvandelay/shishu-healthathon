@@ -154,6 +154,7 @@
     .stage.working #mic-meter,
     .stage.working #caption,
     .stage.working #call-btn,
+    .stage.working #call-dock,
     .stage.working #nudge-btn { display: none; }
 
     @keyframes pulse {
@@ -283,14 +284,37 @@
       40% { transform: translateY(-7px); opacity: 1; }
     }
 
+    @media (prefers-reduced-motion: reduce) {
+      .ring,
+      #wait .dots i {
+        animation: none;
+      }
+    }
+
+    .call-dock {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: clamp(12px, 4vw, 20px);
+      margin-top: 14px;
+      max-width: 100%;
+    }
+
+    .call-btn,
+    #no-btn,
+    #call-btn,
+    #yes-btn {
+      width: clamp(68px, 21vw, 84px);
+      height: clamp(68px, 21vw, 84px);
+      flex: 0 0 auto;
+    }
+
     .call-btn {
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      width: 84px;
-      height: 84px;
-      margin-top: 14px;
+      padding: 0;
       border: 0;
       border-radius: 50%;
       background: var(--yellow);
@@ -315,6 +339,29 @@
     .call-btn.end:hover { background: var(--red-dark); }
 
     .call-btn:disabled { opacity: 0.65; cursor: wait; }
+
+    .no-btn {
+      background: #ffffff;
+      color: var(--navy);
+      border: 2px solid var(--navy);
+      box-shadow: 0 8px 18px rgba(27, 42, 74, 0.12);
+    }
+
+    .no-btn .en { color: var(--muted); }
+
+    .no-btn:hover:not(:disabled) { background: var(--navy-soft); }
+
+    .yes-btn {
+      background: var(--navy);
+      color: #ffffff;
+      box-shadow: 0 8px 18px rgba(27, 42, 74, 0.24);
+    }
+
+    .yes-btn .en { color: rgba(255, 255, 255, 0.88); }
+
+    .yes-btn:hover:not(:disabled) { background: var(--navy-dark); }
+
+    .quick-btn:disabled { opacity: 0.45; cursor: default; }
 
     .consent-row {
       display: flex;
@@ -674,7 +721,11 @@
         <label><input id="consent-check" type="checkbox"><span><span class="hi">मैं सहमत हूँ</span><span class="en">I agree</span></span></label>
         <a href="/static/SHISHU-consent.pdf" target="_blank" rel="noopener"><span class="hi">सहमति पत्र</span><span class="en">Consent</span></a>
       </p>
-      <button id="call-btn" class="call-btn" type="button" disabled><span class="hi">शुरू</span><span class="en">Start</span></button>
+      <div id="call-dock" class="call-dock">
+        <button id="no-btn" class="call-btn quick-btn no-btn" type="button" aria-label="नहीं, आगे बढ़ें (No)" hidden><span class="hi">नहीं</span><span class="en">No</span></button>
+        <button id="call-btn" class="call-btn" type="button" disabled><span class="hi">शुरू</span><span class="en">Start</span></button>
+        <button id="yes-btn" class="call-btn quick-btn yes-btn" type="button" aria-label="हाँ (Yes)" hidden><span class="hi">हाँ</span><span class="en">Yes</span></button>
+      </div>
       <button id="nudge-btn" class="nudge-btn" type="button" hidden><span class="hi">जवाब नहीं आया? यहाँ दबाएँ</span><span class="en">No reply? Tap here</span></button>
     </section>
     <section id="thanks" class="thanks" hidden>

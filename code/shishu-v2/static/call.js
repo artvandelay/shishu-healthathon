@@ -4,6 +4,8 @@
       const captionEl = document.getElementById("caption");
       const waitEl = document.getElementById("wait");
       const callBtn = document.getElementById("call-btn");
+      const noBtn = document.getElementById("no-btn");
+      const yesBtn = document.getElementById("yes-btn");
       const consentRow = document.getElementById("consent-row");
       const consentCheck = document.getElementById("consent-check");
       const stageEl = document.getElementById("stage");
@@ -79,6 +81,9 @@
       ].join("\n");
 
       let phase = "idle";
+      let questionStep = "";
+      let expectYesNo = false;
+      let quickReplyPending = false;
       let engine = "gemini";
       let captureRate = 16000;
       let ws = null;
@@ -352,6 +357,14 @@
         nudgeWatch = 0;
       }
 
+      function syncQuickButtons() {
+        const show = phase === "live" && expectYesNo;
+        noBtn.hidden = !show;
+        yesBtn.hidden = !show;
+        noBtn.disabled = !show || quickReplyPending;
+        yesBtn.disabled = !show || quickReplyPending;
+      }
+
       function leaveLiveChrome() {
         stopNudgeWatch();
         clearThinkingWatch();
@@ -361,6 +374,23 @@
         userSpeaking = false;
         speechEndAt = 0;
         resetMicLevel();
+        questionStep = "";
+        expectYesNo = false;
+        quickReplyPending = false;
+        syncQuickButtons();
+      }
+
+      function sendQuickReply(outcome) {
+        if (phase !== "live" || !expectYesNo || quickReplyPending || !questionStep || !ws || ws.readyState !== WebSocket.OPEN) return;
+        quickReplyPending = true;
+        syncQuickButtons();
+        flushPlayback();
+        speechEndAt = 0;
+        nudgeBtn.classList.remove("hot");
+        nudgeBtn.hidden = true;
+        showCaption("user", outcome === "clear" ? "नहीं।" : "हाँ।");
+        startThinkingWatch();
+        ws.send(JSON.stringify({ type: "quick_reply", outcome: outcome, step: questionStep }));
       }
 
       function isBotPlaying() {
@@ -661,6 +691,15 @@
         } else if (msg.type === "progress") {
           flowGroup = msg.group || "";
           renderHud();
+        } else if (msg.type === "question_state") {
+          questionStep = String(msg.step || "");
+          expectYesNo = Boolean(msg.expect_yes_no);
+          quickReplyPending = false;
+          if (msg.group) {
+            flowGroup = String(msg.group);
+            renderHud();
+          }
+          syncQuickButtons();
         } else if (msg.type === "ending") {
           beginPreparing();
           hangupWhenQuiet();
@@ -689,6 +728,10 @@
           leaveLiveChrome();
           avatarWrap.classList.remove("live", "speaking");
           phase = "error";
+          questionStep = "";
+          expectYesNo = false;
+          quickReplyPending = false;
+          syncQuickButtons();
           releaseWakeLock();
           setStatus({ hi: "कॉल शुरू करने के लिए नीचे दबाएँ", en: "Tap below to start the call" });
           showConsentRow();
@@ -786,6 +829,10 @@
       }
 
       async function startCall(micPromise) {
+        questionStep = "";
+        expectYesNo = false;
+        quickReplyPending = false;
+        syncQuickButtons();
         clearError();
         captionRole = "";
         captionText = "";
@@ -834,6 +881,7 @@
           await openSocket();
           if (phase !== "connecting") return;
           phase = "live";
+          syncQuickButtons();
           avatarWrap.classList.add("live");
           startNudgeWatch();
           setStatus({ hi: "सुन रही हूँ…", en: "Listening" });
@@ -846,6 +894,10 @@
           leaveLiveChrome();
           avatarWrap.classList.remove("live", "speaking");
           phase = "error";
+          questionStep = "";
+          expectYesNo = false;
+          quickReplyPending = false;
+          syncQuickButtons();
           releaseWakeLock();
           setStatus({ hi: "कॉल शुरू करने के लिए नीचे दबाएँ", en: "Tap below to start the call" });
           showConsentRow();
@@ -863,6 +915,10 @@
         leaveLiveChrome();
         avatarWrap.classList.remove("live", "speaking");
         phase = "preparing";
+        questionStep = "";
+        expectYesNo = false;
+        quickReplyPending = false;
+        syncQuickButtons();
         setStatus("");
         stageEl.classList.add("working");
         avatarWrap.classList.add("working");
@@ -899,6 +955,10 @@
 
       function endCall() {
         if (phase !== "live" && phase !== "connecting") return;
+        questionStep = "";
+        expectYesNo = false;
+        quickReplyPending = false;
+        syncQuickButtons();
         const sock = ws;
         const open = sock && sock.readyState === WebSocket.OPEN;
         closeAudioContext();
@@ -1031,6 +1091,10 @@
         if (summaryTimer) clearTimeout(summaryTimer);
         summaryTimer = 0;
         phase = "done";
+        questionStep = "";
+        expectYesNo = false;
+        quickReplyPending = false;
+        syncQuickButtons();
         releaseWakeLock();
         stopCapture();
         flushPlayback();
@@ -1061,6 +1125,10 @@
         stopTimer();
         leaveLiveChrome();
         phase = "idle";
+        questionStep = "";
+        expectYesNo = false;
+        quickReplyPending = false;
+        syncQuickButtons();
         releaseWakeLock();
         hangupArmed = false;
         reportPending = false;
@@ -1207,6 +1275,9 @@
         }
         if (phase === "connecting" || phase === "live") endCall();
       });
+
+      noBtn.addEventListener("click", function () { sendQuickReply("clear"); });
+      yesBtn.addEventListener("click", function () { sendQuickReply("concern"); });
 
       nudgeBtn.addEventListener("click", function () {
         if (phase !== "live" || !ws || ws.readyState !== WebSocket.OPEN) return;

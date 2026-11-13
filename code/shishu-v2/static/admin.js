@@ -291,9 +291,74 @@
         return html || "<p>The report is not ready yet.</p>";
       }
 
-      function renderFindings(findings) {
+      function cursorDetail(item) {
+        const bits = [];
+        const ids = asList(item && item.child_ids).map(function (id) {
+          return String(id || "").trim();
+        }).filter(Boolean);
+        if (ids.length) bits.push(ids.join(", "));
+        const notes = String((item && item.notes) || "").trim();
+        if (notes) bits.push(notes);
+        const followups = asObject(item && item.followups);
+        Object.keys(followups).sort().forEach(function (fid) {
+          const row = followups[fid];
+          const note = typeof row === "string"
+            ? row.trim()
+            : String((asObject(row).note || asObject(row).notes || "")).trim();
+          if (!note || note === notes) return;
+          bits.push(fid + ": " + note);
+        });
+        return bits.join(" · ");
+      }
+
+      function renderCursorAnswers(cursorState) {
+        const answers = asObject(asObject(cursorState).answers);
+        const rank = { concern: 0, unknown: 1, clear: 2 };
+        const keys = Object.keys(answers).filter(function (qid) {
+          return String(asObject(answers[qid]).state || "") !== "not_applicable";
+        });
+        keys.sort(function (a, b) {
+          const sa = String(asObject(answers[a]).state || "");
+          const sb = String(asObject(answers[b]).state || "");
+          const ra = Object.prototype.hasOwnProperty.call(rank, sa) ? rank[sa] : 3;
+          const rb = Object.prototype.hasOwnProperty.call(rank, sb) ? rank[sb] : 3;
+          return ra - rb || String(a).localeCompare(String(b));
+        });
+        if (!keys.length) {
+          findingsEl.appendChild(el("p", "calm", "No structured findings were recorded."));
+          return;
+        }
+        const table = el("table");
+        const head = el("tr");
+        ["Question ID", "State", "Detail", "Flag"].forEach(function (label) {
+          head.appendChild(el("th", "", label));
+        });
+        const thead = el("thead");
+        thead.appendChild(head);
+        table.appendChild(thead);
+        const tbody = el("tbody");
+        keys.forEach(function (qid) {
+          const item = asObject(answers[qid]);
+          const state = String(item.state || "");
+          const flagged = state === "concern" && qid !== "intro_bridge";
+          const row = el("tr", flagged ? "flag" : "");
+          row.appendChild(el("td", "", qid));
+          row.appendChild(el("td", "", state));
+          row.appendChild(el("td", "", cursorDetail(item)));
+          row.appendChild(el("td", "", flagged ? "Yes" : ""));
+          tbody.appendChild(row);
+        });
+        table.appendChild(tbody);
+        findingsEl.appendChild(table);
+      }
+
+      function renderFindings(findings, cursorState) {
         findingsEl.textContent = "";
         const data = asObject(findings);
+        if (Object.keys(data).length === 0) {
+          renderCursorAnswers(cursorState);
+          return;
+        }
         const keys = Object.keys(data).sort(function (a, b) {
           function rank(key) {
             if (String(key).indexOf("profile_") === 0) return 0;
@@ -390,7 +455,7 @@
         renderFlags(call.red_flags);
         doctorEl.innerHTML = renderMarkdown(call.summary_doctor || "");
         motherEl.textContent = call.summary_mother || "The mother summary is not ready yet.";
-        renderFindings(call.findings);
+        renderFindings(call.findings, call.cursor_state);
         renderTranscript(call.transcript);
         renderTelemetry(call);
         paintReview(call);
