@@ -78,7 +78,7 @@ async def _drop_fallback(turn):
     await asyncio.gather(task, return_exceptions=True)
 
 
-def _server_message(*, turn_complete=False, user_text="", bot_text="", tool_calls=None):
+def _server_message(*, turn_complete=False, user_text="", bot_text="", tool_calls=None, go_away=False):
     tool_call = None
     if tool_calls:
         tool_call = SimpleNamespace(function_calls=tool_calls)
@@ -93,7 +93,7 @@ def _server_message(*, turn_complete=False, user_text="", bot_text="", tool_call
         ),
         tool_call=tool_call,
         session_resumption_update=None,
-        go_away=None,
+        go_away=SimpleNamespace(time_left="50s") if go_away else None,
     )
 
 
@@ -902,6 +902,475 @@ class LiveTurnTests(unittest.TestCase):
 
         asyncio.run(clinical())
         asyncio.run(close())
+
+
+class Stage5ATests(unittest.TestCase):
+    def _telemetry(self):
+        return {
+            "tool_calls": 0,
+            "tool_errors": 0,
+            "end_requested": False,
+            "audio_chunks_out": 0,
+            "bot_turns": 0,
+            "user_turns": 0,
+            "turn_latencies_ms": [],
+            "errors": [],
+            "reconnects": 0,
+        }
+
+    def test_output_transcription_is_hindi_and_closing_text_is_not_invented(self):
+        live = gemini_live._live_config({"gemini_model": "gemini-3.1-flash-live-preview"})
+        self.assertEqual(list(live.output_audio_transcription.language_codes), ["hi-IN"])
+        self.assertEqual(list(live.input_audio_transcription.language_codes), ["hi-IN"])
+        older = gemini_live._live_config({"gemini_model": "gemini-2.0-flash-live"})
+        self.assertFalse(older.output_audio_transcription.language_codes)
+        self.assertFalse(older.input_audio_transcription.language_codes)
+        with open(gemini_live.__file__, encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertNotIn("def _complete_closing_transcript", source)
+        self.assertFalse(hasattr(gemini_live, "_complete_closing_transcript"))
+        prompt = gemini_live.GEMINI_LIVE_SYSTEM_PROMPT
+        self.assertIn("थैलेसीमिया माइनर या ट्रेट", prompt)
+        self.assertIn("recorded_concerns", prompt)
+        self.assertIn("none were recorded yet", prompt)
+
+    def test_same_step_clarify_and_held_reemit_question_state(self):
+        async def run():
+            state = cursor_tests._clear_until(
+                cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
+                "birth_jaundice",
+            )
+            cursor = gemini_live._Cursor()
+            cursor.state = state
+            step = gemini_live._current_step(state)
+            turn = gemini_live._TurnState()
+            turn.spoken_qid = step
+            turn.user_turn_step = step
+            ws = _FakeSocket()
+            session = _FakeSession()
+            await gemini_live._answer_function_calls(
+                session,
+                asyncio.Lock(),
+                ws,
+                asyncio.Lock(),
+                db.create_call("gemini"),
+                self._telemetry(),
+                [_Call("record_turn", {"outcome": "clarify"}, "fc-clarify")],
+                set(),
+                set(),
+                cursor,
+                turn,
+            )
+            states = [item for item in ws.sent if item.get("type") == "question_state"]
+            self.assertEqual([item["step"] for item in states], [step])
+            self.assertEqual(cursor.state["active_qid"], "birth_jaundice")
+            self.assertTrue(session.sent[0][1][0].response["clarify"])
+            await _drop_fallback(turn)
+
+            held = gemini_live._TurnState()
+            held.user_turn_step = step
+            held_ws = _FakeSocket()
+            held_session = _FakeSession()
+            await gemini_live._answer_function_calls(
+                held_session,
+                asyncio.Lock(),
+                held_ws,
+                asyncio.Lock(),
+                db.create_call("gemini"),
+                self._telemetry(),
+                [_Call("record_turn", {"outcome": "clear"}, "fc-held")],
+                set(),
+                set(),
+                cursor,
+                held,
+            )
+            held_states = [item for item in held_ws.sent if item.get("type") == "question_state"]
+            self.assertEqual([item["step"] for item in held_states], [step])
+            body = held_session.sent[0][1][0].response
+            self.assertEqual(body["result"], "held")
+            self.assertEqual(body["reason"], "not_spoken")
+            self.assertEqual(cursor.state["active_qid"], "birth_jaundice")
+            await _drop_fallback(held)
+
+        asyncio.run(run())
+
+    def test_trailing_quick_reply_asr_does_not_record_a_3ms_latency(self):
+        async def run():
+            state = cursor_tests._clear_until(
+                cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
+                "birth_jaundice",
+            )
+            cursor = gemini_live._Cursor()
+            cursor.state = state
+            step = gemini_live._current_step(state)
+            tapped = "birth_nicu"
+            turn = gemini_live._TurnState()
+            turn.spoken_qid = step
+            turn.awaiting_bot_reply = True
+            turn.speech_end_waiting = False
+            turn.last_quick_reply_step = tapped
+            turn.last_quick_reply_ts = time.time()
+            started = time.time() - 0.35
+            turn.last_user_turn_ts = started
+            telemetry = self._telemetry()
+            telemetry["user_turns"] = 2
+            telemetry["turn_latencies_ms"] = [640]
+            call_id = db.create_call("gemini")
+            ws = _FakeSocket()
+            await gemini_live._handle_server_message(
+                _server_message(user_text="नहीं"),
+                _FakeSession(),
+                asyncio.Lock(),
+                ws,
+                asyncio.Lock(),
+                call_id,
+                telemetry,
+                turn,
+                _Recorder(),
+                set(),
+                set(),
+                cursor,
+                stop=asyncio.Event(),
+            )
+            self.assertEqual(turn.user_turn_step, tapped)
+            self.assertEqual(telemetry["user_turns"], 2)
+            self.assertEqual(telemetry["turn_latencies_ms"], [640])
+            self.assertAlmostEqual(turn.last_user_turn_ts, started, delta=0.02)
+            await gemini_live._on_bot_audio(
+                ws,
+                asyncio.Lock(),
+                call_id,
+                telemetry,
+                turn,
+                _Recorder(),
+                b"\x01\x00" * 240,
+                24000,
+                cursor,
+            )
+            self.assertEqual(telemetry["user_turns"], 2)
+            self.assertEqual(len(telemetry["turn_latencies_ms"]), 2)
+            self.assertGreater(telemetry["turn_latencies_ms"][-1], 200)
+
+            fresh = gemini_live._TurnState()
+            fresh.spoken_qid = step
+            fresh.awaiting_bot_reply = False
+            fresh.last_quick_reply_step = tapped
+            fresh.last_quick_reply_ts = time.time()
+            quiet = self._telemetry()
+            quiet["user_turns"] = 2
+            quiet["turn_latencies_ms"] = [640]
+            await gemini_live._handle_server_message(
+                _server_message(user_text="नहीं"),
+                _FakeSession(),
+                asyncio.Lock(),
+                _FakeSocket(),
+                asyncio.Lock(),
+                call_id,
+                quiet,
+                fresh,
+                _Recorder(),
+                set(),
+                set(),
+                cursor,
+                stop=asyncio.Event(),
+            )
+            self.assertEqual(quiet["user_turns"], 2)
+            self.assertFalse(fresh.awaiting_bot_reply)
+            await gemini_live._on_bot_audio(
+                _FakeSocket(),
+                asyncio.Lock(),
+                call_id,
+                quiet,
+                fresh,
+                _Recorder(),
+                b"\x01\x00" * 240,
+                24000,
+                cursor,
+            )
+            self.assertEqual(quiet["user_turns"], 2)
+            self.assertEqual(quiet["turn_latencies_ms"], [640])
+
+        asyncio.run(run())
+
+    def test_vad_start_sensitivity_defaults_and_migrates_to_low(self):
+        low = gemini_live.types.StartSensitivity.START_SENSITIVITY_LOW
+        high = gemini_live.types.StartSensitivity.START_SENSITIVITY_HIGH
+        self.assertEqual(db.DEFAULT_SETTINGS["vad_start_sensitivity"], "LOW")
+        self.assertEqual(gemini_live._session_settings({})["start_sens"], low)
+        self.assertEqual(
+            gemini_live._session_settings({"vad_start_sensitivity": ""})["start_sens"],
+            low,
+        )
+        self.assertEqual(
+            gemini_live._session_settings({"vad_start_sensitivity": "LOW"})["start_sens"],
+            low,
+        )
+        self.assertEqual(
+            gemini_live._session_settings({"vad_start_sensitivity": "HIGH"})["start_sens"],
+            high,
+        )
+        db.set_setting("vad_start_sensitivity", "HIGH")
+        db._init_db()
+        self.assertEqual(db.get_all_settings()["vad_start_sensitivity"], "LOW")
+        db.set_setting("vad_start_sensitivity", "LOW")
+        db._init_db()
+        self.assertEqual(db.get_all_settings()["vad_start_sensitivity"], "LOW")
+
+    def test_go_away_waits_and_a_dropped_turn_is_spoken_again(self):
+        async def handle(turn, message, session=None):
+            cursor = gemini_live._Cursor()
+            cursor.state = cursor_tests._clear_until(
+                cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
+                "birth_jaundice",
+            )
+            ws = _FakeSocket()
+            keep = await gemini_live._handle_server_message(
+                message,
+                session or _FakeSession(),
+                asyncio.Lock(),
+                ws,
+                asyncio.Lock(),
+                db.create_call("gemini"),
+                self._telemetry(),
+                turn,
+                _Recorder(),
+                set(),
+                set(),
+                cursor,
+                stop=asyncio.Event(),
+            )
+            return keep, cursor, ws
+
+        async def drive(session, turn, cursor, reconnect):
+            stop = getattr(session, "stop", None) or asyncio.Event()
+            ws = _FakeSocket()
+            telemetry = self._telemetry()
+            await asyncio.wait_for(
+                gemini_live._gemini_loop(
+                    session,
+                    asyncio.Lock(),
+                    ws,
+                    asyncio.Lock(),
+                    stop,
+                    db.create_call("gemini"),
+                    telemetry,
+                    turn,
+                    _Recorder(),
+                    cursor,
+                    reconnect,
+                    None,
+                ),
+                timeout=3,
+            )
+            return ws
+
+        async def run():
+            missing = gemini_live._TurnState()
+            missing.bot_speaking = True
+            keep, _cursor, _ws = await handle(missing, _server_message(go_away=True))
+            self.assertFalse(keep)
+            self.assertFalse(missing.reconnect_requested)
+
+            speaking = gemini_live._TurnState()
+            speaking.bot_speaking = True
+            speaking.resume_handle = "resume-1"
+            session = _FakeSession()
+            keep, cursor, _ws = await handle(speaking, _server_message(go_away=True), session)
+            self.assertTrue(keep)
+            self.assertTrue(speaking.go_away_pending)
+            self.assertFalse(speaking.reconnect_requested)
+            self.assertEqual(session.sent, [])
+            step = gemini_live._current_step(cursor.state)
+            speaking.pending_speak_step = step
+            speaking.pending_speak_kind = "clarify"
+            speaking.active_speak_kind = "clarify"
+            speaking.bot_replied_since_user = False
+            keep, _cursor, _ws = await handle(
+                speaking,
+                _server_message(turn_complete=True),
+                session,
+            )
+            self.assertTrue(keep)
+            self.assertFalse(speaking.go_away_pending)
+            self.assertTrue(speaking.reconnect_requested)
+            self.assertEqual(speaking.pending_speak_step, step)
+            self.assertEqual(session.sent, [])
+
+            idle = gemini_live._TurnState()
+            idle.resume_handle = "resume-idle"
+            keep, _cursor, _ws = await handle(idle, _server_message(go_away=True))
+            self.assertTrue(keep)
+            self.assertTrue(idle.reconnect_requested)
+            self.assertFalse(idle.go_away_pending)
+
+            class _Live:
+                def __init__(self, messages, error=None):
+                    self.messages = list(messages)
+                    self.error = error
+                    self.stop = asyncio.Event()
+                    self.sent = []
+                    self.delivered = 0
+                    self.started = False
+
+                async def send_realtime_input(self, **kwargs):
+                    self.sent.append(kwargs)
+                    self.stop.set()
+
+                async def receive(self):
+                    if self.started:
+                        await asyncio.Future()
+                        return
+                    self.started = True
+                    if self.error is not None:
+                        raise self.error
+                    for item in self.messages:
+                        self.delivered += 1
+                        yield item
+
+            waiting = gemini_live._Cursor()
+            waiting.state = cursor_tests._clear_until(
+                cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
+                "birth_jaundice",
+            )
+            wait_step = gemini_live._current_step(waiting.state)
+            wait_turn = gemini_live._TurnState()
+            wait_turn.resume_handle = "resume-wait"
+            wait_turn.awaiting_bot_reply = True
+            wait_turn.pending_speak_step = wait_step
+            wait_turn.pending_speak_kind = "clarify"
+            wait_turn.active_speak_kind = "clarify"
+            live = _Live([
+                _server_message(go_away=True),
+                _server_message(turn_complete=True),
+            ])
+            seen = []
+
+            async def reconnect(handle):
+                seen.append(handle)
+                return True
+
+            ws = await drive(live, wait_turn, waiting, reconnect)
+            self.assertEqual(live.delivered, 2)
+            self.assertEqual(seen, ["resume-wait"])
+            self.assertEqual(len(live.sent), 1)
+            cue = live.sent[0]["text"]
+            self.assertIn("she did not understand", cue)
+            self.assertIn("नीली लाइट", cue)
+            kinds = [item.get("type") for item in ws.sent]
+            self.assertIn("reconnected", kinds)
+            self.assertIn("question_state", kinds)
+
+            dropped = gemini_live._Cursor()
+            dropped.state = waiting.state
+            drop_turn = gemini_live._TurnState()
+            drop_turn.resume_handle = "resume-drop"
+            drop_turn.bot_speaking = True
+            drop_turn.active_speak_kind = "speak"
+            drop = _Live([], error=ConnectionError("dropped mid-turn"))
+            seen.clear()
+
+            async def reconnect_drop(handle):
+                seen.append(handle)
+                return True
+
+            ws = await drive(drop, drop_turn, dropped, reconnect_drop)
+            self.assertEqual(seen, ["resume-drop"])
+            self.assertEqual(len(drop.sent), 1)
+            again = drop.sent[0]["text"]
+            self.assertIn("speak only this Hindi now", again)
+            self.assertIn("नीली लाइट", again)
+            self.assertNotIn("she did not understand", again)
+            self.assertIn("question_state", [item.get("type") for item in ws.sent])
+
+        asyncio.run(run())
+
+    def test_recorded_concerns_follow_the_cursor_on_clarify_and_family(self):
+        async def answer(cursor, turn, call):
+            session = _FakeSession()
+            await gemini_live._answer_function_calls(
+                session,
+                asyncio.Lock(),
+                _FakeSocket(),
+                asyncio.Lock(),
+                db.create_call("gemini"),
+                self._telemetry(),
+                [call],
+                set(),
+                set(),
+                cursor,
+                turn,
+            )
+            await _drop_fallback(turn)
+            return session.sent[0][1][0].response
+
+        async def run():
+            state = cursor_tests._clear_until(
+                cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
+                "birth_jaundice",
+            )
+            state["answers"]["birth_nicu"] = {
+                "state": "concern",
+                "child_ids": ["child_1"],
+                "notes": "साँस की तकलीफ",
+                "followups": {"nicu_days": {"state": "concern", "note": "चार दिन"}},
+            }
+            self.assertNotIn("recorded_concerns", gemini_live._tool_body(state))
+            lines = gemini_live._recorded_concerns(state)
+            self.assertEqual(len(lines), 1)
+            self.assertIn("काँच के बक्से", lines[0])
+            self.assertIn("4 साल", lines[0])
+            self.assertIn("साँस की तकलीफ", lines[0])
+            self.assertIn("चार दिन", lines[0])
+            self.assertNotIn("ऑपरेशन", lines[0])
+
+            cursor = gemini_live._Cursor()
+            cursor.state = state
+            step = gemini_live._current_step(state)
+            turn = gemini_live._TurnState()
+            turn.spoken_qid = step
+            turn.user_turn_step = step
+            body = await answer(
+                cursor,
+                turn,
+                _Call("record_turn", {"outcome": "clarify"}, "fc-clarify"),
+            )
+            self.assertTrue(body["clarify"])
+            self.assertEqual(body["recorded_concerns"], lines)
+            self.assertEqual(cursor.state["active_qid"], "birth_jaundice")
+
+            family = cursor_tests._clear_until(
+                cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
+                "fam_transfusion",
+            )
+            family = apply_turn(family, "concern", note="मामा के बेटे को बार बार खून")
+            self.assertEqual(family["pending_followup_idx"], 0)
+            family = apply_turn(family, "concern", note="सगे मामा")
+            family = cursor_tests._clear_until(family, "fam_same_problem")
+            preview = gemini_live._tool_body(family)
+            self.assertTrue(any("सगे मामा" in line for line in preview["recorded_concerns"]))
+            self.assertTrue(any("मामा के बेटे" in line for line in preview["recorded_concerns"]))
+            close_state = cursor_tests._clear_until(
+                cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
+                "close_anything_else",
+            )
+            self.assertEqual(gemini_live._tool_body(close_state)["recorded_concerns"], [])
+
+            fam = gemini_live._Cursor()
+            fam.state = family
+            fam_step = gemini_live._current_step(family)
+            fam_turn = gemini_live._TurnState()
+            fam_turn.spoken_qid = fam_step
+            fam_turn.user_turn_step = fam_step
+            fam_body = await answer(
+                fam,
+                fam_turn,
+                _Call("record_turn", {"outcome": "concern", "note": ""}, "fc-same"),
+            )
+            self.assertIn("recorded_concerns", fam_body)
+            self.assertTrue(any("सगे मामा" in line for line in fam_body["recorded_concerns"]))
+            self.assertEqual(fam.state["active_qid"], "fam_same_problem")
+
+        asyncio.run(run())
 
 
 if __name__ == "__main__":

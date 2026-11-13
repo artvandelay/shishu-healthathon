@@ -173,7 +173,25 @@ class QuickReplyScreenTests(unittest.TestCase):
         self.assertIn(".no-btn:hover:not(:disabled) { background: var(--navy-soft); }", html)
         self.assertIn(".yes-btn .en { color: rgba(255, 255, 255, 0.88); }", html)
         self.assertIn(".yes-btn:hover:not(:disabled) { background: var(--navy-dark); }", html)
-        self.assertIn(".quick-btn:disabled { opacity: 0.45; cursor: default; }", html)
+        self.assertIn("opacity: 0;", html)
+        self.assertIn("transform: scale(0.9);", html)
+        self.assertIn("visibility: hidden;", html)
+        self.assertIn("pointer-events: none;", html)
+        self.assertIn(
+            "transition: opacity 240ms ease-out, transform 240ms ease-out, visibility 0s linear 240ms;",
+            html,
+        )
+        self.assertIn(".quick-btn.is-visible {", html)
+        self.assertIn("transform: scale(1);", html)
+        self.assertIn("visibility: visible;", html)
+        self.assertIn("pointer-events: auto;", html)
+        self.assertIn(
+            "transition: opacity 240ms ease-out, transform 240ms ease-out, visibility 0s;",
+            html,
+        )
+        self.assertIn(".quick-btn.is-visible:disabled { opacity: 0.45; cursor: default; }", html)
+        self.assertIn(".quick-btn", motion)
+        self.assertIn("transition: none", motion)
 
         client = TestClient(app.app)
         client.post("/api/login", json={"username": "Mother", "passcode": app._passcode()})
@@ -196,11 +214,14 @@ class QuickReplyScreenTests(unittest.TestCase):
         dashboard = admin_js.text
 
         sync = _function_body(script, "syncQuickButtons")
-        self.assertIn('phase === "live" && expectYesNo && quickReplyReady', sync)
-        self.assertIn("noBtn.hidden = !show", sync)
-        self.assertIn("yesBtn.hidden = !show", sync)
-        self.assertIn("noBtn.disabled = !show || quickReplyPending", sync)
-        self.assertIn("yesBtn.disabled = !show || quickReplyPending", sync)
+        self.assertIn('const live = phase === "live";', sync)
+        self.assertIn("noBtn.hidden = !live;", sync)
+        self.assertIn("yesBtn.hidden = !live;", sync)
+        self.assertIn("const show = live && expectYesNo && quickReplyReady;", sync)
+        self.assertIn('noBtn.classList.toggle("is-visible", show);', sync)
+        self.assertIn('yesBtn.classList.toggle("is-visible", show);', sync)
+        self.assertIn("noBtn.disabled = !show || quickReplyPending;", sync)
+        self.assertIn("yesBtn.disabled = !show || quickReplyPending;", sync)
 
         state = script.split('msg.type === "question_state"', 1)[1].split('msg.type === "ending"', 1)[0]
         self.assertIn('questionStep = String(msg.step || "");', state)
@@ -208,8 +229,10 @@ class QuickReplyScreenTests(unittest.TestCase):
         self.assertIn("promptChars = Number(msg.prompt_chars) || 0;", state)
         self.assertIn("quickReplyReady = false;", state)
         self.assertIn("quickReplyPending = false;", state)
-        self.assertIn("stepFirstPlayTime = 0;", state)
-        self.assertIn("clearQuickRevealTimer();", state)
+        self.assertIn("stepAudioStart = 0;", state)
+        self.assertIn("stepQueuedSec = 0;", state)
+        self.assertIn("stepStreamDone = false;", state)
+        self.assertIn("cancelQuickRevealRaf();", state)
         self.assertIn("flowGroup = String(msg.group);", state)
         self.assertIn("renderHud();", state)
         self.assertIn("syncQuickButtons();", state)
@@ -221,22 +244,40 @@ class QuickReplyScreenTests(unittest.TestCase):
         self.assertIn("expectYesNo = false;", reset)
         self.assertIn("quickReplyReady = false;", reset)
         self.assertIn("quickReplyPending = false;", reset)
-        self.assertIn("clearQuickRevealTimer();", reset)
+        self.assertIn("stepAudioStart = 0;", reset)
+        self.assertIn("stepQueuedSec = 0;", reset)
+        self.assertIn("stepStreamDone = false;", reset)
+        self.assertIn("cancelQuickRevealRaf();", reset)
         self.assertIn("syncQuickButtons();", reset)
         stripped = [line.strip() for line in script.splitlines()]
         self.assertEqual(stripped.count('questionStep = "";'), 1)
         self.assertEqual(stripped.count("expectYesNo = false;"), 1)
         self.assertEqual(stripped.count("quickReplyPending = false;"), 2)
+        self.assertEqual(stripped.count("stepAudioStart = 0;"), 2)
+        self.assertEqual(stripped.count("stepQueuedSec = 0;"), 2)
+        self.assertEqual(stripped.count("stepStreamDone = false;"), 2)
+        self.assertNotIn("stepFirstPlayTime", script)
+        self.assertNotIn("quickRevealTimer", script)
+        self.assertNotIn("clearQuickRevealTimer", script)
+        self.assertIn('msg.type === "bot_turn_complete"', script)
 
         play = _function_body(script, "playPcm")
-        self.assertIn("!quickReplyReady && !quickRevealTimer", play)
-        self.assertIn("const halfwayMs = Math.round(estMs * 0.5);", play)
-        self.assertIn(
-            'activeSources.size === 0 && phase === "live" && expectYesNo && !quickReplyReady',
-            play,
-        )
-        self.assertLess(play.index("src.start(nextPlayTime)"), play.index("halfwayMs"))
-        self.assertLess(play.index("halfwayMs"), play.index("quickReplyReady = true"))
+        self.assertIn("const startAt = Math.max(now, nextPlayTime);", play)
+        self.assertIn("stepQueuedSec += audioBuffer.duration;", play)
+        self.assertIn("stepAudioStart === 0 && stepQueuedSec >= 0.05", play)
+        self.assertIn("scheduleQuickRevealCheck();", play)
+        self.assertIn("checkQuickReveal();", play)
+        self.assertNotIn("halfwayMs", play)
+        self.assertNotIn("quickReplyReady = true", play)
+        self.assertLess(play.index("stepQueuedSec += audioBuffer.duration;"), play.index("src.start(startAt)"))
+
+        reveal = _function_body(script, "checkQuickReveal")
+        self.assertIn("playedSec >= expectedSec * 0.5", reveal)
+        self.assertIn("playedSec >= 0.65", reveal)
+        self.assertIn("stepStreamDone && !isBotPlaying()", reveal)
+        self.assertIn("promptChars / 12", reveal)
+        self.assertIn("quickReplyReady = true", reveal)
+        self.assertIn("cancelQuickRevealRaf();", reveal)
 
         reply = _function_body(script, "sendQuickReply")
         send_at = reply.index("ws.send")
@@ -295,6 +336,317 @@ class QuickReplyScreenTests(unittest.TestCase):
         self.assertEqual(rendered["legacy"][0]["flag"], "Yes")
         self.assertNotIn("birth_nicu", [row["domain"] for row in rendered["legacy"]])
         self.assertEqual(rendered["empty"], "No structured findings were recorded.")
+
+    def test_speaker_clock_hides_buttons_until_halfway_or_turn_complete(self):
+        if _NODE is None:
+            self.skipTest("node is not installed")
+        clock = _speaker_clock()
+        idle = clock["idle"]
+        self.assertTrue(idle["noHidden"])
+        self.assertTrue(idle["yesHidden"])
+        self.assertFalse(idle["noVisible"])
+        self.assertFalse(idle["yesVisible"])
+
+        mounted = clock["mounted"]
+        self.assertFalse(mounted["noHidden"])
+        self.assertFalse(mounted["yesHidden"])
+        self.assertFalse(mounted["noVisible"])
+        self.assertFalse(mounted["yesVisible"])
+        self.assertTrue(mounted["noDisabled"])
+        self.assertTrue(mounted["yesDisabled"])
+
+        header = clock["header"]
+        self.assertFalse(header["noHidden"])
+        self.assertFalse(header["yesHidden"])
+        self.assertFalse(header["noVisible"])
+        self.assertFalse(header["yesVisible"])
+
+        before = clock["beforeHalf"]
+        self.assertFalse(before["noVisible"])
+        self.assertFalse(before["yesVisible"])
+        halfway = clock["halfway"]
+        self.assertTrue(halfway["noVisible"])
+        self.assertTrue(halfway["yesVisible"])
+        self.assertFalse(halfway["noDisabled"])
+        self.assertFalse(halfway["yesDisabled"])
+        self.assertFalse(halfway["noHidden"])
+        self.assertFalse(halfway["yesHidden"])
+
+        ended = clock["ended"]
+        self.assertFalse(ended["noVisible"])
+        self.assertFalse(ended["yesVisible"])
+        other = clock["otherStep"]
+        self.assertFalse(other["noVisible"])
+        self.assertFalse(other["yesVisible"])
+        finished = clock["turnComplete"]
+        self.assertTrue(finished["noVisible"])
+        self.assertTrue(finished["yesVisible"])
+        self.assertFalse(finished["noDisabled"])
+        self.assertFalse(finished["yesDisabled"])
+
+
+def _speaker_clock() -> dict:
+    import subprocess
+
+    harness = r"""
+const fs = require("fs");
+const vm = require("vm");
+const raw = fs.readFileSync(process.env.CALL_JS, "utf8");
+const marker = "    })();";
+const at = raw.lastIndexOf(marker);
+if (at < 0) throw new Error("call.js wrapper missing");
+const source = raw.slice(0, at) + `
+      globalThis.__shishuCall = {
+        playPcm: playPcm,
+        onSocketMessage: onSocketMessage,
+        arm: function (ctx) {
+          phase = "live";
+          audioCtx = ctx;
+          syncQuickButtons();
+        }
+      };
+` + raw.slice(at);
+
+function el() {
+  const set = new Set();
+  return {
+    hidden: false,
+    disabled: false,
+    textContent: "",
+    className: "",
+    innerHTML: "",
+    value: "",
+    checked: false,
+    style: {},
+    children: [],
+    classList: {
+      add(name) { set.add(name); },
+      remove(name) { set.delete(name); },
+      contains(name) { return set.has(name); },
+      toggle(name, force) {
+        const on = force === undefined ? !set.has(name) : !!force;
+        if (on) set.add(name); else set.delete(name);
+        return on;
+      }
+    },
+    addEventListener() {},
+    setAttribute() {},
+    getAttribute() { return ""; },
+    removeAttribute() {},
+    appendChild(child) { this.children.push(child); return child; },
+    remove() {},
+    querySelectorAll() { return []; },
+    closest() { return null; },
+    replaceChildren() { this.children = []; }
+  };
+}
+
+function pcm(frames) {
+  const bytes = Buffer.alloc(frames * 2);
+  for (let i = 0; i < frames; i++) bytes.writeInt16LE(800, i * 2);
+  return bytes.toString("base64");
+}
+
+function makeCtx(now) {
+  const ctx = {
+    currentTime: now,
+    state: "running",
+    destination: {},
+    sampleRate: 48000,
+    sources: [],
+    resume() { return Promise.resolve(); },
+    createBuffer(_channels, length, rate) {
+      return {
+        duration: length / rate,
+        getChannelData() { return { set() {} }; }
+      };
+    },
+    createBufferSource() {
+      const src = {
+        buffer: null,
+        connect() {},
+        start() {},
+        stop() {},
+        disconnect() {},
+        onended: null
+      };
+      ctx.sources.push(src);
+      return src;
+    }
+  };
+  return ctx;
+}
+
+function boot() {
+  const frames = [];
+  let nextId = 1;
+  const ids = {};
+  const document = {
+    getElementById(id) {
+      if (!ids[id]) ids[id] = el();
+      return ids[id];
+    },
+    addEventListener() {},
+    createElement() { return el(); },
+    body: el(),
+    visibilityState: "visible"
+  };
+  const store = {};
+  const sandbox = {
+    console,
+    setTimeout,
+    clearTimeout,
+    setInterval,
+    clearInterval,
+    requestAnimationFrame(fn) {
+      const id = nextId++;
+      frames.push({ id, fn });
+      return id;
+    },
+    cancelAnimationFrame(id) {
+      const index = frames.findIndex((item) => item.id === id);
+      if (index >= 0) frames.splice(index, 1);
+    },
+    fetch() {
+      return Promise.resolve({
+        ok: false,
+        status: 503,
+        json() { return Promise.resolve(null); }
+      });
+    },
+    WebSocket: function () {},
+    URL,
+    URLSearchParams,
+    Blob,
+    btoa,
+    atob,
+    encodeURIComponent,
+    decodeURIComponent,
+    Math,
+    JSON,
+    Date,
+    Object,
+    Array,
+    Number,
+    String,
+    Boolean,
+    Error,
+    RegExp,
+    Promise,
+    Map,
+    Set,
+    isNaN,
+    isFinite,
+    parseInt,
+    parseFloat,
+    document,
+    location: { protocol: "http:", host: "127.0.0.1", pathname: "/", search: "" },
+    navigator: {},
+    sessionStorage: {
+      getItem(key) { return Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null; },
+      setItem(key, value) { store[key] = String(value); }
+    }
+  };
+  sandbox.WebSocket.OPEN = 1;
+  vm.createContext(sandbox);
+  vm.runInContext(source, sandbox, { filename: "call.js" });
+  return {
+    api: sandbox.__shishuCall,
+    document,
+    flush(limit) {
+      let count = 0;
+      while (frames.length && count < limit) {
+        frames.shift().fn();
+        count += 1;
+      }
+      return count;
+    }
+  };
+}
+
+function snap(doc) {
+  const noBtn = doc.getElementById("no-btn");
+  const yesBtn = doc.getElementById("yes-btn");
+  return {
+    noHidden: !!noBtn.hidden,
+    yesHidden: !!yesBtn.hidden,
+    noVisible: noBtn.classList.contains("is-visible"),
+    yesVisible: yesBtn.classList.contains("is-visible"),
+    noDisabled: !!noBtn.disabled,
+    yesDisabled: !!yesBtn.disabled
+  };
+}
+
+function question(page) {
+  page.api.onSocketMessage({
+    data: JSON.stringify({
+      type: "question_state",
+      step: "birth_nicu",
+      qid: "birth_nicu",
+      group: "birth",
+      expect_yes_no: true,
+      prompt_chars: 120
+    })
+  });
+}
+
+const headerPage = boot();
+question(headerPage);
+const idle = snap(headerPage.document);
+const headerCtx = makeCtx(10);
+headerPage.api.arm(headerCtx);
+question(headerPage);
+const mounted = snap(headerPage.document);
+headerPage.api.playPcm(pcm(1), 24000);
+headerCtx.sources[0].onended();
+headerPage.flush(8);
+const header = snap(headerPage.document);
+
+const halfPage = boot();
+const halfCtx = makeCtx(10);
+halfPage.api.arm(halfCtx);
+question(halfPage);
+halfPage.api.playPcm(pcm(48000), 24000);
+halfCtx.currentTime = 14;
+halfPage.flush(4);
+const beforeHalf = snap(halfPage.document);
+halfCtx.currentTime = 15;
+halfPage.flush(4);
+const halfway = snap(halfPage.document);
+
+const endPage = boot();
+const endCtx = makeCtx(10);
+endPage.api.arm(endCtx);
+question(endPage);
+endPage.api.playPcm(pcm(4800), 24000);
+endCtx.currentTime = 10.2;
+endCtx.sources[0].onended();
+endPage.flush(4);
+const ended = snap(endPage.document);
+endPage.api.onSocketMessage({
+  data: JSON.stringify({ type: "bot_turn_complete", step: "birth_term" })
+});
+const otherStep = snap(endPage.document);
+endPage.api.onSocketMessage({
+  data: JSON.stringify({ type: "bot_turn_complete", step: "birth_nicu" })
+});
+const turnComplete = snap(endPage.document);
+
+process.stdout.write(JSON.stringify({
+  idle, mounted, header, beforeHalf, halfway, ended, otherStep, turnComplete
+}));
+"""
+    env = {"PATH": os.environ.get("PATH", ""), "CALL_JS": str(_STATIC / "call.js")}
+    done = subprocess.run(
+        [_NODE, "-e", harness],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    if done.returncode != 0:
+        raise AssertionError(done.stderr or done.stdout)
+    return json.loads(done.stdout)
 
 
 def _render_findings(dashboard: str) -> dict:

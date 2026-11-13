@@ -19,7 +19,7 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "gemini_voice": "Kore",
     "vad_prefix_padding_ms": "300",
     "vad_silence_ms": "1000",
-    "vad_start_sensitivity": "HIGH",
+    "vad_start_sensitivity": "LOW",
     "vad_end_sensitivity": "LOW",
     "watchdog_timeout_sec": "8.0",
     "summary_model": "gemini-3.8-flash",
@@ -84,6 +84,9 @@ def _init_db() -> None:
         )
         cur.execute(
             "UPDATE settings SET value = 'LOW' WHERE key = 'vad_end_sensitivity' AND value = 'HIGH'",
+        )
+        cur.execute(
+            "UPDATE settings SET value = 'LOW' WHERE key = 'vad_start_sensitivity' AND value = 'HIGH'",
         )
         cur.execute(
             "UPDATE settings SET value = '8.0' WHERE key = 'watchdog_timeout_sec' AND value = '4.0'",

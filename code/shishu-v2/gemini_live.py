@@ -174,6 +174,8 @@ class _TurnState:
         self.pending_speak_kind = "speak"
         self.last_quick_reply_step = ""
         self.last_quick_reply_ts = 0.0
+        self.go_away_pending = False
+        self.active_speak_kind = "speak"
 
 
 class _Cursor:
@@ -190,10 +192,13 @@ class _SessionProxy:
 
 
 def _session_settings(settings: dict) -> dict:
-    start_low = settings.get("vad_start_sensitivity") == "LOW"
+    start_raw = settings.get("vad_start_sensitivity")
+    if start_raw in (None, ""):
+        start_raw = "LOW"
     end_raw = settings.get("vad_end_sensitivity")
     if end_raw in (None, ""):
         end_raw = "LOW"
+    start_low = start_raw == "LOW"
     end_low = end_raw == "LOW"
     silence_raw = settings.get("vad_silence_ms")
     silence_ms = 1000 if silence_raw in (None, "") else int(float(silence_raw))
@@ -241,7 +246,11 @@ def _live_config(settings: dict, resume_handle: str | None = None) -> types.Live
             if chosen["model"].startswith("gemini-3")
             else types.AudioTranscriptionConfig()
         ),
-        output_audio_transcription=types.AudioTranscriptionConfig(),
+        output_audio_transcription=(
+            types.AudioTranscriptionConfig(language_codes=["hi-IN"])
+            if chosen["model"].startswith("gemini-3")
+            else types.AudioTranscriptionConfig()
+        ),
         realtime_input_config=types.RealtimeInputConfig(
             turn_coverage=types.TurnCoverage.TURN_INCLUDES_ONLY_ACTIVITY,
             automatic_activity_detection=types.AutomaticActivityDetection(
@@ -828,37 +837,63 @@ def _closing_hi(state: dict) -> str:
     )
 
 
-async def _complete_closing_transcript(
-    ws: WebSocket,
-    ws_lock: asyncio.Lock,
-    call_id: int,
-    state: dict,
-) -> None:
-    """Keep a spoken emergency outro in the record when live captions stop early."""
-    line = _closing_hi(state).strip()
-    if len(line) < 20:
-        return
-    call = db.get_call(call_id) or {}
-    last = ""
-    for turn in reversed(call.get("transcript") or []):
-        if turn.get("role") == "assistant":
-            last = str(turn.get("text") or "").strip()
-            break
-    head = line[:12]
-    if len(last) > 80 and (head in last or last[:12] in line):
-        return
-    qid = str(state.get("active_qid") or "")
-    db.append_transcript(call_id, "assistant", line, qid=qid)
-    await _send_json(ws, ws_lock, {"type": "transcript", "role": "assistant", "text": line})
+def _recorded_concerns(state: dict) -> list[str]:
+    """One short Hindi line for each answer already saved as a concern."""
+    answers = state.get("answers") or {}
+    if not isinstance(answers, dict):
+        return []
+    age_by_id: dict[str, str] = {}
+    children = (state.get("profile") or {}).get("children") or []
+    if isinstance(children, list):
+        for child in children:
+            if not isinstance(child, dict):
+                continue
+            cid = str(child.get("id") or "").strip()
+            label = str(child.get("age_label_hi") or "").strip()
+            if cid and label:
+                age_by_id[cid] = label
+    lines: list[str] = []
+    for qid, entry in answers.items():
+        if not isinstance(entry, dict) or entry.get("state") != "concern":
+            continue
+        try:
+            head = str(get_spec(str(qid)).question_hi or "").strip()
+        except KeyError:
+            head = ""
+        ages: list[str] = []
+        for cid in entry.get("child_ids") or []:
+            label = age_by_id.get(str(cid), "")
+            if label and label not in ages:
+                ages.append(label)
+        notes: list[str] = []
+        own = str(entry.get("notes") or "").strip()
+        if own:
+            notes.append(own)
+        followups = entry.get("followups") or {}
+        if isinstance(followups, dict):
+            for item in followups.values():
+                if isinstance(item, dict):
+                    text = str(item.get("note") or "").strip()
+                else:
+                    text = str(item or "").strip()
+                if text and text not in notes:
+                    notes.append(text)
+        bits = [bit for bit in (head, ", ".join(ages), "; ".join(notes)) if bit]
+        if bits:
+            lines.append(" — ".join(bits))
+    return lines
 
 
-def _tool_body(state: dict) -> dict:
+def _tool_body(state: dict, *, outcome: str = "") -> dict:
     body = {"result": "ok", "say": _say_hindi(state)}
     if state.get("phase") == "closing":
         body["stop"] = True
     children = (state.get("profile") or {}).get("children") or []
     if len(children) > 1:
         body["children"] = children_roster(state)
+    qid = str(state.get("active_qid") or "")
+    if outcome == "clarify" or qid in ("fam_same_problem", "close_anything_else"):
+        body["recorded_concerns"] = _recorded_concerns(state)
     return body
 
 
@@ -940,6 +975,7 @@ async def _fallback_speak_after_tool(
         if _current_step(cursor.state) != step_after_tool:
             return
         text = _speak_cue_text(cursor.state, kind)
+        turn.active_speak_kind = kind
         turn.pending_speak_step = ""
         if stop is None:
             async with send_lock:
@@ -1018,7 +1054,6 @@ async def _answer_function_calls(
     logged: list[str] = []
     clarify_applied = False
     handled = False
-    step_before = _current_step(cursor.state)
     for fc in calls:
         fc_id = getattr(fc, "id", None) or ""
         if fc_id and (fc_id in cancelled or fc_id in seen):
@@ -1064,7 +1099,7 @@ async def _answer_function_calls(
                     else bool(turn.last_quick_reply_step)
                 )
                 if stale_turn:
-                    body = _tool_body(cursor.state)
+                    body = _tool_body(cursor.state, outcome=outcome)
                     body["result"] = "held"
                     body["reason"] = "stale_turn"
                     logged.append("record_turn_held")
@@ -1072,7 +1107,7 @@ async def _answer_function_calls(
                 else:
                     heard = _question_already_spoken(turn, cursor.state)
                     if qid in _PROFILE_TURN_QIDS or not heard:
-                        body = _tool_body(cursor.state)
+                        body = _tool_body(cursor.state, outcome=outcome)
                         body["result"] = "held"
                         body["reason"] = "profile" if qid in _PROFILE_TURN_QIDS else "not_spoken"
                         logged.append("record_turn_held")
@@ -1097,7 +1132,7 @@ async def _answer_function_calls(
                                 telemetry,
                                 on_end_accepted,
                             )
-                        body = _tool_body(cursor.state)
+                        body = _tool_body(cursor.state, outcome=outcome)
                         if outcome == "clarify":
                             body["clarify"] = True
                             clarify_applied = True
@@ -1147,9 +1182,8 @@ async def _answer_function_calls(
             telemetry,
             "Could not send the tool response to Gemini",
         )
-    if _current_step(cursor.state) != step_before:
-        await _send_json(ws, ws_lock, _question_state_payload(cursor.state))
     if handled:
+        await _send_json(ws, ws_lock, _question_state_payload(cursor.state))
         kind = "speak"
         if cursor.state.get("phase") != "asking":
             kind = "close"
@@ -1159,6 +1193,7 @@ async def _answer_function_calls(
         step_after_tool = _current_step(cursor.state)
         turn.pending_speak_step = step_after_tool
         turn.pending_speak_kind = kind
+        turn.active_speak_kind = kind
         if delay <= 0:
             await _fallback_speak_after_tool(
                 session,
@@ -1302,10 +1337,11 @@ async def _handle_server_message(
                 or time.time() - state.last_quick_reply_ts < 1.2
             ):
                 state.user_turn_step = state.last_quick_reply_step
+                _caller_heard(state, telemetry)
             else:
                 state.user_turn_step = _current_step(cursor.state)
                 state.last_quick_reply_step = ""
-            _arm_user_turn(state, telemetry)
+                _arm_user_turn(state, telemetry)
             await _emit(
                 ws, ws_lock, call_id, telemetry, "user_transcript", user_text
             )
@@ -1379,6 +1415,10 @@ async def _handle_server_message(
 
     if server_content is not None and server_content.turn_complete:
         state.ignore_bot_audio = False
+        if state.go_away_pending:
+            state.go_away_pending = False
+            state.reconnect_requested = True
+            _cancel_speak_fallback(state)
         speak_step = state.pending_speak_step
         speak_kind = state.pending_speak_kind
         stop_is_set = stop is not None and stop.is_set()
@@ -1387,8 +1427,10 @@ async def _handle_server_message(
             and speak_step == _current_step(cursor.state)
             and not state.bot_replied_since_user
             and not stop_is_set
+            and not state.reconnect_requested
         ):
             state.pending_speak_step = ""
+            state.active_speak_kind = speak_kind
             _cancel_speak_fallback(state)
             ok = await _send_realtime_safe(
                 session,
@@ -1410,14 +1452,16 @@ async def _handle_server_message(
                     stop.set()
                 return False
         state.bot_speaking = False
-        if (
-            cursor.state.get("phase") == "closing"
-            and state.bot_replied_since_user
-            and not state.awaiting_bot_reply
-        ):
-            await _complete_closing_transcript(ws, ws_lock, call_id, cursor.state)
         if not state.awaiting_bot_reply:
             state.quiet_from = max(time.time(), state.playback_ends_at)
+            await _send_json(
+                ws,
+                ws_lock,
+                {
+                    "type": "bot_turn_complete",
+                    "step": _current_step(cursor.state),
+                },
+            )
         if not state.awaiting_bot_reply or telemetry.get("end_requested"):
             await _emit(ws, ws_lock, call_id, telemetry, "turn_complete", "")
 
@@ -1427,7 +1471,10 @@ async def _handle_server_message(
     if getattr(response, "go_away", None) is not None:
         if not state.resume_handle:
             return False
-        state.reconnect_requested = True
+        if state.bot_speaking or state.awaiting_bot_reply:
+            state.go_away_pending = True
+        else:
+            state.reconnect_requested = True
     return True
 
 
@@ -1487,6 +1534,7 @@ async def _gemini_loop(
         if not state.reconnect_requested:
             continue
         state.reconnect_requested = False
+        _cancel_speak_fallback(state)
         reconnects += 1
         await _send_json(ws, ws_lock, {"type": "reconnecting", "attempt": reconnects})
         await _emit(ws, ws_lock, call_id, telemetry, "reconnecting", str(reconnects))
@@ -1497,6 +1545,11 @@ async def _gemini_loop(
                 ws, ws_lock, call_id, telemetry, "Gemini Live could not reconnect"
             )
             return
+        resume_speak = (
+            state.bot_speaking
+            or state.awaiting_bot_reply
+            or bool(state.pending_speak_step)
+        )
         telemetry["reconnects"] = reconnects
         state.bot_speaking = False
         state.ignore_bot_audio = False
@@ -1508,6 +1561,21 @@ async def _gemini_loop(
         cancelled.clear()
         await _send_json(ws, ws_lock, {"type": "reconnected", "attempt": reconnects})
         await _emit(ws, ws_lock, call_id, telemetry, "reconnected", str(reconnects))
+        if (
+            resume_speak
+            and cursor.state.get("phase") == "asking"
+            and not telemetry.get("end_requested")
+        ):
+            state.pending_speak_step = ""
+            _arm_waiting_reply(state, speech_end_waiting=False)
+            await _send_json(ws, ws_lock, _question_state_payload(cursor.state))
+            await _send_realtime_safe(
+                session,
+                send_lock,
+                state,
+                stop,
+                text=_speak_cue_text(cursor.state, state.active_speak_kind),
+            )
 
 
 async def _watchdog_loop(
@@ -1843,6 +1911,7 @@ async def _browser_loop(
                     _arm_waiting_reply(state, speech_end_waiting=False)
                     state.quiet_from = 0.0
                     cue_kind = "speak"
+                state.active_speak_kind = cue_kind
                 _cancel_speak_fallback(state)
                 ok = await _send_realtime_safe(
                     session,

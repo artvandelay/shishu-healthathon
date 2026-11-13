@@ -286,8 +286,10 @@
 
     @media (prefers-reduced-motion: reduce) {
       .ring,
-      #wait .dots i {
+      #wait .dots i,
+      .quick-btn {
         animation: none;
+        transition: none;
       }
     }
 
@@ -338,7 +340,15 @@
 
     .call-btn.end:hover { background: var(--red-dark); }
 
-    .call-btn:disabled { opacity: 0.65; cursor: wait; }
+    .call-btn:disabled:not(.quick-btn) { opacity: 0.65; cursor: wait; }
+
+    .quick-btn {
+      opacity: 0;
+      transform: scale(0.9);
+      visibility: hidden;
+      pointer-events: none;
+      transition: opacity 240ms ease-out, transform 240ms ease-out, visibility 0s linear 240ms;
+    }
 
     .no-btn {
       background: #ffffff;
@@ -361,7 +371,15 @@
 
     .yes-btn:hover:not(:disabled) { background: var(--navy-dark); }
 
-    .quick-btn:disabled { opacity: 0.45; cursor: default; }
+    .quick-btn.is-visible {
+      opacity: 1;
+      transform: scale(1);
+      visibility: visible;
+      pointer-events: auto;
+      transition: opacity 240ms ease-out, transform 240ms ease-out, visibility 0s;
+    }
+
+    .quick-btn.is-visible:disabled { opacity: 0.45; cursor: default; }
 
     .consent-row {
       display: flex;

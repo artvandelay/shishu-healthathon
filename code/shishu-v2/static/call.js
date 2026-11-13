@@ -86,8 +86,10 @@
       let quickReplyReady = false;
       let quickReplyPending = false;
       let promptChars = 0;
-      let stepFirstPlayTime = 0;
-      let quickRevealTimer = 0;
+      let stepAudioStart = 0;
+      let stepQueuedSec = 0;
+      let stepStreamDone = false;
+      let quickRevealRaf = 0;
       let engine = "gemini";
       let captureRate = 16000;
       let ws = null;
@@ -362,16 +364,47 @@
       }
 
       function syncQuickButtons() {
-        const show = phase === "live" && expectYesNo && quickReplyReady;
-        noBtn.hidden = !show;
-        yesBtn.hidden = !show;
+        const live = phase === "live";
+        noBtn.hidden = !live;
+        yesBtn.hidden = !live;
+        const show = live && expectYesNo && quickReplyReady;
+        noBtn.classList.toggle("is-visible", show);
+        yesBtn.classList.toggle("is-visible", show);
         noBtn.disabled = !show || quickReplyPending;
         yesBtn.disabled = !show || quickReplyPending;
       }
 
-      function clearQuickRevealTimer() {
-        if (quickRevealTimer) clearTimeout(quickRevealTimer);
-        quickRevealTimer = 0;
+      function cancelQuickRevealRaf() {
+        if (quickRevealRaf) cancelAnimationFrame(quickRevealRaf);
+        quickRevealRaf = 0;
+      }
+
+      function scheduleQuickRevealCheck() {
+        if (quickRevealRaf) return;
+        quickRevealRaf = requestAnimationFrame(function () {
+          quickRevealRaf = 0;
+          checkQuickReveal();
+        });
+      }
+
+      function checkQuickReveal() {
+        if (!(phase === "live" && expectYesNo && !quickReplyReady && (stepAudioStart > 0 || stepStreamDone))) {
+          return;
+        }
+        const playedSec = (audioCtx && stepAudioStart > 0) ? Math.max(0, audioCtx.currentTime - stepAudioStart) : 0;
+        const expectedSec = stepStreamDone ? stepQueuedSec : Math.max(stepQueuedSec, promptChars / 12);
+        if (
+          (expectedSec > 0 && playedSec >= expectedSec * 0.5 && (stepStreamDone || playedSec >= 0.65))
+          || (stepStreamDone && !isBotPlaying())
+        ) {
+          quickReplyReady = true;
+          cancelQuickRevealRaf();
+          syncQuickButtons();
+          return;
+        }
+        if (phase === "live" && expectYesNo && !quickReplyReady && (isBotPlaying() || !stepStreamDone)) {
+          scheduleQuickRevealCheck();
+        }
       }
 
       function resetQuickState() {
@@ -379,7 +412,10 @@
         expectYesNo = false;
         quickReplyReady = false;
         quickReplyPending = false;
-        clearQuickRevealTimer();
+        stepAudioStart = 0;
+        stepQueuedSec = 0;
+        stepStreamDone = false;
+        cancelQuickRevealRaf();
         syncQuickButtons();
       }
 
@@ -498,24 +534,15 @@
         speechEndAt = 0;
         nudgeBtn.classList.remove("hot"); nudgeBtn.hidden = true;
         const now = audioCtx.currentTime;
-        nextPlayTime = Math.max(now, nextPlayTime);
-        src.start(nextPlayTime);
-        nextPlayTime += audioBuffer.duration;
+        const startAt = Math.max(now, nextPlayTime);
+        stepQueuedSec += audioBuffer.duration;
+        if (stepAudioStart === 0 && stepQueuedSec >= 0.05) stepAudioStart = startAt;
+        src.start(startAt);
+        nextPlayTime = startAt + audioBuffer.duration;
         activeSources.add(src);
         avatarWrap.classList.add("speaking");
         setStatus({ hi: "SHISHU बोल रही है…", en: "SHISHU is speaking" });
-        if (expectYesNo && !quickReplyReady && !quickRevealTimer) {
-          if (!stepFirstPlayTime) stepFirstPlayTime = Date.now();
-          const estMs = Math.max(1200, Math.min(4500, Math.round((promptChars / 14) * 1000)));
-          const halfwayMs = Math.round(estMs * 0.5);
-          quickRevealTimer = setTimeout(function () {
-            quickRevealTimer = 0;
-            if (phase === "live" && expectYesNo) {
-              quickReplyReady = true;
-              syncQuickButtons();
-            }
-          }, halfwayMs);
-        }
+        if (expectYesNo && !quickReplyReady) scheduleQuickRevealCheck();
         src.onended = function () {
           activeSources.delete(src);
           if (activeSources.size === 0 && phase === "live") {
@@ -524,11 +551,7 @@
               setStatus({ hi: "सुन रही हूँ…", en: "Listening" });
             }
           }
-          if (activeSources.size === 0 && phase === "live" && expectYesNo && !quickReplyReady) {
-            clearQuickRevealTimer();
-            quickReplyReady = true;
-            syncQuickButtons();
-          }
+          checkQuickReveal();
         };
       }
 
@@ -723,14 +746,22 @@
         } else if (msg.type === "progress") {
           flowGroup = msg.group || "";
           renderHud();
+        } else if (msg.type === "bot_turn_complete") {
+          if (!msg.step || msg.step === questionStep) {
+            stepStreamDone = true;
+            if (stepAudioStart === 0 && stepQueuedSec > 0 && audioCtx) stepAudioStart = audioCtx.currentTime;
+            checkQuickReveal();
+          }
         } else if (msg.type === "question_state") {
           questionStep = String(msg.step || "");
           expectYesNo = Boolean(msg.expect_yes_no);
           promptChars = Number(msg.prompt_chars) || 0;
           quickReplyReady = false;
           quickReplyPending = false;
-          stepFirstPlayTime = 0;
-          clearQuickRevealTimer();
+          stepAudioStart = 0;
+          stepQueuedSec = 0;
+          stepStreamDone = false;
+          cancelQuickRevealRaf();
           if (msg.group) {
             flowGroup = String(msg.group);
             renderHud();

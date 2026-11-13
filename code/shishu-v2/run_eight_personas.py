@@ -415,8 +415,8 @@ def _check(call_id: int, persona: Persona) -> dict:
     else:
         pages, text = _pdf_text(pdf_path)
         if persona.close == "emergency":
-            if "108" not in assistant:
-                problems.append("assistant transcript missing 108")
+            if not bool(telemetry.get("closing_heard")):
+                problems.append("closing audio was not heard")
             if "108" not in text and "अधूरी" not in text:
                 problems.append("emergency pdf missing banner")
         elif pages < 2:
