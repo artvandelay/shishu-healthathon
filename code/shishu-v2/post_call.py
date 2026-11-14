@@ -7,6 +7,7 @@ deterministic fallback still fills both reports from the saved cursor.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from pathlib import Path
@@ -17,6 +18,8 @@ from triage_catalog import active_specs
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 MODEL = "gemini-3.8-flash"
 
@@ -812,7 +815,12 @@ async def synthesize_call(call: dict) -> dict:
         if not isinstance(raw, dict):
             raise ValueError("synthesis response was not a JSON object")
         return _finish(_coerce(raw, call))
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "post_call synthesis fell back to deterministic cursor report for call %s: %s",
+            call.get("id"),
+            exc,
+        )
         return deterministic_fallback(call)
 
 

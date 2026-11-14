@@ -217,6 +217,7 @@ class LiveTurnTests(unittest.TestCase):
             "end_requested": False,
             "audio_chunks_out": 0,
             "bot_turns": 0,
+            "user_turns": 0,
             "turn_latencies_ms": [],
         }
 
@@ -1480,6 +1481,207 @@ class ClosedWorldTargetTests(unittest.TestCase):
             self.assertEqual(held["active_qid"], "fam_maternal_bleeding")
             self.assertEqual(held["pending_followup_idx"], 0)
             self.assertEqual(held["step_attempts"], 0)
+
+        asyncio.run(run())
+
+
+class Stage6BTelemetryTests(unittest.TestCase):
+    def _telemetry(self):
+        return {
+            "tool_calls": 0,
+            "tool_errors": 0,
+            "end_requested": False,
+            "audio_chunks_out": 0,
+            "bot_turns": 0,
+            "user_turns": 0,
+            "turn_latencies_ms": [],
+            "errors": [],
+            "reconnects": 0,
+        }
+
+    def test_quick_reply_counts_a_user_turn_and_stale_turn_does_not_repeat_the_cue(self):
+        async def run():
+            state = cursor_tests._clear_until(
+                cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
+                "birth_nicu",
+            )
+            cursor = gemini_live._Cursor()
+            cursor.state = state
+            step = gemini_live._current_step(state)
+            turn = gemini_live._TurnState()
+            turn.spoken_qid = step
+            session = _FakeSession()
+            ws = _FakeSocket([{"type": "quick_reply", "outcome": "clear", "step": step}])
+            telemetry = self._telemetry()
+            call_id = db.create_call("gemini")
+            await gemini_live._browser_loop(
+                session,
+                asyncio.Lock(),
+                ws,
+                asyncio.Lock(),
+                asyncio.Event(),
+                call_id,
+                telemetry,
+                turn,
+                cursor,
+                _Recorder(),
+            )
+            self.assertEqual(telemetry["user_turns"], 1)
+            cues = [
+                item for item in session.sent
+                if item[0] == "realtime" and "SYSTEM CUE" in item[1].get("text", "")
+            ]
+            self.assertEqual(len(cues), 1)
+            self.assertEqual(
+                len([item for item in ws.sent if item.get("type") == "question_state"]),
+                1,
+            )
+
+            await gemini_live._handle_server_message(
+                _server_message(
+                    turn_complete=True,
+                    tool_calls=[_Call("record_turn", {"outcome": "clear"}, "fc-stale")],
+                ),
+                session,
+                asyncio.Lock(),
+                ws,
+                asyncio.Lock(),
+                call_id,
+                telemetry,
+                turn,
+                _Recorder(),
+                set(),
+                set(),
+                cursor,
+                stop=asyncio.Event(),
+            )
+            cues = [
+                item for item in session.sent
+                if item[0] == "realtime" and "SYSTEM CUE" in item[1].get("text", "")
+            ]
+            self.assertEqual(len(cues), 1)
+            self.assertEqual(turn.pending_speak_step, "")
+            self.assertIsNone(turn.speak_fallback)
+            tool = [item for item in session.sent if item[0] == "tool"]
+            self.assertEqual(tool[-1][1][0].response["result"], "held")
+            self.assertEqual(tool[-1][1][0].response["reason"], "stale_turn")
+            self.assertEqual(
+                len([item for item in ws.sent if item.get("type") == "question_state"]),
+                1,
+            )
+            details = [
+                item["last_event"]["detail"]
+                for item in ws.sent
+                if item.get("type") == "telemetry"
+            ]
+            self.assertIn("record_turn_held", details)
+            self.assertEqual(telemetry["user_turns"], 1)
+
+            closing = cursor_tests._clear_until(
+                cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
+                "close_anything_else",
+            )
+            closing = apply_turn(closing, "concern", note="पेट दर्द")
+            close_cursor = gemini_live._Cursor()
+            close_cursor.state = closing
+            close_step = gemini_live._current_step(closing)
+            close_turn = gemini_live._TurnState()
+            close_turn.spoken_qid = close_step
+            close_ws = _FakeSocket([
+                {"type": "quick_reply", "outcome": "clear", "step": close_step},
+            ])
+            close_telemetry = self._telemetry()
+            await gemini_live._browser_loop(
+                _FakeSession(),
+                asyncio.Lock(),
+                close_ws,
+                asyncio.Lock(),
+                asyncio.Event(),
+                db.create_call("gemini"),
+                close_telemetry,
+                close_turn,
+                close_cursor,
+                _Recorder(),
+            )
+            self.assertEqual(close_cursor.state["phase"], "closing")
+            self.assertEqual(close_telemetry["user_turns"], 1)
+
+        asyncio.run(run())
+
+    def test_dropoff_qid_follows_an_incomplete_call_and_clears_when_complete(self):
+        class _Saver:
+            def save(self):
+                return "", 0
+
+        async def run():
+            state = cursor_tests._clear_until(
+                cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
+                "birth_jaundice",
+            )
+            asking = json.loads(json.dumps(state))
+            cursor = gemini_live._Cursor()
+            cursor.state = state
+            call_id = db.create_call("gemini")
+            telemetry = gemini_live._new_telemetry("gemini", "Kore", 1000, 300, 1)
+            await gemini_live._mark_closing(
+                cursor,
+                "silence",
+                _FakeSocket(),
+                asyncio.Lock(),
+                call_id,
+                telemetry,
+                None,
+            )
+            self.assertEqual(telemetry["dropoff_qid"], "birth_jaundice")
+
+            finished = gemini_live._Cursor()
+            finished.state = cursor_tests._clear_until(
+                cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
+                "close_anything_else",
+            )
+            finished.state["active_qid"] = "close_anything_else"
+            done_telemetry = gemini_live._new_telemetry("gemini", "Kore", 1000, 300, 1)
+            await gemini_live._mark_closing(
+                finished,
+                "complete",
+                _FakeSocket(),
+                asyncio.Lock(),
+                call_id,
+                done_telemetry,
+                None,
+            )
+            self.assertEqual(finished.state["close_reason"], "complete")
+            self.assertEqual(done_telemetry["dropoff_qid"], "")
+
+            abrupt_id = db.create_call("gemini")
+            abrupt = gemini_live._Cursor()
+            abrupt.state = asking
+            abrupt_telemetry = gemini_live._new_telemetry("gemini", "Kore", 1000, 300, 1)
+            await gemini_live._finalize(
+                _FakeSocket(),
+                asyncio.Lock(),
+                abrupt_id,
+                abrupt_telemetry,
+                _Saver(),
+                None,
+                abrupt,
+            )
+            saved = db.get_call(abrupt_id)["telemetry"]
+            self.assertEqual(saved["dropoff_qid"], "birth_jaundice")
+
+            complete_id = db.create_call("gemini")
+            complete_telemetry = gemini_live._new_telemetry("gemini", "Kore", 1000, 300, 1)
+            await gemini_live._finalize(
+                _FakeSocket(),
+                asyncio.Lock(),
+                complete_id,
+                complete_telemetry,
+                _Saver(),
+                None,
+                finished,
+            )
+            saved_complete = db.get_call(complete_id)["telemetry"]
+            self.assertEqual(saved_complete["dropoff_qid"], "")
 
         asyncio.run(run())
 

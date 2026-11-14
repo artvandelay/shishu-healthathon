@@ -2,6 +2,7 @@
 
 import html
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -14,6 +15,8 @@ if sys.platform == "darwin":
 
 import call_cursor
 import triage_catalog
+
+logger = logging.getLogger(__name__)
 
 _STATIC = Path(__file__).resolve().parent / "static"
 _FONT = _STATIC / "fonts" / "NotoSansDevanagari.ttf"
@@ -419,6 +422,7 @@ def render_pdf(report: dict) -> bytes:
 
         return HTML(string=document, base_url=str(_STATIC)).write_pdf()
     except Exception:
+        logger.warning("weasyprint failed, trying headless chrome fallback", exc_info=True)
         if Path(_CHROME).is_file():
             return _chrome_pdf(document)
         raise

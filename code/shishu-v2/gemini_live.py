@@ -4,6 +4,7 @@ import asyncio
 import base64
 import inspect
 import json
+import logging
 import os
 import time
 from collections.abc import Awaitable, Callable
@@ -17,6 +18,8 @@ from starlette.websockets import WebSocketState
 
 import audio_recorder
 import db
+
+logger = logging.getLogger(__name__)
 from call_cursor import (
     apply_profile,
     apply_turn,
@@ -183,6 +186,7 @@ class _TurnState:
         self.pending_speak_kind = "speak"
         self.last_quick_reply_step = ""
         self.last_quick_reply_ts = 0.0
+        self.speak_cue_step = ""
         self.go_away_pending = False
         self.active_speak_kind = "speak"
 
@@ -307,7 +311,7 @@ def _new_telemetry(
         "avg_latency_ms": 0,
         "max_latency_ms": 0,
         "last_interaction_status": "",
-        "coverage": [],
+        "dropoff_qid": "",
         "end_refusals": 0,
         "end_requested_at": 0.0,
         "force_close": False,
@@ -316,6 +320,20 @@ def _new_telemetry(
         "reconnects": 0,
         "errors": [],
     }
+
+
+def _stamp_dropoff(telemetry: dict, state: dict | None) -> None:
+    """The question she was still on when the call ended before it was complete."""
+    cursor_state = state or {}
+    reason = str(cursor_state.get("close_reason") or "")
+    if reason == "complete":
+        telemetry["dropoff_qid"] = ""
+    else:
+        telemetry["dropoff_qid"] = str(cursor_state.get("active_qid") or "")
+
+
+def _json_copy(value):
+    return json.loads(json.dumps(value, ensure_ascii=False))
 
 
 def _refresh_latency(telemetry: dict) -> None:
@@ -450,7 +468,7 @@ def _arm_waiting_reply(
 
 def _arm_user_turn(state: _TurnState, telemetry: dict) -> None:
     if not state.awaiting_bot_reply or state.speech_end_waiting:
-        telemetry["user_turns"] += 1
+        telemetry["user_turns"] = int(telemetry.get("user_turns") or 0) + 1
     _arm_waiting_reply(state, speech_end_waiting=False)
     _caller_heard(state, telemetry)
     state.checked_in = False
@@ -489,7 +507,9 @@ async def _emit(
     telemetry["last_interaction_status"] = event_type
     _refresh_latency(telemetry)
     try:
-        evt = db.append_call_event(call_id, event_type, detail, meta)
+        evt = await asyncio.to_thread(
+            db.append_call_event, call_id, event_type, detail, meta
+        )
     except Exception:
         evt = {
             "t": round(time.time(), 3),
@@ -498,7 +518,7 @@ async def _emit(
             "meta": meta or {},
         }
     try:
-        db.update_call_telemetry(call_id, telemetry)
+        await asyncio.to_thread(db.update_call_telemetry, call_id, _json_copy(telemetry))
     except Exception:
         pass
     snapshot = json.loads(json.dumps(telemetry))
@@ -548,14 +568,14 @@ async def _forward_transcript(
     if not text:
         return ""
     qid = str(cursor.state.get("active_qid") or "")
-    db.append_transcript(call_id, role, text, qid=qid)
+    await asyncio.to_thread(db.append_transcript, call_id, role, text, qid=qid)
     await _send_json(ws, lock, {"type": "transcript", "role": role, "text": text})
     return text
 
 
-def _report_snapshot(call_id: int) -> dict:
+async def _report_snapshot(call_id: int) -> dict:
     """Immutable transcript and cursor for synthesis. No later caller turn is included."""
-    call = db.get_call(call_id) or {}
+    call = await asyncio.to_thread(db.get_call, call_id) or {}
     cursor = call.get("cursor_state") or {}
     snapshot = {
         "id": int(call_id),
@@ -596,7 +616,7 @@ async def _schedule_end_report(
     if on_end_accepted is None:
         return
     try:
-        scheduled = on_end_accepted(int(call_id), _report_snapshot(call_id))
+        scheduled = on_end_accepted(int(call_id), await _report_snapshot(call_id))
         if inspect.isawaitable(scheduled):
             await scheduled
     except Exception:
@@ -1005,8 +1025,11 @@ async def _fallback_speak_after_tool(
         if stop is None:
             async with send_lock:
                 await session.send_realtime_input(text=text)
+            turn.speak_cue_step = step_after_tool
             return
         ok = await _send_realtime_safe(session, send_lock, turn, stop, text=text)
+        if ok and not turn.reconnect_requested:
+            turn.speak_cue_step = step_after_tool
         if not ok:
             telemetry["tool_errors"] = int(telemetry.get("tool_errors") or 0) + 1
             await _report_error(
@@ -1045,8 +1068,9 @@ async def _mark_closing(
     elif not state.get("close_reason"):
         state["close_reason"] = reason
     cursor.state = state
+    _stamp_dropoff(telemetry, state)
     try:
-        db.save_cursor_state(call_id, state)
+        await asyncio.to_thread(db.save_cursor_state, call_id, _json_copy(state))
     except Exception:
         pass
     if _accept_end(telemetry):
@@ -1079,6 +1103,7 @@ async def _answer_function_calls(
     logged: list[str] = []
     clarify_applied = False
     handled = False
+    stale_only = True
     for fc in calls:
         fc_id = getattr(fc, "id", None) or ""
         if fc_id and (fc_id in cancelled or fc_id in seen):
@@ -1096,10 +1121,13 @@ async def _answer_function_calls(
                 if kwargs or qid in _PROFILE_QIDS:
                     new_state, _hold = apply_profile(cursor.state, **kwargs)
                     cursor.state = new_state
-                    db.save_cursor_state(call_id, new_state)
+                    await asyncio.to_thread(
+                        db.save_cursor_state, call_id, _json_copy(new_state)
+                    )
                 body = _tool_body(cursor.state)
                 logged.append("save_profile")
                 handled = True
+                stale_only = False
                 clarify_applied = False
             elif name == "record_turn":
                 outcome = str(args.get("outcome") or "").strip().lower().replace(" ", "_")
@@ -1130,6 +1158,7 @@ async def _answer_function_calls(
                     logged.append("record_turn_held")
                     clarify_applied = False
                 else:
+                    stale_only = False
                     heard = _question_already_spoken(turn, cursor.state)
                     if qid in _PROFILE_TURN_QIDS or not heard:
                         body = _tool_body(cursor.state, outcome=outcome)
@@ -1147,7 +1176,9 @@ async def _answer_function_calls(
                             target_qid=str(args.get("target_qid") or ""),
                         )
                         cursor.state = new_state
-                        db.save_cursor_state(call_id, new_state)
+                        await asyncio.to_thread(
+                            db.save_cursor_state, call_id, _json_copy(new_state)
+                        )
                         if new_state.get("phase") == "closing":
                             await _mark_closing(
                                 cursor,
@@ -1171,10 +1202,12 @@ async def _answer_function_calls(
                 logged.append(name or "ignored")
                 telemetry["tool_errors"] = int(telemetry.get("tool_errors") or 0) + 1
         except Exception:
+            logger.exception("tool %s failed on call %s", name, call_id)
             telemetry["tool_errors"] = int(telemetry.get("tool_errors") or 0) + 1
             body = {"result": "error", "say": _say_hindi(cursor.state)}
             logged.append(f"{name or 'tool'}_error")
             clarify_applied = False
+            stale_only = False
             handled = True
         if cursor.state.get("phase") == "closing":
             body["stop"] = True
@@ -1209,6 +1242,13 @@ async def _answer_function_calls(
             "Could not send the tool response to Gemini",
         )
     if handled:
+        step_after_tool = _current_step(cursor.state)
+        cue_sent = bool(step_after_tool) and turn.speak_cue_step == step_after_tool
+        already_spoken = _question_already_spoken(turn, cursor.state)
+        # A late record_turn after quick_reply already spoke this step. Keep the
+        # FunctionResponse and the tool_call event, and do not speak it again.
+        if stale_only and (cue_sent or already_spoken):
+            return
         await _send_json(ws, ws_lock, _question_state_payload(cursor.state))
         kind = "speak"
         if cursor.state.get("phase") != "asking":
@@ -1465,6 +1505,8 @@ async def _handle_server_message(
                 stop if stop is not None else asyncio.Event(),
                 text=_speak_cue_text(cursor.state, speak_kind),
             )
+            if ok and not state.reconnect_requested:
+                state.speak_cue_step = speak_step
             if not ok:
                 telemetry["tool_errors"] = int(telemetry.get("tool_errors") or 0) + 1
                 await _report_error(
@@ -1595,13 +1637,15 @@ async def _gemini_loop(
             state.pending_speak_step = ""
             _arm_waiting_reply(state, speech_end_waiting=False)
             await _send_json(ws, ws_lock, _question_state_payload(cursor.state))
-            await _send_realtime_safe(
+            sent = await _send_realtime_safe(
                 session,
                 send_lock,
                 state,
                 stop,
                 text=_speak_cue_text(cursor.state, state.active_speak_kind),
             )
+            if sent and not state.reconnect_requested:
+                state.speak_cue_step = _current_step(cursor.state)
 
 
 async def _watchdog_loop(
@@ -1822,8 +1866,11 @@ async def _browser_loop(
                 if playback_done:
                     state.quiet_from = max(now_ts, state.playback_ends_at)
                 try:
-                    db.append_call_event(
-                        call_id, "speech_end", "already_spoken" if already else ""
+                    await asyncio.to_thread(
+                        db.append_call_event,
+                        call_id,
+                        "speech_end",
+                        "already_spoken" if already else "",
                     )
                 except Exception:
                     pass
@@ -1858,7 +1905,7 @@ async def _browser_loop(
                 if not text:
                     continue
                 qid = str(cursor.state.get("active_qid") or "")
-                db.append_transcript(call_id, "user", text, qid=qid)
+                await asyncio.to_thread(db.append_transcript, call_id, "user", text, qid=qid)
                 await _send_json(
                     ws,
                     ws_lock,
@@ -1906,7 +1953,7 @@ async def _browser_loop(
                 state.last_quick_reply_ts = time.time()
                 said = "नहीं।" if outcome == "clear" else "हाँ।"
                 qid = str(cursor.state.get("active_qid") or "")
-                db.append_transcript(call_id, "user", said, qid=qid)
+                await asyncio.to_thread(db.append_transcript, call_id, "user", said, qid=qid)
                 await _send_json(
                     ws, ws_lock, {"type": "transcript", "role": "user", "text": said}
                 )
@@ -1917,7 +1964,9 @@ async def _browser_loop(
                 await _emit(ws, ws_lock, call_id, telemetry, "tool_call", tool_name)
                 cursor.state = apply_turn(cursor.state, outcome)
                 try:
-                    db.save_cursor_state(call_id, cursor.state)
+                    await asyncio.to_thread(
+                        db.save_cursor_state, call_id, _json_copy(cursor.state)
+                    )
                 except Exception:
                     pass
                 await _send_json(ws, ws_lock, {"type": "clear"})
@@ -1932,10 +1981,11 @@ async def _browser_loop(
                         telemetry,
                         on_end_accepted,
                     )
+                    telemetry["user_turns"] = int(telemetry.get("user_turns") or 0) + 1
+                    _caller_heard(state, telemetry)
                     cue_kind = "close"
                 else:
-                    _arm_waiting_reply(state, speech_end_waiting=False)
-                    state.quiet_from = 0.0
+                    _arm_user_turn(state, telemetry)
                     cue_kind = "speak"
                 state.active_speak_kind = cue_kind
                 _cancel_speak_fallback(state)
@@ -1954,6 +2004,8 @@ async def _browser_loop(
                         telemetry,
                         "Could not speak the next question",
                     )
+                elif not state.reconnect_requested:
+                    state.speak_cue_step = _current_step(cursor.state)
             elif kind == "hangup":
                 stop.set()
                 return
@@ -2005,6 +2057,7 @@ async def _finalize(
     telemetry: dict | None,
     recorder: audio_recorder.CallAudioRecorder,
     on_call_completed: Callable[[int], Awaitable[bool] | bool] | None = None,
+    cursor: _Cursor | None = None,
 ) -> None:
     # Spinner first. PDF work happens after this, and a second send is skipped.
     await _notify_ending(ws, ws_lock, telemetry)
@@ -2016,15 +2069,16 @@ async def _finalize(
         filename, duration = "", 0
 
     if telemetry is not None:
+        _stamp_dropoff(telemetry, None if cursor is None else cursor.state)
         _refresh_latency(telemetry)
         try:
-            db.update_call_telemetry(call_id, telemetry)
+            await asyncio.to_thread(db.update_call_telemetry, call_id, _json_copy(telemetry))
         except Exception:
             pass
 
-    db.complete_call(call_id, int(duration), filename, "", "")
+    await asyncio.to_thread(db.complete_call, call_id, int(duration), filename, "", "")
     ready = await _report_is_ready(on_call_completed, call_id)
-    call = db.get_call(call_id) or {}
+    call = await asyncio.to_thread(db.get_call, call_id) or {}
     done = {
         "type": "call_completed" if ready else "report_failed",
         "call_id": call_id,
@@ -2155,8 +2209,10 @@ async def handle_gemini_ws(
             connect_ms,
         )
         recorder = audio_recorder.CallAudioRecorder(call_id)
-        db.save_cursor_state(call_id, cursor.state)
-        share_token = str((db.get_call(call_id) or {}).get("share_token") or "")
+        await asyncio.to_thread(db.save_cursor_state, call_id, _json_copy(cursor.state))
+        share_token = str(
+            (await asyncio.to_thread(db.get_call, call_id) or {}).get("share_token") or ""
+        )
         await _send_json(
             ws,
             ws_lock,
@@ -2266,6 +2322,7 @@ async def handle_gemini_ws(
                     telemetry,
                     recorder,
                     on_call_completed,
+                    cursor,
                 )
             except Exception:
                 await _send_json(

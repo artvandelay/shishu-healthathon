@@ -3,9 +3,12 @@
 import base64
 import hashlib
 import hmac
+import json
+import logging
 import os
 import re
 import secrets
+import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -23,6 +26,8 @@ import db
 import gemini_live
 import report_service
 import seed
+
+logger = logging.getLogger(__name__)
 
 COOKIE_NAME = "shishu_auth"
 ROLE_COOKIE = "shishu_role"
@@ -44,10 +49,24 @@ _STATIC_TYPES = {
     ".woff2": "font/woff2",
 }
 _SHARE_EVENTS = frozenset({"share_clicked"})
+_BUG_BYTE_CAP = 512 * 1024
+_BUG_NOTE_CAP = 2000
+_LOGIN_FAILS = 15
+_LOGIN_WINDOW_SEC = 60.0
+_PDF_REBUILDS = 5
+_PDF_WINDOW_SEC = 60.0
+_rate_lock = threading.Lock()
+_login_failures: dict[str, list[float]] = {}
+_pdf_rebuilds: dict[str, list[float]] = {}
 
 
 def _passcode() -> str:
-    return os.environ.get("APP_PASSCODE") or "shishu2026"
+    configured = (os.environ.get("APP_PASSCODE") or "").strip()
+    if configured:
+        return configured
+    if not (os.environ.get("RAILWAY_ENVIRONMENT") or "").strip():
+        return "shishu2026"
+    return ""
 
 
 def _admin_passcode() -> str:
@@ -133,14 +152,53 @@ def _require_admin(request: Request) -> None:
         raise HTTPException(status_code=403, detail="Admin login required")
 
 
-def _owns_call(role: str, username: str, call_id: int) -> bool:
-    if call_id <= 0 or role == "admin":
-        return role == "admin" and call_id > 0
-    call = db.get_call(call_id)
+def _client_ip(request: Request) -> str:
+    client = request.client
+    if client is None:
+        return ""
+    return client.host or ""
+
+
+def _prune_hits(stamps: list[float], now: float, window: float) -> list[float]:
+    return [stamp for stamp in stamps if now - stamp < window]
+
+
+def _rate_limited(bucket: dict[str, list[float]], key: str, limit: int, window: float) -> bool:
+    """True when this key already has `limit` hits inside the window."""
+    now = time.monotonic()
+    with _rate_lock:
+        stamps = _prune_hits(bucket.get(key, []), now, window)
+        bucket[key] = stamps
+        return len(stamps) >= limit
+
+
+def _rate_hit(bucket: dict[str, list[float]], key: str, window: float) -> None:
+    now = time.monotonic()
+    with _rate_lock:
+        stamps = _prune_hits(bucket.get(key, []), now, window)
+        stamps.append(now)
+        bucket[key] = stamps
+
+
+def _reset_rate_limits() -> None:
+    with _rate_lock:
+        _login_failures.clear()
+        _pdf_rebuilds.clear()
+
+
+def _owns_call(role: str, call_id: int, share_token: str = "") -> bool:
+    """Admin owns any saved call. A mother owns a call only through its share token."""
+    if call_id <= 0:
+        return False
+    if role == "admin":
+        return True
+    token = (share_token or "").strip()
+    if not token:
+        return False
+    call = db.get_call_by_token(token)
     if call is None:
         return False
-    owner = str(call.get("caller_name") or "").strip()
-    return bool(username) and owner == username
+    return int(call.get("id") or 0) == int(call_id)
 
 
 def _audio_dir() -> Path:
@@ -172,6 +230,8 @@ def _resolve_audio(audio_path: str) -> Path | None:
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
+    if not (os.environ.get("APP_PASSCODE") or "").strip():
+        logger.warning("APP_PASSCODE is unset")
     seed.ensure_seeded()
     yield
 
@@ -271,6 +331,9 @@ def _clear_session(response: JSONResponse, request: Request) -> None:
 
 @app.post("/api/login")
 async def login(request: Request):
+    ip = _client_ip(request)
+    if _rate_limited(_login_failures, ip, _LOGIN_FAILS, _LOGIN_WINDOW_SEC):
+        return JSONResponse({"ok": False}, status_code=429)
     try:
         body = await request.json()
     except Exception:
@@ -288,6 +351,7 @@ async def login(request: Request):
     elif _match(supplied, _passcode()):
         role = "user"
     else:
+        _rate_hit(_login_failures, ip, _LOGIN_WINDOW_SEC)
         return JSONResponse({"ok": False}, status_code=401)
     response = JSONResponse({"ok": True, "role": role, "username": username})
     _set_session(response, request, role, username)
@@ -361,8 +425,18 @@ def get_bugs(request: Request):
 
 @app.post("/api/bugs")
 async def post_bug(request: Request):
+    length = request.headers.get("content-length")
+    if length:
+        try:
+            if int(length) > _BUG_BYTE_CAP:
+                raise HTTPException(status_code=413, detail="Bug report is too large")
+        except ValueError:
+            pass
+    raw = await request.body()
+    if len(raw) > _BUG_BYTE_CAP:
+        raise HTTPException(status_code=413, detail="Bug report is too large")
     try:
-        body = await request.json()
+        body = json.loads(raw) if raw else None
     except Exception:
         body = None
     if not isinstance(body, dict):
@@ -377,14 +451,16 @@ async def post_bug(request: Request):
     except (TypeError, ValueError):
         elapsed = 0
     extra = body.get("client_state") if isinstance(body.get("client_state"), dict) else {}
+    share_token = str(body.get("share_token") or "").strip()
+    note = str(body.get("note") or "")[:_BUG_NOTE_CAP]
     bug = db.create_bug_report(
         call_id,
         username or role or "user",
         str(body.get("category") or ""),
-        str(body.get("note") or ""),
+        note,
         elapsed,
         extra,
-        _owns_call(role, username, call_id),
+        _owns_call(role, call_id, share_token),
     )
     return {"ok": True, "bug": bug}
 
@@ -413,15 +489,13 @@ def _pdf_response(pdf: bytes, name: str) -> Response:
 
 
 def _authorize_mother_pdf(call_id: int, request: Request) -> None:
+    """Integer call ids are admin-only. Mothers use the unguessable share token."""
+    _require_admin(request)
     call = db.get_call(call_id)
     if call is None:
         raise HTTPException(status_code=404, detail="Call not found")
     if str(call.get("status") or "") == "active":
         raise HTTPException(status_code=409, detail="Call is still running")
-    role, username = _identity_from_cookies(request.cookies)
-    owner = role == "user" and (call.get("caller_name") or "") == username
-    if role != "admin" and not owner:
-        raise HTTPException(status_code=403, detail="Not allowed")
 
 
 @app.get("/api/calls/{call_id}/mother.pdf")
@@ -494,6 +568,9 @@ async def post_clinician_review(call_id: int, request: Request):
 @app.post("/api/calls/by-token/{share_token}/mother.pdf")
 async def rebuild_mother_pdf_by_token(share_token: str):
     call = _call_for_token(share_token)
+    if _rate_limited(_pdf_rebuilds, share_token, _PDF_REBUILDS, _PDF_WINDOW_SEC):
+        raise HTTPException(status_code=429, detail="Too many report rebuilds")
+    _rate_hit(_pdf_rebuilds, share_token, _PDF_WINDOW_SEC)
     try:
         pdf, name = await report_service.mother_pdf(int(call["id"]))
     except LookupError as exc:

@@ -22,7 +22,6 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "vad_start_sensitivity": "LOW",
     "vad_end_sensitivity": "LOW",
     "watchdog_timeout_sec": "8.0",
-    "summary_model": "gemini-3.8-flash",
 }
 
 _CALL_EXTRA_COLUMNS = (
@@ -45,10 +44,10 @@ conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 conn.row_factory = sqlite3.Row
 try:
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA synchronous=NORMAL")
 except Exception:
     pass
-
 
 def _init_db() -> None:
     with _db_lock:
@@ -90,9 +89,6 @@ def _init_db() -> None:
         )
         cur.execute(
             "UPDATE settings SET value = '8.0' WHERE key = 'watchdog_timeout_sec' AND value = '4.0'",
-        )
-        cur.execute(
-            "UPDATE settings SET value = 'gemini-3.8-flash' WHERE key = 'summary_model' AND value = 'gemini-2.5-flash'",
         )
         cur.execute(
             """
@@ -155,9 +151,7 @@ def _init_db() -> None:
         )
         conn.commit()
 
-
 _init_db()
-
 
 def get_session_secret() -> str:
     """Opaque HMAC key for login cookies. Not a setting, and not returned by the API."""
@@ -175,14 +169,12 @@ def get_session_secret() -> str:
         conn.commit()
         return value
 
-
 def get_setting(key: str, default: str = "") -> str:
     with _db_lock:
         cur = conn.cursor()
         cur.execute("SELECT value FROM settings WHERE key = ?", (key,))
         row = cur.fetchone()
         return row["value"] if row else default
-
 
 def set_setting(key: str, value: str) -> None:
     with _db_lock:
@@ -193,7 +185,6 @@ def set_setting(key: str, value: str) -> None:
         )
         conn.commit()
 
-
 def get_all_settings() -> dict[str, str]:
     merged = dict(DEFAULT_SETTINGS)
     with _db_lock:
@@ -202,7 +193,6 @@ def get_all_settings() -> dict[str, str]:
         for row in cur.fetchall():
             merged[row["key"]] = row["value"] if row["value"] is not None else ""
     return merged
-
 
 def update_settings(updates: dict[str, Any]) -> dict[str, str]:
     if not isinstance(updates, dict):
@@ -218,7 +208,6 @@ def update_settings(updates: dict[str, Any]) -> dict[str, str]:
             )
         conn.commit()
     return get_all_settings()
-
 
 def create_call(
     engine: str,
@@ -253,7 +242,6 @@ def create_call(
         )
         conn.commit()
         return int(cur.lastrowid)
-
 
 def append_transcript(
     call_id: int, role: str, text: str, exact: bool = False, qid: str = ""
@@ -298,124 +286,6 @@ def append_transcript(
             (json.dumps(transcript, ensure_ascii=False), call_id),
         )
         conn.commit()
-
-
-def _person_name_detail(detail: str) -> bool:
-    text = (detail or "").strip().lower()
-    if not text:
-        return False
-    blocked = (
-        "married",
-        "marriage",
-        "unmarried",
-        "shaadi",
-        "child",
-        "children",
-        "not provided",
-        "not stated",
-        "not given",
-        "only said",
-    )
-    return not any(word in text for word in blocked)
-
-
-def record_finding_db(
-    call_id: int, domain: str, status: str, detail: str, is_red_flag: bool = False
-) -> dict:
-    with _db_lock:
-        cur = conn.cursor()
-        cur.execute("SELECT findings_json, red_flags_json FROM calls WHERE id = ?", (call_id,))
-        row = cur.fetchone()
-        if not row:
-            return {}
-        try:
-            findings = json.loads(row["findings_json"] or "{}")
-        except Exception:
-            findings = {}
-        try:
-            red_flags = json.loads(row["red_flags_json"] or "[]")
-        except Exception:
-            red_flags = []
-
-        prev = findings.get(domain)
-        prev_positive = isinstance(prev, dict) and (
-            prev.get("is_red_flag") or prev.get("status") == "positive"
-        )
-        keep_prev_mother_name = (
-            domain == "profile_mother_name"
-            and not _person_name_detail(detail)
-            and isinstance(prev, dict)
-            and _person_name_detail(str(prev.get("detail") or ""))
-        )
-        prev_detail = str(prev.get("detail") or "").strip() if isinstance(prev, dict) else ""
-        prev_status = str(prev.get("status") or "").lower() if isinstance(prev, dict) else ""
-        if keep_prev_mother_name or (prev_positive and not is_red_flag and status != "positive"):
-            pass
-        elif prev_positive and status == "positive" and detail and detail not in prev_detail:
-            findings[domain] = {
-                "status": "positive",
-                "detail": f"{prev_detail}; {detail}",
-                "is_red_flag": bool(prev.get("is_red_flag") or is_red_flag),
-            }
-        elif (
-            domain not in ("profile_mother_name", "profile_child_name", "profile_child_age", "profile_child_gender")
-            and isinstance(prev, dict)
-            and not prev_positive
-            and status != "positive"
-            and prev_detail
-            and detail
-            and detail not in prev_detail
-        ):
-            merged_status = "info" if "info" in (prev_status, status.lower()) else status
-            findings[domain] = {
-                "status": merged_status,
-                "detail": f"{prev_detail}; {detail}",
-                "is_red_flag": False,
-            }
-        else:
-            findings[domain] = {
-                "status": status,
-                "detail": detail,
-                "is_red_flag": bool(is_red_flag),
-            }
-
-        profile_col_map = {
-            "profile_mother_name": "mother_name",
-            "profile_child_name": "child_name",
-            "profile_child_age": "child_age",
-            "profile_child_gender": "child_gender",
-        }
-        if domain in profile_col_map and detail:
-            col = profile_col_map[domain]
-            write_detail = detail
-            if domain == "profile_mother_name" and not _person_name_detail(detail):
-                cur.execute("SELECT mother_name FROM calls WHERE id = ?", (call_id,))
-                current = cur.fetchone()
-                current_name = str(current["mother_name"] or "") if current else ""
-                if _person_name_detail(current_name):
-                    write_detail = ""
-            if write_detail:
-                cur.execute(
-                    f"UPDATE calls SET {col} = ? WHERE id = ?",
-                    (write_detail, call_id),
-                )
-
-        if is_red_flag:
-            flag_str = f"{domain}: {detail}"
-            if flag_str not in red_flags:
-                red_flags.append(flag_str)
-
-        cur.execute(
-            "UPDATE calls SET findings_json = ?, red_flags_json = ? WHERE id = ?",
-            (
-                json.dumps(findings, ensure_ascii=False),
-                json.dumps(red_flags, ensure_ascii=False),
-                call_id,
-            ),
-        )
-        conn.commit()
-        return findings
-
 
 def complete_call(
     call_id: int,
@@ -468,38 +338,6 @@ def complete_call(
             )
         conn.commit()
 
-
-def save_doctor_summary(
-    call_id: int,
-    summary_doctor: str,
-    findings: dict | None = None,
-    red_flags: list | None = None,
-) -> None:
-    """Write the English doctor note after the call. Leave the mother text alone."""
-    with _db_lock:
-        cur = conn.cursor()
-        if isinstance(findings, dict) and isinstance(red_flags, list):
-            cur.execute(
-                """
-                UPDATE calls
-                SET summary_doctor = ?, findings_json = ?, red_flags_json = ?
-                WHERE id = ?
-                """,
-                (
-                    summary_doctor or "",
-                    json.dumps(findings, ensure_ascii=False),
-                    json.dumps(red_flags, ensure_ascii=False),
-                    call_id,
-                ),
-            )
-        else:
-            cur.execute(
-                "UPDATE calls SET summary_doctor = ? WHERE id = ?",
-                (summary_doctor or "", call_id),
-            )
-        conn.commit()
-
-
 def _cursor_labels(state: dict) -> tuple[str, str]:
     """Admin list labels: mother name, and the children's ages and sexes."""
     profile = (state or {}).get("profile") if isinstance(state, dict) else {}
@@ -519,7 +357,6 @@ def _cursor_labels(state: dict) -> tuple[str, str]:
             bits.append(label)
     return name, " · ".join(bits)
 
-
 def save_cursor_state(call_id: int, state: dict) -> None:
     name, child_age = _cursor_labels(state or {})
     sets = ["cursor_json = ?"]
@@ -536,7 +373,6 @@ def save_cursor_state(call_id: int, state: dict) -> None:
         cur.execute(f"UPDATE calls SET {', '.join(sets)} WHERE id = ?", values)
         conn.commit()
 
-
 def get_call_by_token(share_token: str) -> dict | None:
     token = (share_token or "").strip()
     if len(token) < 8:
@@ -548,7 +384,6 @@ def get_call_by_token(share_token: str) -> dict | None:
         if not row:
             return None
         return _row_to_call_dict(row)
-
 
 def save_clinician_review(call_id: int, rating: str, note: str = "") -> dict:
     if rating not in _CLINICIAN_RATINGS:
@@ -562,7 +397,6 @@ def save_clinician_review(call_id: int, rating: str, note: str = "") -> dict:
         )
         conn.commit()
     return payload
-
 
 def save_report_text(
     call_id: int,
@@ -598,34 +432,6 @@ def save_report_text(
         cur.execute(f"UPDATE calls SET {', '.join(sets)} WHERE id = ?", values)
         conn.commit()
 
-
-def get_answers(call_id: int) -> dict | None:
-    with _db_lock:
-        cur = conn.cursor()
-        cur.execute("SELECT answers_json FROM calls WHERE id = ?", (call_id,))
-        row = cur.fetchone()
-    if not row:
-        return None
-    raw = (row["answers_json"] or "").strip()
-    if not raw:
-        return None
-    try:
-        data = json.loads(raw)
-    except Exception:
-        return None
-    return data if isinstance(data, dict) else None
-
-
-def save_answers(call_id: int, payload: dict) -> None:
-    with _db_lock:
-        cur = conn.cursor()
-        cur.execute(
-            "UPDATE calls SET answers_json = ? WHERE id = ?",
-            (json.dumps(payload, ensure_ascii=False), call_id),
-        )
-        conn.commit()
-
-
 def append_call_event(
     call_id: int, event_type: str, detail: str = "", meta: dict | None = None
 ) -> dict:
@@ -656,7 +462,6 @@ def append_call_event(
         conn.commit()
     return event
 
-
 def update_call_telemetry(call_id: int, patch: dict[str, Any]) -> dict:
     if not isinstance(patch, dict):
         patch = {}
@@ -679,7 +484,6 @@ def update_call_telemetry(call_id: int, patch: dict[str, Any]) -> dict:
         )
         conn.commit()
         return telemetry
-
 
 def create_bug_report(
     call_id: int,
@@ -728,7 +532,6 @@ def create_bug_report(
         "call_elapsed_sec": int(call_elapsed_sec or 0),
     }
 
-
 def list_bug_reports(limit: int = 50) -> list[dict]:
     with _db_lock:
         cur = conn.cursor()
@@ -743,7 +546,6 @@ def list_bug_reports(limit: int = 50) -> list[dict]:
             item["snapshot"] = {}
         out.append(item)
     return out
-
 
 def _row_to_call_dict(row: sqlite3.Row) -> dict[str, Any]:
     d = dict(row)
@@ -778,7 +580,6 @@ def _row_to_call_dict(row: sqlite3.Row) -> dict[str, Any]:
         d["clinician_review"] = {}
     return d
 
-
 def get_call(call_id: int) -> dict | None:
     with _db_lock:
         cur = conn.cursor()
@@ -797,14 +598,12 @@ def get_call(call_id: int) -> dict | None:
             row = cur.fetchone()
         return _row_to_call_dict(row)
 
-
 _LIST_COLUMNS = (
     "id", "engine", "mother_name", "child_name", "child_age", "child_gender",
     "status", "started_at", "ended_at", "duration_sec", "red_flags_json",
     "caller_name", "user_role", "model_used", "voice_used",
     "clinic_code", "clinician_review_json",
 )
-
 
 def list_calls() -> list[dict]:
     """Every call, without transcripts or findings. The detail view loads those."""

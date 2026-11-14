@@ -8,8 +8,10 @@ import asyncio
 import json
 import os
 import tempfile
+import threading
 import time
 from pathlib import Path
+from weakref import WeakKeyDictionary
 
 import db
 import mother_report
@@ -18,7 +20,8 @@ import post_call
 _REPORTS = Path(db.DATA_DIR) / "mother-pdfs"
 _answers: dict[int, asyncio.Task] = {}
 _inflight: dict[int, asyncio.Task] = {}
-_claim_guard: asyncio.Lock | None = None
+_loop_guards: WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = WeakKeyDictionary()
+_loop_guard_lock = threading.Lock()
 
 
 def pdf_path(call_id: int) -> Path:
@@ -61,10 +64,14 @@ def _atomic_write(path: Path, data: bytes) -> None:
 
 
 def _guard() -> asyncio.Lock:
-    global _claim_guard
-    if _claim_guard is None:
-        _claim_guard = asyncio.Lock()
-    return _claim_guard
+    """One asyncio lock per running loop. A process-wide lock breaks the next loop."""
+    loop = asyncio.get_running_loop()
+    with _loop_guard_lock:
+        lock = _loop_guards.get(loop)
+        if lock is None:
+            lock = asyncio.Lock()
+            _loop_guards[loop] = lock
+        return lock
 
 
 def _failed(task: asyncio.Task) -> bool:
@@ -136,50 +143,56 @@ async def _claim(call_id: int) -> asyncio.Task:
 
 
 async def _build(call_id: int) -> tuple[bytes, str]:
-    task = await _answers_task(call_id)
+    current_task = asyncio.current_task()
     try:
-        extracted = await task
-    except Exception:
-        async with _guard():
-            if _answers.get(call_id) is task:
-                _answers.pop(call_id, None)
-        raise
-    started = time.perf_counter()
-    _event(call_id, "render_start")
-    try:
-        call = await asyncio.to_thread(db.get_call, call_id)
-        if call is None:
-            raise LookupError(f"Call {call_id} was not found")
-        if post_call.is_synthesis(extracted):
-            synthesis = extracted
-        else:
-            synthesis = post_call.deterministic_fallback(call)
-        report = mother_report.build_v3(call, synthesis)
-        mother_name = str(synthesis.get("mother_name_hi") or "").strip()
-        if mother_name == "माँ":
-            mother_name = ""
-        child_age = str(synthesis.get("children_label_hi") or "").strip()
-        await asyncio.to_thread(
-            db.save_report_text,
-            call_id,
-            synthesis.get("doctor_markdown") or "",
-            post_call.mother_summary_text(synthesis),
-            list(synthesis.get("red_flags") or []),
-            mother_name,
-            child_age,
-        )
-        pdf = await asyncio.to_thread(mother_report.render_pdf, report)
-        if not pdf.startswith(b"%PDF"):
-            raise ValueError("Renderer did not return a PDF")
-        _event(call_id, "render_end", {"ms": _ms(started)})
-        await asyncio.to_thread(_atomic_write, pdf_path(call_id), pdf)
-        _event(call_id, "pdf_write", {"bytes": len(pdf)})
-        _event(call_id, "report_ready", {"ms": _ms(started)})
+        task = await _answers_task(call_id)
+        try:
+            extracted = await task
+        except Exception:
+            async with _guard():
+                if _answers.get(call_id) is task:
+                    _answers.pop(call_id, None)
+            raise
+        started = time.perf_counter()
+        _event(call_id, "render_start")
+        try:
+            call = await asyncio.to_thread(db.get_call, call_id)
+            if call is None:
+                raise LookupError(f"Call {call_id} was not found")
+            if post_call.is_synthesis(extracted):
+                synthesis = extracted
+            else:
+                synthesis = post_call.deterministic_fallback(call)
+            report = mother_report.build_v3(call, synthesis)
+            mother_name = str(synthesis.get("mother_name_hi") or "").strip()
+            if mother_name == "माँ":
+                mother_name = ""
+            child_age = str(synthesis.get("children_label_hi") or "").strip()
+            await asyncio.to_thread(
+                db.save_report_text,
+                call_id,
+                synthesis.get("doctor_markdown") or "",
+                post_call.mother_summary_text(synthesis),
+                list(synthesis.get("red_flags") or []),
+                mother_name,
+                child_age,
+            )
+            pdf = await asyncio.to_thread(mother_report.render_pdf, report)
+            if not pdf.startswith(b"%PDF"):
+                raise ValueError("Renderer did not return a PDF")
+            _event(call_id, "render_end", {"ms": _ms(started)})
+            await asyncio.to_thread(_atomic_write, pdf_path(call_id), pdf)
+            _event(call_id, "pdf_write", {"bytes": len(pdf)})
+            _event(call_id, "report_ready", {"ms": _ms(started)})
+        finally:
+            async with _guard():
+                if _answers.get(call_id) is task:
+                    _answers.pop(call_id, None)
+        return pdf, mother_report.filename(call)
     finally:
         async with _guard():
-            if _answers.get(call_id) is task:
-                _answers.pop(call_id, None)
-    return pdf, mother_report.filename(call)
+            if _inflight.get(call_id) is current_task:
+                _inflight.pop(call_id, None)
 
 
 async def mother_pdf(call_id: int) -> tuple[bytes, str]:

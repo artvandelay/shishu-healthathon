@@ -6,6 +6,7 @@ import os
 import wave
 
 import db
+from call_cursor import apply_profile, new_cursor_state
 
 _DOCTOR_SHILPA = """### Patient Profile & Chief Complaint
 Mother: Shilpa. Child: Aarav, 7-year-old boy. This was a pre-consultation screening, not an acute emergency visit. The history a doctor should see first is neonatal jaundice treated with phototherapy, knee swelling for 5–7 days after falls, high blood pressure and thyroid disease that continued after delivery, and a previous son who died at 5 months with fits.
@@ -175,7 +176,7 @@ _TURNS_GEETA = [
     ("user", "High BP tha. Delivery ke baad theek ho gaya. (I had high BP. It was fine after delivery.)"),
     ("assistant", "Thalassemia test hua? Scan hua, normal tha? Garbh mein khoon chadha? Delivery bina dikkat ke hui? (Thalassemia test? Scan normal? Blood in pregnancy? Delivery without a problem?)"),
     ("user", "Thalassemia kya hai? Mujhe iska pata nahi tha, test nahi hua. Scan hua tha, normal tha. Khoon nahi chadha. Delivery theek rahi. (What is thalassemia? I was not aware of it, so no test. Scan was normal. No blood. Delivery was fine.)"),
-    ("assistant", "Thalassemia mein khoon theek se nahi banta, aur kuch logon ko baar-baar khoon chadhane ki zaroorat padti hai. Test pehle se ho sakta hai. Doctor hi bataenge ki aapke liye zaroorat hai ya nahi. Ab parivaar: kya aap aur pati shaadi se pehle rishtedaar the? Koi bachcha khoya? Ek saal se kam umar mein kisi bachche ki mrityu? Parivaar mein jhatke? (Thalassemia is a condition where blood does not form normally and some people need transfusions. A test can be done in advance. The doctor will say if you need it. Were you related before marriage? Any child lost? Any death under one year? Seizures in the family?)"),
+    ("assistant", "Thalassemia minor ya trait ek saadhaaran khoon ki jaanch hai. Isse pata chalta hai ki maa ya pita carrier hain ya nahi. Carrier hone par maa ya pita khud theek rehte hain, aur doctor isse pregnancy aur bachche ki salah ke liye dekhte hain. Ab parivaar: kya aap aur pati shaadi se pehle rishtedaar the? Koi bachcha khoya? Ek saal se kam umar mein kisi bachche ki mrityu? Parivaar mein jhatke? (Thalassemia minor or trait is an ordinary parent carrier blood check. The parent stays healthy, and the doctor uses it for pregnancy and child guidance. Were you related before marriage? Any child lost? Any death under one year? Seizures in the family?)"),
     ("user", "Nahi, hum rishtedaar nahi the. Koi bachcha nahi khoya. Ek saal se kam umar mein koi mrityu nahi. Jhatke nahi. (No. We were not relatives. I have not lost a child. No death under one year. No seizures.)"),
     ("assistant", "Parivaar mein der se baithna-chalna-bolna, andhaapan, kam sunai dena, khoon chadhna, zyada khoon bahna, bachpan ka cancer, dil, gurde, jawan umar mein BP/cholesterol/stroke, infection ke saath khujli, ya shareer par gaanth? (Late milestones, blindness, deafness, transfusions, bleeding, childhood cancer, heart, kidney, young BP/cholesterol/stroke, itchy infections, or lumps in the family?)"),
     ("user", "Nahi, jitna mujhe pata hai. Bachpan ka cancer mujhe nahi pata. Jawan umar ka BP ya stroke bhi nahi pata. Baaki nahi. (No, as far as I know. I do not know about childhood cancer, or about high BP or stroke at a young age. Otherwise no.)"),
@@ -221,35 +222,84 @@ _FINDINGS_GEETA = [
 
 def _write_placeholder_wav(path: str, seconds: int = 3) -> int:
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    rate = 24000
+    rate = 16000
     count = rate * seconds
-    samples = array.array(
-        "h",
-        (int(4000 * math.sin(2 * math.pi * 440 * i / rate)) for i in range(count)),
-    )
+    frames = array.array("h")
+    for i in range(count):
+        sample = int(4000 * math.sin(2 * math.pi * 440 * i / rate))
+        frames.append(sample)
+        frames.append(sample)
     with wave.open(path, "wb") as handle:
-        handle.setnchannels(1)
+        handle.setnchannels(2)
         handle.setsampwidth(2)
         handle.setframerate(rate)
-        handle.writeframes(samples.tobytes())
+        handle.writeframes(frames.tobytes())
     return seconds
 
 
-def _seed_call(turns, findings, summary_doctor, summary_mother) -> int:
+def _completed_cursor(name: str, child_name: str, age_years: float, sex: str) -> dict:
+    state, hold = apply_profile(
+        new_cursor_state(),
+        caller_name=name,
+        marital_status="married",
+        children=[{"age_years": age_years, "sex": sex, "name": child_name}],
+        ever_pregnant=True,
+    )
+    if hold:
+        raise RuntimeError(f"seed profile hold: {hold}")
+    state["phase"] = "closing"
+    state["close_reason"] = "complete"
+    return state
+
+
+def _seed_call(turns, findings, summary_doctor, summary_mother, cursor_state) -> int:
     call_id = db.create_call("gemini")
     for role, text in turns:
         db.append_transcript(call_id, role, text)
-    for domain, status, detail, is_red_flag in findings:
-        db.record_finding_db(call_id, domain, status, detail, is_red_flag)
+    db.save_cursor_state(call_id, cursor_state)
+    findings_map = {
+        domain: {
+            "status": status,
+            "detail": detail,
+            "is_red_flag": bool(is_red_flag),
+        }
+        for domain, status, detail, is_red_flag in findings
+    }
+    red_flags = [
+        f"{domain}: {detail}"
+        for domain, _status, detail, is_red_flag in findings
+        if is_red_flag
+    ]
+    db.save_report_text(call_id, summary_doctor, summary_mother, red_flags)
     audio_file = f"call_{call_id}.wav"
     audio_path = os.path.join(db.DATA_DIR, "audio", audio_file)
     duration = _write_placeholder_wav(audio_path, 3)
-    db.complete_call(call_id, duration, audio_file, summary_doctor, summary_mother)
+    db.complete_call(
+        call_id,
+        duration,
+        audio_file,
+        summary_doctor,
+        summary_mother,
+        findings_map,
+        red_flags,
+    )
     return call_id
 
 
 def ensure_seeded() -> None:
     if db.list_calls():
         return
-    _seed_call(_TURNS_SHILPA, _FINDINGS_SHILPA, _DOCTOR_SHILPA, _MOTHER_SHILPA)
-    _seed_call(_TURNS_GEETA, _FINDINGS_GEETA, _DOCTOR_GEETA, _MOTHER_GEETA)
+    _seed_call(
+        _TURNS_SHILPA,
+        _FINDINGS_SHILPA,
+        _DOCTOR_SHILPA,
+        _MOTHER_SHILPA,
+        _completed_cursor("Shilpa", "Aarav", 7, "male"),
+    )
+    _seed_call(
+        _TURNS_GEETA,
+        _FINDINGS_GEETA,
+        _DOCTOR_GEETA,
+        _MOTHER_GEETA,
+        _completed_cursor("Geeta", "Ananya", 6, "female"),
+    )

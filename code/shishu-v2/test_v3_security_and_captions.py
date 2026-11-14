@@ -1,9 +1,12 @@
 """Auth cookies, public copy, and caption leaks. No network."""
 
+import asyncio
 import os
 import tempfile
 import unittest
+import wave
 from pathlib import Path
+from unittest.mock import patch
 
 _TMP = tempfile.mkdtemp(prefix="shishu-v3-security-")
 os.environ["DATA_DIR"] = _TMP
@@ -14,6 +17,9 @@ import app  # noqa: E402
 import db  # noqa: E402
 import gemini_live  # noqa: E402
 import prompts  # noqa: E402
+import report_service  # noqa: E402
+import seed  # noqa: E402
+from call_cursor import apply_profile, new_cursor_state  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 _HERE = Path(__file__).resolve().parent
@@ -166,3 +172,135 @@ class CaptionAndCopyTests(unittest.TestCase):
         self.assertNotIn("openai_model", settings)
         self.assertNotIn("openai_voice", settings)
         self.assertNotIn("openai_backend_model", settings)
+
+
+class Stage6BAccessTests(unittest.TestCase):
+    def test_user_cannot_fetch_a_pdf_by_call_id(self):
+        call_id = db.create_call("gemini", caller_name="Pooja")
+        db.complete_call(call_id, 30, "", "", "")
+        token = db.get_call(call_id)["share_token"]
+        user = TestClient(app.app)
+        logged = user.post("/api/login", json={"username": "Pooja", "passcode": app._passcode()})
+        self.assertEqual(logged.status_code, 200)
+        denied = user.get(f"/api/calls/{call_id}/mother.pdf")
+        self.assertEqual(denied.status_code, 403)
+        denied_post = user.post(f"/api/calls/{call_id}/mother.pdf")
+        self.assertEqual(denied_post.status_code, 403)
+        by_token = user.get(f"/api/calls/by-token/{token}/mother.pdf")
+        self.assertNotEqual(by_token.status_code, 403)
+        admin = TestClient(app.app)
+        admin.post("/api/login", json={"username": "admin", "passcode": app._admin_passcode()})
+        admin_pdf = admin.get(f"/api/calls/{call_id}/mother.pdf")
+        self.assertNotEqual(admin_pdf.status_code, 403)
+
+    def test_bug_body_is_capped_and_ownership_uses_the_share_token(self):
+        user = TestClient(app.app)
+        user.post("/api/login", json={"username": "Pooja", "passcode": app._passcode()})
+        huge = user.post("/api/bugs", json={"category": "test", "note": "x" * (512 * 1024), "call_id": 0})
+        self.assertEqual(huge.status_code, 413)
+        note = "n" * 2500
+        filed = user.post("/api/bugs", json={"category": "test", "note": note, "call_id": 0})
+        self.assertEqual(filed.status_code, 200)
+        self.assertEqual(len(filed.json()["bug"]["note"]), 2000)
+
+        call_id = db.create_call("gemini", caller_name="Pooja")
+        db.append_transcript(call_id, "user", "Secret line from this call.")
+        db.complete_call(call_id, 10, "", "", "")
+        token = db.get_call(call_id)["share_token"]
+        owned = user.post(
+            "/api/bugs",
+            json={"category": "test", "note": "mine", "call_id": call_id, "share_token": token},
+        )
+        self.assertEqual(owned.status_code, 200)
+        stranger = TestClient(app.app)
+        stranger.post("/api/login", json={"username": "Pooja", "passcode": app._passcode()})
+        peeked = stranger.post(
+            "/api/bugs",
+            json={"category": "test", "note": "guess", "call_id": call_id},
+        )
+        self.assertEqual(peeked.status_code, 200)
+        admin = TestClient(app.app)
+        admin.post("/api/login", json={"username": "admin", "passcode": app._admin_passcode()})
+        listed = admin.get("/api/bugs").json()
+        match = next(item for item in listed if item["id"] == owned.json()["bug"]["id"])
+        texts = [row.get("text") for row in match["snapshot"]["last_transcript"]]
+        self.assertIn("Secret line from this call.", texts)
+        other = next(item for item in listed if item["id"] == peeked.json()["bug"]["id"])
+        self.assertEqual(other["snapshot"]["last_transcript"], [])
+
+    def test_failed_logins_and_token_pdf_rebuilds_are_throttled(self):
+        app._reset_rate_limits()
+        try:
+            client = TestClient(app.app)
+            for _ in range(app._LOGIN_FAILS):
+                failed = client.post("/api/login", json={"username": "Pooja", "passcode": "wrong"})
+                self.assertEqual(failed.status_code, 401)
+            blocked = client.post("/api/login", json={"username": "Pooja", "passcode": "wrong"})
+            self.assertEqual(blocked.status_code, 429)
+
+            call_id = db.create_call("gemini", caller_name="Pooja")
+            db.complete_call(call_id, 12, "", "", "")
+            token = db.get_call(call_id)["share_token"]
+            for _ in range(app._PDF_REBUILDS):
+                app._rate_hit(app._pdf_rebuilds, token, app._PDF_WINDOW_SEC)
+            rebuild = client.post(f"/api/calls/by-token/{token}/mother.pdf")
+            self.assertEqual(rebuild.status_code, 429)
+        finally:
+            app._reset_rate_limits()
+
+    def test_report_inflight_clears_and_seed_audio_is_stereo_16k(self):
+        state, hold = apply_profile(
+            new_cursor_state(),
+            caller_name="Pooja",
+            marital_status="unmarried",
+        )
+        self.assertIsNone(hold)
+        state["phase"] = "closing"
+        state["close_reason"] = "complete"
+        call_id = db.create_call("gemini", caller_name="Pooja")
+        db.save_cursor_state(call_id, state)
+        db.complete_call(call_id, 20, "", "", "")
+
+        async def explode(_call):
+            raise ConnectionError("offline")
+
+        async def render():
+            return await report_service.mother_pdf(call_id)
+
+        with patch("post_call._from_gemini", new=explode):
+            first = asyncio.run(render())
+            self.assertEqual(report_service._inflight, {})
+            second = asyncio.run(render())
+            self.assertEqual(report_service._inflight, {})
+        self.assertTrue(first[0].startswith(b"%PDF"))
+        self.assertTrue(second[0].startswith(b"%PDF"))
+
+        with db._db_lock:
+            db.conn.execute("DELETE FROM calls")
+            db.conn.commit()
+        seed.ensure_seeded()
+        calls = db.list_calls()
+        self.assertEqual(len(calls), 2)
+        explained = []
+        for row in calls:
+            full = db.get_call(row["id"])
+            self.assertEqual(full["cursor_state"]["close_reason"], "complete")
+            self.assertTrue(full["summary_mother"])
+            path = os.path.join(db.DATA_DIR, "audio", full["audio_path"])
+            with wave.open(path) as handle:
+                self.assertEqual(handle.getnchannels(), 2)
+                self.assertEqual(handle.getframerate(), 16000)
+                self.assertEqual(handle.getsampwidth(), 2)
+            explained.extend(
+                turn["text"]
+                for turn in full["transcript"]
+                if "carrier blood check" in turn["text"]
+            )
+        self.assertEqual(len(explained), 1)
+        text = explained[0].lower()
+        self.assertIn("stays healthy", text)
+        self.assertIn("carrier", text)
+        self.assertNotIn("transfusion", text)
+        self.assertNotIn("severe", text)
+        self.assertNotIn("baar-baar khoon", text)
+        self.assertNotIn("does not form normally", text)

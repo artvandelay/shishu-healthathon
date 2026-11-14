@@ -594,7 +594,12 @@ class TokenPrivacyTests(unittest.TestCase):
 def _store(state, mother_name: str) -> int:
     call_id = db.create_call("gemini", caller_name=mother_name)
     db.save_cursor_state(call_id, state)
-    db.record_finding_db(call_id, "profile_mother_name", "info", mother_name, False)
+    with db._db_lock:
+        db.conn.execute(
+            "UPDATE calls SET mother_name = ? WHERE id = ?",
+            (mother_name, call_id),
+        )
+        db.conn.commit()
     db.complete_call(call_id, 180, "", "", "")
     return call_id
 
