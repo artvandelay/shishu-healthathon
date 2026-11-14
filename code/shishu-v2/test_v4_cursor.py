@@ -269,6 +269,32 @@ class SkipMatrixTests(unittest.TestCase):
         unmarried = apply_turn(unmarried, "clear")
         self.assertEqual(unmarried["active_qid"], "fam_infant_death")
 
+    def test_question_hi_for_partial_profiles_and_catalog_wording(self):
+        thal = get_spec("preg_thalassemia")
+        nicu = get_spec("birth_nicu")
+        self.assertEqual(call_cursor.question_hi_for(None, thal), thal.question_hi)
+        self.assertEqual(call_cursor.question_hi_for({}, thal), thal.question_hi)
+        self.assertEqual(call_cursor.question_hi_for({"profile": {}}, thal), thal.question_hi)
+        unmarried = call_cursor.question_hi_for({"profile": {"marital_status": "unmarried"}}, thal)
+        self.assertEqual(unmarried, call_cursor._THAL_UNMARRIED)
+        self.assertNotIn("पति", unmarried)
+        self.assertIn(
+            "होने वाले पति",
+            call_cursor.question_hi_for({"profile": {"marital_status": "about_to_marry"}}, thal),
+        )
+        self.assertEqual(
+            call_cursor.question_hi_for({"profile": {"children": "nope"}}, nicu),
+            nicu.question_hi,
+        )
+        kids = {
+            "profile": {
+                "marital_status": "married",
+                "children": [_child(6, "male", 1), _child(2, "female", 2)],
+            },
+        }
+        self.assertEqual(call_cursor.question_hi_for(kids, nicu), nicu.question_multi_hi)
+        self.assertEqual(call_cursor._question_hi(kids, nicu), nicu.question_multi_hi)
+
     def test_age_rules_skip_tooth_periods_and_puberty(self):
         baby = _profile(children=[_child(1, "male")])
         for qid in ("mod_tooth_bleed", "mod_heavy_periods", "body_puberty"):
@@ -555,11 +581,18 @@ class CloseAndFinishTests(unittest.TestCase):
         self.assertEqual(state["answers"]["fam_same_problem"]["state"], "not_applicable")
 
         stopped = _clear_until(_profile(children=[_child(3, "female")]), "ill_fasting")
-        stopped = apply_turn(stopped, "emergency", note="अभी सांस नहीं ले रहा")
+        answers_before = json.loads(json.dumps(stopped["answers"]))
+        stopped = apply_turn(stopped, "emergency", note="  अभी   सांस नहीं ले रहा  ")
         self.assertEqual(stopped["phase"], "closing")
         self.assertEqual(stopped["close_reason"], "emergency")
+        self.assertEqual(stopped["emergency_note"], "अभी सांस नहीं ले रहा")
         self.assertEqual(stopped["active_qid"], "ill_fasting")
+        self.assertEqual(stopped["answers"], answers_before)
         self.assertEqual(apply_turn(stopped, "clear")["phase"], "closing")
+        fresh = _clear_until(_profile(children=[_child(3, "female")]), "ill_fasting")
+        quiet = apply_turn(fresh, "caller_stop", note="अब रहन दो")
+        self.assertEqual(quiet["close_reason"], "caller_stop")
+        self.assertNotIn("emergency_note", quiet)
 
     def test_family_concern_opens_same_problem_without_a_hidden_gate(self):
         state = _profile(children=[_child(4, "male")])
@@ -688,6 +721,72 @@ class CallNineReplayTests(unittest.TestCase):
         self.assertEqual(close["phase"], "asking")
         self.assertEqual(close["pending_followup_idx"], 0)
         self.assertEqual(close["step_attempts"], 0)
+
+    def test_join_notes_is_idempotent_across_clauses(self):
+        self.assertEqual(call_cursor._join_notes("सांस; तीन दिन", "तीन दिन"), "सांस; तीन दिन")
+        self.assertEqual(call_cursor._join_notes("सांस;  तीन   दिन ", "  सांस "), "सांस; तीन दिन")
+        self.assertEqual(call_cursor._join_notes("NICU", "nicu; बुखार"), "NICU; बुखार")
+        self.assertEqual(call_cursor._join_notes("", "  चार   दिन "), "चार दिन")
+        self.assertEqual(call_cursor._join_notes("सांस", "   "), "सांस")
+
+    def test_revise_writes_a_late_note_into_the_open_followup(self):
+        state = _clear_until(self._boy(), "birth_nicu")
+        state = apply_turn(state, "concern", note="सांस", followup_answered=True)
+        state = apply_turn(state, "concern", note="तीन दिन")
+        self.assertNotEqual(state["active_qid"], "birth_nicu")
+        later = state["active_qid"]
+        updated = apply_turn(state, "concern", note="और बुखार", target_qid="birth_nicu")
+        self.assertEqual(updated["active_qid"], later)
+        followups = updated["answers"]["birth_nicu"]["followups"]
+        self.assertEqual(followups["nicu_reason"]["note"], "सांस")
+        self.assertEqual(followups["nicu_days"]["note"], "तीन दिन; और बुखार")
+        again = apply_turn(updated, "concern", note="और बुखार", target_qid="birth_nicu")
+        self.assertEqual(again["answers"]["birth_nicu"]["followups"]["nicu_days"]["note"], "तीन दिन; और बुखार")
+        self.assertEqual(again["answers"]["birth_nicu"]["followups"]["nicu_reason"]["note"], "सांस")
+
+        open_slot = json.loads(json.dumps(state))
+        del open_slot["answers"]["birth_nicu"]["followups"]["nicu_days"]
+        routed = apply_turn(open_slot, "concern", note="चार दिन", target_qid="birth_nicu")
+        routed_followups = routed["answers"]["birth_nicu"]["followups"]
+        self.assertEqual(routed_followups["nicu_reason"]["note"], "सांस")
+        self.assertEqual(routed_followups["nicu_days"]["note"], "चार दिन")
+        self.assertEqual(routed["active_qid"], open_slot["active_qid"])
+
+    def test_clarify_mid_followup_returns_to_the_unfinished_question(self):
+        state = _clear_until(self._boy(), "birth_nicu")
+        state = apply_turn(state, "concern")
+        self.assertEqual(state["pending_followup_idx"], 0)
+        self.assertEqual(state["answers"]["birth_nicu"]["state"], "concern")
+        rewound = apply_turn(state, "clarify", target_qid="birth_mode_detail")
+        self.assertEqual(rewound["active_qid"], "birth_mode_detail")
+        self.assertNotIn("birth_nicu", rewound["answers"])
+        self.assertNotIn("birth_mode_detail", rewound["answers"])
+        self.assertEqual(rewound["answers"]["birth_term"]["state"], "clear")
+        answered = apply_turn(rewound, "clear")
+        self.assertEqual(answered["answers"]["birth_mode_detail"]["state"], "clear")
+        self.assertEqual(answered["active_qid"], "birth_nicu")
+        self.assertIsNone(answered["pending_followup_idx"])
+        self.assertNotIn("birth_nicu", answered["answers"])
+
+        kids = [_child(6, "male", 1), _child(2, "female", 2)]
+        which = _clear_until(_profile(children=kids), "birth_nicu")
+        which = apply_turn(which, "concern")
+        self.assertEqual(which["pending_followup_idx"], -1)
+        self.assertEqual(which["answers"]["birth_nicu"]["state"], "concern")
+        which = apply_turn(which, "clarify", target_qid="birth_term")
+        self.assertNotIn("birth_nicu", which["answers"])
+        self.assertEqual(which["answers"]["birth_mode_detail"]["state"], "clear")
+        which = apply_turn(which, "clear")
+        self.assertEqual(which["active_qid"], "birth_nicu")
+        self.assertIsNone(which["pending_followup_idx"])
+
+        close = _clear_until(self._boy(), "close_anything_else")
+        close = apply_turn(close, "concern", note="पेट दर्द")
+        close = apply_turn(close, "concern")
+        self.assertEqual(close["pending_followup_idx"], 0)
+        close = apply_turn(close, "clarify", target_qid="birth_mode_detail")
+        self.assertEqual(close["answers"]["close_anything_else"]["state"], "concern")
+        self.assertEqual(close["answers"]["close_anything_else"]["notes"], "पेट दर्द")
 
 
 if __name__ == "__main__":

@@ -169,7 +169,19 @@ def _accepted_target(state: dict, target_qid: str) -> str:
 
 
 def _rewind_target(state: dict, target: str) -> dict:
-    """Ask an already-answered question again. Later answers stay put."""
+    """Ask an already-answered question again. Later answers stay put.
+
+    A concern left hanging on which-child or a follow-up is cleared so the
+    cursor lands on that question again after the clarified one is answered.
+    A close concern that already has the mother's words stays recorded.
+    """
+    prev_qid = state.get("active_qid")
+    pending = state.get("pending_followup_idx")
+    if pending is not None and prev_qid and prev_qid != target:
+        prior = (state.get("answers") or {}).get(prev_qid)
+        keep_close = prev_qid == "close_anything_else" and _close_concern_kept(state)
+        if isinstance(prior, dict) and prior.get("state") == "concern" and not keep_close:
+            state["answers"].pop(prev_qid, None)
     state["active_qid"] = target
     state["pending_followup_idx"] = None
     state["step_attempts"] = 0
@@ -201,10 +213,26 @@ def _revise_target(state: dict, target: str, outcome: str, child_ref: str, note:
                 if cid not in child_ids:
                     child_ids.append(cid)
             if spec.followups and note.strip():
-                fid = spec.followups[0]
-                slot = followups.get(fid)
-                old = str(slot.get("note") or "") if isinstance(slot, dict) else ""
-                followups[fid] = {"state": "concern", "note": _join_notes(old, note.strip())}
+                text = note.strip()
+                if len(spec.followups) > 1 and _slot_note(followups, spec.followups[0]):
+                    fid = ""
+                    for later in spec.followups[1:]:
+                        if not _slot_note(followups, later):
+                            fid = later
+                            followups[fid] = {"state": "concern", "note": text}
+                            break
+                    if not fid:
+                        fid = spec.followups[-1]
+                        followups[fid] = {
+                            "state": "concern",
+                            "note": _join_notes(_slot_note(followups, fid), text),
+                        }
+                else:
+                    fid = spec.followups[0]
+                    followups[fid] = {
+                        "state": "concern",
+                        "note": _join_notes(_slot_note(followups, fid), text),
+                    }
         state["answers"][target] = _blank(
             "concern",
             note=_join_notes(str(prior.get("notes") or ""), note),
@@ -232,6 +260,8 @@ def apply_turn(
     if outcome in ("emergency", "caller_stop"):
         state["phase"] = "closing"
         state["close_reason"] = outcome
+        if outcome == "emergency" and note.strip():
+            state["emergency_note"] = " ".join(note.split())
         return state
     if state["phase"] != "asking":
         return state
@@ -291,8 +321,15 @@ def _ask(hindi: str) -> str:
     return f"Ask only this one Hindi question, then wait: {hindi}"
 
 
-def _question_hi(state: dict, spec) -> str:
-    marital = state["profile"]["marital_status"]
+def question_hi_for(state: dict, spec) -> str:
+    """Hindi question for this caller. Incomplete profiles use the catalog line."""
+    profile = state.get("profile") if isinstance(state, dict) else None
+    if not isinstance(profile, dict):
+        return spec.question_hi
+    marital = profile.get("marital_status")
+    children = profile.get("children")
+    if not isinstance(children, list):
+        children = []
     if spec.id == "preg_thalassemia":
         if marital == "about_to_marry":
             return _THAL_ABOUT
@@ -301,9 +338,14 @@ def _question_hi(state: dict, spec) -> str:
         return spec.question_hi
     if spec.id == "fam_related" and marital == "about_to_marry":
         return _RELATED_ABOUT
-    if len(state["profile"]["children"]) > 1 and spec.question_multi_hi:
-        return spec.question_multi_hi
+    multi = spec.question_multi_hi
+    if len(children) > 1 and multi:
+        return multi
     return spec.question_hi
+
+
+def _question_hi(state: dict, spec) -> str:
+    return question_hi_for(state, spec)
 
 
 def _resolve_main(state, spec, outcome, child_ref, note, followup_answered) -> dict:
@@ -835,9 +877,24 @@ def _child_ids_for(state: dict, spec, child_ref: str) -> list[str]:
     return []
 
 
+def _slot_note(followups: dict, fid: str) -> str:
+    slot = followups.get(fid)
+    if isinstance(slot, dict):
+        return str(slot.get("note") or "").strip()
+    return ""
+
+
 def _join_notes(existing: str, extra: str) -> str:
-    old = " ".join((existing or "").split())
-    new = " ".join((extra or "").split())
-    if old and new:
-        return f"{old}; {new}"
-    return new or old
+    parts: list[str] = []
+    seen: set[str] = set()
+    for source in (existing, extra):
+        for clause in str(source or "").split(";"):
+            cleaned = " ".join(clause.split())
+            if not cleaned:
+                continue
+            key = cleaned.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            parts.append(cleaned)
+    return "; ".join(parts)

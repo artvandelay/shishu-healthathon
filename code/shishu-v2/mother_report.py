@@ -12,6 +12,7 @@ from pathlib import Path
 if sys.platform == "darwin":
     os.environ.setdefault("DYLD_FALLBACK_LIBRARY_PATH", "/opt/homebrew/lib")
 
+import call_cursor
 import triage_catalog
 
 _STATIC = Path(__file__).resolve().parent / "static"
@@ -212,18 +213,19 @@ def _page2_from_cursor(state: dict, incomplete: bool) -> tuple[list, list, list]
         if status in ("", "concern", "not_applicable"):
             continue
         title = _GROUP_HI.get(spec.group, spec.group)
+        label = call_cursor.question_hi_for(state, spec)
         if status == "clear":
             if title not in buckets:
                 order.append(title)
                 buckets[title] = []
-            buckets[title].append(spec.question_hi)
+            buckets[title].append(label)
         elif status == "unknown":
-            unknown.append(spec.question_hi)
+            unknown.append(label)
         elif status == "not_asked" and incomplete:
             if title not in missed:
                 missed_order.append(title)
                 missed[title] = []
-            missed[title].append(spec.question_hi)
+            missed[title].append(label)
     groups = [{"title": title, "items": buckets[title], "facts": []} for title in order]
     unasked = [{"title": title, "items": missed[title]} for title in missed_order]
     return groups, unknown, unasked

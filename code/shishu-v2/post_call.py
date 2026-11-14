@@ -41,8 +41,6 @@ _SECTION = {
 }
 
 _HEMATOLOGY = frozenset({
-    "gate_bleeding_joints",
-    "gate_transfusion_anemia",
     "body_bleeding_bruise",
     "body_joint_swelling",
     "mod_tooth_bleed",
@@ -58,10 +56,23 @@ _ROUTINE_HI = (
     "घर पर खान-पान और किन चेतावनी की बातों पर ध्यान रखूँ?",
 )
 
+_EMERGENCY_HI = (
+    "इमरजेंसी डॉक्टर से अभी पूछूँ कि यह खतरे की निशानी कितनी गंभीर है और मुझे अस्पताल या 108 पर क्या करना है?",
+    "अभी साँस और हालत को स्थिर करने के लिए डॉक्टर कौन सी जाँच तुरंत करेंगे?",
+    "अस्पताल पहुँचकर डॉक्टर को कौन सी चेतावनी की बातें और पहले की बीमारी बतानी चाहिए?",
+)
+
+_EMERGENCY_FLAG = "emergency: active danger sign now; hospital or 108"
+_EMERGENCY_BULLET = "- Active emergency. Caller was told to go to the nearest hospital or call 108."
+_POSITIVE_HEADING = "### Positive Red Flags & NRROID Gate Alerts"
+
 _DISEASE = re.compile(
     r"(?:"
-    r"\b(?:Duchenne|Pompe|Wiskott[\s-]*Aldrich|Hemophilia|Haemophilia|Gaucher|SCID|SMA|MPS)\b"
+    r"\b(?:Duchenne|Pompe|Wiskott[\s-]*Aldrich|Hemophilia|Haemophilia|Gaucher|SCID|SMA|MPS|Fanconi|PKU)\b"
+    r"|Sickle[\s-]*Cell"
+    r"|Cystic[\s-]*Fibrosis"
     r"|ड्यूशेन|हीमोफीलिया|पॉम्पे|गॉशर|इम्यूनोडेफिशिएंसी|म्यूकोपॉलीसेकेराइडोसिस"
+    r"|सिकल\s*सेल|सिस्टिक\s*फाइब्रोसिस|फैंकोनी"
     r"|थैलेसीमिया मेजर"
     r")",
     re.IGNORECASE,
@@ -123,6 +134,7 @@ def _children_label(profile: dict) -> str:
 
 
 def _followup_bits(entry: dict) -> str:
+    """Internal ids for the LLM brief only. Mother-facing text uses _human_notes."""
     followups = entry.get("followups") or {}
     if not isinstance(followups, dict):
         return ""
@@ -138,14 +150,40 @@ def _followup_bits(entry: dict) -> str:
     return "; ".join(bits)
 
 
+def _human_notes(entry: dict) -> str:
+    """Mother's words only: no follow-up ids and no clear/concern/unknown labels."""
+    if not isinstance(entry, dict):
+        return ""
+    parts: list[str] = []
+    seen: set[str] = set()
+
+    def add(text: object) -> None:
+        cleaned = " ".join(str(text or "").split())
+        if not cleaned:
+            return
+        key = cleaned.casefold()
+        if key in seen:
+            return
+        seen.add(key)
+        parts.append(cleaned)
+
+    add(entry.get("notes"))
+    followups = entry.get("followups") or {}
+    if isinstance(followups, dict):
+        for value in followups.values():
+            if isinstance(value, dict):
+                add(value.get("note"))
+            elif isinstance(value, str):
+                add(value)
+    return "; ".join(parts)
+
+
 def _detail_text(entry: dict) -> str:
-    note = str(entry.get("notes") or "").strip()
-    extra = _followup_bits(entry)
-    return " — ".join(part for part in (note, extra) if part)
+    return _human_notes(entry)
 
 
 def _concern_sentence(spec, entry: dict) -> str:
-    note = _detail_text(entry)
+    note = _human_notes(entry)
     body = spec.question_hi.strip().rstrip("?")
     if body.startswith("क्या "):
         body = body[4:]
@@ -155,7 +193,7 @@ def _concern_sentence(spec, entry: dict) -> str:
 
 
 def _concern_question(spec, entry: dict) -> str:
-    note = str(entry.get("notes") or "").strip()
+    note = _human_notes(entry)
     if note:
         return f"मैंने बताया कि {note}। डॉक्टर, इसकी जाँच क्या होनी चाहिए?"
     body = spec.question_hi.strip().rstrip("?")
@@ -164,20 +202,120 @@ def _concern_question(spec, entry: dict) -> str:
     return f"मैंने हाँ कहा कि {body}। डॉक्टर, अब क्या जाँच करनी चाहिए?"
 
 
-def _fit_questions(questions: list[str], *, concern_count: int = 0) -> list[str]:
+def _emergency_note(state: dict) -> str:
+    return " ".join(str((state or {}).get("emergency_note") or "").split())
+
+
+def _emergency_flag(note: str) -> str:
+    text = " ".join(str(note or "").split())
+    if text:
+        return f"{_EMERGENCY_FLAG}. {text}"
+    return _EMERGENCY_FLAG
+
+
+def _emergency_bullet(note: str) -> str:
+    text = " ".join(str(note or "").split())
+    if text:
+        return f"{_EMERGENCY_BULLET} Mother's words: {text}."
+    return _EMERGENCY_BULLET
+
+
+def _placeholder_bullet(line: str) -> bool:
+    text = line.strip()
+    if text.startswith("-"):
+        text = text[1:].strip()
+    return text.startswith(("None documented", "No positive", "None reported"))
+
+
+def _is_emergency_bullet(line: str) -> bool:
+    text = line.strip()
+    if text.startswith("-"):
+        text = text[1:].strip()
+    return text.startswith("Active emergency.")
+
+
+def _ensure_emergency_flags(flags: list[str], note: str) -> list[str]:
+    wanted = _emergency_flag(note)
+    kept: list[str] = []
+    placed = False
+    for flag in flags:
+        if flag == wanted or str(flag).startswith(_EMERGENCY_FLAG):
+            if not placed:
+                text = " ".join(str(note or "").split())
+                kept.append(wanted if text and text not in flag else flag)
+                placed = True
+            continue
+        kept.append(flag)
+    if not placed:
+        kept.append(wanted)
+    return kept
+
+
+def _ensure_emergency_doctor(doctor: str, note: str) -> str:
+    bullet = _emergency_bullet(note)
+    heading = _POSITIVE_HEADING
+    if heading not in (doctor or ""):
+        return (doctor or "").rstrip() + f"\n\n{heading}\n{bullet}\n"
+    head, rest = doctor.split(heading, 1)
+    nxt = rest.find("\n### ")
+    if nxt < 0:
+        body, tail = rest, ""
+    else:
+        body, tail = rest[:nxt], rest[nxt:]
+    lines: list[str] = []
+    for raw_line in body.splitlines():
+        stripped = raw_line.strip()
+        if not stripped or _placeholder_bullet(stripped) or _is_emergency_bullet(stripped):
+            continue
+        lines.append(stripped if stripped.startswith("- ") else f"- {stripped}")
+    lines.insert(0, bullet)
+    return head + heading + "\n" + "\n".join(lines) + "\n" + tail
+
+
+def _keep_question(question: str, kept: list[str], *, emergency: bool) -> None:
+    raw = str(question or "").strip()
+    if not raw or _DISEASE.search(raw):
+        return
+    text = _scrub_diagnostic_terms(raw)
+    if not text or text in kept:
+        return
+    if emergency and text in _ROUTINE_HI:
+        return
+    kept.append(text)
+
+
+def _fit_questions(
+    questions: list[str],
+    *,
+    concern_count: int = 0,
+    emergency: bool = False,
+    concern_questions: list[str] | None = None,
+) -> list[str]:
     cap = min(10, max(6, concern_count))
     kept: list[str] = []
     for question in questions:
-        text = _scrub_diagnostic_terms(question)
-        if text and text not in kept:
-            kept.append(text)
-        if len(kept) == cap:
+        if len(kept) >= cap:
             break
-    for routine in _ROUTINE_HI:
+        _keep_question(question, kept, emergency=emergency)
+    for question in concern_questions or []:
+        if len(kept) >= cap:
+            break
+        _keep_question(question, kept, emergency=emergency)
+    fillers = _EMERGENCY_HI if emergency else _ROUTINE_HI
+    for filler in fillers:
         if len(kept) >= 3:
             break
-        if routine not in kept:
-            kept.append(routine)
+        if filler not in kept:
+            kept.append(filler)
+    if emergency and concern_count == 0:
+        rest = [item for item in kept if item not in _EMERGENCY_HI]
+        merged: list[str] = []
+        for item in list(_EMERGENCY_HI) + rest:
+            if item not in merged:
+                merged.append(item)
+            if len(merged) == cap:
+                break
+        kept = merged
     return kept[:cap]
 
 
@@ -203,6 +341,7 @@ def deterministic_fallback(call: dict) -> dict:
     profile = state.get("profile") or {}
     name = str(profile.get("caller_name") or "").strip() or "माँ"
     reason = state.get("close_reason") or "incomplete"
+    emergency_note = _emergency_note(state)
     rows = _rows(state)
     concerns = [(spec, entry) for spec, entry, status in rows if status == "concern"]
     clears = [spec for spec, _entry, status in rows if status == "clear"]
@@ -228,10 +367,13 @@ def deterministic_fallback(call: dict) -> dict:
         ),
     ])
     if reason == "emergency":
-        sections[_HEADINGS[1]].append("Active emergency. Caller was told to go to the nearest hospital or call 108.")
+        line = "Active emergency. Caller was told to go to the nearest hospital or call 108."
+        if emergency_note:
+            line += f" Mother's words: {emergency_note}."
+        sections[_HEADINGS[1]].append(line)
     if concerns:
         for spec, entry in concerns:
-            note = _detail_text(entry)
+            note = _human_notes(entry)
             gate = spec.nrroid_gate or spec.id
             line = f"{gate} {spec.id}: {spec.need_en}."
             if note:
@@ -255,21 +397,25 @@ def deterministic_fallback(call: dict) -> dict:
     for heading in _HEADINGS:
         body = sections[heading] or ["None reported in this call."]
         doctor_parts.append(heading + "\n" + "\n".join(f"- {line}" if not line.startswith("-") else line for line in body))
-    flags = [
-        f"{spec.nrroid_gate or spec.id} {spec.id}: {spec.need_en}"
-        for spec, _entry in concerns
-    ]
+    flags = [_flag_for(spec, entry) for spec, entry in concerns]
+    doctor = "\n\n".join(doctor_parts)
     if reason == "emergency":
-        flags.append("emergency: active danger sign now; hospital or 108")
-    return _finish({
-        "mother_name_hi": name,
-        "children_label_hi": _children_label(profile),
-        "mother_questions_hi": [_concern_question(spec, entry) for spec, entry in concerns],
-        "yes_summaries_hi": [_concern_sentence(spec, entry) for spec, entry in concerns],
-        "doctor_markdown": "\n\n".join(doctor_parts),
-        "red_flags": flags,
-        "_concern_count": len(concerns),
-    })
+        flags = _ensure_emergency_flags(flags, emergency_note)
+        doctor = _ensure_emergency_doctor(doctor, emergency_note)
+    questions = [_concern_question(spec, entry) for spec, entry in concerns]
+    return _finish(
+        {
+            "mother_name_hi": name,
+            "children_label_hi": _children_label(profile),
+            "mother_questions_hi": questions,
+            "yes_summaries_hi": [_concern_sentence(spec, entry) for spec, entry in concerns],
+            "doctor_markdown": doctor,
+            "red_flags": flags,
+        },
+        concern_count=len(concerns),
+        emergency=reason == "emergency",
+        concern_questions=questions,
+    )
 
 
 def mother_summary_text(synthesis: dict) -> str:
@@ -313,17 +459,14 @@ def _summary_text(value: object) -> str:
 
 def _yes_by_qid(raw: dict) -> dict[str, str]:
     items = raw.get("yes_items_hi")
-    pairs: list[tuple] = []
-    if isinstance(items, dict):
-        pairs = list(items.items())
-    elif isinstance(items, list):
-        for item in items:
-            if isinstance(item, dict):
-                pairs.append((item.get("qid"), item))
     found: dict[str, str] = {}
-    for qid, value in pairs:
-        key = str(qid or "").strip()
-        text = _summary_text(value)
+    if not isinstance(items, list):
+        return found
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("qid") or "").strip()
+        text = _summary_text(item)
         if key and text:
             found[key] = text
     return found
@@ -334,7 +477,7 @@ def _summaries_for(concerns: list[tuple], raw: dict) -> list[str]:
     lines = []
     for spec, entry in concerns:
         summary = by_qid.get(spec.id, "")
-        if summary and _usable_hindi([summary]):
+        if summary and _usable_hindi([summary]) and not _DISEASE.search(summary):
             lines.append(summary)
         else:
             lines.append(_concern_sentence(spec, entry))
@@ -342,7 +485,7 @@ def _summaries_for(concerns: list[tuple], raw: dict) -> list[str]:
 
 
 def _close_uncovered(questions: list[str], entry: dict) -> bool:
-    note = str(entry.get("notes") or "").strip()
+    note = _human_notes(entry)
     blob = "\n".join(questions)
     if note:
         return note not in blob
@@ -362,14 +505,15 @@ def _insert_line(doctor: str, heading: str, line: str) -> str:
 
 
 def _concern_visible(doctor: str, spec, entry: dict) -> bool:
-    if spec.id in (doctor or ""):
+    text = doctor or ""
+    note = _human_notes(entry)
+    if spec.id in text and (not note or note in text):
         return True
-    note = str(entry.get("notes") or "").strip()
-    return bool(note) and note in (doctor or "")
+    return bool(note) and note in text
 
 
 def _flag_for(spec, entry: dict) -> str:
-    note = str(entry.get("notes") or "").strip()
+    note = _human_notes(entry)
     flag = f"{spec.nrroid_gate or spec.id} {spec.id}: {spec.need_en}"
     if note:
         flag = f"{flag}. {note}"
@@ -378,7 +522,7 @@ def _flag_for(spec, entry: dict) -> str:
 
 def _with_every_concern(doctor: str, flags: list[str], concerns: list[tuple]) -> tuple[str, list[str]]:
     for spec, entry in concerns:
-        note = str(entry.get("notes") or "").strip()
+        note = _human_notes(entry)
         if spec.id == "close_anything_else":
             if spec.id not in doctor or (note and note not in doctor):
                 line = f"- Additional mother disclosure (close_anything_else): {note or spec.need_en}."
@@ -389,7 +533,7 @@ def _with_every_concern(doctor: str, flags: list[str], concerns: list[tuple]) ->
                 line += f" Mother's words: {note}."
             doctor = _insert_line(doctor, _section_for(spec), line)
         blob = "\n".join(flags)
-        if spec.id in blob and (spec.id != "close_anything_else" or not note or note in blob):
+        if spec.id in blob and (not note or note in blob):
             continue
         flags.append(_flag_for(spec, entry))
     return doctor, flags
@@ -401,7 +545,10 @@ def _headings_ok(doctor: str) -> bool:
 
 def _coerce(raw: dict, call: dict) -> dict:
     fallback = deterministic_fallback(call)
+    state = cursor_of(call)
     concerns = _concern_rows(call)
+    emergency = (state.get("close_reason") or "") == "emergency"
+    emergency_note = _emergency_note(state)
     questions = _str_list(raw.get("mother_questions_hi"))
     doctor = raw.get("doctor_markdown") if isinstance(raw.get("doctor_markdown"), str) else ""
     if not _headings_ok(doctor):
@@ -423,7 +570,10 @@ def _coerce(raw: dict, call: dict) -> dict:
     else:
         yes = []
         flags = _str_list(raw.get("red_flags")) or list(fallback["red_flags"])
-    profile = (cursor_of(call).get("profile") or {})
+    if emergency:
+        doctor = _ensure_emergency_doctor(doctor, emergency_note)
+        flags = _ensure_emergency_flags(flags, emergency_note)
+    profile = state.get("profile") or {}
     name = raw.get("mother_name_hi")
     profile_name = str(profile.get("caller_name") or "").strip()
     if profile_name and _DEVANAGARI.search(profile_name):
@@ -444,26 +594,48 @@ def _coerce(raw: dict, call: dict) -> dict:
         "doctor_markdown": doctor.strip(),
         "red_flags": flags,
         "_concern_count": len(concerns),
+        "_emergency": emergency,
+        "_concern_questions": [_concern_question(spec, entry) for spec, entry in concerns],
     }
 
 
-def _finish(result: dict) -> dict:
+def _finish(
+    result: dict,
+    *,
+    concern_count: int | None = None,
+    emergency: bool | None = None,
+    concern_questions: list[str] | None = None,
+) -> dict:
+    if concern_count is None:
+        concern_count = int(result.get("_concern_count") or 0)
+    if emergency is None:
+        emergency = bool(result.get("_emergency"))
+    if concern_questions is None:
+        supplied = result.get("_concern_questions")
+        concern_questions = list(supplied) if isinstance(supplied, list) else []
     questions = _fit_questions(
         _str_list(result.get("mother_questions_hi")),
-        concern_count=int(result.get("_concern_count") or 0),
+        concern_count=concern_count,
+        emergency=emergency,
+        concern_questions=concern_questions,
     )
     yes = []
     for line in _str_list(result.get("yes_summaries_hi")):
         cleaned = _scrub_diagnostic_terms(line)
         if cleaned and cleaned not in yes:
             yes.append(cleaned)
+    flags = []
+    for flag in _str_list(result.get("red_flags")):
+        cleaned = _scrub_diagnostic_terms(flag)
+        if cleaned and cleaned not in flags:
+            flags.append(cleaned)
     finished = {
         "mother_name_hi": _scrub_diagnostic_terms(str(result.get("mother_name_hi") or "माँ")) or "माँ",
         "children_label_hi": _scrub_diagnostic_terms(str(result.get("children_label_hi") or "")),
         "mother_questions_hi": questions,
         "yes_summaries_hi": yes,
         "doctor_markdown": str(result.get("doctor_markdown") or "").strip(),
-        "red_flags": _str_list(result.get("red_flags")),
+        "red_flags": flags,
     }
     if not _headings_ok(finished["doctor_markdown"]):
         finished["doctor_markdown"] = "\n\n".join(
@@ -511,13 +683,19 @@ def _transcript_block(call: dict) -> str:
 
 def _user_content(call: dict) -> str:
     state = cursor_of(call)
+    reason = state.get("close_reason") or "incomplete"
+    context = [f"Close reason: {reason}"]
+    emergency_note = _emergency_note(state)
+    if emergency_note:
+        context.append(f"Emergency note: {emergency_note}")
     return (
         "Write the post-call JSON from this cursor and transcript.\n"
         "Answer states are authoritative. concern means she said हाँ. "
         "clear means नहीं. unknown means पता नहीं. "
         "Do not mention items that are absent or not_applicable. "
         "Do not invent a child for a childless caller.\n\n"
-        "Cursor answers (qid, state, group, gate, english need, notes, child ids, hindi question):\n"
+        + "\n".join(context)
+        + "\n\nCursor answers (qid, state, group, gate, english need, notes, child ids, hindi question):\n"
         + _answered_brief(state)
         + "\n\nProfile:\n"
         + json.dumps(state.get("profile") or {}, ensure_ascii=False)
