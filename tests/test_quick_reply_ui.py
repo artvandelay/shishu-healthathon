@@ -38,21 +38,6 @@ _STATIC = APP_DIR / "static"
 _NODE = shutil.which("node")
 
 
-def _function_body(source: str, name: str) -> str:
-    start = source.index("function " + name)
-    brace = source.index("{", start)
-    depth = 0
-    for index in range(brace, len(source)):
-        char = source[index]
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                return source[start:index + 1]
-    raise AssertionError(f"unclosed function {name}")
-
-
 class _ScriptedSession:
     """Gemini stand-in. The test pushes server messages; the call loop reads them."""
 
@@ -145,240 +130,64 @@ def _audio_message():
 
 class QuickReplyScreenTests(unittest.TestCase):
     def test_call_page_serves_a_same_size_three_button_dock(self):
-        html = (_STATIC / "call.html").read_text(encoding="utf-8")
-        dock_at = html.index('id="call-dock"')
-        no_at = html.index('id="no-btn"')
-        call_at = html.index('id="call-btn"')
-        yes_at = html.index('id="yes-btn"')
-        self.assertLess(dock_at, no_at)
-        self.assertLess(no_at, call_at)
-        self.assertLess(call_at, yes_at)
-        self.assertEqual(html.count('id="call-btn"'), 1)
-        self.assertIn('aria-label="नहीं, आगे बढ़ें (No)"', html)
-        self.assertIn('aria-label="हाँ (Yes)"', html)
-        self.assertIn("prefers-reduced-motion: reduce", html)
-        motion = html.split("@media (prefers-reduced-motion: reduce)", 1)[1].split("}", 1)[0]
-        self.assertIn(".ring", motion)
-        self.assertIn("#wait .dots i", motion)
-        self.assertIn("animation: none", motion)
-        self.assertIn(".stage.working #call-dock", html)
-        self.assertIn(".stage.working #call-btn", html)
-
-        size = html.split(".call-btn,\n    #no-btn,\n    #call-btn,\n    #yes-btn {", 1)[1].split("}", 1)[0]
-        self.assertEqual(size.count("clamp(68px, 21vw, 84px)"), 2)
-        self.assertIn("flex: 0 0 auto", size)
-        dock = html.split(".call-dock {", 1)[1].split("}", 1)[0]
-        self.assertIn("display: flex", dock)
-        self.assertIn("justify-content: center", dock)
-        self.assertIn("gap: clamp(12px, 4vw, 20px)", dock)
-        self.assertIn("margin-top: 14px", dock)
-        button = html.split(".call-btn {", 1)[1].split("}", 1)[0]
-        self.assertNotIn("margin-top", button)
-        self.assertIn("background: #ffffff", html)
-        self.assertIn("border: 2px solid var(--navy)", html)
-        self.assertIn(".no-btn .en { color: var(--muted); }", html)
-        self.assertIn(".yes-btn .en { color: rgba(255, 255, 255, 0.88); }", html)
-        self.assertIn("@media (hover: hover)", html)
-        hover = html.split("@media (hover: hover)", 1)[1]
-        self.assertIn(".no-btn:hover:not(:disabled) { background: var(--navy-soft); }", hover)
-        self.assertIn(".yes-btn:hover:not(:disabled) { background: var(--navy-dark); }", hover)
-        self.assertIn(".call-btn:not(:disabled):active { transform: scale(0.96); }", html)
-        self.assertGreater(
-            html.rindex(".call-btn:not(:disabled):active { transform: none; }"),
-            html.index(".call-btn:not(:disabled):active { transform: scale(0.96); }"),
-        )
-        self.assertIn("opacity: 0;", html)
-        self.assertIn("transform: scale(0.9);", html)
-        self.assertIn("visibility: hidden;", html)
-        self.assertIn("pointer-events: none;", html)
-        self.assertIn(
-            "transition: opacity 240ms ease-out, transform 240ms ease-out, visibility 0s linear 240ms;",
-            html,
-        )
-        self.assertIn(".quick-btn.is-visible {", html)
-        self.assertIn("transform: scale(1);", html)
-        self.assertIn("visibility: visible;", html)
-        self.assertIn("pointer-events: auto;", html)
-        self.assertIn(
-            "transition: opacity 240ms ease-out, transform 240ms ease-out, visibility 0s;",
-            html,
-        )
-        self.assertIn(".quick-btn.is-visible:disabled { opacity: 0.45; cursor: default; }", html)
-        self.assertIn(".quick-btn", motion)
-        self.assertIn("transition: none", motion)
-
         client = TestClient(app.app)
         client.post("/api/login", json={"username": "Mother", "passcode": app._passcode()})
         page = client.get("/")
         self.assertEqual(page.status_code, 200)
         served = page.text
-        self.assertLess(served.index('id="no-btn"'), served.index('id="call-btn"'))
-        self.assertLess(served.index('id="call-btn"'), served.index('id="yes-btn"'))
+
+        dock_at = served.index('id="call-dock"')
+        no_at = served.index('id="no-btn"')
+        call_at = served.index('id="call-btn"')
+        yes_at = served.index('id="yes-btn"')
+        self.assertLess(dock_at, no_at)
+        self.assertLess(no_at, call_at)
+        self.assertLess(call_at, yes_at)
+        self.assertEqual(served.count('id="call-btn"'), 1)
+        self.assertIn('aria-label="नहीं, आगे बढ़ें (No)"', served)
+        self.assertIn('aria-label="हाँ (Yes)"', served)
         self.assertIn("clamp(68px, 21vw, 84px)", served)
         self.assertIn(".stage.working #call-dock", served)
-        self.assertIn("prefers-reduced-motion", served)
+        self.assertIn(".stage.working #call-btn", served)
+        self.assertIn("prefers-reduced-motion: reduce", served)
+        self.assertNotIn("engine-note", served)
 
-    def test_call_js_sends_quick_reply_and_admin_reads_cursor_answers(self):
-        client = TestClient(app.app)
-        call_js = client.get("/static/call.js")
-        admin_js = client.get("/static/admin.js")
-        self.assertEqual(call_js.status_code, 200)
-        self.assertEqual(admin_js.status_code, 200)
-        script = call_js.text
-        dashboard = admin_js.text
-
-        sync = _function_body(script, "syncQuickButtons")
-        self.assertIn('const live = phase === "live";', sync)
-        self.assertIn("noBtn.hidden = !live;", sync)
-        self.assertIn("yesBtn.hidden = !live;", sync)
-        self.assertIn("const show = live && expectYesNo && quickReplyReady;", sync)
-        self.assertIn('noBtn.classList.toggle("is-visible", show);', sync)
-        self.assertIn('yesBtn.classList.toggle("is-visible", show);', sync)
-        self.assertIn("noBtn.disabled = !show || quickReplyPending;", sync)
-        self.assertIn("yesBtn.disabled = !show || quickReplyPending;", sync)
-
-        state = script.split('msg.type === "question_state"', 1)[1].split('msg.type === "ending"', 1)[0]
-        self.assertIn('questionStep = String(msg.step || "");', state)
-        self.assertIn("expectYesNo = Boolean(msg.expect_yes_no);", state)
-        self.assertIn("promptChars = Number(msg.prompt_chars) || 0;", state)
-        self.assertIn("quickReplyReady = false;", state)
-        self.assertIn("quickReplyPending = false;", state)
-        self.assertIn("stepAudioStart = 0;", state)
-        self.assertIn("stepQueuedSec = 0;", state)
-        self.assertIn("stepStreamDone = false;", state)
-        self.assertIn("cancelQuickRevealRaf();", state)
-        self.assertIn("flowGroup = String(msg.group);", state)
-        self.assertIn("renderHud();", state)
-        self.assertIn("syncQuickButtons();", state)
-        self.assertNotIn("noBtn.hidden = false", state)
-        self.assertNotIn("yesBtn.hidden = false", state)
-
-        reset = _function_body(script, "resetQuickState")
-        self.assertIn('questionStep = "";', reset)
-        self.assertIn("expectYesNo = false;", reset)
-        self.assertIn("quickReplyReady = false;", reset)
-        self.assertIn("quickReplyPending = false;", reset)
-        self.assertIn("stepAudioStart = 0;", reset)
-        self.assertIn("stepQueuedSec = 0;", reset)
-        self.assertIn("stepStreamDone = false;", reset)
-        self.assertIn("cancelQuickRevealRaf();", reset)
-        self.assertIn("syncQuickButtons();", reset)
-        stripped = [line.strip() for line in script.splitlines()]
-        self.assertEqual(stripped.count('questionStep = "";'), 1)
-        self.assertEqual(stripped.count("expectYesNo = false;"), 1)
-        self.assertEqual(stripped.count("quickReplyPending = false;"), 2)
-        self.assertEqual(stripped.count("stepAudioStart = 0;"), 2)
-        self.assertEqual(stripped.count("stepQueuedSec = 0;"), 2)
-        self.assertEqual(stripped.count("stepStreamDone = false;"), 2)
-        self.assertNotIn("stepFirstPlayTime", script)
-        self.assertNotIn("quickRevealTimer", script)
-        self.assertNotIn("clearQuickRevealTimer", script)
-        self.assertIn('msg.type === "bot_turn_complete"', script)
-
-        play = _function_body(script, "playPcm")
-        self.assertIn("const startAt = Math.max(now, nextPlayTime);", play)
-        self.assertIn("stepQueuedSec += audioBuffer.duration;", play)
-        self.assertIn("stepAudioStart === 0 && stepQueuedSec >= 0.05", play)
-        self.assertIn("scheduleQuickRevealCheck();", play)
-        self.assertIn("checkQuickReveal();", play)
-        self.assertNotIn("halfwayMs", play)
-        self.assertNotIn("quickReplyReady = true", play)
-        self.assertLess(play.index("stepQueuedSec += audioBuffer.duration;"), play.index("src.start(startAt)"))
-
-        reveal = _function_body(script, "checkQuickReveal")
-        self.assertIn("playedSec >= expectedSec * 0.5", reveal)
-        self.assertIn("playedSec >= 0.65", reveal)
-        self.assertIn("stepStreamDone && !isBotPlaying()", reveal)
-        self.assertIn("promptChars / 12", reveal)
-        self.assertIn("quickReplyReady = true", reveal)
-        self.assertIn("cancelQuickRevealRaf();", reveal)
-
-        reply = _function_body(script, "sendQuickReply")
-        send_at = reply.index("ws.send")
-        self.assertLess(reply.index("flushPlayback()"), send_at)
-        self.assertLess(reply.index("startThinkingWatch()"), send_at)
-        self.assertIn('showCaption("user", outcome === "clear" ? "नहीं।" : "हाँ।")', reply)
-        self.assertIn('{ type: "quick_reply", outcome: outcome, step: questionStep }', reply)
-        self.assertIn('phase !== "live"', reply)
-        self.assertIn("!expectYesNo", reply)
-        self.assertIn("!quickReplyReady", reply)
-        self.assertIn("quickReplyPending", reply)
-        self.assertIn("!questionStep", reply)
-        self.assertIn("WebSocket.OPEN", reply)
-        self.assertIn('sendQuickReply("clear")', script)
-        self.assertIn('sendQuickReply("concern")', script)
-
-        for name in (
-            "leaveLiveChrome",
-            "onSocketClose",
-            "beginPreparing",
-            "endCall",
-            "showThanks",
-            "resetForNewCall",
-            "startCall",
-        ):
-            body = _function_body(script, name)
-            self.assertIn("resetQuickState();", body, name)
-            self.assertNotIn('questionStep = "";', body, name)
-            self.assertNotIn("expectYesNo = false;", body, name)
-
-        self.assertIn("renderFindings(call.findings, call.cursor_state)", dashboard)
-        self.assertIn("function renderFindings(findings, cursorState)", dashboard)
-        self.assertIn("const answers = asObject(asObject(cursorState).answers);", dashboard)
-        self.assertIn("not_applicable", dashboard)
-        self.assertIn("Question ID", dashboard)
-        self.assertIn('qid !== "intro_bridge"', dashboard)
-        self.assertIn('"Red flag"', dashboard)
-        self.assertIn("function renderCursorAnswers", dashboard)
-
+    def test_speaker_clock_and_quick_reply_click_behavior(self):
         if _NODE is None:
             self.skipTest("node is not installed")
-        rendered = _render_findings(dashboard)
-        concern = rendered["cursor"][0]
-        self.assertEqual(concern["qid"], "birth_mode_detail")
-        self.assertEqual(concern["state"], "concern")
-        self.assertEqual(concern["flag"], "Yes")
-        self.assertIn("child_1", concern["detail"])
-        self.assertIn("ऑपरेशन", concern["detail"])
-        self.assertIn("operation_reason: सांस की तकलीफ", concern["detail"])
-        self.assertEqual([row["state"] for row in rendered["cursor"]], ["concern", "concern", "unknown", "clear"])
-        bridge = next(row for row in rendered["cursor"] if row["qid"] == "intro_bridge")
-        self.assertEqual(bridge["state"], "concern")
-        self.assertEqual(bridge["flag"], "")
-        self.assertNotIn("preg_scan", [row["qid"] for row in rendered["cursor"]])
-        self.assertEqual(rendered["legacy"][0]["domain"], "Chief Complaint")
-        self.assertEqual(rendered["legacy"][0]["flag"], "Yes")
-        self.assertNotIn("birth_nicu", [row["domain"] for row in rendered["legacy"]])
-        self.assertEqual(rendered["empty"], "No structured findings were recorded.")
+        result = _run_call_js_behavior()
 
-    def test_speaker_clock_hides_buttons_until_halfway_or_turn_complete(self):
-        if _NODE is None:
-            self.skipTest("node is not installed")
-        clock = _speaker_clock()
-        idle = clock["idle"]
+        idle = result["idle"]
         self.assertTrue(idle["noHidden"])
         self.assertTrue(idle["yesHidden"])
         self.assertFalse(idle["noVisible"])
         self.assertFalse(idle["yesVisible"])
 
-        mounted = clock["mounted"]
-        self.assertFalse(mounted["noHidden"])
-        self.assertFalse(mounted["yesHidden"])
-        self.assertFalse(mounted["noVisible"])
-        self.assertFalse(mounted["yesVisible"])
-        self.assertTrue(mounted["noDisabled"])
-        self.assertTrue(mounted["yesDisabled"])
+        self.assertEqual(result["hudModel"], "gemini-3.1-flash-live-preview")
 
-        header = clock["header"]
-        self.assertFalse(header["noHidden"])
-        self.assertFalse(header["yesHidden"])
-        self.assertFalse(header["noVisible"])
-        self.assertFalse(header["yesVisible"])
+        # Non-yes/no question: mounted in live phase without jumping layout, stays hidden/disabled
+        non_yn_mounted = result["nonYnMounted"]
+        self.assertFalse(non_yn_mounted["noHidden"])
+        self.assertFalse(non_yn_mounted["yesHidden"])
+        self.assertFalse(non_yn_mounted["noVisible"])
+        self.assertFalse(non_yn_mounted["yesVisible"])
+        self.assertTrue(non_yn_mounted["noDisabled"])
+        self.assertTrue(non_yn_mounted["yesDisabled"])
 
-        before = clock["beforeHalf"]
+        non_yn_after_turn = result["nonYnAfterTurn"]
+        self.assertFalse(non_yn_after_turn["noVisible"])
+        self.assertFalse(non_yn_after_turn["yesVisible"])
+        self.assertTrue(non_yn_after_turn["noDisabled"])
+        self.assertTrue(non_yn_after_turn["yesDisabled"])
+
+        # Yes/no question: invisible before 50% playback, visible & enabled at 50%
+        before = result["beforeHalf"]
         self.assertFalse(before["noVisible"])
         self.assertFalse(before["yesVisible"])
-        halfway = clock["halfway"]
+        self.assertTrue(before["noDisabled"])
+        self.assertTrue(before["yesDisabled"])
+
+        halfway = result["halfway"]
         self.assertTrue(halfway["noVisible"])
         self.assertTrue(halfway["yesVisible"])
         self.assertFalse(halfway["noDisabled"])
@@ -386,43 +195,90 @@ class QuickReplyScreenTests(unittest.TestCase):
         self.assertFalse(halfway["noHidden"])
         self.assertFalse(halfway["yesHidden"])
 
-        ended = clock["ended"]
-        self.assertFalse(ended["noVisible"])
-        self.assertFalse(ended["yesVisible"])
-        other = clock["otherStep"]
-        self.assertFalse(other["noVisible"])
-        self.assertFalse(other["yesVisible"])
-        finished = clock["turnComplete"]
+        # Mismatched bot_turn_complete is ignored; matching step reveals buttons
+        self.assertFalse(result["otherStep"]["noVisible"])
+        self.assertFalse(result["otherStep"]["yesVisible"])
+        finished = result["turnComplete"]
         self.assertTrue(finished["noVisible"])
         self.assertTrue(finished["yesVisible"])
         self.assertFalse(finished["noDisabled"])
         self.assertFalse(finished["yesDisabled"])
 
+        # Clicking #no-btn stops playback, disables buttons, sets caption, sends quick_reply once
+        self.assertTrue(result["sourceStoppedOnClick"])
+        self.assertTrue(result["afterNoClick"]["noDisabled"])
+        self.assertTrue(result["afterNoClick"]["yesDisabled"])
+        self.assertEqual(result["captionAfterNo"], "You: नहीं।")
+        self.assertEqual(
+            result["quickRepliesSent"],
+            [{"type": "quick_reply", "outcome": "clear", "step": "birth_nicu"}],
+        )
 
-def _speaker_clock() -> dict:
+        # Clicking #yes-btn on a new yes/no question sends concern
+        self.assertEqual(result["captionAfterYes"], "You: हाँ।")
+        self.assertEqual(
+            result["yesReplySent"],
+            [{"type": "quick_reply", "outcome": "concern", "step": "birth_jaundice"}],
+        )
+
+        # ending message transitions to preparing and hides/resets quick-reply buttons
+        ending = result["afterEnding"]
+        self.assertTrue(ending["stageWorking"])
+        self.assertFalse(ending["waitHidden"])
+        self.assertTrue(ending["noHidden"])
+        self.assertTrue(ending["yesHidden"])
+        self.assertFalse(ending["noVisible"])
+        self.assertFalse(ending["yesVisible"])
+
+    def test_admin_dashboard_boots_and_renders_cursor_answers(self):
+        if _NODE is None:
+            self.skipTest("node is not installed")
+        rendered = _run_admin_js_behavior()
+
+        self.assertNotIn("/api/config", rendered["fetchedUrls"])
+        self.assertEqual(rendered["headers"], ["Question ID", "State", "Detail", "Red flag"])
+        self.assertEqual(rendered["modelBadge"], "Gemini 3.1 Flash Live")
+        self.assertIn("पूजा · 2 साल", rendered["callMeta"])
+        self.assertNotIn("अमन", rendered["callMeta"])
+        self.assertNotIn("female", rendered["callMeta"])
+        self.assertIn("5 tool calls / 1 nudges", rendered["kpis"])
+
+        rows = rendered["rows"]
+        self.assertEqual(
+            [row["state"] for row in rows],
+            ["concern", "concern", "unknown", "clear"],
+        )
+        concern = rows[0]
+        self.assertEqual(concern["qid"], "birth_mode_detail")
+        self.assertEqual(concern["flag"], "Yes")
+        self.assertEqual(concern["rowClass"], "flag")
+        self.assertIn("child_1", concern["detail"])
+        self.assertIn("ऑपरेशन", concern["detail"])
+        self.assertIn("operation_reason: सांस की तकलीफ", concern["detail"])
+
+        bridge = next(row for row in rows if row["qid"] == "intro_bridge")
+        self.assertEqual(bridge["state"], "concern")
+        self.assertEqual(bridge["flag"], "")
+        self.assertEqual(bridge["rowClass"], "")
+        self.assertNotIn("preg_scan", [row["qid"] for row in rows])
+
+        self.assertEqual(rendered["emptyText"], "No structured findings were recorded.")
+        self.assertEqual(rendered["copiedReport"], "# Doctor Summary\nAll good.")
+        self.assertEqual(rendered["copyNotice"], "Report copied.")
+
+
+def _run_call_js_behavior() -> dict:
     import subprocess
 
     harness = r"""
 const fs = require("fs");
 const vm = require("vm");
-const raw = fs.readFileSync(process.env.CALL_JS, "utf8");
-const marker = "    })();";
-const at = raw.lastIndexOf(marker);
-if (at < 0) throw new Error("call.js wrapper missing");
-const source = raw.slice(0, at) + `
-      globalThis.__shishuCall = {
-        playPcm: playPcm,
-        onSocketMessage: onSocketMessage,
-        arm: function (ctx) {
-          phase = "live";
-          audioCtx = ctx;
-          syncQuickButtons();
-        }
-      };
-` + raw.slice(at);
+const source = fs.readFileSync(process.env.CALL_JS, "utf8");
 
 function el() {
   const set = new Set();
+  const attrs = {};
+  const listeners = {};
   return {
     hidden: false,
     disabled: false,
@@ -443,10 +299,18 @@ function el() {
         return on;
       }
     },
-    addEventListener() {},
-    setAttribute() {},
-    getAttribute() { return ""; },
-    removeAttribute() {},
+    addEventListener(type, fn) {
+      if (!listeners[type]) listeners[type] = [];
+      listeners[type].push(fn);
+    },
+    trigger(type, event) {
+      const list = listeners[type] || [];
+      for (const fn of list) fn(event || { target: this, preventDefault() {} });
+    },
+    click() { this.trigger("click"); },
+    setAttribute(k, v) { attrs[k] = String(v); },
+    getAttribute(k) { return attrs[k] || ""; },
+    removeAttribute(k) { delete attrs[k]; },
     appendChild(child) { this.children.push(child); return child; },
     remove() {},
     querySelectorAll() { return []; },
@@ -469,18 +333,29 @@ function makeCtx(now) {
     sampleRate: 48000,
     sources: [],
     resume() { return Promise.resolve(); },
+    close() { return Promise.resolve(); },
+    createMediaStreamSource() {
+      return { connect() {}, disconnect() {} };
+    },
+    createScriptProcessor() {
+      return { onaudioprocess: null, connect() {}, disconnect() {} };
+    },
+    createGain() {
+      return { gain: { value: 0 }, connect() {}, disconnect() {} };
+    },
     createBuffer(_channels, length, rate) {
       return {
         duration: length / rate,
-        getChannelData() { return { set() {} }; }
+        getChannelData() { return new Float32Array(length); }
       };
     },
     createBufferSource() {
       const src = {
         buffer: null,
+        stopped: false,
         connect() {},
         start() {},
-        stop() {},
+        stop() { this.stopped = true; },
         disconnect() {},
         onended: null
       };
@@ -491,27 +366,62 @@ function makeCtx(now) {
   return ctx;
 }
 
+async function flushMicrotasks() {
+  for (let i = 0; i < 32; i++) await Promise.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 function boot() {
   const frames = [];
   let nextId = 1;
   const ids = {};
+  const sockets = [];
+  let activeCtx = null;
+
+  const initiallyHidden = new Set([
+    "no-btn", "yes-btn", "wait", "nudge-btn", "thanks", "hud",
+    "hud-toggle", "admin-link", "admin-view", "error", "bug-overlay"
+  ]);
+
   const document = {
     getElementById(id) {
-      if (!ids[id]) ids[id] = el();
+      if (!ids[id]) {
+        ids[id] = el();
+        if (initiallyHidden.has(id)) ids[id].hidden = true;
+      }
       return ids[id];
     },
     addEventListener() {},
     createElement() { return el(); },
+    querySelector() { return null; },
     body: el(),
     visibilityState: "visible"
   };
+
+  function MockWebSocket() {
+    this.readyState = 1;
+    this.bufferedAmount = 0;
+    this.sent = [];
+    this.onopen = null;
+    this.onmessage = null;
+    this.onerror = null;
+    this.onclose = null;
+    sockets.push(this);
+    queueMicrotask(() => { if (this.onopen) this.onopen(); });
+  }
+  MockWebSocket.OPEN = 1;
+  MockWebSocket.prototype.send = function (raw) {
+    this.sent.push(JSON.parse(raw));
+  };
+  MockWebSocket.prototype.close = function () {};
+
   const store = {};
   const sandbox = {
     console,
-    setTimeout,
-    clearTimeout,
-    setInterval,
-    clearInterval,
+    setTimeout() { return 1; },
+    clearTimeout() {},
+    setInterval() { return 1; },
+    clearInterval() {},
     requestAnimationFrame(fn) {
       const id = nextId++;
       frames.push({ id, fn });
@@ -521,14 +431,17 @@ function boot() {
       const index = frames.findIndex((item) => item.id === id);
       if (index >= 0) frames.splice(index, 1);
     },
-    fetch() {
-      return Promise.resolve({
-        ok: false,
-        status: 503,
-        json() { return Promise.resolve(null); }
-      });
+    fetch(url) {
+      if (url === "/api/config") {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json() { return Promise.resolve({ role: "admin", username: "Mother" }); }
+        });
+      }
+      return Promise.resolve({ ok: false, status: 404, json() { return Promise.resolve(null); } });
     },
-    WebSocket: function () {},
+    WebSocket: MockWebSocket,
     URL,
     URLSearchParams,
     Blob,
@@ -536,44 +449,50 @@ function boot() {
     atob,
     encodeURIComponent,
     decodeURIComponent,
-    Math,
-    JSON,
-    Date,
-    Object,
-    Array,
-    Number,
-    String,
-    Boolean,
-    Error,
-    RegExp,
-    Promise,
-    Map,
-    Set,
-    isNaN,
-    isFinite,
-    parseInt,
-    parseFloat,
     document,
     location: { protocol: "http:", host: "127.0.0.1", pathname: "/", search: "" },
-    navigator: {},
+    navigator: {
+      mediaDevices: {
+        getUserMedia() {
+          return Promise.resolve({
+            getTracks() { return [{ stop() {} }]; },
+            getAudioTracks() { return []; }
+          });
+        }
+      }
+    },
     sessionStorage: {
       getItem(key) { return Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null; },
       setItem(key, value) { store[key] = String(value); }
     }
   };
-  sandbox.WebSocket.OPEN = 1;
+  sandbox.window = {
+    AudioContext: function () {
+      activeCtx = makeCtx(10);
+      return activeCtx;
+    },
+    addEventListener() {},
+    removeEventListener() {}
+  };
   vm.createContext(sandbox);
   vm.runInContext(source, sandbox, { filename: "call.js" });
+
   return {
-    api: sandbox.__shishuCall,
     document,
-    flush(limit) {
+    async startLiveCall() {
+      const consent = document.getElementById("consent-check");
+      consent.checked = true;
+      consent.trigger("change");
+      document.getElementById("call-btn").click();
+      await flushMicrotasks();
+      return { ctx: activeCtx, ws: sockets[sockets.length - 1] };
+    },
+    flushRaf(limit) {
       let count = 0;
       while (frames.length && count < limit) {
         frames.shift().fn();
         count += 1;
       }
-      return count;
     }
   };
 }
@@ -591,64 +510,117 @@ function snap(doc) {
   };
 }
 
-function question(page) {
-  page.api.onSocketMessage({
-    data: JSON.stringify({
-      type: "question_state",
-      step: "birth_nicu",
-      qid: "birth_nicu",
-      group: "birth",
-      expect_yes_no: true,
-      prompt_chars: 120
-    })
-  });
+function pushMsg(ws, payload) {
+  ws.onmessage({ data: JSON.stringify(payload) });
 }
 
-const headerPage = boot();
-question(headerPage);
-const idle = snap(headerPage.document);
-const headerCtx = makeCtx(10);
-headerPage.api.arm(headerCtx);
-question(headerPage);
-const mounted = snap(headerPage.document);
-headerPage.api.playPcm(pcm(1), 24000);
-headerCtx.sources[0].onended();
-headerPage.flush(8);
-const header = snap(headerPage.document);
+(async function main() {
+  // 1. Idle + non-yes/no live question
+  const p1 = boot();
+  const idle = snap(p1.document);
+  const live1 = await p1.startLiveCall();
+  pushMsg(live1.ws, {
+    type: "session_started",
+    call_id: 7,
+    model: "gemini-3.1-flash-live-preview",
+    voice: "Kore"
+  });
+  const hudModel = p1.document.getElementById("hud-model").textContent;
+  pushMsg(live1.ws, {
+    type: "question_state",
+    step: "intro_name",
+    qid: "intro_name",
+    group: "intro",
+    expect_yes_no: false,
+    prompt_chars: 40
+  });
+  const nonYnMounted = snap(p1.document);
+  pushMsg(live1.ws, { type: "audio", data: pcm(24000), sample_rate: 24000 });
+  live1.ctx.currentTime = 12;
+  live1.ctx.sources[0].onended();
+  p1.flushRaf(4);
+  pushMsg(live1.ws, { type: "bot_turn_complete", step: "intro_name" });
+  const nonYnAfterTurn = snap(p1.document);
 
-const halfPage = boot();
-const halfCtx = makeCtx(10);
-halfPage.api.arm(halfCtx);
-question(halfPage);
-halfPage.api.playPcm(pcm(48000), 24000);
-halfCtx.currentTime = 14;
-halfPage.flush(4);
-const beforeHalf = snap(halfPage.document);
-halfCtx.currentTime = 15;
-halfPage.flush(4);
-const halfway = snap(halfPage.document);
+  // 2. Halfway reveal + #no-btn click + duplicate click ignored + #yes-btn + ending
+  const p2 = boot();
+  const live2 = await p2.startLiveCall();
+  pushMsg(live2.ws, {
+    type: "question_state",
+    step: "birth_nicu",
+    qid: "birth_nicu",
+    group: "birth",
+    expect_yes_no: true,
+    prompt_chars: 120
+  });
+  pushMsg(live2.ws, { type: "audio", data: pcm(48000), sample_rate: 24000 });
+  live2.ctx.currentTime = 14;
+  p2.flushRaf(4);
+  const beforeHalf = snap(p2.document);
+  live2.ctx.currentTime = 15;
+  p2.flushRaf(4);
+  const halfway = snap(p2.document);
 
-const endPage = boot();
-const endCtx = makeCtx(10);
-endPage.api.arm(endCtx);
-question(endPage);
-endPage.api.playPcm(pcm(4800), 24000);
-endCtx.currentTime = 10.2;
-endCtx.sources[0].onended();
-endPage.flush(4);
-const ended = snap(endPage.document);
-endPage.api.onSocketMessage({
-  data: JSON.stringify({ type: "bot_turn_complete", step: "birth_term" })
+  // Click #no-btn while audio is still playing
+  p2.document.getElementById("no-btn").click();
+  // Second click before next question_state must be ignored
+  p2.document.getElementById("no-btn").click();
+  p2.document.getElementById("yes-btn").click();
+  const sourceStoppedOnClick = live2.ctx.sources[0].stopped;
+  const afterNoClick = snap(p2.document);
+  const captionAfterNo = p2.document.getElementById("caption").textContent;
+  const quickRepliesSent = live2.ws.sent.filter((m) => m.type === "quick_reply");
+
+  // 3. Turn-complete reveal (mismatched step ignored, matching step reveals) + #yes-btn + ending
+  const p3 = boot();
+  const live3 = await p3.startLiveCall();
+  pushMsg(live3.ws, {
+    type: "question_state",
+    step: "birth_jaundice",
+    qid: "birth_jaundice",
+    group: "birth",
+    expect_yes_no: true,
+    prompt_chars: 120
+  });
+  pushMsg(live3.ws, { type: "audio", data: pcm(4800), sample_rate: 24000 });
+  live3.ctx.currentTime = 10.2;
+  live3.ctx.sources[0].onended();
+  p3.flushRaf(4);
+  pushMsg(live3.ws, { type: "bot_turn_complete", step: "birth_term" });
+  const otherStep = snap(p3.document);
+  pushMsg(live3.ws, { type: "bot_turn_complete", step: "birth_jaundice" });
+  const turnComplete = snap(p3.document);
+  p3.document.getElementById("yes-btn").click();
+  const captionAfterYes = p3.document.getElementById("caption").textContent;
+  const yesReplySent = live3.ws.sent.filter((m) => m.type === "quick_reply");
+
+  pushMsg(live3.ws, { type: "ending" });
+  const afterEnding = Object.assign(snap(p3.document), {
+    stageWorking: p3.document.getElementById("stage").classList.contains("working"),
+    waitHidden: !!p3.document.getElementById("wait").hidden
+  });
+
+  process.stdout.write(JSON.stringify({
+    idle,
+    hudModel,
+    nonYnMounted,
+    nonYnAfterTurn,
+    beforeHalf,
+    halfway,
+    otherStep,
+    turnComplete,
+    sourceStoppedOnClick,
+    afterNoClick,
+    captionAfterNo,
+    quickRepliesSent,
+    captionAfterYes,
+    yesReplySent,
+    afterEnding
+  }));
+})().catch((err) => {
+  console.error(err);
+  process.exit(1);
 });
-const otherStep = snap(endPage.document);
-endPage.api.onSocketMessage({
-  data: JSON.stringify({ type: "bot_turn_complete", step: "birth_nicu" })
-});
-const turnComplete = snap(endPage.document);
-
-process.stdout.write(JSON.stringify({
-  idle, mounted, header, beforeHalf, halfway, ended, otherStep, turnComplete
-}));
 """
     env = {"PATH": os.environ.get("PATH", ""), "CALL_JS": str(_STATIC / "call.js")}
     done = subprocess.run(
@@ -663,69 +635,253 @@ process.stdout.write(JSON.stringify({
     return json.loads(done.stdout)
 
 
-def _render_findings(dashboard: str) -> dict:
-    start = dashboard.index("function cursorDetail")
-    end = dashboard.index("function renderTranscript")
-    body = dashboard[start:end]
-    harness = r"""
-const findingsEl = { children: [], _text: "" };
-Object.defineProperty(findingsEl, "textContent", {
-  set(value) { this._text = value; if (value === "") this.children = []; },
-  get() { return this._text; }
-});
-findingsEl.appendChild = function (child) { this.children.push(child); };
-function el(tag, className, text) {
-  const node = { tag: tag, className: className || "", text: text == null ? "" : String(text), children: [] };
-  node.appendChild = function (child) { this.children.push(child); };
-  return node;
-}
-function asList(value) { return Array.isArray(value) ? value : []; }
-function asObject(value) {
-  if (value && typeof value === "object" && !Array.isArray(value)) return value;
-  return {};
-}
-function labelize(key) {
-  return String(key || "").replace(/^profile_/, "").replace(/_/g, " ").replace(/\b\w/g, function (ch) { return ch.toUpperCase(); });
-}
-""" + body + r"""
-function dump(table) {
-  const rows = table.children.find(function (node) { return node.tag === "tbody"; }).children;
-  return rows.map(function (row) {
-    const cells = row.children.map(function (cell) { return cell.text; });
-    return { qid: cells[0], domain: cells[0], state: cells[1], detail: cells[2], flag: cells[3] };
-  });
-}
-renderFindings({}, {
-  answers: {
-    preg_scan: { state: "not_applicable", notes: "", child_ids: [], followups: {} },
-    intro_name: { state: "clear", notes: "पूजा", child_ids: [], followups: {} },
-    intro_bridge: { state: "concern", notes: "", child_ids: [], followups: {} },
-    birth_term: { state: "unknown", notes: "", child_ids: [], followups: {} },
-    birth_mode_detail: {
-      state: "concern",
-      child_ids: ["child_1"],
-      notes: "ऑपरेशन",
-      followups: { operation_reason: { state: "concern", note: "सांस की तकलीफ" } }
-    }
-  }
-});
-const cursor = dump(findingsEl.children[0]);
-renderFindings(
-  { chief_complaint: { status: "present", detail: "खांसी", is_red_flag: true } },
-  { answers: { birth_nicu: { state: "concern", notes: "hidden", child_ids: [], followups: {} } } }
-);
-const legacy = dump(findingsEl.children[0]);
-renderFindings({}, { answers: { preg_scan: { state: "not_applicable" } } });
-const empty = findingsEl.children[0].text;
-process.stdout.write(JSON.stringify({ cursor: cursor, legacy: legacy, empty: empty }));
-"""
+def _run_admin_js_behavior() -> dict:
     import subprocess
 
+    harness = r"""
+const fs = require("fs");
+const vm = require("vm");
+const source = fs.readFileSync(process.env.ADMIN_JS, "utf8");
+
+function makeNode(tag) {
+  const set = new Set();
+  const attrs = {};
+  const listeners = {};
+  const node = {
+    tagName: String(tag || "div").toUpperCase(),
+    hidden: false,
+    disabled: false,
+    value: "",
+    href: "",
+    src: "",
+    title: "",
+    type: "",
+    innerHTML: "",
+    _text: "",
+    children: [],
+    get childNodes() { return this.children; },
+    get className() { return Array.from(set).join(" "); },
+    set className(val) {
+      set.clear();
+      String(val || "").split(/\s+/).filter(Boolean).forEach((c) => set.add(c));
+    },
+    get textContent() { return this._text; },
+    set textContent(val) {
+      this._text = val == null ? "" : String(val);
+      if (this._text === "") this.children = [];
+    },
+    classList: {
+      add(c) { set.add(c); },
+      remove(c) { set.delete(c); },
+      contains(c) { return set.has(c); },
+      toggle(c, force) {
+        const on = force === undefined ? !set.has(c) : !!force;
+        if (on) set.add(c); else set.delete(c);
+        return on;
+      }
+    },
+    appendChild(child) {
+      this.children.push(child);
+      return child;
+    },
+    setAttribute(k, v) { attrs[k] = String(v); },
+    getAttribute(k) { return attrs[k] || ""; },
+    addEventListener(type, fn) {
+      if (!listeners[type]) listeners[type] = [];
+      listeners[type].push(fn);
+    },
+    trigger(type, event) {
+      const list = listeners[type] || [];
+      for (const fn of list) fn(event || { target: this, preventDefault() {} });
+    },
+    click() { this.trigger("click"); },
+    querySelectorAll() { return []; },
+    closest() { return null; },
+    contains() { return false; },
+    remove() {}
+  };
+  return node;
+}
+
+const ids = {};
+const document = {
+  getElementById(id) {
+    if (!ids[id]) ids[id] = makeNode("div");
+    return ids[id];
+  },
+  createElement(tag) { return makeNode(tag); },
+  querySelectorAll() { return []; },
+  body: makeNode("body")
+};
+
+const call1 = {
+  id: 1,
+  caller_name: "पूजा",
+  user_role: "user",
+  mother_name: "पूजा",
+  child_name: "अमन",
+  child_age: "2 साल",
+  child_gender: "female",
+  clinic_code: "kem",
+  model_used: "gemini-3.1-flash-live-preview",
+  voice_used: "Kore",
+  duration_sec: 95,
+  started_at: "2026-11-15T04:00:00Z",
+  status: "completed",
+  red_flags: ["birth_mode_detail"],
+  summary_doctor: "# Doctor Summary\nAll good.",
+  summary_mother: "माँ के लिए सवाल",
+  telemetry: {
+    connect_ms: 120,
+    avg_latency_ms: 400,
+    max_latency_ms: 600,
+    turn_latencies_ms: [400],
+    user_turns: 4,
+    bot_turns: 5,
+    tool_calls: 5,
+    watchdog_nudges: 1,
+    audio_chunks_in: 10,
+    audio_chunks_out: 12
+  },
+  events: [],
+  transcript: [],
+  cursor_state: {
+    answers: {
+      preg_scan: { state: "not_applicable", notes: "", child_ids: [], followups: {} },
+      intro_name: { state: "clear", notes: "पूजा", child_ids: [], followups: {} },
+      intro_bridge: { state: "concern", notes: "", child_ids: [], followups: {} },
+      birth_term: { state: "unknown", notes: "", child_ids: [], followups: {} },
+      birth_mode_detail: {
+        state: "concern",
+        child_ids: ["child_1"],
+        notes: "ऑपरेशन",
+        followups: { operation_reason: { state: "concern", note: "सांस की तकलीफ" } }
+      }
+    }
+  }
+};
+
+const call2 = {
+  id: 2,
+  caller_name: "रेखा",
+  user_role: "user",
+  mother_name: "रेखा",
+  child_age: "4 साल",
+  model_used: "gemini-3.1-flash-live-preview",
+  voice_used: "Kore",
+  duration_sec: 45,
+  status: "completed",
+  red_flags: [],
+  summary_doctor: "",
+  summary_mother: "",
+  telemetry: {},
+  events: [],
+  transcript: [],
+  cursor_state: {
+    answers: {
+      preg_scan: { state: "not_applicable", notes: "", child_ids: [], followups: {} }
+    }
+  }
+};
+
+const fetchedUrls = [];
+let copiedReport = "";
+
+const sandbox = {
+  console,
+  setTimeout,
+  clearTimeout,
+  setInterval() { return 1; },
+  clearInterval() {},
+  URLSearchParams,
+  encodeURIComponent,
+  document,
+  location: { pathname: "/admin", search: "", href: "http://127.0.0.1/admin" },
+  navigator: {
+    clipboard: {
+      writeText(text) {
+        copiedReport = text;
+        return Promise.resolve();
+      }
+    }
+  },
+  window: { addEventListener() {}, removeEventListener() {}, print() {} },
+  fetch(path) {
+    fetchedUrls.push(path);
+    if (path === "/api/calls") {
+      return Promise.resolve({ ok: true, status: 200, json() { return Promise.resolve([call1, call2]); } });
+    }
+    if (path === "/api/calls/1") {
+      return Promise.resolve({ ok: true, status: 200, json() { return Promise.resolve(call1); } });
+    }
+    if (path === "/api/calls/2") {
+      return Promise.resolve({ ok: true, status: 200, json() { return Promise.resolve(call2); } });
+    }
+    if (path === "/api/bugs") {
+      return Promise.resolve({ ok: true, status: 200, json() { return Promise.resolve([]); } });
+    }
+    return Promise.resolve({ ok: false, status: 404, json() { return Promise.resolve({}); } });
+  }
+};
+
+async function flushMicrotasks() {
+  for (let i = 0; i < 16; i++) await Promise.resolve();
+}
+
+(async function main() {
+  vm.createContext(sandbox);
+  vm.runInContext(source, sandbox, { filename: "admin.js" });
+  await flushMicrotasks();
+
+  const findingsTable = document.getElementById("findings").children[0];
+  const headers = findingsTable.children[0].children[0].children.map((th) => th.textContent);
+  const rows = findingsTable.children[1].children.map((tr) => ({
+    rowClass: tr.className,
+    qid: tr.children[0].textContent,
+    state: tr.children[1].textContent,
+    detail: tr.children[2].textContent,
+    flag: tr.children[3].textContent
+  }));
+
+  const firstListItem = document.getElementById("call-list").children[0];
+  const modelBadge = firstListItem.children[3].children[0].textContent;
+  const callMeta = document.getElementById("call-meta").textContent;
+  const kpis = document.getElementById("telemetry-grid").children
+    .map((box) => box.children.map((n) => n.textContent).join(": "))
+    .join(" | ");
+
+  document.getElementById("copy-report").click();
+  await flushMicrotasks();
+  const copyNotice = document.getElementById("notice").textContent;
+
+  // Click second call to verify empty findings message
+  document.getElementById("call-list").children[1].click();
+  await flushMicrotasks();
+  const emptyText = document.getElementById("findings").children[0].textContent;
+
+  process.stdout.write(JSON.stringify({
+    fetchedUrls,
+    headers,
+    rows,
+    modelBadge,
+    callMeta,
+    kpis,
+    copiedReport,
+    copyNotice,
+    emptyText
+  }));
+})().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+"""
+    env = {"PATH": os.environ.get("PATH", ""), "ADMIN_JS": str(_STATIC / "admin.js")}
     done = subprocess.run(
         [_NODE, "-e", harness],
         check=False,
         capture_output=True,
         text=True,
+        env=env,
     )
     if done.returncode != 0:
         raise AssertionError(done.stderr or done.stdout)
@@ -999,6 +1155,8 @@ class QuickReplySocketTests(unittest.TestCase):
         self.assertIn("हाँ।", said)
         self.assertIn({"type": "clear"}, messages)
         started = next(item for item in messages if item.get("type") == "session_started")
+        self.assertIn("model", started)
+        self.assertNotIn("engine", started)
         saved = db.get_call(started["call_id"])["cursor_state"]
         self.assertEqual(saved["answers"]["intro_bridge"]["state"], "clear")
         self.assertEqual(saved["answers"]["birth_mode_detail"]["state"], "concern")

@@ -25,7 +25,7 @@ DEFAULT_MODEL = "gemini-3.5-flash-lite"
 DEFAULT_ATTEMPT_TIMEOUT_SEC = 3.0
 
 _ALLOWED_TOP_KEYS = frozenset({
-    "caller_name", "marital_status", "child_count", "children", "ever_pregnant",
+    "caller_name", "marital_status", "child_count", "children",
 })
 _ALLOWED_CHILD_KEYS = frozenset({"age_years", "sex", "name"})
 _VALID_MARITAL_STATUSES = frozenset({"married", "about_to_marry", "unmarried"})
@@ -34,21 +34,21 @@ _VALID_CHILD_SEX = frozenset({"male", "female", "unknown"})
 _SYSTEM_INSTRUCTION = (
     "Extract ONLY demographic profile entities stated or directly answered by the caller's "
     "utterance given active_qid and active_prompt. Return strictly matching JSON with only the "
-    "five schema fields and leave any unmentioned field as null.\n"
-    "- caller_name: the person's actual name only if stated; null if she only uttered a "
-    "lead-in fragment without an actual name or did not mention a name.\n"
+    "four schema fields and leave any unmentioned field as null.\n"
+    "- caller_name: the person's given/family name only if stated; null if she only uttered a "
+    "lead-in fragment without an actual name or did not mention a name. Never copy medical "
+    "diagnoses or disease names into caller_name.\n"
     "- marital_status: 'married', 'about_to_marry', or 'unmarried' when stated or directly "
     "answered (when active_qid is intro_married, a bare negative means 'unmarried' and a bare "
     "affirmative means 'married'); otherwise null.\n"
     "- child_count and children: when she mentions children, set child_count to total count "
     "(integer >= 0) and children to one item per child whose age was stated (age_years as float "
     "years >= 0, converting months to fractional years such as 0.5 for 6 months; sex as "
-    "'male', 'female', or 'unknown'; optional name or null). When active_qid is intro_children "
-    "and she gives a bare negative or zero count, set child_count=0 and children=[]. If she "
-    "states count > 0 without all ages, keep child_count and list only children with stated "
-    "ages. Set both child_count and children to null when children are not mentioned.\n"
-    "- ever_pregnant: boolean when stated or when active_qid is ever_pregnant and she gives "
-    "a direct affirmative (true) or negative (false) answer; otherwise null."
+    "'male', 'female', or 'unknown'; optional personal name or null, never a disease name). "
+    "When active_qid is intro_children and she gives a bare negative or zero count, set "
+    "child_count=0 and children=[]. If she states count > 0 without all ages, keep child_count "
+    "and list only children with stated ages. Set both child_count and children to null when "
+    "children are not mentioned."
 )
 
 _CHILD_SCHEMA = types.Schema(
@@ -72,9 +72,8 @@ _RESPONSE_SCHEMA = types.Schema(
         ),
         "child_count": types.Schema(type=types.Type.INTEGER, nullable=True),
         "children": types.Schema(type=types.Type.ARRAY, items=_CHILD_SCHEMA, nullable=True),
-        "ever_pregnant": types.Schema(type=types.Type.BOOLEAN, nullable=True),
     },
-    required=["caller_name", "marital_status", "child_count", "children", "ever_pregnant"],
+    required=["caller_name", "marital_status", "child_count", "children"],
 )
 
 _GENERATE_CONFIG = types.GenerateContentConfig(
@@ -178,12 +177,6 @@ def validate_profile_payload(raw: Any) -> dict[str, Any]:
         updates["children"] = []
     elif validated_children:
         updates["children"] = validated_children
-
-    if "ever_pregnant" in raw and raw.get("ever_pregnant") is not None:
-        raw_ever = raw.get("ever_pregnant")
-        if not isinstance(raw_ever, bool):
-            raise ValueError(f"ever_pregnant must be a boolean, got {raw_ever!r}")
-        updates["ever_pregnant"] = raw_ever
 
     return updates
 

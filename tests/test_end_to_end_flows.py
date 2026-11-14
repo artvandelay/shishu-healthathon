@@ -227,7 +227,7 @@ class ClarifyAndDeadAirTests(unittest.TestCase):
         cursor.state = state
 
         async def run():
-            call_id = db.create_call("gemini")
+            call_id = db.create_call()
             session = _FakeSession()
             with mock.patch.object(decisions, "evaluate_turn") as eval_mock:
                 await gemini_live._answer_function_calls(
@@ -288,7 +288,7 @@ class ClarifyAndDeadAirTests(unittest.TestCase):
             )
 
         async def run():
-            call_id = db.create_call("gemini")
+            call_id = db.create_call()
             session = _FakeSession()
             with mock.patch.object(decisions, "evaluate_turn", side_effect=fake_eval) as eval_mock:
                 await gemini_live._answer_function_calls(
@@ -297,7 +297,7 @@ class ClarifyAndDeadAirTests(unittest.TestCase):
                     _FakeSocket(),
                     asyncio.Lock(),
                     call_id,
-                    {"tool_calls": 0, "tool_errors": 0, "end_requested": False},
+                    {"tool_calls": 0, "tool_errors": 0},
                     [
                         _Call("next_question", {}, "fc-a"),
                         _Call("next_question", {}, "fc-b"),
@@ -351,7 +351,7 @@ class ClarifyAndDeadAirTests(unittest.TestCase):
             )
 
         async def run():
-            call_id = db.create_call("gemini")
+            call_id = db.create_call()
             session = _FakeSession()
             with mock.patch.object(decisions, "evaluate_turn", side_effect=fake_eval):
                 await gemini_live._answer_function_calls(
@@ -410,7 +410,6 @@ class ClarifyAndDeadAirTests(unittest.TestCase):
             "audio_chunks_out": 0,
             "bot_turns": 0,
             "turn_latencies_ms": [],
-            "end_requested": False,
         }
 
         class _Recorder:
@@ -418,7 +417,7 @@ class ClarifyAndDeadAirTests(unittest.TestCase):
                 return None
 
         async def run():
-            call_id = db.create_call("gemini")
+            call_id = db.create_call()
             await gemini_live._on_bot_audio(
                 _FakeSocket(),
                 asyncio.Lock(),
@@ -447,7 +446,7 @@ class ReportAndLoginTests(unittest.TestCase):
         self.assertEqual(state["phase"], "closing")
         call = report_tests._call_for(state, 11)
         synthesis = post_call.build_reports(call)
-        pdf = mother_report.render_pdf(mother_report.build_v3(call, synthesis))
+        pdf = mother_report.render_pdf(mother_report.build_report(call, synthesis))
         pages = len(PdfReader(io.BytesIO(pdf)).pages)
         self.assertGreaterEqual(pages, 2)
         self.assertLessEqual(pages, 3)

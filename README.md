@@ -2,109 +2,88 @@
 
 SHISHU is a Hindi voice app for a pre-consultation call.
 A mother speaks with the app before she meets a doctor or a health worker.
-The live call uses Gemini.
-After the call, the mother gets a Hindi PDF.
-The doctor gets an English note.
-You can read the code and the sample reports here.
-You do not need to run the demo.
+The live call uses Gemini Live alongside the Gemini Decisions API and a schema-validated profile extractor.
+After the call, the mother gets a 2-page Hindi PDF (`mother_report.py`), and the doctor gets an English intake note (`post_call.py`).
 
-## Where the call lives
+## Architecture (`code/shishu-v2/`)
 
-`code/shishu-v2/checklist.py` holds the topic list.
-`code/shishu-v2/question_flow.py` holds the question order.
-`code/shishu-v2/prompts.py` holds the words for the model.
-`code/shishu-v2/gemini_live.py` runs the live call.
-`code/shishu-v2/mother_report.py` builds the Hindi PDF for the mother.
-`code/shishu-v2/summarizer.py` builds the English note for the doctor.
+- `triage_catalog.py` — 56 atomic yes/no clinical questions + 25 follow-up prompts
+- `call_cursor.py` — deterministic FormBharo state engine, demographic skip matrix, multi-child roster, and dual-intent turn composer
+- `decisions.py`, `decision_schema.json`, `decision_thresholds.json` — single-pass `gemini-decision-1` probability turn classifier and calibrated thresholds
+- `profile_extractor.py` — schema-validated 4-field demographic extractor (`gemini-3.5-flash-lite`)
+- `gemini_live.py`, `live_decision_bridge.py`, `prompts.py` — Gemini Live (`gemini-3.1-flash-live-preview`, `Kore` Hindi voice) WebSocket session, speaker-clock `नहीं`/`हाँ` quick-reply protocol, and silence/reconnect watchdogs
+- `post_call.py`, `mother_report.py`, `report_service.py` — pure deterministic English clinician intake note and 2-page Hindi WeasyPrint Mother PDF
+- `audio_recorder.py` — off-loop 16 kHz stereo wall-clock WAV recorder
+- `app.py`, `db.py`, `seed.py` — FastAPI routes, HMAC cookie auth, UUID `share_token` PDF access, SQLite persistence, and v4 clinical seed calls
 
-The mother PDF stays in Hindi.
-The doctor note stays in English.
-`mother_report.py` does not give the mother an English PDF.
+The mother PDF stays in Hindi, and the doctor intake note stays in English.
 
 ## Sample reports
 
-The sample files are in `docs/samples/`.
+The sample files are in `docs/samples/`:
 
-`docs/samples/SHISHU-sample-red-flags.pdf` is the Hindi PDF from call 253.
-That is the file the mother gets.
-The call was not complete.
-The PDF is not a diagnosis.
-
-`docs/samples/SHISHU-sample-red-flags-en.pdf` is the same report in English.
-Open this file if you do not read Hindi.
-
-`docs/samples/SHISHU-sample-no-flags.pdf` is a Hindi sample with no yes answers.
-`docs/samples/SHISHU-sample-incomplete.pdf` is a short Hindi sample from a call that ended early.
+- `docs/samples/SHISHU-sample-red-flags.pdf` — Hindi Mother PDF with red flags
+- `docs/samples/SHISHU-sample-red-flags-en.pdf` — English version for readers who do not read Hindi
+- `docs/samples/SHISHU-sample-no-flags.pdf` — Hindi sample with no yes answers
+- `docs/samples/SHISHU-sample-incomplete.pdf` — short Hindi sample from a call that ended early
 
 The call consent is `docs/SHISHU-consent.pdf`.
 
-A live service is optional: https://shishu-production.up.railway.app
-
 ## Requirements
 
-You need these items:
-
-- Python 3.12
+- Python 3.12 and `uv`
 - A Gemini API key
-- The Railway CLI, for a deploy
+- System libraries required by WeasyPrint (`pango`, `harfbuzz`) and `ffmpeg` (see `Dockerfile` for Linux packages; on macOS via Homebrew)
+- The Railway CLI, for deployment
 
 ## Configure the app
 
-Put a file named `.env` in the root of the repo.
-The app reads this file at start.
+Put a file named `.env` in the root of the repo. The app reads this file at startup.
 
 ```
 GEMINI_API_KEY=
 APP_PASSCODE=
 ADMIN_PASSCODE=
-OPENAI_API_KEY=
 DATA_DIR=./storage
 ```
 
-`OPENAI_API_KEY` is optional.
-The live call uses Gemini.
-`DATA_DIR` is the folder for the database and the call audio.
+`DATA_DIR` is the folder for the SQLite database, call audio WAVs, and generated Mother PDFs.
 
-CAUTION: Do not commit `.env`.
-The file holds the API keys and the passcodes.
+CAUTION: Do not commit `.env`. It holds the API key and passcodes.
 
-## Run the app on this computer
+## Run the app locally
 
-Go to the root of the repo.
-Create a virtual environment.
+From the root of the repo, create the virtual environment in `~/pyenv/shishu` and install dependencies with `uv`:
 
 ```
-python3.12 -m venv .venv
-source .venv/bin/activate
-pip install -r code/shishu-v2/requirements.txt
+uv venv ~/pyenv/shishu --python 3.12 && uv pip install --python ~/pyenv/shishu/bin/python -r code/shishu-v2/requirements.txt
 ```
 
-Start the server.
+Start the server:
 
 ```
-PYTHONPATH=code/shishu-v2 uvicorn app:app --app-dir code/shishu-v2 --host 127.0.0.1 --port 8000
+PYTHONPATH=code/shishu-v2 ~/pyenv/shishu/bin/uvicorn app:app --app-dir code/shishu-v2 --host 127.0.0.1 --port 8000
 ```
 
-Open http://127.0.0.1:8000.
-Enter `APP_PASSCODE` on the login page.
-The admin page uses `ADMIN_PASSCODE`.
+Open http://127.0.0.1:8000 and enter your configured `APP_PASSCODE` on the login page.
+The `/admin` page uses `ADMIN_PASSCODE`.
 
-## Unit tests
+## Unit tests & scripts
 
-Go to `code/shishu-v2`.
-Run the unit tests.
+Run the full offline test suite from the root of the repo (zero network calls, does not require live API keys):
 
 ```
-python -m unittest test_bugfixes test_triage_flow
+~/pyenv/shishu/bin/python -m unittest discover -s tests
 ```
 
-The tests do not call the network.
-The tests do not read `.env`.
+Calibration and live persona verification scripts live in `scripts/`:
 
-## Deploy
+- `scripts/calibrate_decisions.py` — sweep and calibrate `decision_thresholds.json` against `scripts/decision_calibration_cases.json` using `gemini-decision-1`
+- `scripts/run_eight_personas.py` — end-to-end live Gemini persona suite (run inside `tmux`)
 
-The deploy uses `Dockerfile` and `railway.toml`.
-The image writes data to `/data`.
+## Deploy (Railway / Docker)
+
+The deploy uses `Dockerfile` and `railway.toml`. The container writes persistent data to `/data`.
 
 On the Railway service, complete these steps before the first deploy:
 
@@ -112,38 +91,22 @@ On the Railway service, complete these steps before the first deploy:
 2. Set `DATA_DIR` to `/data`.
 3. Attach a volume at `/data`.
 
-The volume keeps the database and the call audio after a new deploy.
-
-From the root of the repo, upload this directory.
+From the root of the repo, deploy:
 
 ```
 railway up --detach -m "short summary"
 ```
 
 If this directory is not linked to the service, add `--project`, `--environment`, and `--service`.
-
-`railway up --detach` returns after the upload.
-The build is not complete at that moment.
-Read the deployment status first.
+Check deployment status with:
 
 ```
 railway deployment list --limit 1 --json
 ```
 
-A status of `SUCCESS` means that the new version is in service.
-
-## Optional live service
-
-You do not need the live service to read this repo.
-The service address is https://shishu-production.up.railway.app.
-Open that address.
-Enter any name on the login page.
-For a call, enter the passcode `shishu2026`.
+A status of `SUCCESS` means the new version is live.
 
 ## Files that stay off GitHub
 
-This repo does not track private notes, call transcripts, medical source files, or old app versions.
-Those files can stay on this computer.
-`.gitignore` blocks a new commit of those files.
-The sample reports in `docs/samples/` stay in the repo.
-The consent file in `docs/` stays in the repo.
+This repo does not track private notes, call transcripts, medical source files, or runtime storage.
+`.gitignore` blocks accidental commits of those files. The sample reports in `docs/samples/` and `docs/SHISHU-consent.pdf` remain in the repo.

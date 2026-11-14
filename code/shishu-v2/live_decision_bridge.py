@@ -1,4 +1,4 @@
-"""Decision API bridge for live calls: turn capture and single-engine turn execution."""
+"""Decision API bridge for live calls: turn capture and turn execution."""
 
 from __future__ import annotations
 
@@ -16,12 +16,17 @@ import db
 import decisions
 import profile_extractor
 from audio_recorder import pcm16_to_wav_bytes
-from call_cursor import apply_interpreted_turn, apply_profile, close_technical_failure, step_id
+from call_cursor import (
+    apply_interpreted_turn,
+    close_technical_failure,
+    merge_transcript_chunk,
+    step_id,
+)
 
 logger = logging.getLogger(__name__)
 USER_TURN_PCM_MAX_BYTES = 960_000
 USER_TURN_PCM_TAIL_CHUNKS = 6
-_PROFILE_REASK_QIDS = frozenset({"intro_name", "intro_married", "intro_children", "ever_pregnant"})
+_PROFILE_REASK_QIDS = frozenset({"intro_name", "intro_married", "intro_children"})
 
 
 @dataclass
@@ -109,16 +114,6 @@ def load_turn_thresholds(
     return decisions.load_thresholds(path)
 
 
-def merge_transcript_chunk(prev: str, chunk: str) -> str:
-    prev_s, chunk_s = str(prev or "").strip(), str(chunk or "").strip()
-    if not prev_s or chunk_s.startswith(prev_s):
-        return chunk_s
-    if not chunk_s or prev_s.endswith(chunk_s):
-        return prev_s
-    sep = "" if (prev_s[-1].isspace() or chunk_s[0] in ",.;:!?।") else " "
-    return prev_s + sep + chunk_s
-
-
 def consume_task_error(task: asyncio.Task) -> None:
     if not task.cancelled():
         try:
@@ -163,33 +158,8 @@ async def _save_state_safe(call_id: int, state: dict) -> None:
         pass
 
 
-def _sync_ever_pregnant(payload: dict[str, Any], updates: dict[str, Any], qid: str) -> None:
-    if "ever_pregnant" not in updates:
-        return
-    ep = updates["ever_pregnant"]
-    if payload.get("side_qid") == "ever_pregnant":
-        if payload.get("side_action") != "add_or_correct":
-            return
-        so = str(payload.get("side_outcome") or "concern")
-        if (so == "concern" and ep is True) or (so in ("clear", "retract") and ep is False):
-            return
-        updates.pop("ever_pregnant", None)
-        for k in ("side_qid", "side_action", "side_outcome", "side_note"):
-            payload.pop(k, None)
-        if payload.get("current_outcome") not in ("", "not_about_active"):
-            payload["current_outcome"] = "not_about_active"
-    elif qid == "ever_pregnant":
-        cur = str(payload.get("current_outcome") or "")
-        bad = (cur == "concern" and ep is False) or (cur in ("clear", "retract") and ep is True)
-        if bad or (cur == "unknown" and ep is not None):
-            updates.pop("ever_pregnant", None)
-            payload["current_outcome"] = "not_about_active"
-        elif cur in ("concern", "clear", "retract"):
-            updates.pop("ever_pregnant", None)
-
-
-def _is_superseded(cursor: Any, telemetry: dict, step: str) -> bool:
-    return bool(telemetry.get("end_requested") or cursor.state.get("phase") != "asking"
+def _is_superseded(cursor: Any, step: str, *, is_closing: bool = False) -> bool:
+    return bool(is_closing or cursor.state.get("phase") != "asking"
                 or step_id(cursor.state) != step)
 
 
@@ -214,8 +184,9 @@ async def _fail_decision_turn(
 
 
 async def run_decision_turn(
-    cursor: Any, capture: TurnCapture, call_id: int, telemetry: dict, *,
+    cursor: Any, capture: TurnCapture, call_id: int, *,
     tool_body_fn: Callable[..., dict[str, Any]], mark_closing_fn: Callable[[str], Awaitable[None]],
+    is_closing: bool = False,
     settings: dict | None = None, thresholds: decisions.DecisionThresholds | None = None,
     input_rate: int = 16000,
 ) -> tuple[dict[str, Any], bool, str]:
@@ -246,7 +217,7 @@ async def run_decision_turn(
         decisions.build_turn_request(state_snap, utterance_text=utt, audio_wav_bytes=audio_wav)
     )
     meta = _decision_meta(res)
-    if _is_superseded(cursor, telemetry, step):
+    if _is_superseded(cursor, step, is_closing=is_closing):
         await _log_event(call_id, "decision_turn", "superseded", meta)
         return _held_body(tool_body_fn, cursor, capture, "stale_turn")
     if not res.ok:
@@ -269,7 +240,7 @@ async def run_decision_turn(
         ext = await extract_profile_updates(cursor.state, utt, audio_wav)
         meta.update({"extractor_ok": bool(ext.ok), "extractor_ms": int(ext.extractor_ms),
                      "extractor_error": str(ext.error_reason or "")})
-    if _is_superseded(cursor, telemetry, step):
+    if _is_superseded(cursor, step, is_closing=is_closing):
         await _log_event(call_id, "decision_turn", "superseded", meta)
         return _held_body(tool_body_fn, cursor, capture, "stale_turn")
     dt = f"{active_qid}:{outcome}" if active_qid and outcome else (active_qid or outcome or "ok")
@@ -277,13 +248,7 @@ async def run_decision_turn(
 
     if ext is not None and ext.ok:
         capture.extractor_failures, capture.extractor_failure_step = 0, ""
-        updates = dict(ext.updates)
-        _sync_ever_pregnant(payload, updates, active_qid)
-        if (active_qid in ("intro_name", "intro_married", "intro_children")
-                and not updates and payload.get("current_outcome") != "clarify"):
-            cursor.state, _ = apply_profile(cursor.state)
-        if updates:
-            payload["profile_updates"] = updates
+        payload["profile_updates"] = dict(ext.updates)
     elif ext is not None:
         fails = (capture.extractor_failures if capture.extractor_failure_step == step else 0) + 1
         capture.extractor_failures, capture.extractor_failure_step = fails, step

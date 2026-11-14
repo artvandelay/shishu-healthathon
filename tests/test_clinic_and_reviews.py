@@ -100,15 +100,14 @@ class Stage4AssetTests(unittest.TestCase):
     def test_ending_fires_once_when_closing_audio_finishes(self):
         state = gemini_live._TurnState()
         now = 1000.0
-        telemetry = {"closing_heard": True}
+        state.closing_heard = True
         state.bot_speaking = True
         state.playback_ends_at = now
-        self.assertFalse(gemini_live._closing_audio_finished(telemetry, state, now))
+        self.assertFalse(gemini_live._closing_audio_finished(state, now))
         state.bot_speaking = False
-        self.assertFalse(gemini_live._closing_audio_finished(telemetry, state, now))
+        self.assertFalse(gemini_live._closing_audio_finished(state, now))
         self.assertTrue(
             gemini_live._closing_audio_finished(
-                telemetry,
                 state,
                 now + gemini_live._CLOSING_AUDIO_GRACE_SEC,
             )
@@ -116,9 +115,10 @@ class Stage4AssetTests(unittest.TestCase):
 
         async def once():
             ws = _FakeSocket()
-            box = {}
-            await gemini_live._notify_ending(ws, asyncio.Lock(), box)
-            await gemini_live._notify_ending(ws, asyncio.Lock(), box)
+            turn = gemini_live._TurnState()
+            await gemini_live._notify_ending(ws, asyncio.Lock(), turn)
+            await gemini_live._notify_ending(ws, asyncio.Lock(), turn)
+            self.assertTrue(turn.ending_sent)
             return ws.sent
 
         self.assertEqual(asyncio.run(once()), [{"type": "ending"}])
@@ -130,13 +130,13 @@ class Stage4LoopTests(unittest.TestCase):
         self.assertEqual(app._clinic_slug("kem"), "kem")
         self.assertEqual(app._clinic_slug("../kem"), "")
         self.assertEqual(app._clinic_slug(""), "")
-        call_id = db.create_call("gemini", caller_name="पूजा", clinic_code="kem")
+        call_id = db.create_call(caller_name="पूजा", clinic_code="kem")
         row = next(item for item in db.list_calls() if item["id"] == call_id)
         self.assertEqual(row["clinic_code"], "kem")
         self.assertEqual(row["clinician_review"], {})
 
     def test_share_clicked_is_logged_by_token(self):
-        call_id = db.create_call("gemini", caller_name="पूजा", clinic_code="kem")
+        call_id = db.create_call(caller_name="पूजा", clinic_code="kem")
         token = db.get_call(call_id)["share_token"]
         client = TestClient(app.app)
         missing = client.post(
@@ -159,7 +159,7 @@ class Stage4LoopTests(unittest.TestCase):
         self.assertEqual([item["type"] for item in events], ["share_clicked"])
 
     def test_clinician_review_is_admin_only_and_round_trips(self):
-        call_id = db.create_call("gemini", caller_name="पूजा", clinic_code="kem")
+        call_id = db.create_call(caller_name="पूजा", clinic_code="kem")
         anon = TestClient(app.app)
         self.assertEqual(
             anon.post(

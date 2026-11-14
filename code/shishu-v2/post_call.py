@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import re
-
 import call_cursor
 from triage_catalog import active_specs
 
@@ -20,13 +18,22 @@ _HEADINGS = (
 _POSITIVE_HEADING = _HEADINGS[1]
 
 _SECTION = {
-    "birth": _HEADINGS[2], "body": _HEADINGS[3], "illness": _HEADINGS[4],
-    "pregnancy": _HEADINGS[5], "family": _HEADINGS[6], "close": _HEADINGS[0],
+    "birth": _HEADINGS[2],
+    "body": _HEADINGS[3],
+    "illness": _HEADINGS[4],
+    "pregnancy": _HEADINGS[5],
+    "family": _HEADINGS[6],
+    "close": _HEADINGS[0],
 }
 
 _HEMATOLOGY = frozenset({
-    "body_bleeding_bruise", "body_joint_swelling", "mod_tooth_bleed",
-    "mod_heavy_periods", "body_transfusion", "body_blood_count", "body_limb_pain",
+    "body_bleeding_bruise",
+    "body_joint_swelling",
+    "mod_tooth_bleed",
+    "mod_heavy_periods",
+    "body_transfusion",
+    "body_blood_count",
+    "body_limb_pain",
 })
 
 _ROUTINE_HI = (
@@ -45,35 +52,17 @@ _EMERGENCY_HI = (
     "इमरजेंसी डॉक्टर से अभी पूछूँ कि यह खतरे की निशानी कितनी गंभीर है "
     "और मुझे अस्पताल या 108 पर क्या करना है?",
     "अभी साँस और हालत को स्थिर करने के लिए डॉक्टर कौन सी जाँच तुरंत करेंगे?",
-    "अस्पताल पहुँचकर डॉक्टर को कौन सी चेतावनी की बातें और पहले की बीमारी बतानी चाहिए?",
+    "अस्पताल पहुँचकर डॉक्टर को कौन सी चेतावनी की बातों और पहले की बीमारी बतानी चाहिए?",
 )
 
 _EMERGENCY_FLAG = "emergency: active danger sign now; hospital or 108"
-_EMERGENCY_BULLET = (
-    "- Active emergency. Caller was told to go to the nearest hospital or call 108."
-)
-
-_DISEASE = re.compile(
-    r"(?:\b(?:Duchenne|Pompe|Wiskott[\s-]*Aldrich|Hemophilia|Haemophilia"
-    r"|Gaucher|SCID|SMA|MPS|Fanconi|PKU)\b"
-    r"|Sickle[\s-]*Cell|Cystic[\s-]*Fibrosis"
-    r"|ड्यूशेन|हीमोफीलिया|पॉम्पे|गॉशर|इम्यूनोडेफिशिएंसी|म्यूकोपॉलीसेकेराइडोसिस"
-    r"|सिकल\s*सेल|सिस्टिक\s*फाइब्रोसिस|फैंकोनी|थैलेसीमिया मेजर)",
-    re.IGNORECASE,
-)
+_EMERGENCY_LINE = "Active emergency. Caller was told to go to the nearest hospital or call 108."
 
 
-def _scrub_diagnostic_terms(text: str) -> str:
-    cleaned = _DISEASE.sub("", text or "")
-    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
-    cleaned = re.sub(r" +([।?])", r"\1", cleaned)
-    return cleaned.strip()
-
-
-def _scrub_unique(items) -> list[str]:
+def _unique(items) -> list[str]:
     out: list[str] = []
     for item in items:
-        cleaned = _scrub_diagnostic_terms(str(item or "").strip())
+        cleaned = " ".join(str(item or "").split())
         if cleaned and cleaned not in out:
             out.append(cleaned)
     return out
@@ -83,22 +72,41 @@ def _section_for(spec) -> str:
     return _HEADINGS[4] if spec.id in _HEMATOLOGY else _SECTION.get(spec.group, _HEADINGS[-1])
 
 
-def _question_stem(spec) -> str:
-    body = spec.question_hi.strip().rstrip("?")
-    return body[4:] if body.startswith("क्या ") else body
+def _child_scope_hi(profile: dict, entry: dict) -> str:
+    children = profile.get("children") or []
+    ids = entry.get("child_ids") or []
+    if len(children) <= 1 or not ids:
+        return ""
+    return call_cursor.children_label_hi(profile, ids)
 
 
-def _concern_sentence(spec, entry: dict) -> str:
-    note = call_cursor.answer_notes_text(entry)
-    stem = _question_stem(spec)
-    return f"{stem} — {note}।" if note else f"{stem}।"
+def _child_scope_en(profile: dict, entry: dict) -> str:
+    children = profile.get("children") or []
+    ids = entry.get("child_ids") or []
+    if len(children) <= 1 or not ids:
+        return ""
+    return call_cursor.children_label_en(profile, ids)
 
 
-def _concern_question(spec, entry: dict) -> str:
-    note = call_cursor.answer_notes_text(entry)
+def _concern_sentence(spec, entry: dict, profile: dict) -> str:
+    note = call_cursor.mother_notes_text(entry)
+    child_hi = _child_scope_hi(profile, entry)
+    if spec.id == "close_anything_else":
+        return f"अन्य बात — {note}।" if note else "डॉक्टर को बताने के लिए एक अन्य बात दर्ज की गई।"
+    head = f"{spec.stem_hi} ({child_hi})" if child_hi else spec.stem_hi
+    return f"{head} — {note}।" if note else f"{head}।"
+
+
+def _concern_question(spec, entry: dict, profile: dict) -> str:
+    note = call_cursor.mother_notes_text(entry)
+    child_hi = _child_scope_hi(profile, entry)
+    scope_prefix = f"{child_hi} के लिए: " if (child_hi and child_hi not in note) else ""
     if note:
-        return f"मैंने बताया कि {note}। डॉक्टर, इसकी जाँच क्या होनी चाहिए?"
-    return f"मैंने हाँ कहा कि {_question_stem(spec)}। डॉक्टर, अब क्या जाँच करनी चाहिए?"
+        return f"{scope_prefix}मैंने बताया कि {note}। डॉक्टर, इसकी जाँच क्या होनी चाहिए?"
+    if spec.id == "close_anything_else":
+        return "मैंने कॉल के अंत में एक और बात दर्ज करवाई थी। डॉक्टर, उस पर क्या सलाह है?"
+    head = f"{spec.stem_hi} ({child_hi})" if child_hi else spec.stem_hi
+    return f"मैंने हाँ कहा कि {head}। डॉक्टर, अब क्या जाँच करनी चाहिए?"
 
 
 def _fit_questions(
@@ -106,26 +114,15 @@ def _fit_questions(
     *,
     emergency: bool = False,
     has_children: bool = True,
-    concern_questions: list[str] | None = None,
 ) -> list[str]:
-    if emergency and not concern_questions:
+    if emergency and not questions:
         return list(_EMERGENCY_HI)
     routine = _ROUTINE_HI if has_children else _ROUTINE_CHILDLESS_HI
-    kept: list[str] = []
-    for source in (questions, concern_questions or ()):
-        for raw in source:
-            if len(kept) >= 6:
-                break
-            text = str(raw or "").strip()
-            if not text or _DISEASE.search(text):
-                continue
-            cleaned = _scrub_diagnostic_terms(text)
-            if cleaned and cleaned not in kept and not (
-                emergency and (cleaned in _ROUTINE_HI or cleaned in _ROUTINE_CHILDLESS_HI)
-            ):
-                kept.append(cleaned)
-        if kept:
-            break
+    kept = [
+        text
+        for text in _unique(questions)
+        if not (emergency and (text in _ROUTINE_HI or text in _ROUTINE_CHILDLESS_HI))
+    ][:6]
     for filler in (_EMERGENCY_HI if emergency else routine):
         if len(kept) >= 3:
             break
@@ -147,18 +144,21 @@ def _rows(state: dict) -> list[tuple]:
     return rows
 
 
-def _flag_for(spec, entry: dict) -> str:
+def _flag_for(spec, entry: dict, profile: dict) -> str:
     note = call_cursor.answer_notes_text(entry)
+    child_en = _child_scope_en(profile, entry)
     head = f"{spec.nrroid_gate} {spec.id}" if spec.nrroid_gate else spec.id
     flag = f"{head}: {spec.need_en}"
+    if child_en:
+        flag = f"{flag} [{child_en}]"
     return f"{flag}. {note}" if note else flag
 
 
 def build_reports(call: dict) -> dict:
-    """Both reports from the cursor alone. No disease names, no transliteration."""
+    """Build clinician English note (verbatim) and mother Hindi report (non-diagnostic)."""
     state = call_cursor.cursor_from_call(call)
-    profile = state.get("profile") or {}
-    name = str(profile.get("caller_name") or "").strip() or "माँ"
+    profile = state.get("profile") if isinstance(state.get("profile"), dict) else {}
+    name = " ".join(str(profile.get("caller_name") or "").split()) or "माँ"
     reason = state.get("close_reason") or "incomplete"
     emergency = reason == "emergency"
     emergency_note = " ".join(str(state.get("emergency_note") or "").split())
@@ -167,29 +167,28 @@ def build_reports(call: dict) -> dict:
     clears = [spec for spec, _entry, status in rows if status == "clear"]
 
     sections: dict[str, list[str]] = {heading: [] for heading in _HEADINGS}
-    child_bits = [
-        f"{child.get('id')} {child.get('sex') or 'unknown'} age {child.get('age_years')}"
-        for child in (profile.get("children") or [])
-    ]
+    children_en = call_cursor.children_label_en(profile)
     chief = concerns[0][0].need_en if concerns else "Screening call with no positive gate."
     sections[_HEADINGS[0]].extend([
         f"Caller: {name}.",
         f"Marital status: {profile.get('marital_status') or 'not reported'}.",
         f"Ever pregnant: {profile.get('ever_pregnant')}.",
-        "Children: " + (", ".join(child_bits) if child_bits else "none."),
+        f"Children: {children_en if children_en else 'none.'}",
         f"Close reason: {reason}.",
         f"Chief complaint: {chief}",
     ])
     if emergency:
         suffix = f" Mother's words: {emergency_note}." if emergency_note else ""
-        sections[_HEADINGS[1]].append(f"{_EMERGENCY_BULLET}{suffix}")
+        sections[_HEADINGS[1]].append(f"{_EMERGENCY_LINE}{suffix}")
     for spec, entry, status in rows:
         if status == "concern":
             note = call_cursor.answer_notes_text(entry)
+            child_en = _child_scope_en(profile, entry)
+            child_tag = f" [{child_en}]" if child_en else ""
             gate = spec.nrroid_gate or spec.id
             words = f" Mother's words: {note}." if note else ""
-            sections[_HEADINGS[1]].append(f"{gate} {spec.id}: {spec.need_en}.{words}")
-            detail = f"Concern. {spec.need_en}." + (f" {note}" if note else "")
+            sections[_HEADINGS[1]].append(f"{gate} {spec.id}: {spec.need_en}{child_tag}.{words}")
+            detail = f"Concern. {spec.need_en}{child_tag}." + (f" {note}" if note else "")
             sections[_section_for(spec)].append(detail)
         elif status in ("clear", "unknown"):
             sections[_section_for(spec)].append(f"{status.title()}. {spec.need_en}.")
@@ -205,30 +204,27 @@ def build_reports(call: dict) -> dict:
     doctor_parts = []
     for heading in _HEADINGS:
         body = sections[heading] or ["None reported in this call."]
-        bullets = [
-            _scrub_diagnostic_terms(line if line.startswith("-") else f"- {line}")
-            for line in body
-        ]
+        bullets = [f"- {line}" for line in body]
         doctor_parts.append(heading + "\n" + "\n".join(bullets))
-    flags = [_flag_for(spec, entry) for spec, entry in concerns]
+
+    flags = [_flag_for(spec, entry, profile) for spec, entry in concerns]
     if emergency:
         flags.append(f"{_EMERGENCY_FLAG}. {emergency_note}" if emergency_note else _EMERGENCY_FLAG)
-    questions = [_concern_question(spec, entry) for spec, entry in concerns]
-    has_children = bool(profile.get("children"))
+
+    questions = [_concern_question(spec, entry, profile) for spec, entry in concerns]
     fitted = _fit_questions(
         questions,
         emergency=emergency,
-        has_children=has_children,
-        concern_questions=questions,
+        has_children=bool(profile.get("children")),
     )
-    yes = _scrub_unique(_concern_sentence(spec, entry) for spec, entry in concerns)
+    yes = _unique(_concern_sentence(spec, entry, profile) for spec, entry in concerns)
     return {
-        "mother_name_hi": _scrub_diagnostic_terms(name) or "माँ",
-        "children_label_hi": _scrub_diagnostic_terms(call_cursor.children_label_hi(profile)),
+        "mother_name_hi": name,
+        "children_label_hi": call_cursor.children_label_hi(profile),
         "mother_questions_hi": fitted,
         "yes_summaries_hi": yes,
         "doctor_markdown": "\n\n".join(doctor_parts),
-        "red_flags": _scrub_unique(flags),
+        "red_flags": _unique(flags),
     }
 
 

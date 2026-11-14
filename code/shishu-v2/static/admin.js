@@ -93,19 +93,15 @@
         return [];
       }
 
-      function engineBadge(call) {
+      function modelBadge(call) {
         const model = String((call && call.model_used) || "").trim();
-        const engine = String((call && call.engine) || call || "").toLowerCase();
-        const v = (model || engine).toLowerCase();
-        if (!v) return "—";
-        if (v.indexOf("gemini-3.1") !== -1 || v.indexOf("gemini") !== -1) return "Gemini 3.1 Flash Live";
-        return model || String(call.engine || call);
+        if (!model) return "—";
+        if (model.toLowerCase().indexOf("gemini") !== -1) return "Gemini 3.1 Flash Live";
+        return model;
       }
 
       function flagCount(call) {
-        if (Array.isArray(call.red_flags)) return call.red_flags.length;
-        if (typeof call.red_flag_count === "number") return call.red_flag_count;
-        return asList(call.red_flags).length;
+        return asList(call && call.red_flags).length;
       }
 
       function pad(n) {
@@ -138,16 +134,9 @@
       }
 
       function people(call) {
-        const mother = call.mother_name || "Mother not named";
-        const childBits = [call.child_name, call.child_age].filter(Boolean).join(", ");
-        return childBits ? mother + " · " + childBits : mother;
-      }
-
-      function labelize(key) {
-        return String(key || "")
-          .replace(/^profile_/, "")
-          .replace(/_/g, " ")
-          .replace(/\b\w/g, function (ch) { return ch.toUpperCase(); });
+        const mother = (call && call.mother_name) || "Mother not named";
+        const age = String((call && call.child_age) || "").trim();
+        return age ? (mother + " · " + age) : mother;
       }
 
       function clinicCode(call) {
@@ -219,7 +208,7 @@
           btn.appendChild(el("div", "caller", callerLine(call)));
           btn.appendChild(el("div", "people", people(call)));
           const meta = el("div", "meta");
-          const badgeName = engineBadge(call);
+          const badgeName = modelBadge(call);
           const badge = el("span", "badge", badgeName);
           meta.appendChild(badge);
           const clinic = clinicCode(call);
@@ -309,7 +298,8 @@
         return bits.join(" · ");
       }
 
-      function renderCursorAnswers(cursorState) {
+      function renderFindings(cursorState) {
+        findingsEl.textContent = "";
         const answers = asObject(asObject(cursorState).answers);
         const rank = { concern: 0, unknown: 1, clear: 2 };
         const keys = Object.keys(answers).filter(function (qid) {
@@ -328,7 +318,7 @@
         }
         const table = el("table");
         const head = el("tr");
-        ["Question ID", "State", "Detail", "Flag"].forEach(function (label) {
+        ["Question ID", "State", "Detail", "Red flag"].forEach(function (label) {
           head.appendChild(el("th", "", label));
         });
         const thead = el("thead");
@@ -343,49 +333,6 @@
           row.appendChild(el("td", "", qid));
           row.appendChild(el("td", "", state));
           row.appendChild(el("td", "", cursorDetail(item)));
-          row.appendChild(el("td", "", flagged ? "Yes" : ""));
-          tbody.appendChild(row);
-        });
-        table.appendChild(tbody);
-        findingsEl.appendChild(table);
-      }
-
-      function renderFindings(findings, cursorState) {
-        findingsEl.textContent = "";
-        const data = asObject(findings);
-        if (Object.keys(data).length === 0) {
-          renderCursorAnswers(cursorState);
-          return;
-        }
-        const keys = Object.keys(data).sort(function (a, b) {
-          function rank(key) {
-            if (String(key).indexOf("profile_") === 0) return 0;
-            if (key === "chief_complaint") return 1;
-            return 2;
-          }
-          return rank(a) - rank(b) || String(a).localeCompare(String(b));
-        });
-        if (!keys.length) {
-          findingsEl.appendChild(el("p", "calm", "No structured findings were recorded."));
-          return;
-        }
-        const table = el("table");
-        const head = el("tr");
-        ["Domain", "Status", "Detail", "Red flag"].forEach(function (label) {
-          head.appendChild(el("th", "", label));
-        });
-        const thead = el("thead");
-        thead.appendChild(head);
-        table.appendChild(thead);
-        const tbody = el("tbody");
-        keys.forEach(function (key) {
-          const item = data[key] || {};
-          const flagged = item.is_red_flag === true || item.is_red_flag === 1 || item.is_red_flag === "true";
-          const row = el("tr", flagged ? "flag" : "");
-          row.appendChild(el("td", "", labelize(key)));
-          row.appendChild(el("td", "", item.status || ""));
-          const detail = item.detail == null ? "" : (typeof item.detail === "string" ? item.detail : JSON.stringify(item.detail));
-          row.appendChild(el("td", "", detail));
           row.appendChild(el("td", "", flagged ? "Yes" : ""));
           tbody.appendChild(row);
         });
@@ -437,8 +384,7 @@
           callerLine(call),
           people(call),
           clinicCode(call),
-          call.child_gender || "",
-          engineBadge(call),
+          modelBadge(call),
           fmtDuration(call.duration_sec),
           fmtTime(call.started_at),
           call.status || ""
@@ -453,7 +399,7 @@
         renderFlags(call.red_flags);
         doctorEl.innerHTML = renderMarkdown(call.summary_doctor || "");
         motherEl.textContent = call.summary_mother || "The mother summary is not ready yet.";
-        renderFindings(call.findings, call.cursor_state);
+        renderFindings(call.cursor_state);
         renderTranscript(call.transcript);
         renderTelemetry(call);
         paintReview(call);
@@ -529,7 +475,7 @@
         grid.textContent = "";
         const t = asObject(call.telemetry);
         const caller = (call.caller_name || "—") + " (" + (call.user_role || "—") + ")";
-        const model = (call.model_used || call.engine || "—") + " · " + (call.voice_used || "default");
+        const model = (call.model_used || "—") + " · " + (call.voice_used || "default");
         const latency = kpi(
           "Turn Latency (Avg / Max)",
           dashNum(t.avg_latency_ms, " ms") + " / " + dashNum(t.max_latency_ms, " ms")
@@ -546,7 +492,7 @@
         grid.appendChild(kpi("Turns (User / Bot)", dashNum(t.user_turns) + " / " + dashNum(t.bot_turns)));
         grid.appendChild(kpi(
           "Tool Calls & Nudges",
-          dashNum(t.tool_calls) + " findings / " + dashNum(t.watchdog_nudges) + " nudges"
+          dashNum(t.tool_calls) + " tool calls / " + dashNum(t.watchdog_nudges) + " nudges"
         ));
         grid.appendChild(kpi(
           "Audio Packets (In / Out)",
@@ -791,19 +737,9 @@
         }
       }
 
-      async function copyReport() {
+      function copyReport() {
         const text = current && current.summary_doctor ? current.summary_doctor : "";
-        try {
-          await navigator.clipboard.writeText(text);
-        } catch (err) {
-          const area = document.createElement("textarea");
-          area.value = text;
-          document.body.appendChild(area);
-          area.select();
-          document.execCommand("copy");
-          area.remove();
-        }
-        showNotice("Report copied.");
+        return copyText(text, "Report copied.");
       }
 
       function printReport() {
@@ -859,10 +795,8 @@
       });
 
       async function boot() {
-        const cfgRes = await api("/api/config");
         const callsRes = await api("/api/calls", { cache: "no-store" });
-        if (!cfgRes || !callsRes) return;
-        await cfgRes.json();
+        if (!callsRes) return;
         calls = asCalls(await callsRes.json());
         updatedEl.textContent = "Updated " + new Date().toLocaleTimeString(undefined, {
           hour: "2-digit",

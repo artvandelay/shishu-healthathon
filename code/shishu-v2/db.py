@@ -16,7 +16,6 @@ DB_PATH = os.path.join(DATA_DIR, "shishu.db")
 _db_lock = threading.Lock()
 
 DEFAULT_SETTINGS: dict[str, str] = {
-    "active_engine": "gemini",
     "gemini_model": "gemini-3.1-flash-live-preview",
     "gemini_voice": "Kore",
     "vad_prefix_padding_ms": "300",
@@ -25,20 +24,6 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "vad_end_sensitivity": "LOW",
     "watchdog_timeout_sec": "8.0",
 }
-
-_CALL_EXTRA_COLUMNS = (
-    ("caller_name", "TEXT DEFAULT ''"),
-    ("user_role", "TEXT DEFAULT 'user'"),
-    ("model_used", "TEXT DEFAULT ''"),
-    ("voice_used", "TEXT DEFAULT ''"),
-    ("telemetry_json", "TEXT DEFAULT '{}'"),
-    ("events_json", "TEXT DEFAULT '[]'"),
-    ("answers_json", "TEXT DEFAULT ''"),
-    ("cursor_json", "TEXT DEFAULT ''"),
-    ("share_token", "TEXT DEFAULT ''"),
-    ("clinic_code", "TEXT DEFAULT ''"),
-    ("clinician_review_json", "TEXT DEFAULT '{}'"),
-)
 
 _CLINICIAN_RATINGS = frozenset({"useful", "missed_flag", "false_alarm"})
 
@@ -68,59 +53,33 @@ def _init_db() -> None:
                 (key, value),
             )
         cur.execute(
-            "UPDATE settings SET value = ? WHERE key = 'gemini_model' AND value = 'gemini-3.8-live'",
-            (DEFAULT_SETTINGS["gemini_model"],),
-        )
-        cur.execute(
-            "UPDATE settings SET value = 'Kore' WHERE key = 'gemini_voice'",
-        )
-        cur.execute(
-            "DELETE FROM settings WHERE key IN ('openai_model', 'openai_voice', 'openai_backend_model')",
-        )
-        cur.execute(
-            "UPDATE settings SET value = 'gemini' WHERE key = 'active_engine'",
-        )
-        cur.execute(
-            "UPDATE settings SET value = '1000' WHERE key = 'vad_silence_ms' AND value IN ('650', '750', '1300')",
-        )
-        cur.execute(
-            "UPDATE settings SET value = 'LOW' WHERE key = 'vad_end_sensitivity' AND value = 'HIGH'",
-        )
-        cur.execute(
-            "UPDATE settings SET value = 'LOW' WHERE key = 'vad_start_sensitivity' AND value = 'HIGH'",
-        )
-        cur.execute(
-            "UPDATE settings SET value = '8.0' WHERE key = 'watchdog_timeout_sec' AND value = '4.0'",
-        )
-        cur.execute(
             """
             CREATE TABLE IF NOT EXISTS calls (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                engine TEXT,
                 mother_name TEXT DEFAULT '',
-                child_name TEXT DEFAULT '',
                 child_age TEXT DEFAULT '',
-                child_gender TEXT DEFAULT '',
                 status TEXT DEFAULT 'active',
                 started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 ended_at DATETIME,
                 duration_sec INTEGER DEFAULT 0,
                 audio_path TEXT DEFAULT '',
                 transcript_json TEXT DEFAULT '[]',
-                findings_json TEXT DEFAULT '{}',
                 red_flags_json TEXT DEFAULT '[]',
                 summary_doctor TEXT DEFAULT '',
-                summary_mother TEXT DEFAULT ''
+                summary_mother TEXT DEFAULT '',
+                caller_name TEXT DEFAULT '',
+                user_role TEXT DEFAULT 'user',
+                model_used TEXT DEFAULT '',
+                voice_used TEXT DEFAULT '',
+                telemetry_json TEXT DEFAULT '{}',
+                events_json TEXT DEFAULT '[]',
+                cursor_json TEXT DEFAULT '',
+                share_token TEXT DEFAULT '',
+                clinic_code TEXT DEFAULT '',
+                clinician_review_json TEXT DEFAULT '{}'
             )
             """
         )
-        existing = {
-            row["name"]
-            for row in cur.execute("PRAGMA table_info(calls)").fetchall()
-        }
-        for name, decl in _CALL_EXTRA_COLUMNS:
-            if name not in existing:
-                cur.execute(f"ALTER TABLE calls ADD COLUMN {name} {decl}")
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS server_secrets (
@@ -196,23 +155,8 @@ def get_all_settings() -> dict[str, str]:
             merged[row["key"]] = row["value"] if row["value"] is not None else ""
     return merged
 
-def update_settings(updates: dict[str, Any]) -> dict[str, str]:
-    if not isinstance(updates, dict):
-        return get_all_settings()
-    with _db_lock:
-        cur = conn.cursor()
-        for key, value in updates.items():
-            if key not in DEFAULT_SETTINGS:
-                continue
-            cur.execute(
-                "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                (key, "" if value is None else str(value)),
-            )
-        conn.commit()
-    return get_all_settings()
 
 def create_call(
-    engine: str,
     caller_name: str = "",
     user_role: str = "user",
     model_used: str = "",
@@ -226,13 +170,12 @@ def create_call(
         cur.execute(
             """
             INSERT INTO calls (
-                engine, status, caller_name, user_role, model_used, voice_used,
+                status, caller_name, user_role, model_used, voice_used,
                 mother_name, share_token, clinic_code
             )
-            VALUES (?, 'active', ?, ?, ?, ?, ?, ?, ?)
+            VALUES ('active', ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                engine,
                 caller_name or "",
                 user_role or "user",
                 model_used or "",
@@ -245,9 +188,7 @@ def create_call(
         conn.commit()
         return int(cur.lastrowid)
 
-def append_transcript(
-    call_id: int, role: str, text: str, exact: bool = False, qid: str = ""
-) -> None:
+def append_transcript(call_id: int, role: str, text: str, qid: str = "") -> None:
     if not text:
         return
     with _db_lock:
@@ -268,17 +209,12 @@ def append_transcript(
         )
         if same_turn:
             prev_text = transcript[-1].get("text", "")
-            if exact:
-                transcript[-1]["text"] = prev_text + text
-            elif prev_text and not prev_text.endswith(" ") and not text.startswith(" "):
-                transcript[-1]["text"] = prev_text + " " + text
-            else:
-                transcript[-1]["text"] = prev_text + text
+            transcript[-1]["text"] = call_cursor.merge_transcript_chunk(prev_text, text)
             transcript[-1]["ts"] = time.time()
             if qid:
                 transcript[-1]["qid"] = qid
         else:
-            entry = {"role": role, "text": text, "ts": time.time()}
+            entry = {"role": role, "text": text.strip(), "ts": time.time()}
             if qid:
                 entry["qid"] = qid
             transcript.append(entry)
@@ -293,14 +229,13 @@ def complete_call(
     call_id: int,
     duration_sec: int,
     audio_filename: str,
-    summary_doctor: str,
-    summary_mother: str,
-    findings: dict | None = None,
+    summary_doctor: str = "",
+    summary_mother: str = "",
     red_flags: list | None = None,
 ) -> None:
     with _db_lock:
         cur = conn.cursor()
-        if isinstance(findings, dict) and isinstance(red_flags, list):
+        if isinstance(red_flags, list):
             cur.execute(
                 """
                 UPDATE calls
@@ -310,7 +245,6 @@ def complete_call(
                     audio_path = ?,
                     summary_doctor = ?,
                     summary_mother = ?,
-                    findings_json = ?,
                     red_flags_json = ?
                 WHERE id = ?
                 """,
@@ -319,7 +253,6 @@ def complete_call(
                     audio_filename,
                     summary_doctor,
                     summary_mother,
-                    json.dumps(findings, ensure_ascii=False),
                     json.dumps(red_flags, ensure_ascii=False),
                     call_id,
                 ),
@@ -545,10 +478,6 @@ def _row_to_call_dict(row: sqlite3.Row) -> dict[str, Any]:
     except Exception:
         d["transcript"] = []
     try:
-        d["findings"] = json.loads(d.get("findings_json") or "{}")
-    except Exception:
-        d["findings"] = {}
-    try:
         d["red_flags"] = json.loads(d.get("red_flags_json") or "[]")
     except Exception:
         d["red_flags"] = []
@@ -590,14 +519,14 @@ def get_call(call_id: int) -> dict | None:
         return _row_to_call_dict(row)
 
 _LIST_COLUMNS = (
-    "id", "engine", "mother_name", "child_name", "child_age", "child_gender",
+    "id", "mother_name", "child_age",
     "status", "started_at", "ended_at", "duration_sec", "red_flags_json",
     "caller_name", "user_role", "model_used", "voice_used",
     "clinic_code", "clinician_review_json",
 )
 
 def list_calls() -> list[dict]:
-    """Every call, without transcripts or findings. The detail view loads those."""
+    """Every call, without transcripts or cursor JSON. The detail view loads those."""
     cols = ", ".join(_LIST_COLUMNS)
     with _db_lock:
         cur = conn.cursor()

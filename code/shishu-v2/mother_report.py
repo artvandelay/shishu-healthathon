@@ -145,8 +145,6 @@ h2 { margin: 16px 0 6px; font-size: 13pt; }
   line-height: 1.35;
 }
 .ans { flex: 0 0 auto; color: #565F75; }
-.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
-.chip { padding: 3px 10px; border: 1px solid #E0E2E5; border-radius: 99px; font-size: 10pt; color: #565F75; }
 """
 
 
@@ -213,16 +211,13 @@ def _page2_from_cursor(state: dict, incomplete: bool) -> tuple[list, list, list]
                 missed_order.append(title)
                 missed[title] = []
             missed[title].append(label)
-    groups = [{"title": title, "items": buckets[title], "facts": []} for title in order]
+    groups = [{"title": title, "items": buckets[title]} for title in order]
     unasked = [{"title": title, "items": missed[title]} for title in missed_order]
     return groups, unknown, unasked
 
 
-def build_v3(call: dict, synthesis: dict) -> dict:
-    """Mother PDF from a v3 cursor plus one synthesis payload.
-
-    Hindi lines are used as written. This path does not transliterate.
-    """
+def build_report(call: dict, synthesis: dict) -> dict:
+    """Mother PDF report payload from cursor state plus synthesis."""
     state = call_cursor.cursor_from_call(call)
     when = _ist(str(call.get("started_at") or ""))
     if when:
@@ -254,8 +249,6 @@ def build_v3(call: dict, synthesis: dict) -> dict:
         "groups": groups,
         "unknown": unknown,
         "unasked": unasked,
-        "not_asked": [group["title"] for group in unasked] if incomplete else [],
-        "started": when,
     }
 
 
@@ -308,14 +301,6 @@ def render_html(report: dict) -> str:
                 '<div class="no-row"><span>'
                 + html.escape(question)
                 + '</span><span class="ans">नहीं</span></div>'
-            )
-        for fact in group.get("facts") or []:
-            rows.append(
-                '<div class="no-row"><span>'
-                + html.escape(fact["q"])
-                + '</span><span class="ans">'
-                + html.escape(fact["a"])
-                + "</span></div>"
             )
     if report["unknown"]:
         rows.append('<div class="group">पक्का जवाब नहीं मिला</div>')

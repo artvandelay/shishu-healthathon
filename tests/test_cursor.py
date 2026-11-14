@@ -101,7 +101,7 @@ def _spec_tables():
     lines = _DOC.read_text(encoding="utf-8").splitlines()
     follow_at = lines.index("### 4.1 Follow-Up Prompts (`FOLLOWUP_HI`)")
     intro_at = lines.index("### 4.2 Intro & Open Capture Items")
-    clin_at = lines.index('### 4.3 Atomic Clinical Questions (56 Items — All `kind="gate"`, `opens=()`)')
+    clin_at = lines.index('### 4.3 Atomic Clinical Questions (56 Items — All `kind="gate"`)')
     end = lines.index("---", clin_at)
     followups = []
     for line in lines[follow_at:intro_at]:
@@ -152,7 +152,6 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(spec.kind, kind, qid)
             self.assertEqual(spec.skip_if, skip, qid)
             self.assertEqual(spec.question_hi, hindi, qid)
-            self.assertEqual(spec.opens, (), qid)
         self.assertEqual(get_spec("close_anything_else").followups, ("open_concern_detail",))
         self.assertEqual(len(clinical), 56)
         gates = [spec for spec in triage_catalog.CATALOG if spec.kind == "gate"]
@@ -167,7 +166,6 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(spec.question_hi, row["hi"], row["id"])
             self.assertEqual(spec.question_multi_hi, row["multi"], row["id"])
             self.assertEqual(spec.followups, row["follow"], row["id"])
-            self.assertEqual(spec.opens, (), row["id"])
             if spec.group in ("birth", "body", "illness") and "no_children" in spec.skip_if:
                 self.assertTrue(spec.question_multi_hi.strip(), row["id"])
                 child_multi += 1
@@ -365,7 +363,7 @@ class ChildResolutionTests(unittest.TestCase):
         prompt = active_prompt_hi(state)
         self.assertEqual(
             prompt,
-            "यह किस बच्चे की बात है — 8 साल वाले रिया, 5 साल वाले अर्जुन (बीच वाले), या 2 साल वाले बेटा?",
+            "यह किस बच्चे की बात है — 8 साल वाली रिया, 5 साल वाले अर्जुन (बीच वाले), या 2 साल वाले बेटे?",
         )
         state = apply_turn(state, "concern", child_ref="child_3")
         self.assertEqual(state["answers"]["birth_jaundice"]["child_ids"], ["child_3"])
@@ -1220,6 +1218,71 @@ class DecisionApiPhase1Tests(unittest.TestCase):
         closed = apply_turn(close_more, "clear")
         self.assertEqual(call_cursor.active_prompt_hi(closed), "")
         self.assertEqual(call_cursor.step_id(closed), "closing:complete")
+
+    def test_diagnostic_notes_and_child_label_filtering(self):
+        kids = [
+            _child(2, "male", 1, name="अमन"),
+            _child(8, "female", 2, name="रिया"),
+        ]
+        state = _clear_until(_profile(children=kids), "body_bleeding_bruise")
+
+        # Main turn with safe note on child_1, then followup with diagnostic note
+        s1 = apply_turn(
+            state,
+            "concern",
+            child_ref="child_1",
+            note="चोट पर खून देर तक बहता है",
+            diagnostic=False,
+        )
+        # No followups on body_bleeding_bruise -> advances to body_joint_swelling
+        self.assertEqual(s1["active_qid"], "body_joint_swelling")
+
+        # Side revision adds a diagnostic note onto body_bleeding_bruise
+        s2 = apply_interpreted_turn(s1, {
+            "current_outcome": "not_about_active",
+            "diagnostic_note": True,
+            "side_qid": "body_bleeding_bruise",
+            "side_action": "add_or_correct",
+            "side_outcome": "concern",
+            "side_note": "डॉक्टर ने Hemophilia बताया",
+        })
+        entry = s2["answers"]["body_bleeding_bruise"]
+        self.assertEqual(
+            call_cursor.answer_notes_text(entry),
+            "चोट पर खून देर तक बहता है; डॉक्टर ने Hemophilia बताया",
+        )
+        self.assertEqual(
+            call_cursor.mother_notes_text(entry),
+            "चोट पर खून देर तक बहता है",
+        )
+
+        # Purely diagnostic turn on birth_nicu with mixed safe + diagnostic followups
+        nicu = _clear_until(_profile(children=kids), "birth_nicu")
+        nicu = apply_turn(
+            nicu,
+            "concern",
+            child_ref="child_2",
+            note="पॉम्पे बीमारी की जाँच",
+            diagnostic=True,
+        )
+        nicu = apply_turn(nicu, "concern", note="साँस की तकलीफ", diagnostic=False)
+        nicu = apply_turn(nicu, "concern", note="Pompe confirm हुआ", diagnostic=True)
+        nicu_entry = nicu["answers"]["birth_nicu"]
+        self.assertIn("पॉम्पे बीमारी की जाँच", call_cursor.answer_notes_text(nicu_entry))
+        self.assertIn("साँस की तकलीफ", call_cursor.answer_notes_text(nicu_entry))
+        self.assertIn("Pompe confirm हुआ", call_cursor.answer_notes_text(nicu_entry))
+        self.assertEqual(call_cursor.mother_notes_text(nicu_entry), "साँस की तकलीफ")
+
+        # Child label filtering (oldest-first order when filtered, empty list -> "")
+        prof = state["profile"]
+        self.assertEqual(call_cursor.children_label_hi(prof), "अमन 2 साल बेटा · रिया 8 साल बेटी")
+        self.assertEqual(call_cursor.children_label_hi(prof, ["child_2"]), "रिया 8 साल बेटी")
+        self.assertEqual(call_cursor.children_label_hi(prof, []), "")
+        self.assertEqual(
+            call_cursor.children_label_en(prof, ["child_2"]),
+            "child_2 (female, age 8.0, रिया)",
+        )
+        self.assertEqual(call_cursor.children_label_en(prof, []), "")
 
 
 if __name__ == "__main__":

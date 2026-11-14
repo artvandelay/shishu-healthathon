@@ -26,7 +26,7 @@ import mother_report  # noqa: E402
 import post_call  # noqa: E402
 import report_service  # noqa: E402
 import test_cursor as cursor_tests  # noqa: E402
-from call_cursor import apply_profile, apply_turn, close_technical_failure  # noqa: E402
+from call_cursor import apply_interpreted_turn, apply_profile, apply_turn, close_technical_failure  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from pypdf import PdfReader  # noqa: E402
 from triage_catalog import active_specs, get_spec  # noqa: E402
@@ -34,7 +34,7 @@ from triage_catalog import active_specs, get_spec  # noqa: E402
 _CHILD_QUESTIONS = tuple(
     spec.question_hi for spec in active_specs() if "no_children" in spec.skip_if
 )
-_FORBIDDEN = ("Duchenne", "Hemophilia", "Haemophilia", "Pompe", "Gaucher", "SCID", "Wiskott")
+_FORBIDDEN = ("Duchenne", "Hemophilia", "Haemophilia", "Pompe", "Gaucher", "SCID", "Wiskott", "ड्यूशेन", "हीमोफीलिया")
 
 
 def _childless_cursor():
@@ -105,7 +105,7 @@ def _pages(pdf: bytes) -> int:
 
 def _page2(call: dict) -> str:
     synthesis = post_call.build_reports(call)
-    document = mother_report.render_html(mother_report.build_v3(call, synthesis))
+    document = mother_report.render_html(mother_report.build_report(call, synthesis))
     return document.split('class="page2"', 1)[1]
 
 
@@ -122,7 +122,7 @@ class CursorReportTests(unittest.TestCase):
         self.assertNotIn("मेरे बच्चे", " ".join(synthesis["mother_questions_hi"]))
         self.assertEqual(synthesis["yes_summaries_hi"], [])
         self.assertEqual(synthesis["children_label_hi"], "")
-        report = mother_report.build_v3(call, synthesis)
+        report = mother_report.build_report(call, synthesis)
         document = mother_report.render_html(report)
         page2 = document.split('class="page2"', 1)[1]
         for question in _CHILD_QUESTIONS:
@@ -138,26 +138,48 @@ class CursorReportTests(unittest.TestCase):
         self.assertNotIn("काँच के बक्से", extracted)
         self.assertIn("SHISHU-7", extracted)
 
-    def test_scrubber_strips_disease_names_from_mother_hindi(self):
-        dirty_questions = [
-            "क्या मेरे बच्चे को Duchenne है?",
-            "Hemophilia की जाँच करानी चाहिए?",
-        ]
-        fitted = post_call._fit_questions(dirty_questions)
-        scrubbed_yes = post_call._scrub_diagnostic_terms("डॉक्टर ने Hemophilia और Pompe बताया।")
-        blob = " ".join([*fitted, scrubbed_yes])
-        for name in _FORBIDDEN:
-            self.assertNotIn(name, blob)
-            self.assertNotIn(name.lower(), blob.lower())
-        self.assertGreaterEqual(len(fitted), 3)
-        self.assertLessEqual(len(fitted), 6)
-
-        call = _call_for(_bleed_cursor(), 3)
+    def test_diagnostic_turns_stay_in_doctor_note_and_are_omitted_from_mother_pdf(self):
+        state = _bleed_cursor()
+        state["answers"]["body_bleeding_bruise"]["notes"] = "डॉक्टर ने Hemophilia और ड्यूशेन बताया"
+        state["answers"]["body_bleeding_bruise"]["mother_notes"] = ""
+        state["answers"]["close_anything_else"] = {
+            "state": "concern",
+            "child_ids": [],
+            "notes": "Pompe की जाँच हुई थी",
+            "mother_notes": "",
+            "followups": {
+                "open_concern_detail": {
+                    "state": "concern",
+                    "note": "Pompe की जाँच हुई थी",
+                    "diagnostic": True,
+                }
+            },
+        }
+        call = _call_for(state, 3)
         synthesis = post_call.build_reports(call)
-        mother = " ".join(synthesis["mother_questions_hi"] + synthesis["yes_summaries_hi"])
+        report = mother_report.build_report(call, synthesis)
+        doc_html = mother_report.render_html(report)
+        pdf = mother_report.render_pdf(report)
+        pdf_text = "\n".join(page.extract_text() or "" for page in PdfReader(io.BytesIO(pdf)).pages)
+
+        # Doctor note and red_flags keep verbatim diagnostic terms
+        self.assertIn("Hemophilia", synthesis["doctor_markdown"])
+        self.assertIn("ड्यूशेन", synthesis["doctor_markdown"])
+        self.assertIn("Pompe", synthesis["doctor_markdown"])
+        self.assertTrue(any("Hemophilia" in flag for flag in synthesis["red_flags"]))
+        self.assertTrue(any("Pompe" in flag for flag in synthesis["red_flags"]))
+
+        # Mother report, questions, HTML, and PDF contain zero diagnostic terms and stay grammatical
+        mother_blob = " ".join(
+            synthesis["mother_questions_hi"] + synthesis["yes_summaries_hi"] + [doc_html, pdf_text]
+        )
         for name in _FORBIDDEN:
-            self.assertNotIn(name.lower(), mother.lower())
-        self.assertIn("खून", mother)
+            self.assertNotIn(name.lower(), mother_blob.lower())
+        self.assertGreaterEqual(len(synthesis["mother_questions_hi"]), 3)
+        self.assertLessEqual(len(synthesis["mother_questions_hi"]), 6)
+        self.assertTrue(all(q.endswith("?") for q in synthesis["mother_questions_hi"]))
+        self.assertIn("खून", " ".join(synthesis["yes_summaries_hi"]))
+        self.assertTrue(any("मामूली चोट पर खून देर तक बहता है" in line for line in synthesis["yes_summaries_hi"]))
         for heading in post_call._HEADINGS:
             self.assertIn(heading, synthesis["doctor_markdown"])
 
@@ -241,7 +263,7 @@ class CursorReportTests(unittest.TestCase):
         self.assertIn(note, "\n".join(synthesis["red_flags"]))
         self.assertTrue(any("close_anything_else" in flag for flag in synthesis["red_flags"]))
 
-        document = mother_report.render_html(mother_report.build_v3(call, synthesis))
+        document = mother_report.render_html(mother_report.build_report(call, synthesis))
         page1, page2 = document.split('class="page2"', 1)
         for qid in qids:
             self.assertIn(notes[qid], page1)
@@ -250,18 +272,11 @@ class CursorReportTests(unittest.TestCase):
         self.assertIn(get_spec("ill_fasting").question_hi, page2)
         self.assertIn(get_spec("birth_jaundice").question_hi, page2)
 
-    def test_devanagari_disease_names_and_followups_reach_reports(self):
-        scrubbed = post_call._scrub_diagnostic_terms("बच्चे को ड्यूशेन और हीमोफीलिया बताया")
-        self.assertNotIn("ड्यूशेन", scrubbed)
-        self.assertNotIn("हीमोफीलिया", scrubbed)
-        self.assertIn("बताया", scrubbed)
-        self.assertNotIn("पॉम्पे", post_call._scrub_diagnostic_terms("पॉम्पे"))
-        self.assertNotIn("थैलेसीमिया मेजर", post_call._scrub_diagnostic_terms("थैलेसीमिया मेजर की बात"))
-        self.assertIn("थैलेसीमिया", post_call._scrub_diagnostic_terms("थैलेसीमिया जाँच में माइनर"))
+    def test_followups_and_multi_child_labels_reach_reports(self):
         state = _bleed_cursor()
         state["answers"]["gate_bones_fractures"] = {
             "state": "concern",
-            "child_ids": ["child_1"],
+            "child_ids": ["child_2"],
             "notes": "गिरने पर हड्डी टूटी",
             "followups": {"fracture_count_or_bowing": {"state": "concern", "note": "दो बार"}},
         }
@@ -277,13 +292,19 @@ class CursorReportTests(unittest.TestCase):
         sentence = post_call._concern_sentence(
             get_spec("gate_bones_fractures"),
             state["answers"]["gate_bones_fractures"],
+            state["profile"],
         )
         self.assertIn("दो बार", sentence)
+        self.assertIn("2 साल बेटी", sentence)
         synthesis = post_call.build_reports(_call_for(state, 19))
         for expected in ("दो बार", "सांस", "तीन दिन"):
             self.assertIn(expected, "\n".join(synthesis["yes_summaries_hi"]))
             self.assertIn(expected, synthesis["doctor_markdown"])
             self.assertIn(expected, "\n".join(synthesis["red_flags"]))
+        self.assertIn("child_2 (female, age 2", synthesis["doctor_markdown"])
+        self.assertTrue(any("child_2 (female, age 2" in flag for flag in synthesis["red_flags"]))
+        self.assertTrue(any("2 साल बेटी" in line for line in synthesis["yes_summaries_hi"]))
+        self.assertTrue(any("2 साल बेटी के लिए:" in q for q in synthesis["mother_questions_hi"]))
         self.assertNotIn("fracture_count_or_bowing", synthesis["doctor_markdown"])
         self.assertNotIn("nicu_reason", synthesis["doctor_markdown"])
 
@@ -329,7 +350,7 @@ class CursorReportTests(unittest.TestCase):
             self.assertNotIn(routine, synthesis["mother_questions_hi"])
         self.assertIn("खून", synthesis["mother_questions_hi"][0])
         self.assertEqual(synthesis["mother_questions_hi"][1:], list(post_call._EMERGENCY_HI[:2]))
-        doc = mother_report.render_html(mother_report.build_v3(call, synthesis))
+        doc = mother_report.render_html(mother_report.build_report(call, synthesis))
         self.assertIn("108", doc)
         self.assertIn("नज़दीकी अस्पताल", doc)
 
@@ -369,7 +390,7 @@ class CursorReportTests(unittest.TestCase):
         state["close_reason"] = "complete"
         call = _call_for(state, 23)
         synthesis = post_call.build_reports(call)
-        report = mother_report.build_v3(call, synthesis)
+        report = mother_report.build_report(call, synthesis)
         document = mother_report.render_html(report)
         page1 = document.split('class="page2"', 1)[0]
         for surface in (
@@ -417,49 +438,53 @@ class CursorReportTests(unittest.TestCase):
         self.assertIn(nicu.question_multi_hi, two_page)
         self.assertNotIn(nicu.question_hi, two_page)
 
-    def test_disease_questions_and_summaries_stay_grammatical(self):
-        samples = (
-            "Sickle Cell",
-            "sickle-cell",
-            "सिकल सेल",
-            "Cystic Fibrosis",
-            "सिस्टिक फाइब्रोसिस",
-            "Fanconi",
-            "फैंकोनी",
-            "PKU",
-        )
-        for term in samples:
-            cleaned = post_call._scrub_diagnostic_terms(f"उसे {term} बताया")
-            self.assertNotIn(term.casefold(), cleaned.casefold())
-            self.assertIn("बताया", cleaned)
-        self.assertIn("थैलेसीमिया", post_call._scrub_diagnostic_terms("थैलेसीमिया जाँच में माइनर"))
-        self.assertNotIn("थैलेसीमिया मेजर", post_call._scrub_diagnostic_terms("थैलेसीमिया मेजर की बात"))
-
+    def test_mixed_safe_and_diagnostic_turns_stay_grammatical(self):
+        kids = [cursor_tests._child(7, "male", 1, name="आरव"), cursor_tests._child(2, "female", 2, name="मीरा")]
         state = cursor_tests._clear_until(
-            cursor_tests._profile(children=[cursor_tests._child(4, "male")], name="पूजा"),
+            cursor_tests._profile(children=kids, name="पूजा"),
             "body_bleeding_bruise",
         )
-        state = apply_turn(state, "concern", note="चोट पर खून देर तक बहता है")
+        # Safe concern on child_2
+        state = apply_turn(
+            state,
+            "concern",
+            child_ref="child_2",
+            note="चोट पर खून देर तक बहता है",
+            diagnostic=False,
+        )
+        # Side revision adds diagnostic term onto body_bleeding_bruise (only doctor sees it)
+        state = apply_interpreted_turn(state, {
+            "current_outcome": "not_about_active",
+            "diagnostic_note": True,
+            "side_qid": "body_bleeding_bruise",
+            "side_action": "add_or_correct",
+            "side_outcome": "concern",
+            "side_note": "डॉक्टर ने Sickle Cell और सिकल सेल बताया",
+        })
+        # Routine thalassemia check (non-diagnostic) stays visible to mother
+        state = cursor_tests._clear_until(state, "preg_thalassemia")
+        state = apply_turn(state, "concern", note="थैलेसीमिया जाँच में माइनर बताया", diagnostic=False)
         state["phase"] = "closing"
         state["close_reason"] = "complete"
+
         call = _call_for(state, 34)
         synthesis = post_call.build_reports(call)
         mother = " ".join(synthesis["mother_questions_hi"] + synthesis["yes_summaries_hi"])
         self.assertNotIn("Sickle", mother)
         self.assertNotIn("सिकल", mother)
-        self.assertIn("खून", synthesis["yes_summaries_hi"][0])
-        self.assertIn("खून", synthesis["mother_questions_hi"][0])
+        self.assertIn("चोट पर खून देर तक बहता है", synthesis["yes_summaries_hi"][0])
+        self.assertIn("मीरा 2 साल बेटी", synthesis["yes_summaries_hi"][0])
+        self.assertIn("मीरा 2 साल बेटी के लिए:", synthesis["mother_questions_hi"][0])
+        self.assertIn("थैलेसीमिया जाँच में माइनर बताया", mother)
         self.assertTrue(all(question.endswith("?") for question in synthesis["mother_questions_hi"]))
         self.assertGreaterEqual(len(synthesis["mother_questions_hi"]), 3)
 
-        fitted = post_call._fit_questions(
-            ["क्या मेरे बच्चे को Sickle Cell है?", "क्या सिकल सेल है?"],
-            concern_questions=synthesis["mother_questions_hi"],
-        )
-        scrubbed_mother = " ".join([*fitted, post_call._scrub_diagnostic_terms("बच्चे को सिकल सेल है।")])
-        self.assertNotIn("Sickle", scrubbed_mother)
-        self.assertNotIn("सिकल", scrubbed_mother)
-        self.assertGreaterEqual(len(fitted), 3)
+        # Doctor Markdown and red_flags keep the verbatim diagnostic note and child_2 English label
+        self.assertIn("Sickle Cell", synthesis["doctor_markdown"])
+        self.assertIn("सिकल सेल", synthesis["doctor_markdown"])
+        self.assertIn("child_2 (female, age 2.0, मीरा)", synthesis["doctor_markdown"])
+        self.assertTrue(any("Sickle Cell" in flag for flag in synthesis["red_flags"]))
+        self.assertTrue(any("child_2 (female, age 2.0, मीरा)" in flag for flag in synthesis["red_flags"]))
 
     def test_technical_failure_renders_incomplete_non_emergency_mother_pdf(self):
         state = cursor_tests._clear_until(
@@ -475,7 +500,7 @@ class CursorReportTests(unittest.TestCase):
         for emergency_q in post_call._EMERGENCY_HI:
             self.assertNotIn(emergency_q, synthesis["mother_questions_hi"])
 
-        report = mother_report.build_v3(call, synthesis)
+        report = mother_report.build_report(call, synthesis)
         self.assertTrue(report["incomplete"])
         self.assertFalse(report["emergency"])
         self.assertEqual(report["status"], "अधूरी कॉल")
@@ -506,45 +531,71 @@ class CursorReportTests(unittest.TestCase):
         self.assertTrue(synthesis["red_flags"])
         for heading in post_call._HEADINGS:
             self.assertIn(heading, synthesis["doctor_markdown"])
-        pdf = mother_report.render_pdf(mother_report.build_v3(call, synthesis))
+        pdf = mother_report.render_pdf(mother_report.build_report(call, synthesis))
         self.assertTrue(pdf.startswith(b"%PDF"))
         self.assertGreaterEqual(_pages(pdf), 2)
 
-    def test_scrubber_strips_disease_names_from_doctor_markdown_and_mother_notes(self):
-        state = _bleed_cursor()
-        state["profile"]["caller_name"] = "रेखा Hemophilia"
-        state["profile"]["children"][0]["name"] = "आरव Pompe"
-        state["answers"]["body_bleeding_bruise"]["notes"] = "Suspected Hemophilia and Pompe"
-        state["answers"]["close_anything_else"] = {
-            "state": "concern",
-            "child_ids": [],
-            "notes": "डॉक्टर ने Duchenne और ड्यूशेन का नाम लिया",
-            "followups": {},
-        }
+    def test_doctor_note_retains_verbatim_diagnosis_and_multichild_tags_while_mother_pdf_is_clean(self):
+        kids = [
+            cursor_tests._child(7, "male", 1, name="आरव"),
+            cursor_tests._child(3, "female", 2, name="मीरा"),
+        ]
+        state = cursor_tests._clear_until(
+            cursor_tests._profile(children=kids, name="रेखा"),
+            "body_bleeding_bruise",
+        )
+        state = apply_turn(
+            state,
+            "concern",
+            child_ref="child_2",
+            note="Suspected Hemophilia and Pompe",
+            diagnostic=True,
+        )
+        state = cursor_tests._clear_until(state, "close_anything_else")
+        state = apply_turn(
+            state,
+            "concern",
+            note="डॉक्टर ने Duchenne और ड्यूशेन का नाम लिया",
+            diagnostic=True,
+        )
+        state = apply_turn(state, "clear")
         call = _call_for(state, 43)
         result = post_call.build_reports(call)
         for heading in post_call._HEADINGS:
             prefix = f"{heading}\n" if heading == post_call._HEADINGS[0] else f"\n\n{heading}\n"
             self.assertIn(prefix, result["doctor_markdown"])
-        combined = "\n".join([
-            result["mother_name_hi"],
-            result["children_label_hi"],
-            result["doctor_markdown"],
+
+        # Doctor note and red_flags preserve verbatim diagnostic words and child_2 English label
+        self.assertIn("Suspected Hemophilia and Pompe", result["doctor_markdown"])
+        self.assertIn("डॉक्टर ने Duchenne और ड्यूशेन का नाम लिया", result["doctor_markdown"])
+        self.assertIn("child_2 (female, age 3.0, मीरा)", result["doctor_markdown"])
+        self.assertTrue(any("Suspected Hemophilia and Pompe" in f for f in result["red_flags"]))
+        self.assertTrue(any("Duchenne" in f for f in result["red_flags"]))
+        self.assertTrue(any("child_2 (female, age 3.0, मीरा)" in f for f in result["red_flags"]))
+
+        # Mother PDF (yes_summaries_hi, mother_questions_hi, HTML, PDF) omits diagnostic terms & shows child_2 Hindi label
+        report = mother_report.build_report(call, result)
+        html_doc = mother_report.render_html(report)
+        pdf_bytes = mother_report.render_pdf(report)
+        pdf_text = "\n".join(page.extract_text() or "" for page in PdfReader(io.BytesIO(pdf_bytes)).pages)
+        mother_blob = "\n".join([
             *result["yes_summaries_hi"],
             *result["mother_questions_hi"],
-            *result["red_flags"],
+            html_doc,
+            pdf_text,
         ])
-        for name in _FORBIDDEN:
-            self.assertNotIn(name.lower(), combined.lower())
-        self.assertNotIn("ड्यूशेन", combined)
-        self.assertIn("नाम लिया", result["doctor_markdown"])
+        for name in ("Hemophilia", "Pompe", "Duchenne", "ड्यूशेन"):
+            self.assertNotIn(name.lower(), mother_blob.lower())
+        self.assertIn("मीरा 3 साल बेटी", result["yes_summaries_hi"][0])
+        self.assertIn("मीरा 3 साल बेटी", result["mother_questions_hi"][0])
         self.assertIn("रेखा", result["mother_name_hi"])
         self.assertIn("आरव", result["children_label_hi"])
+        self.assertIn("मीरा", result["children_label_hi"])
 
 
 class TokenPrivacyTests(unittest.TestCase):
     def test_share_token_qid_and_review_round_trip(self):
-        call_id = db.create_call("gemini", caller_name="पूजा", clinic_code="kem")
+        call_id = db.create_call(caller_name="पूजा", clinic_code="kem")
         call = db.get_call(call_id)
         self.assertTrue(call["share_token"])
         self.assertGreaterEqual(len(call["share_token"]), 8)
@@ -607,7 +658,7 @@ class TokenPrivacyTests(unittest.TestCase):
 
 
 def _store(state, mother_name: str) -> int:
-    call_id = db.create_call("gemini", caller_name=mother_name)
+    call_id = db.create_call(caller_name=mother_name)
     db.save_cursor_state(call_id, state)
     with db._db_lock:
         db.conn.execute(

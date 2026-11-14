@@ -1,9 +1,8 @@
 """Atomic yes/no catalog for SHISHU v4.
 
 Question text is the Devanagari in docs/requirements-v4.md section 4.
-हाँ on a clinical item is a concern. नहीं is clear. Nothing is hidden behind
-another question: opens stays empty. question_multi_hi is the 2+ child
-wording; an empty string means the general question_hi is used as written.
+हाँ on a clinical item is a concern. नहीं is clear. question_multi_hi is the
+2+ child wording; an empty string means the general question_hi is used.
 """
 
 from dataclasses import dataclass
@@ -16,10 +15,10 @@ class QuestionSpec:
     kind: str
     question_hi: str
     question_multi_hi: str
+    stem_hi: str
     need_en: str
     nrroid_gate: str
     skip_if: tuple[str, ...] = ()
-    opens: tuple[str, ...] = ()
     followups: tuple[str, ...] = ()
     enabled: bool = True
 
@@ -36,16 +35,18 @@ def _q(
     multi: str = "",
     enabled: bool = True,
 ) -> QuestionSpec:
+    stem = question_hi.strip().removesuffix("?").removesuffix("।").strip()
+    stem = stem.removeprefix("क्या ").strip()
     return QuestionSpec(
         id=qid,
         group=group,
         kind=kind,
         question_hi=question_hi,
         question_multi_hi=multi,
+        stem_hi=stem,
         need_en=need_en,
         nrroid_gate=nrroid,
         skip_if=skip,
-        opens=(),
         followups=follow,
         enabled=enabled,
     )
@@ -160,13 +161,11 @@ def _validate() -> None:
     for spec in CATALOG:
         if spec.kind not in _SPINE_KINDS:
             raise RuntimeError(f"{spec.id} has kind {spec.kind}")
-        if spec.opens:
-            raise RuntimeError(f"{spec.id} still opens {spec.opens}")
+        if not spec.stem_hi:
+            raise RuntimeError(f"{spec.id} has empty stem_hi")
         for fid in spec.followups:
             if fid not in FOLLOWUP_HI:
                 raise RuntimeError(f"{spec.id} followup {fid} has no Hindi")
-        # fam_same_problem skips when there is no child, but section 4.3 leaves
-        # its question_multi_hi empty: the sentence is already about the family.
         if spec.group in _CHILD_GROUPS and "no_children" in spec.skip_if and not spec.question_multi_hi.strip():
             raise RuntimeError(f"{spec.id} needs question_multi_hi")
 
@@ -188,4 +187,3 @@ def active_specs() -> list[QuestionSpec]:
 def spine_ids() -> list[str]:
     """Ask order. ever_pregnant is not a row; the cursor inserts it."""
     return [spec.id for spec in active_specs() if spec.kind in _SPINE_KINDS]
-

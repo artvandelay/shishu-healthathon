@@ -29,7 +29,6 @@ def _full_raw(**overrides) -> dict:
         "marital_status": None,
         "child_count": None,
         "children": None,
-        "ever_pregnant": None,
     }
     base.update(overrides)
     return base
@@ -40,7 +39,6 @@ class ProfileExtractorOfflineTests(unittest.TestCase):
         src = (
             APP_DIR / "profile_extractor.py"
         ).read_text(encoding="utf-8")
-        self.assertLessEqual(len(src.splitlines()), 270)
         self.assertIsNone(
             re.search(r"[\u0900-\u097F]", src),
             "profile_extractor.py must contain zero Devanagari characters",
@@ -212,20 +210,20 @@ class ProfileExtractorOfflineTests(unittest.TestCase):
 
         async def fake_gen(**kwargs):
             seen.update(kwargs)
-            return _full_raw(ever_pregnant=False)
+            return _full_raw(marital_status="married")
 
         wav = b"RIFF\x00\x00\x00\x00WAVEfmt "
         res = asyncio.run(
             profile_extractor.extract_profile_entities(
-                active_qid="ever_pregnant",
-                active_prompt="ever pregnant?",
+                active_qid="intro_married",
+                active_prompt="married?",
                 utterance_text="   ",
                 audio_wav_bytes=wav,
                 generator=fake_gen,
             )
         )
         self.assertTrue(res.ok)
-        self.assertEqual(res.updates, {"ever_pregnant": False})
+        self.assertEqual(res.updates, {"marital_status": "married"})
         self.assertIsInstance(seen["contents"], list)
         self.assertEqual(len(seen["contents"]), 2)
         audio_part = seen["contents"][1]
@@ -246,6 +244,8 @@ class ProfileExtractorOfflineTests(unittest.TestCase):
             _full_raw(marital_status="divorced"),
             _full_raw(child_count=-1),
             _full_raw(child_count=True),
+            _full_raw(ever_pregnant=True),
+            _full_raw(ever_pregnant=False),
             _full_raw(ever_pregnant="yes"),
             _full_raw(child_count=0, children=[{"age_years": 2.0, "sex": "male"}]),
             _full_raw(

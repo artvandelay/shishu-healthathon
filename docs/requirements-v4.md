@@ -1,33 +1,33 @@
-# SHISHU v4 — Requirements, FormBharo State Engine & UI Quick-Reply Spec
+# SHISHU v4 — Requirements, FormBharo State Engine, Decision API & UI Quick-Reply Spec
 
-Status: Locked baseline for branch `next_v2` (branched from `next`, keeping working stereo audio, post-call PDF/Doctor synthesis, UUID token auth, Wake Lock, and Admin Clinician Review untouched).
-Production freeze: `main` (`https://shishu-production.up.railway.app`) stays completely untouched. `next_v2` deploys only to `https://shishu-staging.up.railway.app` (`project f196b873-8b92-4877-a764-d435ce52af39`).
+Status: Decision API (`next_v3_decision_api`) architecture over the v4 FormBharo clinical catalog, keeping working stereo audio, deterministic post-call PDF/Doctor synthesis, UUID token auth, Wake Lock, and Admin Clinician Review.
+Production freeze: `main` (`https://shishu-production.up.railway.app`) stays completely untouched.
 
 ---
 
-## 1. Why v4 Exists (Root Causes from Staging Calls #3–#8 + FormBharo Principles)
+## 1. Why v4 & Decision API Exist (Root Causes + FormBharo Principles)
 
-Real staging calls exposed 5 structural flaws in v3 (`next`) that v4 eliminates from first principles, applying the proven hybrid architecture from **FormBharo** (*Dalmia, Midha, Doshi 2026*):
+Real staging calls exposed 5 structural flaws in v3 (`next`) that v4 eliminates from first principles, applying the proven hybrid architecture from **FormBharo** (*Dalmia, Midha, Doshi 2026*) and separating voice delivery from single-pass Decision API turn classification:
 
 1. **No more clubbed cognitive overload or hidden clinical modules**:
    - v3 crammed 4–9 conditions into single gates (`gate_pregnancy_thal`, `gate_cord_bcg`, `fam_conditions_gate`) and hid critical questions (`preg_heart`, `mod_heavy_periods`, `mod_tooth_bleed`, `birth_jaundice`, `fam_maternal_side`) behind unrelated gates.
    - **v4 Rule**: Every screening item is **one short, atomic yes/no question** (`हाँ` = concern, `नहीं` = clear). Zero `opens` sub-trees, zero hidden questions.
 2. **Same-size `नहीं (No)` and `हाँ (Yes)` quick-tap buttons flanking `बंद (End)`**:
-   - Spoken-only `"नहीं"` across ~48 atomic questions takes too long and risks noisy-OPD mishearing.
+   - Spoken-only `"नहीं"` across ~56 atomic questions takes too long and risks noisy-OPD mishearing.
    - **v4 Rule**: During yes/no questions, two circular buttons of the **exact same size (`84×84px`)** as the red `बंद (End)` button appear on its **left (`नहीं / No`)** and **right (`हाँ / Yes`)**. The mother can either speak naturally OR tap `नहीं` / `हाँ` to advance in `<100ms` (immediately flushing bot playback and speaking the next question).
 3. **FormBharo non-monotonic state & bounded retries (zero infinite loops)**:
    - v3 locked into an infinite 5-turn loop on `pending_followup_idx = -1` when a caller said *"हाँ"* by mistake and then said *"नहीं, कुछ नहीं हुआ"* 4 times, and threw away demographic corrections after `intro_married`.
    - **v4 Rule**:
      - **Bounded Retry Cap (`MAX_STEP_ATTEMPTS = 2`)**: Any pending sub-step (`which_child` or `followup`) that receives 2 consecutive non-resolving turns automatically marks that sub-slot `"unknown"` and advances. Infinite loops are impossible.
      - **Retraction Transition**: Saying *"नहीं / कुछ नहीं हुआ / नॉर्मल था"* (`outcome = "retract"`, or `outcome = "clear"` with empty `child_ref` while on `which_child`) reverts `active_qid` from `"concern"` to `"clear"` and advances.
-     - **Anytime Profile Correction**: `save_profile` works on **any** turn in the call, immediately re-evaluating all `skip_if` branches (`_recompute`) and advancing past newly skipped questions.
-     - **Pre-Answered Detail Absorption**: If the mother states the child and/or follow-up detail in her initial `"हाँ"` sentence, `apply_turn` absorbs `child_ref` and `followup_answered=True` without re-asking what she already said.
+     - **Anytime Profile Correction**: `decisions.py` (`mentions_profile`) + `profile_extractor.py` (`gemini-3.5-flash-lite`) + `apply_profile` work on **any** turn in the call, immediately re-evaluating all `skip_if` branches (`_recompute`) and advancing past newly skipped questions.
+     - **Pre-Answered Detail Absorption**: When `decisions.py` sets `detail_present` (`followup_answered=True`) and she states the child and/or follow-up detail in her initial `"हाँ"` sentence, `apply_turn` absorbs `child_ref` and `followup_answered=True` without re-asking what she already said.
 4. **Full N-child support (including middle children — `बीच वाले`)**:
    - v3 hardcoded 2 children (*"बड़े वाले या छोटे वाले?"*) and broke on 3 children (`2y, 5y, 8y`).
-   - **v4 Rule**: `triage_catalog.py` stores explicit `question_hi` (1 child) and `question_multi_hi` (2+ children) text with zero Hindi regex assembly. `_which_child_hi(children)` lists all children by age, sex, or name from oldest to youngest. When a profile has two or more children, the tool result includes `children_roster`, and Gemini passes an exact `id` (`child_1`..`child_n`) or `"all"`. `_resolve_child_ids` matches only that exact `id`, a stored name, a closed-world ordinal token, a unique sex token, or `"all"`.
-5. **Clean Live Voice Turn-Taking (zero self-interruptions, pause-safe VAD)**:
-   - v3 put `"wait": True` in `FunctionResponse` (stalling audio in Call #3) and then fired `send_realtime_input` 1ms after `send_tool_response` (causing 26 self-interruptions in Call #8).
-   - **v4 Rule**: `FunctionResponse` omits `"wait": True` and carries a direct speak directive. When a tool turn finishes without bot audio, `gemini_live.py` sends the speak cue on `server_content.turn_complete`. A `2.5s` fallback timer acts only as a safety net when `turn_complete` never arrives. An accepted `quick_reply` drops leftover audio and captions from the interrupted sentence, and holds any late `record_turn` as `stale_turn`. `vad_silence_ms = 1000` and `vad_end_sensitivity = "LOW"` preserve mid-sentence pauses, and `speech_end` refreshes `quiet_from` for the 15s check-in and 30s close.
+   - **v4 Rule**: `triage_catalog.py` stores explicit `question_hi` (1 child) and `question_multi_hi` (2+ children) text with zero Hindi regex assembly. `_which_child_hi(children)` lists all children by age, sex, or name from oldest to youngest. When a profile has two or more children, `children_roster(state)` supplies `[{"id", "rank", "age_label_hi", "sex", "name"}]` (`child_1`..`child_n`) to `decisions.py` (`child_ref` question), and `gemini-decision-1` selects an exact `child_1`..`child_n` ID or `"all"`. `_resolve_child_ids` in `call_cursor.py` performs closed-world exact ID matching (`"all"` or exact `child["id"]`) with **zero regex or Hindi-token matching**.
+5. **Clean Live Voice Turn-Taking via `next_question` & Decision API (zero self-interruptions, pause-safe VAD)**:
+   - v3 put `"wait": True` in `FunctionResponse` (stalling audio in Call #3) and then fired `send_realtime_input` 1ms after `send_tool_response` (causing 26 self-interruptions in Call #8), while letting the live voice model self-classify clinical answers.
+   - **v4 + Decision API Rule**: Gemini Live exposes only the single zero-argument tool `next_question` (`prompts.GEMINI_LIVE_SYSTEM_PROMPT`). On each caller turn, `live_decision_bridge.run_decision_turn` captures the utterance text (or 16 kHz WAV audio when transcription is empty), calls `decisions.evaluate_turn` (`gemini-decision-1`) + `decisions.interpret_turn_decision` (calibrated `decision_thresholds.json`), optionally calls `profile_extractor.extract_profile_entities` (`gemini-3.5-flash-lite`, 4-field schema), and executes `call_cursor.apply_interpreted_turn` with zero regex/Hindi-token matching in `call_cursor.py`. `FunctionResponse` omits `"wait": True` and carries `{"result": "ok", "say": ...}`. When a tool turn finishes without bot audio, `gemini_live.py` sends the speak cue on `server_content.turn_complete` with a `2.5s` safety-net fallback timer. An accepted `quick_reply` drops leftover audio/captions from the interrupted sentence and marks any late speech turn as `user_turn_is_quick_reply_stale` / `stale_turn`. `vad_silence_ms = 1000` and `vad_end_sensitivity = "LOW"` preserve mid-sentence pauses, and `speech_end` refreshes `quiet_from` for the 15s check-in and 30s close. Post-call clinician notes (`post_call.py`) and 2-page Hindi Mother PDFs (`mother_report.build_report`) are 100% deterministic with zero post-call LLM calls.
 
 ---
 
@@ -86,7 +86,7 @@ Profile fields in `state["profile"]`:
 ## 4. Complete Atomic Triage Catalog (`code/shishu-v2/triage_catalog.py`)
 
 `QuestionSpec` dataclass fields:
-`id`, `group`, `kind` (`"profile" | "bridge" | "gate" | "open_capture"` — keep `"gate"` for all clinical spine items so `mother_report.py` marks unasked items `"पूछा नहीं गया"` on incomplete calls), `question_hi` (1-child / general), `question_multi_hi` (explicit 2+ children phrasing; `""` if non-child item), `need_en`, `nrroid_gate`, `skip_if`, `opens` (default `()`), `followups` (default `()`), `enabled` (`True`).
+`id`, `group`, `kind` (`"profile" | "bridge" | "gate" | "open_capture"` — keep `"gate"` for all clinical spine items so `mother_report.py` marks unasked items `"पूछा नहीं गया"` on incomplete calls), `question_hi` (1-child / general), `question_multi_hi` (explicit 2+ children phrasing; `""` if non-child item), `stem_hi` (clean Hindi stem without leading `"क्या "` or trailing punctuation, used for deterministic reports/notes), `need_en`, `nrroid_gate`, `skip_if` (default `()`), `followups` (default `()`), `enabled` (`True`).
 
 ### 4.1 Follow-Up Prompts (`FOLLOWUP_HI`)
 | Follow-up ID | Hindi Prompt (`expect_yes_no = False`) |
@@ -126,7 +126,7 @@ Profile fields in `state["profile"]`:
 | `intro_bridge` | `intro` | `bridge` | `()` | अब मैं एक-एक करके छोटे और आसान सवाल पूछूँगी। आप बोलकर या नीचे हाँ या नहीं का बटन दबाकर जवाब दे सकती हैं, और कुछ समझ न आए तो पूछ सकती हैं। शुरू करें? |
 | `close_anything_else` | `close` | `open_capture` | `()` | क्या इसके अलावा डॉक्टर के लिए कुछ और बताना है जो आपके मन में हो? |
 
-### 4.3 Atomic Clinical Questions (56 Items — All `kind="gate"`, `opens=()`)
+### 4.3 Atomic Clinical Questions (56 Items — All `kind="gate"`)
 
 | # | ID | Group | NRROID | `skip_if` | `question_hi` (1 Child / General) | `question_multi_hi` (2+ Children) | `followups` |
 |---|---|---|---|---|---|---|---|
@@ -189,14 +189,13 @@ Profile fields in `state["profile"]`:
 
 ---
 
-## 5. FormBharo State Engine Contract (`code/shishu-v2/call_cursor.py`)
+## 5. FormBharo State Engine, Decision API & Deterministic Synthesis (`call_cursor.py`, `decisions.py`, `profile_extractor.py`, `post_call.py`, `mother_report.py`)
 
 ### 5.1 State Shape (Backwards-Compatible with `db.py`, `post_call.py`, `mother_report.py`)
 ```python
 {
-  "version": 2,
   "phase": "asking" | "closing",
-  "close_reason": None | "complete" | "silence" | "time_limit" | "emergency" | "caller_stop",
+  "close_reason": None | "complete" | "silence" | "time_limit" | "emergency" | "caller_stop" | "technical_failure",
   "profile": {
     "caller_name": None | str,
     "marital_status": None | "married" | "about_to_marry" | "unmarried",
@@ -212,17 +211,17 @@ Profile fields in `state["profile"]`:
 }
 ```
 
-### 5.2 Core Cursor Functions & Transitions
+### 5.2 Core Cursor Functions & Transitions (`call_cursor.py` — Zero Regex / Zero Hindi-Token Matching)
 1. **`apply_profile(state, *, caller_name=None, marital_status=None, children=None, ever_pregnant=None, child_count=None) -> tuple[dict, str | None]`**:
    - Works at **any** point in the call (not restricted to `intro_*`).
-   - If `marital_status in ("unmarried", "about_to_marry")`: if `children is None` and not explicitly provided, clears `state["profile"]["children"] = []`; if `ever_pregnant is None` and not `True`, sets `state["profile"]["ever_pregnant"] = False`.
+   - If `marital_status in ("unmarried", "about_to_marry")`: if `children is None` and `child_count is None`, clears `state["profile"]["children"] = []`; if `ever_pregnant is None` and not `True`, sets `state["profile"]["ever_pregnant"] = False`.
    - Re-runs `_recompute(state)`. If `state["active_qid"]` is now skipped (e.g. caller was on `intro_children` and said *"मेरी शादी नहीं हुई है"*), immediately calls `_advance(state)`!
-   - When a profile step is incomplete (`hold` in `{"name_fragment", "marital_status", "children_ages", "ever_pregnant"}`), stores `state["hold_reason"] = hold` so `prompt_directive(state)` speaks a **specific, natural Hindi prompt** instead of repeating the full intro question:
+   - When a profile step is incomplete (`hold` in `{"name_fragment", "marital_status", "children_ages", "ever_pregnant"}`), stores `state["hold_reason"] = hold` so `active_prompt_hi(state)` speaks a **specific, natural Hindi prompt** instead of repeating the full intro question:
      - `"name_fragment"` -> `"जी, आराम से बताइए — आपका पूरा नाम क्या है?"`
      - `"marital_status"` -> `"जी, क्या आपकी शादी हो गई है, होने वाली है, या अभी नहीं हुई?"`
      - `"children_ages"` -> `"जी, उन सभी बच्चों की उम्र क्या-क्या है?"`
      - `"ever_pregnant"` -> `"क्या आप कभी गर्भवती हुई हैं?"`
-2. **`apply_turn(state, outcome, *, child_ref="", note="", followup_answered=False) -> dict`**:
+2. **`apply_turn(state, outcome, *, child_ref="", note="", followup_answered=False, diagnostic=False) -> dict`**:
    - Allowed `outcome`: `"clear" | "concern" | "unknown" | "clarify" | "retract" | "emergency" | "caller_stop"`.
    - **`intro_bridge` (`spec.kind == "bridge"`)**:
      - `"concern"` or `"clear"` or `"unknown"` -> writes `"clear"` and advances (never creates a `"concern"`!).
@@ -230,14 +229,11 @@ Profile fields in `state["profile"]`:
      - Allows `apply_turn` (including UI quick-tap `हाँ`/`नहीं`!) to resolve `ever_pregnant`: `"concern"` -> `ever_pregnant = True`, `"clear"` -> `ever_pregnant = False`, `"unknown"` -> `ever_pregnant = False` + advances cleanly.
    - **Retraction (`outcome == "retract"`, OR `pending_followup_idx == -1` with `outcome == "clear"` and empty `child_ref`)**:
      - Overwrites `state["answers"][active_qid]` to `_blank("clear")`, clears `pending_followup_idx = None` and `step_attempts = 0`, runs `_recompute(state)`, and `_advance(state)`.
-   - **Multi-child resolution (`_resolve_child_ids(state, child_ref)`)**:
-     - `_resolve_child_ids` uses closed-world exact matching without regular expressions. It normalizes whitespace on `child_ref` and sorts children from oldest to youngest (`ordered = sorted(children, key=lambda c: float(c["age_years"]), reverse=True)`).
-       - `"all" / "both" / "दोनों" / "सभी" / "सबको" / "तीनों" / "चारों"` returns all child IDs in `ordered`.
-       - Exact `child_id` (`child_1`..`child_n`) or exact casefolded `child["name"]` returns that child ID.
-       - Exact ordinal tokens map to `ordered`: `"oldest" / "बड़े" / "बड़ा" / "बड़ी" / "बड़े वाले" / "पहले" / "पहला"` -> `ordered[0]`, `"middle" / "बीच" / "बीच वाले" / "बीच वाला" / "बीच वाली" / "मंझले" / "मंझला" / "मंझली" / "मंझल"` -> `ordered[len(ordered)//2]`, `"दूसरे" / "दूसरा"` -> `ordered[1]` (for 2+ children), `"तीसरे" / "तीसरा"` -> `ordered[2]` (for 3+ children), and `"youngest" / "छोटे" / "छोटा" / "छोटी" / "छोटे वाले" / "आखिरी" / "सबसे छोटा"` -> `ordered[-1]`.
-       - Exact sex tokens (`"बेटा" / "लड़का" / "boy"` or `"बेटी" / "लड़की" / "girl"`) match when only one child has that sex.
-     - When the profile has two or more children, `children_roster(state)` returns `[{"id", "rank", "age_label_hi", "sex", "name"}]` from oldest to youngest (`rank` is `oldest`, `middle`, or `youngest`). `_tool_body(state)` sends this list as `"children"`, and Gemini passes an exact `id` or `"all"`.
-     - `_which_child_hi(children)` lists each child in `ordered` by `age_label_hi` (plus `बेटा`/`बेटी` or `name`) and adds `(बीच वाले)` on the middle child of three, for example `"यह किस बच्चे की बात है — 8 साल वाले, 5 साल वाले (बीच वाले), या 2 साल वाले?"`.
+   - **Multi-child resolution (`children_roster(state)` + `_resolve_child_ids(state, child_ref)`)**:
+     - When the profile has two or more children, `children_roster(state)` returns `[{"id", "rank", "age_label_hi", "sex", "name"}]` sorted oldest to youngest (`rank` is `"oldest"`, `"middle"`, or `"youngest"`).
+     - `decisions.py` passes this roster as `children_roster` and poses the closed-world `child_ref` question with options `child_1`..`child_N`, `all`, and `other` to `gemini-decision-1`.
+     - `_resolve_child_ids(state, child_ref)` performs strict closed-world ID lookup with **zero regex or Hindi-token matching**: `"all"` returns all child IDs ordered oldest-to-youngest, an exact `child["id"]` (`child_1`..`child_N`) returns `[ref]`, and anything else returns `[]`.
+     - `_which_child_hi(children)` lists each child in `ordered` by `age_label_hi` (plus `बेटा`/`बेटी` or `name`) and adds `(बीच वाले)` / `(बीच वाली)` on the middle child of three, for example `"यह किस बच्चे की बात है — 8 साल वाले, 5 साल वाले (बीच वाले), या 2 साल वाले?"`.
    - **FormBharo Bounded Retry Cap (`MAX_STEP_ATTEMPTS = 2`)**:
      - If `pending_followup_idx == -1` (`which_child`) receives an unresolvable reply (not retracted, not `unknown`, no matched child), increments `step_attempts`. On `step_attempts >= 2`, leaves `child_ids = []`, records `note` if any, and moves to `followups[0]` or `_advance(state)`.
      - If `pending_followup_idx >= 0` receives an empty/clarify non-answer twice (`step_attempts >= 2`), records `{"state": "unknown", "note": ""}` for that follow-up and advances to the next follow-up or question.
@@ -250,41 +246,58 @@ Profile fields in `state["profile"]`:
      - If `outcome == "concern"` and `not note.strip()` (e.g. she tapped the `हाँ` button or said bare `"हाँ"`): sets `pending_followup_idx = 0` using follow-up `"open_concern_detail"` (`"जी बताइए, डॉक्टर के लिए क्या बात नोट करूँ?"`). When she speaks the concern note on that follow-up, stores it on `close_anything_else["notes"]` with `state = "concern"`, resets `pending_followup_idx = None`, increments `close_rounds`, and asks `"मैंने यह बात नोट कर ली। इसके अलावा कुछ और बताना चाहेंगी?"`.
      - If `outcome == "concern"` WITH `note.strip()`: appends `note` to `close_anything_else["notes"]`, increments `close_rounds`, and asks `"मैंने यह बात नोट कर ली। इसके अलावा कुछ और बताना चाहेंगी?"`.
      - If `outcome in ("clear", "unknown")`: preserves any prior `"concern"` note (or writes `"clear"`/`"unknown"` if none) and transitions `phase = "closing"`, `close_reason = "complete"`.
-3. **`expect_yes_no(state) -> bool`**:
-   - Returns `True` **only** when `state["phase"] == "asking"`, `state["pending_followup_idx"] is None`, and `state["active_qid"]` is NOT in `{"intro_name", "intro_married", "intro_children"}` (i.e. `True` on `intro_bridge`, `ever_pregnant`, all 56 clinical `gate` questions, and `close_anything_else` when `pending_followup_idx is None`; `False` on `intro_name`, `intro_married`, `intro_children`, `which_child`, and all detail `followups`).
+3. **`apply_interpreted_turn(state, interpreted) -> dict`**:
+   - Dual-intent turn composer consuming the structured payload produced by `decisions.interpret_turn_decision` + `profile_extractor`. Handles `emergency` / `caller_stop`, optional `profile_updates`, closed-world `side_qid` (`add_or_correct` on already-answered gates or `clarify_meaning` rewind via `accepted_target`), and `current_outcome` on the active step.
+   - Marks `diagnostic=True` on notes where `mentions_diagnosis` fired so `mother_report.py` redacts raw rare-disease labels from the Mother PDF while keeping clinical facts for the doctor note.
+4. **`expect_yes_no(state) -> bool`**:
+   - Returns `True` **only** when `state["phase"] == "asking"`, `state["pending_followup_idx"] is None`, `not state.get("hold_reason")`, and `state["active_qid"]` is NOT in `{"intro_name", "intro_married", "intro_children"}` (i.e. `True` on `intro_bridge`, `ever_pregnant`, all 56 clinical `gate` questions, and `close_anything_else` when `pending_followup_idx is None`; `False` on `intro_name`, `intro_married`, `intro_children`, `which_child`, `hold_reason` prompts, and all detail `followups`).
+
+### 5.3 Decision API Turn Classifier (`decisions.py`, `decision_schema.json`, `decision_thresholds.json`)
+- Single-pass `POST https://generativelanguage.googleapis.com/v1beta/decisions` using model `gemini-decision-1` (`build_turn_request` + `evaluate_turn`).
+- Evaluates closed-world `noul` and `choice` questions in one request per caller turn:
+  - Always included: `danger_now` (`noul`), `caller_stop` (`noul`), `mentions_profile` (`noul`), `current_outcome` (`clear | concern | unknown | clarify | retract | other`).
+  - Included on clinical/close steps (or once any gate is answered): `mentions_diagnosis` (`noul`), `side_intent` (`add_concern | clear_or_retract | clarify_other | other`), `side_qid` (routable QIDs + `other`).
+  - Included when `len(children_roster(state)) >= 2`: `child_ref` (`child_1..N`, `all`, `other`).
+  - Included on `main` / `close` steps with follow-ups: `detail_present` (`noul`).
+- `interpret_turn_decision` validates calibrated thresholds from `decision_thresholds.json` (`DecisionThresholds`: confidence + margin checks) and produces a pure `InterpretationResult` (`cursor_payload`, `needs_profile_extraction`, `future_qid_match`, `diagnostics`).
+
+### 5.4 Profile Extractor (`profile_extractor.py`) & Post-Call Reports (`post_call.py`, `mother_report.py`)
+- **`profile_extractor.extract_profile_entities`**: Runs only when `needs_profile_extraction` is `True` (on `profile` steps or whenever `mentions_profile` fires). Uses `gemini-3.5-flash-lite` with strict JSON `response_schema` returning exactly 4 schema-validated fields (`caller_name`, `marital_status`, `child_count`, `children`) and zero extra keys.
+- **Deterministic Post-Call Outputs**: `post_call.build_doctor_summary`, `post_call.build_mother_summary`, `post_call.build_red_flags`, and `mother_report.build_report` (2-page WeasyPrint Hindi PDF) are 100% deterministic functions of `cursor_state` — zero post-call LLM calls.
 
 ---
 
-## 6. Live Voice & Quick-Reply WebSocket Contract (`gemini_live.py` + `static/call.html` + `static/call.js`)
+## 6. Live Voice, Decision Bridge & Quick-Reply WebSocket Contract (`gemini_live.py` + `live_decision_bridge.py` + `static/call.html` + `static/call.js`)
 
-### 6.1 Clean Turn-Taking in `gemini_live.py`
-1. **No `"wait": True` and causal speak on `turn_complete`**:
-   - `_tool_body(state)` returns `{"result": "ok", "say": _say_hindi(state)}` and never sets `"wait": True`. It adds `"stop": True` on closing, `"clarify": True` on clarify, and `"children": children_roster(state)` when two or more children exist.
+### 6.1 Clean Turn-Taking & Decision Bridge (`gemini_live.py` + `live_decision_bridge.py`)
+1. **Zero-Arg `next_question` Tool & Causal Speak on `turn_complete`**:
+   - Gemini Live (`gemini-3.1-flash-live-preview`, `Kore` Hindi voice) receives only one tool declaration: `next_question` (no arguments). Gemini Live never classifies answers or picks questions.
+   - When `next_question` is invoked (or on speech/text turn finalization), `live_decision_bridge.run_decision_turn` sends the utterance text (or 16 kHz WAV audio if transcription is empty) to `decisions.evaluate_turn` -> `decisions.interpret_turn_decision`, calls `profile_extractor.extract_profile_entities` if needed, advances `cursor.state` via `apply_interpreted_turn`, saves state to SQLite, and returns `_tool_body(state)`.
+   - Two consecutive `profile_extractor` failures on the same step or any failed Decision API turn close gracefully via `close_technical_failure`.
+   - `_tool_body(state)` returns `{"result": "ok", "say": prompts.say_hindi(state)}` and never sets `"wait": True`. It adds `"stop": True` on closing, `"clarify": True` on clarify, and `"recorded_concerns": prompts.recorded_concerns_hi(state)` on clarify, `fam_same_problem`, or `close_anything_else`.
    - When `_answer_function_calls` handles a tool call, it stores `pending_speak_step` and `pending_speak_kind` and waits for `server_content.turn_complete`.
    - When `server_content.turn_complete` arrives on that same step before any bot audio, `_handle_server_message` cancels the fallback task, clears `pending_speak_step`, and sends `_speak_cue_text`.
    - `_TOOL_SPEAK_FALLBACK_SEC = 2.5` acts only as a dead-socket safety net when `turn_complete` never arrives. Bot audio and an accepted `quick_reply` both clear `pending_speak_step`.
 2. **Pause-Safe VAD and Reliable Silence Check-In**:
    - `db.py` and `gemini_live.py` set `vad_silence_ms = "1000"` and `vad_end_sensitivity = "LOW"` by default.
-   - When browser `{"type": "speech_end"}` arrives and the bot is not speaking, `_browser_loop` sets `state.quiet_from = max(now_ts, state.playback_ends_at)` so the 15s check-in still runs.
+   - When browser `{"type": "speech_end"}` arrives and the bot is not speaking, `_browser_loop` sets `state.quiet_from = max(now_ts, state.playback_ends_at)` so the 15s check-in and 30s auto-close still run.
    - `CallAudioRecorder._remember` records `(elapsed, pcm, rate)` under `self._lock` in O(1) time. `CallAudioRecorder.save()` performs PCM resampling off the event loop inside `asyncio.to_thread`.
-3. **Anytime `save_profile`**:
-   - `_profile_kwargs(qid, args)` parses **any** non-empty field (`caller_name`, `marital_status`, `child_count`, `children`, `ever_pregnant`) regardless of `qid`, and `_marital()` maps `"no" / "nahi" / "नहीं" / "अभी नहीं" / "अविवाहित" / "कुंवारी"` -> `"unmarried"`.
 
 ### 6.2 WebSocket Quick-Reply Protocol
 - **Server -> Browser (`question_state` + `bot_turn_complete`)**:
   - `gemini_live.py` sends `question_state` after the greeting cue and after every handled tool call or `quick_reply`:
-    `{"type": "question_state", "step": _current_step(cursor.state), "qid": active_qid, "group": group, "expect_yes_no": expect_yes_no(cursor.state), "prompt_chars": len(_say_hindi(cursor.state))}`
-  - On `server_content.turn_complete` when the bot is done streaming that question, `gemini_live.py` sends `{"type": "bot_turn_complete", "step": _current_step(cursor.state)}`.
+    `{"type": "question_state", "step": step_id(cursor.state), "qid": active_qid, "group": group, "expect_yes_no": expect_yes_no(cursor.state), "prompt_chars": len(prompts.say_hindi(cursor.state))}`
+  - On `server_content.turn_complete` when the bot is done streaming that question, `gemini_live.py` sends `{"type": "bot_turn_complete", "step": step_id(cursor.state)}`.
 - **Browser -> Server (`quick_reply`)**:
   - Payload: `{"type": "quick_reply", "outcome": "clear" | "concern", "step": currentStep}`
   - Server handling:
-    1. If `telemetry.get("end_requested")` is true or `cursor.state.get("phase") != "asking"`, ignore the message.
-    2. Make sure that `payload.get("step") == _current_step(cursor.state)` and `expect_yes_no(cursor.state)` is `True`, or ignore the duplicate tap.
+    1. If `state.end_requested` is true or `cursor.state.get("phase") != "asking"`, ignore the message.
+    2. Make sure that `payload.get("step") == step_id(cursor.state)` and `expect_yes_no(cursor.state)` is `True`, or ignore the duplicate tap.
     3. Record the transcript (`"नहीं।"` or `"हाँ।"`), and emit `user_transcript` and `tool_call` (`quick_reply_clear` or `quick_reply_concern`).
     4. If `state.bot_speaking` is `True`, set `state.ignore_bot_audio = True` so `_on_bot_audio` and `output_transcription` drop leftover bot output until `interrupted` or `turn_complete`.
-    5. Clear `user_turn_step` and `pending_speak_step`, record `last_quick_reply_step` and `last_quick_reply_ts`, apply the turn, and send `{"type": "clear"}` plus `question_state`.
+    5. Clear `user_turn_step` and `pending_speak_step`, record `last_quick_reply_step` and `last_quick_reply_ts`, apply the turn via `apply_turn`, and send `{"type": "clear"}` plus `question_state`.
     6. If `cursor.state["phase"] == "closing"`, call `_mark_closing(...)`. Then send `_speak_cue_text` (`"close"` or `"speak"`) to Gemini Live.
-    7. If `user_text` arrives before the new step is spoken, during `ignore_bot_audio`, or within `1.2s` of `last_quick_reply_ts`, keep `user_turn_step = last_quick_reply_step`. When `user_turn_step` does not match `_current_step(cursor.state)` (or is empty after a tap), hold `record_turn` with `reason = "stale_turn"`.
+    7. If `user_text` arrives before the new step is spoken, during `ignore_bot_audio`, or within `1.2s` of `last_quick_reply_ts`, keep `user_turn_step = last_quick_reply_step` and mark `capture.user_turn_is_quick_reply_stale = True`. Any late `next_question` tool turn whose `user_turn_step` mismatches `step_id(cursor.state)` (or is marked stale) is held with `reason = "stale_turn"` without overwriting the already-tapped step.
 
 ### 6.3 Call Screen Flanking Buttons (`static/call.html` + `static/call.js`)
 - Inside `#stage`, wrap the main call button in `<div id="call-dock" class="call-dock">`:
@@ -305,11 +318,21 @@ Profile fields in `state["profile"]`:
 ## 7. Staged Implementation & Verification Rules
 
 1. **Environment**:
-   - Secrets stay in root `.env`.
+   - Secrets stay in root `.env` (`GEMINI_API_KEY`, `APP_PASSCODE`, `ADMIN_PASSCODE`, `DATA_DIR`).
    - Python env: `~/pyenv/shishu/bin/python` (packages via `uv`).
-   - Long-running servers and live persona suites run inside `tmux`.
-2. **Stages on `next_v2`**:
-   - **Stage 1**: Pure offline `triage_catalog.py` + `call_cursor.py` + `test_v4_cursor.py` (including replays of Staging Calls #3, #6, #8).
-   - **Stage 2**: `gemini_live.py` + `prompts.py` + `db.py` (VAD defaults) + server `question_state`/`quick_reply` + `test_v4_live_server.py`.
-   - **Stage 3**: `static/call.html` + `static/call.js` flanking `नहीं` / `हाँ` buttons + end-to-end WebSocket `TestClient` tests (`test_v4_quick_reply_ui.py`).
-   - **Stages 4–6**: Speaker-clock halfway button reveal, atomic `fam_maternal_*` split, closed-world `target_qid` revisions/clarifications, emergency & report synthesis hardening, mobile clinic WCAG contrast/accessibility polish, **102 offline unit/socket tests + 6-Persona live Gemini verification in `tmux`** (`run_eight_personas.py`: red-flags, all-clear, midway emergency, 3-kids middle-child + retraction, `about_to_marry` mid-call correction + clarify, and `target_qid` late addition + `close_anything_else` disclosure) + deploy `next_v2` to `shishu-staging`.
+   - Long-running servers, calibration sweeps, and live persona suites run inside `tmux`.
+2. **Offline Unit & Integration Suites (`tests/`)**:
+   - Run all suites with zero network calls via `~/pyenv/shishu/bin/python -m unittest discover -s tests`:
+     - `tests/test_cursor.py` — `triage_catalog.py` parity against Section 4 tables, FormBharo state transitions, demographic skip matrix, multi-child ID routing, `apply_interpreted_turn`, and staging call replays
+     - `tests/test_decisions.py` — `decisions.py` request builder, `decision_schema.json` structure, threshold validation, `interpret_turn_decision` closed-world confidence/margin gating, and `mentions_diagnosis` handling
+     - `tests/test_profile_extractor.py` — `profile_extractor.py` 4-field schema validation, error handling, and `gemini-3.5-flash-lite` integration contract
+     - `tests/test_live_server.py` — `gemini_live.py` + `live_decision_bridge.py` `next_question` turn execution, speak-on-`turn_complete`, silence check-in, reconnect, and technical failure fallback
+     - `tests/test_quick_reply_ui.py` — end-to-end WebSocket `TestClient` `question_state` / `quick_reply` / stale-turn tests + UI flanking button invariants
+     - `tests/test_reports.py` — deterministic `post_call.py` clinician notes, `mother_report.py` 2-page WeasyPrint PDF generation, diagnostic redaction, and `report_service.py`
+     - `tests/test_end_to_end_flows.py` — multi-turn end-to-end flows across demographic profiles, retractions, emergencies, and post-call synthesis
+     - `tests/test_clinic_and_reviews.py` — clinic codes, clinician review ratings, and admin API routes
+     - `tests/test_security_and_captions.py` — HMAC cookie auth, UUID `share_token` PDF access, rate limits, and prompt/HTML safety invariants
+     - `tests/test_audio.py` — `audio_recorder.py` off-loop 16 kHz stereo WAV recording and `pcm16_to_wav_bytes`
+3. **Calibration & Live Verification (`scripts/`)**:
+   - `scripts/calibrate_decisions.py` — calibrates `code/shishu-v2/decision_thresholds.json` against `scripts/decision_calibration_cases.json` using live `gemini-decision-1`.
+   - `scripts/run_eight_personas.py` — 6-persona live Gemini verification in `tmux` (red flags, all clear, midway emergency, 3-kids middle-child + retraction, `about_to_marry` mid-call correction + clarify, and `side_qid` late addition + `close_anything_else` disclosure), routing strictly on `cursor_state` with zero string-matching fallback.

@@ -274,10 +274,21 @@ def calibrate(rows: list[dict[str, Any]]) -> tuple[decisions.DecisionThresholds,
         10.0,
         15.0,
     )
+    diag_rows = [
+        (
+            r["raw_answers"]["mentions_diagnosis"]["noul"],
+            bool(r["gold"].get("mentions_diagnosis", False)),
+        )
+        for r in non_stop
+        if "mentions_diagnosis" in r["raw_answers"]
+    ]
+    diag_t = _sweep_noul(diag_rows, 200.0, 20.0)
     det_rows = [
         (r["raw_answers"]["detail_present"]["noul"], r["gold"]["detail_present"])
         for r in non_stop
-        if "detail_present" in r["raw_answers"] and r["gold"]["detail_present"] is not None
+        if r["gold"]["current_outcome"] == "concern"
+        and "detail_present" in r["raw_answers"]
+        and r["gold"]["detail_present"] is not None
     ]
     detail_t = _sweep_noul(det_rows, 10.0, 15.0)
 
@@ -367,6 +378,7 @@ def calibrate(rows: list[dict[str, Any]]) -> tuple[decisions.DecisionThresholds,
             danger_now_min_yes=danger_t,
             caller_stop_min_yes=stop_t,
             mentions_profile_min_yes=prof_t,
+            mentions_diagnosis_min_yes=diag_t,
             detail_present_min_yes=detail_t,
             outcome_min_confidence=out_c,
             outcome_min_margin=out_m,
@@ -498,12 +510,24 @@ def calibrate(rows: list[dict[str, Any]]) -> tuple[decisions.DecisionThresholds,
             sum(
                 1
                 for r, it in ns_pairs
-                if "detail_present" in r["raw_answers"]
+                if r["gold"]["current_outcome"] == "concern"
+                and "detail_present" in r["raw_answers"]
                 and r["gold"]["detail_present"] is not None
                 and (it.diagnostics["detail_present"] >= th.detail_present_min_yes)
                 == r["gold"]["detail_present"]
             )
             / len(det_rows),
+            4,
+        ),
+        "mentions_diagnosis_accuracy": round(
+            sum(
+                1
+                for r, it in ns_pairs
+                if "mentions_diagnosis" in r["raw_answers"]
+                and it.cursor_payload["diagnostic_note"]
+                == bool(r["gold"].get("mentions_diagnosis", False))
+            )
+            / len(diag_rows),
             4,
         ),
         "mentions_profile_accuracy": round(

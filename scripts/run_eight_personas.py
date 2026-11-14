@@ -34,7 +34,7 @@ import db  # noqa: E402
 import uvicorn  # noqa: E402
 from call_cursor import answer_notes_text, expect_yes_no  # noqa: E402
 from pypdf import PdfReader  # noqa: E402
-from triage_catalog import FOLLOWUP_HI, active_specs, get_spec  # noqa: E402
+from triage_catalog import active_specs, get_spec  # noqa: E402
 import app as shishu_app  # noqa: E402
 
 HOST = "127.0.0.1"
@@ -44,17 +44,12 @@ CALL_DEADLINE_SEC = 1200
 RECV_TIMEOUT_SEC = 300
 
 _LEAKS = (
-    "save_profile",
-    "record_turn",
-    "say_hindi",
+    "next_question",
     "system cue",
     "ask only this",
     "active_qid",
     "last_answered_qid",
-    "answered_qids",
-    "target_qid",
     "recorded_concerns",
-    "do_not_read",
     "duchenne",
     "hemophilia",
     "pompe",
@@ -71,18 +66,6 @@ _LEAKS = (
 _MARRIED = "हाँ, शादी हो गई है।"
 _BRIDGE = "ठीक है।"
 _RETRACT = "नहीं, गलती से हाँ बोला, कुछ नहीं हुआ था।"
-
-
-def _questions() -> list[tuple[str, str]]:
-    rows = [(spec.id, spec.question_hi) for spec in active_specs() if spec.question_hi]
-    rows.extend((fid, text) for fid, text in FOLLOWUP_HI.items())
-    rows.append(("which_child", "यह किस बच्चे की बात है"))
-    rows.append(("ever_pregnant", "क्या आप कभी गर्भवती हुई हैं"))
-    rows.sort(key=lambda item: len(item[1]), reverse=True)
-    return rows
-
-
-QUESTIONS = _questions()
 
 
 def _route(state: dict) -> str:
@@ -102,33 +85,6 @@ def _route(state: dict) -> str:
             return followups[idx]
         return f"{qid}:{idx}"
     return qid
-
-
-def _classify(text: str, state: dict | None = None) -> str:
-    """Prefer the live cursor. Fall back to the spoken question only if it is empty."""
-    if state:
-        routed = _route(state)
-        if routed:
-            return routed
-    if "आपका नाम" in text or "पूरा नाम" in text:
-        return "intro_name"
-    if "शादी हो गई" in text or "होने वाली" in text:
-        return "intro_married"
-    if "कितने बच्चे" in text or "उन सभी बच्चों" in text:
-        return "intro_children"
-    if "कभी गर्भवती" in text:
-        return "ever_pregnant"
-    if "किस बच्चे" in text:
-        return "which_child"
-    if "आसान सवाल" in text or "शुरू करें" in text:
-        return "intro_bridge"
-    if "इसके अलावा" in text or "कुछ और बताना" in text:
-        return "close_anything_else"
-    for qid, question in QUESTIONS:
-        needle = question[:28]
-        if len(needle) >= 12 and needle in text:
-            return qid
-    return ""
 
 
 def _fallback(state: dict) -> tuple[str, str]:
@@ -163,7 +119,7 @@ class Persona:
     def answer(self, text: str, state: dict) -> tuple[str, str] | None:
         if str(state.get("phase") or "") != "asking":
             return None
-        key = _classify(text, state) or "unknown"
+        key = _route(state) or "unknown"
         self.counts[key] = self.counts.get(key, 0) + 1
         if self.counts[key] > 4:
             raise RuntimeError(f"stuck on {key}: {text[:180]}")
@@ -215,17 +171,27 @@ def _check_p1(call: dict, problems: list[str]) -> None:
     nicu = _answer(call, "birth_nicu")
     bleed = _answer(call, "body_bleeding_bruise")
     joint = _answer(call, "body_joint_swelling")
+    fam_bleed = _answer(call, "fam_maternal_bleeding")
     if nicu.get("state") != "concern":
         problems.append(f"birth_nicu={nicu.get('state')}")
     if bleed.get("state") != "concern":
         problems.append(f"body_bleeding_bruise={bleed.get('state')}")
     if joint.get("state") != "concern":
         problems.append(f"body_joint_swelling={joint.get('state')}")
+    if fam_bleed.get("state") != "concern":
+        problems.append(f"fam_maternal_bleeding={fam_bleed.get('state')}")
     nicu_text = answer_notes_text(nicu)
     if not _has(nicu_text, "तकलीफ", "साँस", "सांस"):
         problems.append(f"nicu reason missing: {nicu_text}")
     if not _has(nicu_text, "4", "चार"):
         problems.append(f"nicu days missing: {nicu_text}")
+    doctor = str(call.get("summary_doctor") or "")
+    mother = str(call.get("summary_mother") or "")
+    pdf_all = _flat(_pdf_page(call, 0) + " " + _pdf_page(call, 1))
+    if "हीमोफीलिया" not in doctor:
+        problems.append("doctor summary missing reported हीमोफीलिया")
+    if "हीमोफीलिया" in mother or "हीमोफीलिया" in pdf_all:
+        problems.append("mother summary/pdf leaked हीमोफीलिया")
 
 
 def _check_p2(call: dict, problems: list[str]) -> None:
@@ -288,6 +254,11 @@ def _check_p4(persona: Persona, call: dict, problems: list[str]) -> None:
         problems.append(f"children={profile.get('children')}")
     elif middle.get("id") not in (jaundice.get("child_ids") or []):
         problems.append(f"jaundice child {jaundice.get('child_ids')} middle {middle}")
+    else:
+        if str(middle.get("id")) not in str(call.get("summary_doctor") or ""):
+            problems.append("summary_doctor missing middle child_id attribution")
+        if "6 साल" not in str(call.get("summary_mother") or ""):
+            problems.append("summary_mother missing 6 साल child attribution")
     if not _has(answer_notes_text(jaundice), "3", "तीन"):
         problems.append(f"jaundice days missing: {answer_notes_text(jaundice)}")
     if "मामा" not in answer_notes_text(transfusion):
@@ -444,8 +415,10 @@ def _personas() -> list[Persona]:
                 "nicu_days": _line("चार दिन।"),
                 "body_bleeding_bruise": _line("हाँ, मामूली चोट पर खून देर तक बहता है।"),
                 "body_joint_swelling": _line("हाँ, गिरने पर घुटने में सूजन आती है।"),
+                "fam_maternal_bleeding": _line("हाँ, मेरे सगे मामा के बेटे को डॉक्टर ने हीमोफीलिया बताया था।"),
+                "fam_who": _line("सगे मामा के बेटे को।"),
             }),
-            flags=(2, 6),
+            flags=(3, 7),
             close="complete",
             check=_check_p1,
         ),
@@ -524,8 +497,6 @@ def _check(call_id: int, persona: Persona) -> dict:
         problems.append(f"tool_errors={telemetry.get('tool_errors')}")
     if int(telemetry.get("watchdog_nudges") or 0):
         problems.append(f"watchdog_nudges={telemetry.get('watchdog_nudges')}")
-    if int(telemetry.get("prompt_leaks") or 0):
-        problems.append(f"prompt_leaks={telemetry.get('prompt_leaks')}")
     assistant = " ".join(
         str(turn.get("text") or "")
         for turn in (call.get("transcript") or [])

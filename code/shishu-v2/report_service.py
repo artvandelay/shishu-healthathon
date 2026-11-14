@@ -12,14 +12,21 @@ import db
 import mother_report
 import post_call
 
-_REPORTS = Path(db.DATA_DIR) / "mother-pdfs"
 _inflight: dict[int, asyncio.Task] = {}
 _loop_guards: WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = WeakKeyDictionary()
 _loop_guard_lock = threading.Lock()
 
 
+def _reports_dir() -> Path:
+    return Path(db.DATA_DIR) / "mother-pdfs"
+
+
 def pdf_path(call_id: int) -> Path:
-    return _REPORTS / f"call-{int(call_id)}.pdf"
+    return _reports_dir() / f"call-{int(call_id)}.pdf"
+
+
+def write_pdf_bytes(call_id: int, pdf: bytes) -> None:
+    _atomic_write(pdf_path(call_id), pdf)
 
 
 def _read_pdf(path: Path) -> bytes | None:
@@ -108,7 +115,7 @@ async def _build(call_id: int) -> tuple[bytes, str]:
         if call is None:
             raise LookupError(f"Call {call_id} was not found")
         synthesis = post_call.build_reports(call)
-        report = mother_report.build_v3(call, synthesis)
+        report = mother_report.build_report(call, synthesis)
         mother_name = str(synthesis.get("mother_name_hi") or "").strip()
         if mother_name == "माँ":
             mother_name = ""

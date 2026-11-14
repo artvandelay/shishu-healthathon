@@ -8,7 +8,6 @@ import http.client
 import json
 import math
 import os
-import re
 import socket
 import time
 import urllib.error
@@ -32,7 +31,6 @@ _SCHEMA: dict[str, Any] = json.loads(
     Path(__file__).resolve().with_name("decision_schema.json").read_text(encoding="utf-8")
 )
 
-_QUESTION_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _RETRYABLE_HTTP = frozenset({408, 429})
 _SAFETY_CODES = frozenset(
     {"safety", "prohibited_content", "blocklist", "image_safety", "content_blocked"}
@@ -46,6 +44,7 @@ _NOUL_FIELDS = (
     "danger_now_min_yes",
     "caller_stop_min_yes",
     "mentions_profile_min_yes",
+    "mentions_diagnosis_min_yes",
     "detail_present_min_yes",
 )
 _CONF_FIELDS = (
@@ -84,6 +83,7 @@ class DecisionThresholds:
     danger_now_min_yes: float
     caller_stop_min_yes: float
     mentions_profile_min_yes: float
+    mentions_diagnosis_min_yes: float
     detail_present_min_yes: float
     outcome_min_confidence: float
     outcome_min_margin: float
@@ -219,6 +219,7 @@ def build_turn_request(
         "current_outcome": qs["current_outcome"],
     }
     if step_kind not in ("profile", "bridge") or call_cursor.has_answered_gates(state):
+        questions["mentions_diagnosis"] = qs["mentions_diagnosis"]
         questions["side_intent"] = qs["side_intent"]
         questions["side_qid"] = _side_qid_question(state)
     if len(roster) >= 2:
@@ -226,9 +227,6 @@ def build_turn_request(
     if step_kind in ("main", "close") and bool(followup_prompt):
         questions["detail_present"] = qs["detail_present"]
 
-    for qkey in questions:
-        if not _QUESTION_KEY_RE.match(qkey):
-            raise ValueError(f"invalid Decisions API question key: {qkey!r}")
     return {"model": DECISIONS_MODEL, "input": req_input, "questions": questions}
 
 
@@ -490,12 +488,17 @@ def interpret_turn_decision(
     danger_p = _noul_prob(answers, "danger_now")
     stop_p = _noul_prob(answers, "caller_stop")
     profile_p = _noul_prob(answers, "mentions_profile")
+    diag_p = _noul_prob(answers, "mentions_diagnosis") if has_side else None
     detail_p = _noul_prob(answers, "detail_present") if needs_detail else None
+
     emergency = danger_p is not None and danger_p >= thresholds.danger_now_min_yes
     caller_stop = (not emergency) and (
         stop_p is not None and stop_p >= thresholds.caller_stop_min_yes
     )
     mentions_profile = profile_p is not None and profile_p >= thresholds.mentions_profile_min_yes
+    diagnostic_note = bool(
+        has_side and diag_p is not None and diag_p >= thresholds.mentions_diagnosis_min_yes
+    )
 
     out_eval = evaluate_choice(
         answers,
@@ -597,6 +600,7 @@ def interpret_turn_decision(
         "current_note": active_note,
         "child_ref": child_ref,
         "followup_answered": followup_answered,
+        "diagnostic_note": diagnostic_note,
         "side_qid": side_qid,
         "side_action": side_action,
         "side_outcome": side_outcome,
@@ -609,6 +613,7 @@ def interpret_turn_decision(
         "danger_now": danger_p,
         "caller_stop": stop_p,
         "mentions_profile": profile_p,
+        "mentions_diagnosis": diag_p,
         "detail_present": detail_p,
         "current_outcome": out_eval.as_dict(),
         "side_intent": intent_eval.as_dict() if intent_eval is not None else None,

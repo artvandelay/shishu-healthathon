@@ -39,9 +39,6 @@ from triage_catalog import get_spec
 from prompts import (
     GEMINI_LIVE_SYSTEM_PROMPT,
     HINDI_MEDICAL_VOCAB,
-    clean_assistant_caption,
-    clean_user_caption,
-    leaked_caption,
 )
 
 _ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
@@ -112,6 +109,10 @@ class _TurnState:
         self.speak_cue_step = ""
         self.go_away_pending = False
         self.active_speak_kind = "speak"
+        self.end_requested: bool = False
+        self.end_requested_at: float = 0.0
+        self.closing_heard: bool = False
+        self.ending_sent: bool = False
 
 
 class _Cursor:
@@ -177,18 +178,12 @@ def _live_config(
         system_instruction=types.Content(
             parts=[types.Part(text=GEMINI_LIVE_SYSTEM_PROMPT)]
         ),
-        input_audio_transcription=(
-            types.AudioTranscriptionConfig(
-                language_codes=["hi-IN"],
-                custom_vocabulary=list(HINDI_MEDICAL_VOCAB),
-            )
-            if chosen["model"].startswith("gemini-3")
-            else types.AudioTranscriptionConfig()
+        input_audio_transcription=types.AudioTranscriptionConfig(
+            language_codes=["hi-IN"],
+            custom_vocabulary=list(HINDI_MEDICAL_VOCAB),
         ),
-        output_audio_transcription=(
-            types.AudioTranscriptionConfig(language_codes=["hi-IN"])
-            if chosen["model"].startswith("gemini-3")
-            else types.AudioTranscriptionConfig()
+        output_audio_transcription=types.AudioTranscriptionConfig(
+            language_codes=["hi-IN"],
         ),
         realtime_input_config=types.RealtimeInputConfig(
             turn_coverage=types.TurnCoverage.TURN_INCLUDES_ONLY_ACTIVITY,
@@ -205,11 +200,7 @@ def _live_config(
         ),
         session_resumption=types.SessionResumptionConfig(handle=resume_handle or None),
         tools=[{"function_declarations": [_NEXT_QUESTION_DECL]}],
-        thinking_config=(
-            types.ThinkingConfig(thinking_level="MINIMAL")
-            if chosen["model"].startswith("gemini-3.1")
-            else None
-        ),
+        thinking_config=types.ThinkingConfig(thinking_level="MINIMAL"),
     )
 
 
@@ -238,10 +229,6 @@ def _new_telemetry(
         "max_latency_ms": 0,
         "last_interaction_status": "",
         "dropoff_qid": "",
-        "end_refusals": 0,
-        "end_requested_at": 0.0,
-        "force_close": False,
-        "force_close_at": 0.0,
         "close_reason": "",
         "reconnects": 0,
         "errors": [],
@@ -302,7 +289,7 @@ def _audio_from_part(part: types.Part) -> tuple[bytes, int] | None:
     if blob is None or blob.data is None:
         return None
     mime = blob.mime_type or ""
-    if mime and not mime.lower().startswith("audio/"):
+    if mime and mime.lower().partition("/")[0] != "audio":
         return None
     pcm = audio_recorder.pcm_bytes(blob.data)
     if not pcm:
@@ -310,21 +297,8 @@ def _audio_from_part(part: types.Part) -> tuple[bytes, int] | None:
     return pcm, audio_recorder.rate_from_mime(mime, _OUTPUT_RATE)
 
 
-def _cancel_silence_close(state: _TurnState, telemetry: dict) -> None:
-    """A silence close is provisional until she speaks again."""
-    if telemetry.get("end_requested"):
-        return
-    if telemetry.get("close_reason") != "silence":
-        return
-    telemetry["force_close"] = False
-    telemetry["force_close_at"] = 0.0
-    telemetry["close_reason"] = ""
-    state.checked_in = False
-
-
-def _caller_heard(state: _TurnState, telemetry: dict) -> None:
+def _caller_heard(state: _TurnState) -> None:
     """She is speaking now, so this is not a silent line."""
-    _cancel_silence_close(state, telemetry)
     state.quiet_from = 0.0
 
 
@@ -345,7 +319,7 @@ def _arm_user_turn(state: _TurnState, telemetry: dict) -> None:
     if not state.awaiting_bot_reply or state.speech_end_waiting:
         telemetry["user_turns"] = int(telemetry.get("user_turns") or 0) + 1
     _arm_waiting_reply(state, speech_end_waiting=False)
-    _caller_heard(state, telemetry)
+    _caller_heard(state)
     state.checked_in = False
 
 
@@ -427,19 +401,10 @@ async def _forward_transcript(
     role: str,
     transcription: types.Transcription | None,
     cursor: _Cursor,
-    telemetry: dict,
 ) -> str:
     if transcription is None:
         return ""
-    raw = transcription.text or ""
-    if role == "assistant":
-        text = clean_assistant_caption(raw)
-        if leaked_caption(raw, text):
-            telemetry["prompt_leaks"] = int(telemetry.get("prompt_leaks") or 0) + 1
-    elif role == "user":
-        text = clean_user_caption(raw)
-    else:
-        text = raw
+    text = " ".join((transcription.text or "").split())
     if not text:
         return ""
     qid = str(cursor.state.get("active_qid") or "")
@@ -459,12 +424,11 @@ def _in_quick_reply_stale_window(state: _TurnState, cursor_state: dict) -> bool:
     )
 
 
-def _accept_end(telemetry: dict) -> bool:
+def _accept_end(state: _TurnState) -> bool:
     """Mark the call closing. True only the first time end_call is accepted."""
-    first = not telemetry.get("end_requested")
-    telemetry["end_requested"] = True
-    telemetry["closing"] = True
-    telemetry["end_requested_at"] = time.time()
+    first = not state.end_requested
+    state.end_requested = True
+    state.end_requested_at = time.time()
     return first
 
 
@@ -607,6 +571,7 @@ async def _mark_closing(
     ws_lock: asyncio.Lock,
     call_id: int,
     telemetry: dict,
+    turn: _TurnState,
 ) -> None:
     state = cursor.state
     if state.get("phase") != "closing":
@@ -620,7 +585,7 @@ async def _mark_closing(
         await asyncio.to_thread(db.save_cursor_state, call_id, _json_copy(state))
     except Exception:
         pass
-    if _accept_end(telemetry):
+    if _accept_end(turn):
         close_reason = str(state.get("close_reason") or reason)
         await _emit(
             ws,
@@ -702,16 +667,16 @@ async def _answer_function_calls(
                     else:
                         async def _mark_closing_cb(reason: str) -> None:
                             await _mark_closing(
-                                cursor, reason, ws, ws_lock, call_id, telemetry
+                                cursor, reason, ws, ws_lock, call_id, telemetry, turn
                             )
 
                         body, call_clarify, event_kind = await run_decision_turn(
                             cursor,
                             cap,
                             call_id,
-                            telemetry,
                             tool_body_fn=_tool_body,
                             mark_closing_fn=_mark_closing_cb,
+                            is_closing=turn.end_requested,
                             settings=settings,
                             thresholds=thresholds,
                             input_rate=_INPUT_RATE,
@@ -836,7 +801,8 @@ async def _on_bot_audio(
     dur = len(pcm) / max(1, 2 * rate)
     state.playback_ends_at = max(time.time(), state.playback_ends_at) + dur
     recorder.add_bot_pcm(pcm, rate)
-    if telemetry.get("end_requested"):
+    if state.end_requested:
+        state.closing_heard = True
         telemetry["closing_heard"] = True
     await _send_json(
         ws,
@@ -886,7 +852,7 @@ async def _handle_server_message(
         state.ignore_bot_audio = False
         state.bot_speaking = False
         state.playback_ends_at = 0.0
-        _caller_heard(state, telemetry)
+        _caller_heard(state)
         telemetry["interruptions"] += 1
         await _send_json(ws, ws_lock, {"type": "clear"})
         await _emit(ws, ws_lock, call_id, telemetry, "interrupted", "interrupted")
@@ -899,7 +865,7 @@ async def _handle_server_message(
             if input_tr is not None
             else False
         )
-        if not telemetry.get("end_requested"):
+        if not state.end_requested:
             user_text = await _forward_transcript(
                 ws,
                 ws_lock,
@@ -907,7 +873,6 @@ async def _handle_server_message(
                 "user",
                 input_tr,
                 cursor,
-                telemetry,
             )
         if user_text:
             if _in_quick_reply_stale_window(state, cursor.state):
@@ -915,7 +880,7 @@ async def _handle_server_message(
                     cap.reset(clear_pcm=False)
                 state.user_turn_step = state.last_quick_reply_step
                 cap.user_turn_is_quick_reply_stale = True
-                _caller_heard(state, telemetry)
+                _caller_heard(state)
             else:
                 cap.begin_transcript_chunk(cursor.state, user_text)
                 state.user_turn_step = step_id(cursor.state)
@@ -924,7 +889,7 @@ async def _handle_server_message(
             await _emit(
                 ws, ws_lock, call_id, telemetry, "user_transcript", user_text
             )
-        if input_finished and not telemetry.get("end_requested"):
+        if input_finished and not state.end_requested:
             cap.user_turn_finalized = True
         drop_bot_output = state.ignore_bot_audio or not cap.speech_allowed
         if not drop_bot_output:
@@ -935,7 +900,6 @@ async def _handle_server_message(
                 "assistant",
                 server_content.output_transcription,
                 cursor,
-                telemetry,
             )
 
     parts = []
@@ -989,12 +953,12 @@ async def _handle_server_message(
             settings=settings,
             thresholds=thresholds,
         )
-        if not telemetry.get("end_requested"):
+        if not state.end_requested:
             _arm_waiting_reply(state, speech_end_waiting=False)
             state.quiet_from = 0.0
 
     if server_content is not None and server_content.turn_complete:
-        if not telemetry.get("end_requested"):
+        if not state.end_requested:
             stale_turn = _is_stale_user_turn(state, cursor.state)
             has_turn_input = bool(cap.user_turn_buffer.strip()) or bool(cap.user_turn_pcm)
             if (
@@ -1006,16 +970,16 @@ async def _handle_server_message(
             ):
                 async def _mark_closing_cb(reason: str) -> None:
                     await _mark_closing(
-                        cursor, reason, ws, ws_lock, call_id, telemetry
+                        cursor, reason, ws, ws_lock, call_id, telemetry, state
                     )
 
                 _body, clarify_applied, _kind = await run_decision_turn(
                     cursor,
                     cap,
                     call_id,
-                    telemetry,
                     tool_body_fn=_tool_body,
                     mark_closing_fn=_mark_closing_cb,
+                    is_closing=state.end_requested,
                     settings=settings,
                     thresholds=thresholds,
                     input_rate=_INPUT_RATE,
@@ -1031,7 +995,7 @@ async def _handle_server_message(
                 state.active_speak_kind = missed_kind
                 _cancel_speak_fallback(state)
                 cap.speech_allowed = True
-                if not telemetry.get("end_requested"):
+                if not state.end_requested:
                     _arm_waiting_reply(state, speech_end_waiting=False)
                     state.quiet_from = 0.0
                 ok = await _send_realtime_safe(
@@ -1114,7 +1078,7 @@ async def _handle_server_message(
                     "step": step_id(cursor.state),
                 },
             )
-        if not state.awaiting_bot_reply or telemetry.get("end_requested"):
+        if not state.awaiting_bot_reply or state.end_requested:
             await _emit(ws, ws_lock, call_id, telemetry, "turn_complete", "")
 
     update = getattr(response, "session_resumption_update", None)
@@ -1219,7 +1183,7 @@ async def _gemini_loop(
         if (
             resume_speak
             and cursor.state.get("phase") == "asking"
-            and not telemetry.get("end_requested")
+            and not state.end_requested
         ):
             state.pending_speak_step = ""
             state.capture.speech_allowed = True
@@ -1261,15 +1225,15 @@ async def _watchdog_loop(
             if now - state.call_started_ts >= _HARD_LIMIT_SEC:
                 if cursor.state.get("phase") != "closing":
                     await _mark_closing(
-                        cursor, "time_limit", ws, ws_lock, call_id, telemetry
+                        cursor, "time_limit", ws, ws_lock, call_id, telemetry, state
                     )
                 stop.set()
                 return
-            if cursor.state.get("phase") == "closing" or telemetry.get("end_requested"):
-                played = _closing_audio_finished(telemetry, state, now)
-                waited = now - float(telemetry.get("end_requested_at") or now)
+            if cursor.state.get("phase") == "closing" or state.end_requested:
+                played = _closing_audio_finished(state, now)
+                waited = now - float(state.end_requested_at or now)
                 if played or waited > _CLOSING_MAX_WAIT_SEC:
-                    await _notify_ending(ws, ws_lock, telemetry)
+                    await _notify_ending(ws, ws_lock, state)
                     stop.set()
                     return
                 continue
@@ -1286,7 +1250,7 @@ async def _watchdog_loop(
                     cue = prompts.SILENCE_CHECK_IN_CUE
             if reason:
                 await _mark_closing(
-                    cursor, reason, ws, ws_lock, call_id, telemetry
+                    cursor, reason, ws, ws_lock, call_id, telemetry, state
                 )
                 cue = prompts.speak_cue_text(cursor.state, "close")
             if cue:
@@ -1330,7 +1294,7 @@ async def _watchdog_loop(
             state.nudges_for_current_turn += 1
             telemetry["watchdog_nudges"] += 1
             state.last_user_turn_ts = time.time()
-            nudge = prompts.speak_cue_text(cursor.state, "speak")
+            nudge = prompts.speak_cue_text(cursor.state, state.active_speak_kind)
             state.capture.speech_allowed = True
             ok = await _send_realtime_safe(
                 session, send_lock, state, stop, text=nudge
@@ -1394,7 +1358,7 @@ async def _browser_loop(
                 )
                 continue
             kind = payload.get("type")
-            if telemetry.get("end_requested") and kind in {"audio", "text", "speech_end", "nudge"}:
+            if state.end_requested and kind in {"audio", "text", "speech_end", "nudge"}:
                 continue
             if kind == "audio":
                 pcm = audio_recorder.pcm_bytes(payload.get("data") or "")
@@ -1416,7 +1380,7 @@ async def _browser_loop(
                 in_quick_stale = _in_quick_reply_stale_window(state, cursor.state)
                 cap = state.capture
                 if audio_recorder.pcm_rms(pcm) >= 0.02:
-                    _caller_heard(state, telemetry)
+                    _caller_heard(state)
                     if not in_quick_stale:
                         cap.begin_audio_speech(cursor.state, pcm_16k)
                         state.user_turn_step = step_id(cursor.state)
@@ -1445,7 +1409,6 @@ async def _browser_loop(
                     )
                     return
             elif kind == "speech_end":
-                _cancel_silence_close(state, telemetry)
                 now_ts = time.time()
                 already = _question_already_spoken(state, cursor.state)
                 playback_done = (
@@ -1468,8 +1431,9 @@ async def _browser_loop(
                 if state.awaiting_bot_reply:
                     state.last_user_turn_ts = time.time()
                 state.capture.speech_allowed = True
+                nudge = prompts.speak_cue_text(cursor.state, state.active_speak_kind)
                 ok = await _send_realtime_safe(
-                    session, send_lock, state, stop, text=prompts.WATCHDOG_NUDGE
+                    session, send_lock, state, stop, text=nudge
                 )
                 if not ok:
                     stop.set()
@@ -1489,7 +1453,7 @@ async def _browser_loop(
                     call_id,
                     telemetry,
                     "manual_nudge",
-                    prompts.WATCHDOG_NUDGE,
+                    nudge,
                 )
             elif kind == "text":
                 text = str(payload.get("text") or "").strip()
@@ -1523,7 +1487,7 @@ async def _browser_loop(
                     ws, ws_lock, call_id, telemetry, "user_transcript", text
                 )
             elif kind == "quick_reply":
-                if telemetry.get("end_requested") or cursor.state.get("phase") != "asking":
+                if state.end_requested or cursor.state.get("phase") != "asking":
                     continue
                 outcome = str(payload.get("outcome") or "").strip().lower()
                 if outcome not in ("clear", "concern"):
@@ -1570,9 +1534,10 @@ async def _browser_loop(
                         ws_lock,
                         call_id,
                         telemetry,
+                        state,
                     )
                     telemetry["user_turns"] = int(telemetry.get("user_turns") or 0) + 1
-                    _caller_heard(state, telemetry)
+                    _caller_heard(state)
                     cue_kind = "close"
                 else:
                     _arm_user_turn(state, telemetry)
@@ -1619,9 +1584,9 @@ async def _report_is_ready(
         return False
 
 
-def _closing_audio_finished(telemetry: dict, state: _TurnState, now: float) -> bool:
+def _closing_audio_finished(state: _TurnState, now: float) -> bool:
     return (
-        bool(telemetry.get("closing_heard"))
+        bool(state.closing_heard)
         and not state.bot_speaking
         and state.playback_ends_at > 0
         and now >= state.playback_ends_at + _CLOSING_AUDIO_GRACE_SEC
@@ -1631,13 +1596,13 @@ def _closing_audio_finished(telemetry: dict, state: _TurnState, now: float) -> b
 async def _notify_ending(
     ws: WebSocket,
     ws_lock: asyncio.Lock,
-    telemetry: dict | None,
+    state: _TurnState | None,
 ) -> None:
     """Tell the browser the outro is done so the report spinner can show."""
-    if telemetry is not None:
-        if telemetry.get("ending_sent"):
+    if state is not None:
+        if state.ending_sent:
             return
-        telemetry["ending_sent"] = True
+        state.ending_sent = True
     await _send_json(ws, ws_lock, {"type": "ending"})
 
 
@@ -1649,9 +1614,10 @@ async def _finalize(
     recorder: audio_recorder.CallAudioRecorder,
     on_call_completed: Callable[[int], Awaitable[bool] | bool] | None = None,
     cursor: _Cursor | None = None,
+    state: _TurnState | None = None,
 ) -> None:
     # Spinner first. PDF work happens after this, and a second send is skipped.
-    await _notify_ending(ws, ws_lock, telemetry)
+    await _notify_ending(ws, ws_lock, state)
     filename = ""
     duration = 0
     try:
@@ -1803,7 +1769,6 @@ async def handle_gemini_ws(
             return True
 
         call_id = db.create_call(
-            model,
             caller_name=caller_name,
             user_role=user_role,
             model_used=model,
@@ -1828,7 +1793,7 @@ async def handle_gemini_ws(
             {
                 "type": "session_started",
                 "call_id": call_id,
-                "engine": model,
+                "model": model,
                 "voice": voice,
                 "user_role": user_role,
                 "caller_name": caller_name,
@@ -1931,6 +1896,7 @@ async def handle_gemini_ws(
                     recorder,
                     on_call_completed,
                     cursor,
+                    state,
                 )
             except Exception:
                 await _send_json(

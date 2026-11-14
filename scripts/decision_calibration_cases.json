@@ -745,5 +745,113 @@
       "child_ref": "",
       "detail_present": true
     }
+  },
+  {
+    "id": "diag_hemophilia_hi",
+    "category": "diagnosis_guard",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married",
+        "children": [{"id": "child_1", "age_years": 4, "sex": "male"}]
+      },
+      "active_qid": "fam_bleeding",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": "हाँ, मामा के बेटे को डॉक्टर ने हीमोफीलिया बताया था"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "mentions_diagnosis": true,
+      "current_outcome": "concern",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": true
+    }
+  },
+  {
+    "id": "diag_duchenne_sickle",
+    "category": "diagnosis_guard",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married",
+        "children": [{"id": "child_1", "age_years": 6, "sex": "male"}]
+      },
+      "active_qid": "close_anything_else",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": "हाँ, पहले डॉक्टर ने ड्यूशेन मस्कुलर डिस्ट्रॉफी या सिकल सेल की शंका जताई थी"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "mentions_diagnosis": true,
+      "current_outcome": "concern",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": true
+    }
+  },
+  {
+    "id": "diag_thalassemia_major",
+    "category": "diagnosis_guard",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married",
+        "children": [{"id": "child_1", "age_years": 4, "sex": "male"}]
+      },
+      "active_qid": "fam_transfusion",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": "हाँ, भतीजी को थैलेसीमिया मेजर है, हर महीने खून चढ़ता है"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "mentions_diagnosis": true,
+      "current_outcome": "concern",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": true
+    }
+  },
+  {
+    "id": "diag_thalassemia_minor_carrier",
+    "category": "diagnosis_guard",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married",
+        "children": [{"id": "child_1", "age_years": 4, "sex": "male"}]
+      },
+      "active_qid": "preg_thalassemia",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": "हाँ, मेरी खून जाँच में थैलेसीमिया माइनर ट्रेट बताया गया था"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "mentions_diagnosis": false,
+      "current_outcome": "concern",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": null
+    }
   }
 ]

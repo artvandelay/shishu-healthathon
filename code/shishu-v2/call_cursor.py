@@ -25,7 +25,6 @@ _DEMOGRAPHIC_SKIP = frozenset({
     "unmarried", "about_to_marry", "no_children", "ever_pregnant_no",
 })
 _EARLY = frozenset({"intro_name", "intro_married", "intro_children"})
-_NO_YES = _EARLY
 _CHILD_GROUPS = frozenset({"birth", "body", "illness"})
 _PROFILE_KWARGS = frozenset({
     "caller_name", "marital_status", "children", "ever_pregnant", "child_count",
@@ -51,7 +50,6 @@ _HOLD_HI = {
 
 def new_cursor_state() -> dict:
     return {
-        "version": 2,
         "phase": "asking",
         "close_reason": None,
         "profile": {
@@ -75,7 +73,7 @@ def expect_yes_no(state: dict) -> bool:
         state.get("phase") == "asking"
         and state.get("pending_followup_idx") is None
         and not state.get("hold_reason")
-        and state.get("active_qid") not in _NO_YES
+        and state.get("active_qid") not in _EARLY
     )
 
 
@@ -149,11 +147,8 @@ def accepted_target(state: dict, target_qid: str) -> str:
     if target in _EARLY or target == "close_anything_else":
         return ""
     if target != "ever_pregnant":
-        try:
-            spec = get_spec(target)
-        except KeyError:
-            return ""
-        if spec.kind != "gate":
+        spec = _spec_or_none(target)
+        if spec is None or spec.kind != "gate":
             return ""
     entry = (state.get("answers") or {}).get(target)
     if not isinstance(entry, dict) or entry.get("state") not in _ANSWERED:
@@ -176,9 +171,7 @@ def has_answered_gates(state: dict) -> bool:
     past_intro = state.get("phase") != "asking" or (
         bool(active_qid) and active_qid not in _EARLY and active_qid != "intro_bridge"
     )
-    if past_intro and (state.get("profile") or {}).get("ever_pregnant") is not None:
-        return True
-    return False
+    return bool(past_intro and (state.get("profile") or {}).get("ever_pregnant") is not None)
 
 
 def is_answered_or_na(state: dict, qid: str) -> bool:
@@ -198,12 +191,7 @@ def ever_pregnant_prompt_hi() -> str:
 
 
 def _rewind_target(state: dict, target: str) -> dict:
-    """Ask an already-answered question again. Later answers stay put.
-
-    A concern left hanging on which-child or a follow-up is cleared so the
-    cursor lands on that question again after the clarified one is answered.
-    A close concern that already has the mother's words stays recorded.
-    """
+    """Ask an already-answered question again. Later answers stay put."""
     prev_qid = state.get("active_qid")
     pending = state.get("pending_followup_idx")
     if pending is not None and prev_qid and prev_qid != target:
@@ -222,7 +210,15 @@ def _rewind_target(state: dict, target: str) -> dict:
     return state
 
 
-def _revise_target(state: dict, target: str, outcome: str, child_ref: str, note: str) -> dict:
+def _revise_target(
+    state: dict,
+    target: str,
+    outcome: str,
+    child_ref: str,
+    note: str,
+    *,
+    diagnostic: bool = False,
+) -> dict:
     """Revise an earlier answer and stay on the question she is hearing now."""
     if outcome in ("retract", "clear"):
         state["answers"][target] = _blank("clear")
@@ -248,25 +244,22 @@ def _revise_target(state: dict, target: str, outcome: str, child_ref: str, note:
                     for later in spec.followups[1:]:
                         if not _slot_note(followups, later):
                             fid = later
-                            followups[fid] = {"state": "concern", "note": text}
+                            followups[fid] = _make_slot("concern", text, diagnostic=diagnostic)
                             break
                     if not fid:
                         fid = spec.followups[-1]
-                        followups[fid] = {
-                            "state": "concern",
-                            "note": _join_notes(_slot_note(followups, fid), text),
-                        }
+                        followups[fid] = _merge_slot(followups.get(fid), text, diagnostic=diagnostic)
                 else:
                     fid = spec.followups[0]
-                    followups[fid] = {
-                        "state": "concern",
-                        "note": _join_notes(_slot_note(followups, fid), text),
-                    }
+                    followups[fid] = _merge_slot(followups.get(fid), text, diagnostic=diagnostic)
+        prior_mother = _prior_mother_notes(prior)
+        next_mother = prior_mother if diagnostic else _join_notes(prior_mother, note)
         state["answers"][target] = _blank(
             "concern",
             note=_join_notes(str(prior.get("notes") or ""), note),
             child_ids=child_ids,
             followups=followups,
+            mother_note=next_mother,
         )
     _recompute(state)
     if _active_is_skipped(state):
@@ -281,6 +274,7 @@ def apply_turn(
     child_ref: str = "",
     note: str = "",
     followup_answered: bool = False,
+    diagnostic: bool = False,
 ) -> dict:
     if outcome not in _OUTCOMES:
         raise ValueError(f"unknown outcome {outcome!r}")
@@ -301,22 +295,22 @@ def apply_turn(
         return _resolve_ever(state, outcome)
     if state["active_qid"] == "close_anything_else":
         if state.get("pending_followup_idx") is None:
-            return _resolve_close(state, outcome, note)
-        return _resolve_close_detail(state, outcome, note)
+            return _resolve_close(state, outcome, note, followup_answered, diagnostic=diagnostic)
+        return _resolve_close_detail(state, outcome, note, diagnostic=diagnostic)
     if state.get("pending_followup_idx") == -1:
-        return _resolve_which_child(state, child_ref, note, outcome)
+        return _resolve_which_child(state, child_ref, note, outcome, diagnostic=diagnostic)
     if isinstance(state.get("pending_followup_idx"), int) and state["pending_followup_idx"] >= 0:
-        return _resolve_followup(state, outcome, note)
+        return _resolve_followup(state, outcome, note, diagnostic=diagnostic)
 
     spec = get_spec(state["active_qid"])
     if spec.kind == "profile":
         return state
     if spec.kind == "bridge":
-        _write_answer(state, spec.id, "clear", note, [])
+        _write_answer(state, spec.id, "clear", "", [])
         _recompute(state)
         _advance(state)
         return state
-    return _resolve_main(state, spec, outcome, child_ref, note, followup_answered)
+    return _resolve_main(state, spec, outcome, child_ref, note, followup_answered, diagnostic=diagnostic)
 
 
 def routable_qids() -> tuple[str, ...]:
@@ -397,19 +391,26 @@ def apply_interpreted_turn(state: dict, interpreted: dict) -> dict:
     if current_outcome not in _INTERPRETED_OUTCOMES:
         raise ValueError(f"unknown current_outcome {current_outcome!r}")
 
+    diagnostic_note = bool(data.get("diagnostic_note"))
     raw_profile = data.get("profile_updates")
+    has_profile_dict = isinstance(raw_profile, dict)
     profile_kwargs = (
         {
             key: value
             for key, value in raw_profile.items()
             if key in _PROFILE_KWARGS and value is not None
         }
-        if isinstance(raw_profile, dict)
+        if has_profile_dict
         else {}
+    )
+    should_run_profile = bool(profile_kwargs) or (
+        has_profile_dict
+        and state.get("active_qid") in _EARLY
+        and current_outcome != "clarify"
     )
     profile_applied = False
     skip_active_from_profile = False
-    if profile_kwargs:
+    if should_run_profile:
         prev_active_qid = state.get("active_qid")
         prev_hold = state.get("hold_reason")
         state, profile_hold = apply_profile(state, **profile_kwargs)
@@ -461,6 +462,7 @@ def apply_interpreted_turn(state: dict, interpreted: dict) -> dict:
             side_outcome,
             side_child_ref_resolved,
             side_note,
+            diagnostic=diagnostic_note,
         )
         side_applied = True
         if state.get("phase") != "asking":
@@ -505,6 +507,7 @@ def apply_interpreted_turn(state: dict, interpreted: dict) -> dict:
         child_ref=raw_child_ref,
         note=active_note,
         followup_answered=bool(data.get("followup_answered")),
+        diagnostic=diagnostic_note,
     )
 
 
@@ -620,15 +623,23 @@ def last_answered_prompt_hi(state: dict) -> tuple[str, str]:
     return last_qid, question_hi_for(state, spec)
 
 
-def children_label_hi(profile: dict) -> str:
-    """Format the children's names, ages, and sexes joined with ' · '."""
+def _select_children(profile: dict, child_ids: list[str] | None) -> list[dict]:
+    children = [c for c in (profile.get("children") or []) if isinstance(c, dict)]
+    if child_ids is None:
+        return children
+    wanted = {str(cid).strip() for cid in child_ids if str(cid).strip()}
+    if not wanted:
+        return []
+    return [c for c in _ordered_children(children) if str(c.get("id") or "") in wanted]
+
+
+def children_label_hi(profile: dict, child_ids: list[str] | None = None) -> str:
+    """Format the children's names, ages, and sexes in Hindi joined with ' · '."""
     if not isinstance(profile, dict):
         return ""
     sex_hi = {"male": "बेटा", "female": "बेटी"}
     bits = []
-    for child in profile.get("children") or []:
-        if not isinstance(child, dict):
-            continue
+    for child in _select_children(profile, child_ids):
         child_name = str(child.get("name") or "").strip()
         age = str(child.get("age_label_hi") or "").strip()
         sex = sex_hi.get(child.get("sex") or "", "")
@@ -638,8 +649,46 @@ def children_label_hi(profile: dict) -> str:
     return " · ".join(bits)
 
 
+def children_label_en(profile: dict, child_ids: list[str] | None = None) -> str:
+    """Format the children's ids, sexes, ages, and names in English."""
+    if not isinstance(profile, dict):
+        return ""
+    bits = []
+    for child in _select_children(profile, child_ids):
+        cid = str(child.get("id") or "").strip()
+        sex = str(child.get("sex") or "unknown").strip()
+        age = child.get("age_years")
+        name = str(child.get("name") or "").strip()
+        core = f"{cid} ({sex}, age {age}" + (f", {name})" if name else ")")
+        bits.append(core)
+    return ", ".join(bits)
+
+
+def _dedupe_clauses(raw_parts: list[object]) -> str:
+    parts: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_parts:
+        for clause in str(raw or "").split(";"):
+            cleaned = " ".join(clause.split())
+            if cleaned and cleaned.casefold() not in seen:
+                seen.add(cleaned.casefold())
+                parts.append(cleaned)
+    return "; ".join(parts)
+
+
+def merge_transcript_chunk(prev: str, chunk: str) -> str:
+    """Merge streaming or cumulative transcript chunks without duplicating prefixes."""
+    prev_s, chunk_s = str(prev or "").strip(), str(chunk or "").strip()
+    if not prev_s or chunk_s[: len(prev_s)] == prev_s:
+        return chunk_s
+    if not chunk_s or prev_s[-len(chunk_s) :] == chunk_s:
+        return prev_s
+    sep = "" if (prev_s[-1].isspace() or chunk_s[0] in ",.;:!?।") else " "
+    return prev_s + sep + chunk_s
+
+
 def answer_notes_text(entry: dict) -> str:
-    """Mother's words only: entry notes and follow-up slot notes, deduplicated."""
+    """Clinician-facing verbatim words: entry notes and follow-up slot notes, deduplicated."""
     if not isinstance(entry, dict):
         return ""
     raw_parts: list[object] = [entry.get("notes")]
@@ -648,14 +697,24 @@ def answer_notes_text(entry: dict) -> str:
         for val in followups.values():
             if isinstance(val, (dict, str)):
                 raw_parts.append(val.get("note") if isinstance(val, dict) else val)
-    parts: list[str] = []
-    seen: set[str] = set()
-    for raw in raw_parts:
-        cleaned = " ".join(str(raw or "").split())
-        if cleaned and cleaned.casefold() not in seen:
-            seen.add(cleaned.casefold())
-            parts.append(cleaned)
-    return "; ".join(parts)
+    return _dedupe_clauses(raw_parts)
+
+
+def mother_notes_text(entry: dict) -> str:
+    """Mother-facing words: omits any clause or follow-up slot flagged diagnostic by Decision API."""
+    if not isinstance(entry, dict):
+        return ""
+    base = entry["mother_notes"] if "mother_notes" in entry else entry.get("notes")
+    raw_parts: list[object] = [base]
+    followups = entry.get("followups")
+    if isinstance(followups, dict):
+        for val in followups.values():
+            if isinstance(val, dict):
+                if not val.get("diagnostic"):
+                    raw_parts.append(val.get("note"))
+            elif isinstance(val, str):
+                raw_parts.append(val)
+    return _dedupe_clauses(raw_parts)
 
 
 def cursor_from_call(call: dict | None) -> dict:
@@ -697,12 +756,14 @@ def question_hi_for(state: dict, spec) -> str:
     return spec.question_hi
 
 
-def _resolve_main(state, spec, outcome, child_ref, note, followup_answered) -> dict:
+def _resolve_main(
+    state, spec, outcome, child_ref, note, followup_answered, *, diagnostic: bool = False
+) -> dict:
     child_ids = _child_ids_for(state, spec, child_ref)
     followups = None
     if outcome == "concern" and followup_answered and note.strip() and spec.followups:
-        followups = {spec.followups[0]: {"state": "concern", "note": note.strip()}}
-    _write_answer(state, spec.id, outcome, note, child_ids, followups)
+        followups = {spec.followups[0]: _make_slot("concern", note.strip(), diagnostic=diagnostic)}
+    _write_answer(state, spec.id, outcome, note, child_ids, followups, diagnostic=diagnostic)
     _recompute(state)
     if outcome != "concern":
         _advance(state)
@@ -771,18 +832,29 @@ def _retract(state: dict) -> dict:
     return state
 
 
-def _resolve_close(state: dict, outcome: str, note: str) -> dict:
-    if outcome == "concern" and not note.strip():
+def _resolve_close(
+    state: dict,
+    outcome: str,
+    note: str,
+    followup_answered: bool = False,
+    *,
+    diagnostic: bool = False,
+) -> dict:
+    has_detail = bool(note.strip()) and (followup_answered or bool(note.strip()))
+    if outcome == "concern" and not has_detail:
         state["pending_followup_idx"] = 0
         state["step_attempts"] = 0
         return state
     if outcome == "concern":
         prior = state["answers"].get("close_anything_else") or _blank("concern")
+        prior_mother = _prior_mother_notes(prior)
+        next_mother = prior_mother if diagnostic else _join_notes(prior_mother, note)
         state["answers"]["close_anything_else"] = _blank(
             "concern",
             note=_join_notes(prior.get("notes") or "", note),
             child_ids=prior.get("child_ids") or [],
             followups=prior.get("followups") or {},
+            mother_note=next_mother,
         )
         state["pending_followup_idx"] = None
         state["step_attempts"] = 0
@@ -791,23 +863,30 @@ def _resolve_close(state: dict, outcome: str, note: str) -> dict:
     if outcome in ("clear", "unknown"):
         prior = state["answers"].get("close_anything_else")
         if not prior or prior.get("state") != "concern":
-            _write_answer(state, "close_anything_else", outcome, note, [])
+            _write_answer(state, "close_anything_else", outcome, "", [])
         _recompute(state)
         _advance(state)
     return state
 
 
-def _resolve_close_detail(state: dict, outcome: str, note: str) -> dict:
+def _resolve_close_detail(
+    state: dict, outcome: str, note: str, *, diagnostic: bool = False
+) -> dict:
     text = note.strip()
     if text and outcome != "clarify":
         prior = state["answers"].get("close_anything_else") or _blank("concern")
         followups = dict(prior.get("followups") or {})
-        followups["open_concern_detail"] = {"state": "concern", "note": text}
+        followups["open_concern_detail"] = _merge_slot(
+            followups.get("open_concern_detail"), text, diagnostic=diagnostic
+        )
+        prior_mother = _prior_mother_notes(prior)
+        next_mother = prior_mother if diagnostic else _join_notes(prior_mother, text)
         state["answers"]["close_anything_else"] = _blank(
             "concern",
             note=_join_notes(prior.get("notes") or "", text),
             child_ids=prior.get("child_ids") or [],
             followups=followups,
+            mother_note=next_mother,
         )
         state["pending_followup_idx"] = None
         state["step_attempts"] = 0
@@ -831,7 +910,17 @@ def _resolve_close_detail(state: dict, outcome: str, note: str) -> dict:
     return state
 
 
-def _resolve_which_child(state: dict, child_ref: str, note: str, outcome: str) -> dict:
+def _append_entry_note(answer: dict, note: str, *, diagnostic: bool) -> None:
+    if not note.strip():
+        return
+    prior_mother = _prior_mother_notes(answer)
+    answer["notes"] = _join_notes(answer.get("notes") or "", note)
+    answer["mother_notes"] = prior_mother if diagnostic else _join_notes(prior_mother, note)
+
+
+def _resolve_which_child(
+    state: dict, child_ref: str, note: str, outcome: str, *, diagnostic: bool = False
+) -> dict:
     qid = state["active_qid"]
     spec = get_spec(qid)
     answer = state["answers"].get(qid) or _blank("concern")
@@ -839,20 +928,18 @@ def _resolve_which_child(state: dict, child_ref: str, note: str, outcome: str) -
     if ids:
         answer["child_ids"] = ids
         answer["state"] = "concern"
-        if note.strip():
-            answer["notes"] = _join_notes(answer.get("notes") or "", note)
+        _append_entry_note(answer, note, diagnostic=diagnostic)
         state["answers"][qid] = answer
         state["step_attempts"] = 0
         return _after_child_known(state, spec)
     if outcome == "unknown":
         answer["child_ids"] = []
-        if note.strip():
-            answer["notes"] = _join_notes(answer.get("notes") or "", note)
+        _append_entry_note(answer, note, diagnostic=diagnostic)
         state["answers"][qid] = answer
         state["step_attempts"] = 0
         return _after_child_known(state, spec)
     if note.strip():
-        answer["notes"] = _join_notes(answer.get("notes") or "", note)
+        _append_entry_note(answer, note, diagnostic=diagnostic)
         state["answers"][qid] = answer
     state["step_attempts"] = int(state.get("step_attempts") or 0) + 1
     if state["step_attempts"] < MAX_STEP_ATTEMPTS:
@@ -883,7 +970,9 @@ def _followup_unresolved(outcome: str, note: str) -> bool:
     return outcome not in _ANSWERED and not note.strip()
 
 
-def _resolve_followup(state: dict, outcome: str, note: str) -> dict:
+def _resolve_followup(
+    state: dict, outcome: str, note: str, *, diagnostic: bool = False
+) -> dict:
     spec = get_spec(state["active_qid"])
     idx = state["pending_followup_idx"]
     fid = spec.followups[idx]
@@ -891,11 +980,11 @@ def _resolve_followup(state: dict, outcome: str, note: str) -> dict:
         state["step_attempts"] = int(state.get("step_attempts") or 0) + 1
         if state["step_attempts"] < MAX_STEP_ATTEMPTS:
             return state
-        outcome, note = "unknown", ""
+        outcome, note, diagnostic = "unknown", "", False
     answer = state["answers"].get(spec.id) or _blank("concern")
     followups = dict(answer.get("followups") or {})
     stored = outcome if outcome in _ANSWERED else "concern"
-    followups[fid] = {"state": stored, "note": note.strip()}
+    followups[fid] = _make_slot(stored, note.strip(), diagnostic=diagnostic)
     answer["followups"] = followups
     if answer.get("state") not in _ANSWERED:
         answer["state"] = "concern"
@@ -959,14 +1048,8 @@ def _needs_ever_pregnant(state: dict) -> bool:
 
 
 def _active_is_skipped(state: dict) -> bool:
-    qid = state.get("active_qid")
-    if not qid or qid == "ever_pregnant":
-        return False
-    try:
-        spec = get_spec(qid)
-    except KeyError:
-        return False
-    return _is_skipped(spec, state)
+    spec = _spec_or_none(state.get("active_qid"))
+    return False if spec is None else _is_skipped(spec, state)
 
 
 def _on_profile_step(state: dict) -> bool:
@@ -1029,16 +1112,18 @@ def _which_child_hi(children: list) -> str:
         label = child.get("age_label_hi") or _age_label(float(child["age_years"]))
         name = (child.get("name") or "").strip()
         sex = child.get("sex")
+        is_female = sex == "female"
+        post = "वाली" if is_female else "वाले"
         if name:
-            phrase = f"{label} वाले {name}"
+            phrase = f"{label} {post} {name}"
         elif sex == "male":
-            phrase = f"{label} वाले बेटा"
-        elif sex == "female":
-            phrase = f"{label} वाले बेटी"
+            phrase = f"{label} वाले बेटे"
+        elif is_female:
+            phrase = f"{label} वाली बेटी"
         else:
             phrase = f"{label} वाले"
         if index == middle:
-            phrase += " (बीच वाले)"
+            phrase += " (बीच वाली)" if is_female else " (बीच वाले)"
         parts.append(phrase)
     if len(parts) >= 2:
         listed = ", ".join(parts[:-1]) + ", या " + parts[-1]
@@ -1129,18 +1214,55 @@ def _skip_hits(spec, state: dict) -> tuple[str, ...]:
 
 def _has_family_concern(state: dict) -> bool:
     for qid, answer in state["answers"].items():
-        if qid == "fam_same_problem" or not str(qid).startswith("fam_"):
+        if qid == "fam_same_problem":
             continue
-        if isinstance(answer, dict) and answer.get("state") == "concern":
-            return True
+        spec = _spec_or_none(str(qid))
+        if spec is not None and spec.group == "family":
+            if isinstance(answer, dict) and answer.get("state") == "concern":
+                return True
     return False
 
 
-def _blank(status: str, note: str = "", child_ids: list | None = None, followups: dict | None = None) -> dict:
+def _prior_mother_notes(entry: dict) -> str:
+    if not isinstance(entry, dict):
+        return ""
+    if "mother_notes" in entry:
+        return str(entry.get("mother_notes") or "")
+    return str(entry.get("notes") or "")
+
+
+def _make_slot(status: str, note: str, *, diagnostic: bool = False) -> dict:
+    slot: dict = {"state": status, "note": note}
+    if diagnostic and note:
+        slot["diagnostic"] = True
+    return slot
+
+
+def _merge_slot(prior_slot: object, extra_note: str, *, diagnostic: bool = False) -> dict:
+    prev_note = prior_slot.get("note", "") if isinstance(prior_slot, dict) else ""
+    prev_diag = bool(prior_slot.get("diagnostic")) if isinstance(prior_slot, dict) else False
+    return _make_slot(
+        "concern",
+        _join_notes(str(prev_note or ""), extra_note),
+        diagnostic=prev_diag or diagnostic,
+    )
+
+
+def _blank(
+    status: str,
+    note: str = "",
+    child_ids: list | None = None,
+    followups: dict | None = None,
+    *,
+    mother_note: str | None = None,
+) -> dict:
+    clean_note = note or ""
+    clean_mother = clean_note if mother_note is None else (mother_note or "")
     return {
         "state": status,
         "child_ids": list(child_ids or []),
-        "notes": note or "",
+        "notes": clean_note,
+        "mother_notes": clean_mother,
         "followups": dict(followups or {}),
     }
 
@@ -1158,17 +1280,25 @@ def _recompute(state: dict) -> None:
             del state["answers"][spec.id]
 
 
-def _write_answer(state, qid, outcome, note, child_ids, followups=None) -> None:
+def _write_answer(
+    state, qid, outcome, note, child_ids, followups=None, *, diagnostic: bool = False
+) -> None:
     prior = state["answers"].get(qid) or {}
     keep = prior.get("state") in _ANSWERED
     chosen = followups
     if chosen is None:
         chosen = prior.get("followups") if keep else {}
+    final_note = note or (prior.get("notes") if keep else "") or ""
+    if diagnostic and note:
+        final_mother = (_prior_mother_notes(prior) if keep else "") or ""
+    else:
+        final_mother = note or (_prior_mother_notes(prior) if keep else "") or ""
     state["answers"][qid] = _blank(
         outcome,
-        note=note or (prior.get("notes") if keep else "") or "",
+        note=final_note,
         child_ids=list(child_ids or (prior.get("child_ids") if keep else []) or []),
         followups=dict(chosen or {}),
+        mother_note=final_mother,
     )
 
 
@@ -1204,16 +1334,4 @@ def _slot_note(followups: dict, fid: str) -> str:
 
 
 def _join_notes(existing: str, extra: str) -> str:
-    parts: list[str] = []
-    seen: set[str] = set()
-    for source in (existing, extra):
-        for clause in str(source or "").split(";"):
-            cleaned = " ".join(clause.split())
-            if not cleaned:
-                continue
-            key = cleaned.casefold()
-            if key in seen:
-                continue
-            seen.add(key)
-            parts.append(cleaned)
-    return "; ".join(parts)
+    return _dedupe_clauses([existing, extra])

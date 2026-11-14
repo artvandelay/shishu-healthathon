@@ -6,7 +6,6 @@ import hmac
 import json
 import logging
 import os
-import re
 import secrets
 import threading
 import time
@@ -30,12 +29,9 @@ import seed
 logger = logging.getLogger(__name__)
 
 COOKIE_NAME = "shishu_auth"
-ROLE_COOKIE = "shishu_role"
-USER_COOKIE = "shishu_user"
 _STATIC = Path(__file__).resolve().parent / "static"
 _PUBLIC_PATHS = {"/health", "/login", "/api/login", "/api/logout", "/static/login.html"}
 _COOKIE_MAX_AGE = 60 * 60 * 24 * 14
-_CLINIC_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 _STATIC_TYPES = {
     ".css": "text/css",
     ".html": "text/html",
@@ -148,6 +144,11 @@ def _require_admin(request: Request) -> None:
 
 
 def _client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        first = forwarded.split(",")[0].strip()
+        if first:
+            return first
     client = request.client
     if client is None:
         return ""
@@ -258,7 +259,13 @@ def _page(name: str) -> FileResponse:
 
 def _clinic_slug(value: str) -> str:
     slug = (value or "").strip().lower()
-    return slug if _CLINIC_RE.fullmatch(slug) else ""
+    if not (1 <= len(slug) <= 40):
+        return ""
+    if not (slug[0].isascii() and slug[0].isalnum()):
+        return ""
+    if not all(ch.isascii() and (ch.isalnum() or ch in "_-") for ch in slug):
+        return ""
+    return slug
 
 
 @app.get("/health")
@@ -318,10 +325,9 @@ def _clear_named_cookie(response: JSONResponse, name: str, secure: bool) -> None
 
 def _clear_session(response: JSONResponse, request: Request) -> None:
     secure = _cookie_secure(request)
-    for name in (COOKIE_NAME, ROLE_COOKIE, USER_COOKIE):
-        _clear_named_cookie(response, name, False)
-        if secure:
-            _clear_named_cookie(response, name, True)
+    _clear_named_cookie(response, COOKIE_NAME, False)
+    if secure:
+        _clear_named_cookie(response, COOKIE_NAME, True)
 
 
 @app.post("/api/login")
@@ -363,53 +369,10 @@ def logout(request: Request):
 @app.get("/api/config")
 def get_config(request: Request) -> dict:
     role, username = _identity_from_cookies(request.cookies)
-    settings = db.get_all_settings()
-    settings["active_engine"] = "gemini"
     return {
-        "active_engine": "gemini",
         "role": role or "user",
         "username": username,
-        "settings": settings,
     }
-
-
-@app.get("/api/settings")
-def get_settings(request: Request) -> dict:
-    _require_admin(request)
-    return db.get_all_settings()
-
-
-@app.post("/api/settings")
-async def post_settings(request: Request):
-    _require_admin(request)
-    try:
-        body = await request.json()
-    except Exception:
-        body = None
-    if not isinstance(body, dict):
-        raise HTTPException(status_code=400, detail="Expected a settings object")
-    body["active_engine"] = "gemini"
-    settings = db.update_settings(body)
-    return {"ok": True, "settings": settings}
-
-
-@app.post("/api/config")
-async def set_config(request: Request):
-    _require_admin(request)
-    try:
-        body = await request.json()
-    except Exception:
-        body = None
-    engine = body.get("active_engine") if isinstance(body, dict) else None
-    if isinstance(engine, str):
-        engine = engine.strip().lower()
-    # A stored or posted "openai" value is the removed live-voice engine.
-    if engine == "openai":
-        engine = "gemini"
-    if engine != "gemini":
-        raise HTTPException(status_code=400, detail="active_engine must be gemini")
-    db.set_setting("active_engine", "gemini")
-    return {"ok": True, "active_engine": "gemini"}
 
 
 @app.get("/api/bugs")

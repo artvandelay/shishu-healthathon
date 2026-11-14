@@ -70,8 +70,35 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(bug.status_code, 200)
         self.assertNotIn("snapshot", bug.json()["bug"])
 
+    def test_client_ip_uses_forwarded_header_and_falls_back_to_client_host(self):
+        class Req:
+            def __init__(self, headers, host):
+                self.headers = headers
+                self.client = None if host is None else type("C", (), {"host": host})()
+
+        self.assertEqual(
+            app._client_ip(Req({"x-forwarded-for": "203.0.113.10, 10.0.0.1"}, "10.0.0.2")),
+            "203.0.113.10",
+        )
+        self.assertEqual(
+            app._client_ip(Req({"x-forwarded-for": "   "}, "198.51.100.4")),
+            "198.51.100.4",
+        )
+        self.assertEqual(app._client_ip(Req({}, "198.51.100.4")), "198.51.100.4")
+        self.assertEqual(app._client_ip(Req({}, None)), "")
+
+    def test_config_is_minimal_and_dead_settings_endpoints_are_removed(self):
+        admin = TestClient(app.app)
+        admin.post("/api/login", json={"username": "Ada", "passcode": app._admin_passcode()})
+        cfg = admin.get("/api/config")
+        self.assertEqual(cfg.status_code, 200)
+        self.assertEqual(cfg.json(), {"role": "admin", "username": "Ada"})
+        self.assertEqual(admin.post("/api/config", json={"active_engine": "gemini"}).status_code, 405)
+        self.assertEqual(admin.get("/api/settings").status_code, 404)
+        self.assertEqual(admin.post("/api/settings", json={"gemini_voice": "Kore"}).status_code, 404)
+
     def test_bug_report_does_not_copy_another_callers_transcript(self):
-        owner = db.create_call("gemini", caller_name="Owner")
+        owner = db.create_call(caller_name="Owner")
         db.append_transcript(owner, "user", "Secret line from Owner.")
         db.complete_call(owner, 10, "", "note", "note")
         user = TestClient(app.app)
@@ -128,36 +155,6 @@ class CaptionAndCopyTests(unittest.TestCase):
         self.assertTrue(res.headers["content-type"].startswith("image/png"))
         self.assertGreater(len(res.content), 1000)
 
-    def test_caption_filter_drops_planner_notes_and_tool_names(self):
-        leaked = (
-            "BCG ki jagah par sujan hui? Wait for the user's audio input. "
-            "Current domain: Child physical anomalies."
-        )
-        self.assertEqual(
-            prompts.clean_assistant_caption(leaked),
-            "BCG ki jagah par sujan hui?",
-        )
-        self.assertTrue(prompts.leaked_caption(leaked, prompts.clean_assistant_caption(leaked)))
-        mixed = "Aasani se neel پڑ jaate hain?"
-        self.assertNotIn("پ", prompts.clean_assistant_caption(mixed))
-        tool = "next_question active_qid SYSTEM CUE: कहो क्या नाल गिरी?"
-        cleaned = prompts.clean_assistant_caption(tool)
-        self.assertNotIn("next_question", cleaned)
-        self.assertNotIn("active_qid", cleaned)
-        self.assertNotIn("SYSTEM CUE", cleaned)
-        self.assertTrue(prompts.leaked_caption(tool, cleaned))
-        delta = " haan"
-        self.assertEqual(prompts.clean_assistant_caption(delta, exact=True), " haan")
-        note = "*Note: Audio is in English, but requested reply language is Hindi.*"
-        self.assertEqual(prompts.clean_assistant_caption(note), "")
-
-    def test_clean_user_caption_strips_noise_without_semantic_rewriting(self):
-        self.assertEqual(prompts.clean_user_caption("não"), "não")
-        self.assertEqual(prompts.clean_user_caption("네"), "")
-        self.assertEqual(prompts.clean_user_caption("हाँ   네  सब ठीक है"), "हाँ सब ठीक है")
-        self.assertEqual(prompts.clean_user_caption("6개월"), "6")
-        self.assertEqual(prompts.clean_user_caption("बेटा  پ  ठीक है"), "बेटा ठीक है")
-
     def test_live_prompt_uses_only_the_cursor_tools(self):
         text = prompts.GEMINI_LIVE_SYSTEM_PROMPT
         self.assertIn("next_question", text)
@@ -175,22 +172,10 @@ class CaptionAndCopyTests(unittest.TestCase):
         self.assertEqual(gemini_live._session_settings({})["voice"], "Kore")
         self.assertEqual(db.DEFAULT_SETTINGS["gemini_model"], "gemini-3.1-flash-live-preview")
 
-    def test_persisted_openai_engine_migrates_to_gemini(self):
-        db.set_setting("active_engine", "openai")
-        db.set_setting("openai_model", "gpt-live-1")
-        db.set_setting("openai_voice", "marin")
-        db.set_setting("openai_backend_model", "gpt-5.6-luna")
-        db._init_db()
-        settings = db.get_all_settings()
-        self.assertEqual(settings["active_engine"], "gemini")
-        self.assertNotIn("openai_model", settings)
-        self.assertNotIn("openai_voice", settings)
-        self.assertNotIn("openai_backend_model", settings)
-
 
 class Stage6BAccessTests(unittest.TestCase):
     def test_user_cannot_fetch_a_pdf_by_call_id(self):
-        call_id = db.create_call("gemini", caller_name="Pooja")
+        call_id = db.create_call(caller_name="Pooja")
         db.complete_call(call_id, 30, "", "", "")
         token = db.get_call(call_id)["share_token"]
         user = TestClient(app.app)
@@ -217,7 +202,7 @@ class Stage6BAccessTests(unittest.TestCase):
         self.assertEqual(filed.status_code, 200)
         self.assertEqual(len(filed.json()["bug"]["note"]), 2000)
 
-        call_id = db.create_call("gemini", caller_name="Pooja")
+        call_id = db.create_call(caller_name="Pooja")
         db.append_transcript(call_id, "user", "Secret line from this call.")
         db.complete_call(call_id, 10, "", "", "")
         token = db.get_call(call_id)["share_token"]
@@ -252,7 +237,7 @@ class Stage6BAccessTests(unittest.TestCase):
             blocked = client.post("/api/login", json={"username": "Pooja", "passcode": "wrong"})
             self.assertEqual(blocked.status_code, 429)
 
-            call_id = db.create_call("gemini", caller_name="Pooja")
+            call_id = db.create_call(caller_name="Pooja")
             db.complete_call(call_id, 12, "", "", "")
             token = db.get_call(call_id)["share_token"]
             for _ in range(app._PDF_REBUILDS):
@@ -271,7 +256,7 @@ class Stage6BAccessTests(unittest.TestCase):
         self.assertIsNone(hold)
         state["phase"] = "closing"
         state["close_reason"] = "complete"
-        call_id = db.create_call("gemini", caller_name="Pooja")
+        call_id = db.create_call(caller_name="Pooja")
         db.save_cursor_state(call_id, state)
         db.complete_call(call_id, 20, "", "", "")
 
@@ -291,26 +276,74 @@ class Stage6BAccessTests(unittest.TestCase):
         seed.ensure_seeded()
         calls = db.list_calls()
         self.assertEqual(len(calls), 2)
-        explained = []
+        by_name = {}
+        admin = TestClient(app.app)
+        admin.post("/api/login", json={"username": "admin", "passcode": app._admin_passcode()})
         for row in calls:
+            self.assertNotIn("findings", row)
             full = db.get_call(row["id"])
+            self.assertNotIn("findings", full)
+            self.assertEqual(full["cursor_state"]["phase"], "closing")
             self.assertEqual(full["cursor_state"]["close_reason"], "complete")
             self.assertTrue(full["summary_mother"])
+            self.assertTrue(full["summary_doctor"])
             path = os.path.join(db.DATA_DIR, "audio", full["audio_path"])
             with wave.open(path) as handle:
                 self.assertEqual(handle.getnchannels(), 2)
                 self.assertEqual(handle.getframerate(), 16000)
                 self.assertEqual(handle.getsampwidth(), 2)
-            explained.extend(
-                turn["text"]
-                for turn in full["transcript"]
-                if "carrier blood check" in turn["text"]
+
+            get_pdf = admin.get(f"/api/calls/{row['id']}/mother.pdf")
+            self.assertEqual(get_pdf.status_code, 200)
+            self.assertTrue(get_pdf.content.startswith(b"%PDF"))
+
+            by_token = admin.get(f"/api/calls/by-token/{full['share_token']}/mother.pdf")
+            self.assertEqual(by_token.status_code, 200)
+            self.assertEqual(by_token.content, get_pdf.content)
+
+            rebuilt = admin.post(f"/api/calls/{row['id']}/mother.pdf")
+            self.assertEqual(rebuilt.status_code, 200)
+            self.assertTrue(rebuilt.content.startswith(b"%PDF"))
+
+            after_rebuild = admin.get(f"/api/calls/{row['id']}/mother.pdf")
+            self.assertEqual(after_rebuild.status_code, 200)
+            self.assertEqual(after_rebuild.content, rebuilt.content)
+
+            by_name[full["caller_name"]] = full
+
+        self.assertEqual(set(by_name), {"शिल्पा", "गीता"})
+        shilpa = by_name["शिल्पा"]
+        self.assertTrue(shilpa["red_flags"])
+        shilpa_answers = shilpa["cursor_state"]["answers"]
+        for qid in ("birth_jaundice", "body_joint_swelling", "preg_conditions", "fam_infant_death"):
+            self.assertEqual(shilpa_answers[qid]["state"], "concern")
+        self.assertIn(
+            "तीन दिन नीली लाइट में रखा",
+            shilpa_answers["birth_jaundice"]["followups"]["jaundice_days"]["note"],
+        )
+        self.assertIn(
+            "5 महीने का बेटा",
+            shilpa_answers["fam_infant_death"]["followups"]["infant_death_age"]["note"],
+        )
+        self.assertIn(
+            "झटके आने से",
+            shilpa_answers["fam_infant_death"]["followups"]["infant_death_cause"]["note"],
+        )
+
+        geeta = by_name["गीता"]
+        self.assertEqual(geeta["red_flags"], [])
+        geeta_answers = geeta["cursor_state"]["answers"]
+        self.assertTrue(
+            all(
+                entry.get("state") in ("clear", "not_applicable")
+                for entry in geeta_answers.values()
             )
-        self.assertEqual(len(explained), 1)
-        text = explained[0].lower()
-        self.assertIn("stays healthy", text)
-        self.assertIn("carrier", text)
-        self.assertNotIn("transfusion", text)
-        self.assertNotIn("severe", text)
-        self.assertNotIn("baar-baar khoon", text)
-        self.assertNotIn("does not form normally", text)
+        )
+        clarified = [
+            turn["text"]
+            for turn in geeta["transcript"]
+            if "थैलेसीमिया माइनर या ट्रेट" in turn["text"] and turn["role"] == "assistant"
+        ]
+        self.assertEqual(len(clarified), 1)
+        self.assertNotIn("transfusion", clarified[0].lower())
+        self.assertNotIn("baar-baar", clarified[0].lower())

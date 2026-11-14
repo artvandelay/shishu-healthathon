@@ -47,6 +47,7 @@ def _test_thresholds() -> decisions.DecisionThresholds:
         danger_now_min_yes=0.80,
         caller_stop_min_yes=0.80,
         mentions_profile_min_yes=0.65,
+        mentions_diagnosis_min_yes=0.60,
         detail_present_min_yes=0.65,
         outcome_min_confidence=0.65,
         outcome_min_margin=0.15,
@@ -102,6 +103,8 @@ class SchemaBuilderTests(unittest.TestCase):
         questions = req["questions"]
         for qkey in questions:
             self.assertRegex(qkey, r"^[A-Za-z0-9_-]{1,64}$")
+        self.assertIn("mentions_diagnosis", questions)
+        self.assertEqual(questions["mentions_diagnosis"]["type"], "noul")
 
         side_criteria = questions["side_qid"]["criteria"]
         self.assertEqual(len(side_criteria), 59)
@@ -157,6 +160,7 @@ class SchemaBuilderTests(unittest.TestCase):
         req_ever = decisions.build_turn_request(ever_state, utterance_text="नहीं")
         self.assertEqual(_parsed_input(req_ever)["active_question"], call_cursor._EVER_PREGNANT_HI)
         self.assertNotIn("detail_present", req_ever["questions"])
+        self.assertIn("mentions_diagnosis", req_ever["questions"])
         self.assertIn("side_intent", req_ever["questions"])
         self.assertIn("side_qid", req_ever["questions"])
 
@@ -167,6 +171,7 @@ class SchemaBuilderTests(unittest.TestCase):
         close_more = apply_turn(close, "concern", note="पेट दर्द")
         req_more = decisions.build_turn_request(close_more, utterance_text="नहीं")
         self.assertEqual(_parsed_input(req_more)["active_question"], call_cursor._CLOSE_MORE_HI)
+        self.assertIn("mentions_diagnosis", req_more["questions"])
         self.assertIn("detail_present", req_more["questions"])
 
     def test_conditional_child_ref_and_detail_present_across_step_kinds(self):
@@ -335,7 +340,7 @@ class ThresholdAndGuardTests(unittest.TestCase):
             self.assertNotIn(forbidden, found_floats, forbidden)
 
     def test_thresholds_validation_and_probabilities_required(self):
-        self.assertEqual(len(decisions._ALL_NUMERIC_THRESHOLD_FIELDS), 12)
+        self.assertEqual(len(decisions._ALL_NUMERIC_THRESHOLD_FIELDS), 13)
         self.assertNotIn("calibrated", decisions.DecisionThresholds.__dataclass_fields__)
 
         state = cursor_tests._clear_until(
@@ -1091,6 +1096,56 @@ class TransportRetryTests(unittest.TestCase):
 
         with self.assertRaises(FileNotFoundError):
             decisions.load_thresholds(APP_DIR / "nonexistent_thresholds.json")
+
+    def test_mentions_diagnosis_sets_diagnostic_note_and_isolates_mother_notes(self):
+        thresholds = _test_thresholds()
+        state = cursor_tests._clear_until(
+            cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
+            "body_bleeding_bruise",
+        )
+        diag_utt = "हाँ डॉक्टर ने Hemophilia बताया है"
+        diag_answers = {
+            "danger_now": _noul(0.01),
+            "caller_stop": _noul(0.01),
+            "mentions_profile": _noul(0.01),
+            "mentions_diagnosis": _noul(0.88),
+            "current_outcome": _choice("concern", {"concern": 0.94, "other": 0.04, "clear": 0.02}),
+            "side_intent": _choice("other", {"other": 0.96, "add_concern": 0.04}),
+            "side_qid": _choice("other", {"other": 0.96, "birth_nicu": 0.04}),
+        }
+        diag_interp = decisions.interpret_turn_decision(
+            state, diag_answers, utterance_text=diag_utt, thresholds=thresholds
+        )
+        self.assertTrue(diag_interp.cursor_payload["diagnostic_note"])
+        self.assertEqual(diag_interp.diagnostics["mentions_diagnosis"], 0.88)
+        updated_diag = apply_interpreted_turn(state, diag_interp.cursor_payload)
+        diag_entry = updated_diag["answers"]["body_bleeding_bruise"]
+        self.assertEqual(call_cursor.answer_notes_text(diag_entry), diag_utt)
+        self.assertEqual(call_cursor.mother_notes_text(diag_entry), "")
+
+        thal_state = cursor_tests._clear_until(
+            cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
+            "preg_thalassemia",
+        )
+        routine_utt = "हाँ थैलेसीमिया माइनर निकला था"
+        routine_answers = {
+            "danger_now": _noul(0.01),
+            "caller_stop": _noul(0.01),
+            "mentions_profile": _noul(0.01),
+            "mentions_diagnosis": _noul(0.12),
+            "current_outcome": _choice("concern", {"concern": 0.93, "other": 0.04, "clear": 0.03}),
+            "side_intent": _choice("other", {"other": 0.96, "add_concern": 0.04}),
+            "side_qid": _choice("other", {"other": 0.96, "birth_nicu": 0.04}),
+        }
+        routine_interp = decisions.interpret_turn_decision(
+            thal_state, routine_answers, utterance_text=routine_utt, thresholds=thresholds
+        )
+        self.assertFalse(routine_interp.cursor_payload["diagnostic_note"])
+        self.assertEqual(routine_interp.diagnostics["mentions_diagnosis"], 0.12)
+        updated_routine = apply_interpreted_turn(thal_state, routine_interp.cursor_payload)
+        routine_entry = updated_routine["answers"]["preg_thalassemia"]
+        self.assertEqual(call_cursor.answer_notes_text(routine_entry), routine_utt)
+        self.assertEqual(call_cursor.mother_notes_text(routine_entry), routine_utt)
 
 
 if __name__ == "__main__":

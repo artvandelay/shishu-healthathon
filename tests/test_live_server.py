@@ -213,28 +213,41 @@ class LiveConfigAndStartupTests(unittest.TestCase):
         for forbidden in ("target_qid", "child_ref", "outcome", "marital_status", "caller_stop", "ever_pregnant", "emergency"):
             self.assertNotIn(forbidden, prompt)
 
-        leaked = "next_question कहो क्या नाल गिरी?"
-        cleaned = prompts.clean_assistant_caption(leaked)
-        self.assertEqual(cleaned, "कहो क्या नाल गिरी?")
-        self.assertTrue(prompts.leaked_caption(leaked, cleaned))
-
         cfg = gemini_live._live_config({"gemini_model": "gemini-3.1-flash-live-preview"})
         self.assertEqual(cfg.system_instruction.parts[0].text, prompt)
         self.assertEqual(cfg.speech_config.voice_config.prebuilt_voice_config.voice_name, "Kore")
         self.assertEqual(list(cfg.output_audio_transcription.language_codes), ["hi-IN"])
         self.assertEqual(list(cfg.input_audio_transcription.language_codes), ["hi-IN"])
+        self.assertEqual(cfg.thinking_config.thinking_level, "MINIMAL")
         decls = cfg.tools[0].function_declarations
         self.assertEqual([d.name for d in decls], ["next_question"])
         self.assertEqual(dict(decls[0].parameters.properties or {}), {})
 
-        older = gemini_live._live_config({"gemini_model": "gemini-2.0-flash-live"})
-        self.assertFalse(older.output_audio_transcription.language_codes)
-        self.assertFalse(older.input_audio_transcription.language_codes)
+        custom_cfg = gemini_live._live_config({"gemini_model": "custom-live-model"})
+        self.assertEqual(list(custom_cfg.output_audio_transcription.language_codes), ["hi-IN"])
+        self.assertEqual(list(custom_cfg.input_audio_transcription.language_codes), ["hi-IN"])
+        self.assertEqual(custom_cfg.thinking_config.thinking_level, "MINIMAL")
+        self.assertFalse(hasattr(prompts, "WATCHDOG_NUDGE"))
+        self.assertFalse(hasattr(prompts, "clean_assistant_caption"))
+        self.assertFalse(hasattr(prompts, "clean_user_caption"))
+        self.assertFalse(hasattr(prompts, "leaked_caption"))
+        self.assertFalse(hasattr(gemini_live, "_cancel_silence_close"))
+        self.assertIsNone(
+            gemini_live._audio_from_part(
+                SimpleNamespace(inline_data=SimpleNamespace(data=b"\x01\x00", mime_type="text/plain"))
+            )
+        )
+        self.assertIsNotNone(
+            gemini_live._audio_from_part(
+                SimpleNamespace(inline_data=SimpleNamespace(data=b"\x01\x00", mime_type="audio/pcm;rate=24000"))
+            )
+        )
 
-        # VAD defaults and DB migration
+        # VAD defaults and DB settings persistence
         self.assertEqual(db.DEFAULT_SETTINGS["vad_silence_ms"], "1000")
         self.assertEqual(db.DEFAULT_SETTINGS["vad_end_sensitivity"], "LOW")
         self.assertEqual(db.DEFAULT_SETTINGS["vad_start_sensitivity"], "LOW")
+        self.assertNotIn("active_engine", db.DEFAULT_SETTINGS)
         unset = gemini_live._session_settings({})
         self.assertEqual(unset["voice"], "Kore")
         self.assertEqual(unset["silence_duration_ms"], 1000)
@@ -245,14 +258,6 @@ class LiveConfigAndStartupTests(unittest.TestCase):
         self.assertEqual(custom["end_sens"], gemini_live.types.EndSensitivity.END_SENSITIVITY_HIGH)
         self.assertEqual(custom["start_sens"], gemini_live.types.StartSensitivity.START_SENSITIVITY_HIGH)
 
-        db.set_setting("vad_silence_ms", "750")
-        db.set_setting("vad_end_sensitivity", "HIGH")
-        db.set_setting("vad_start_sensitivity", "HIGH")
-        db._init_db()
-        migrated = db.get_all_settings()
-        self.assertEqual(migrated["vad_silence_ms"], "1000")
-        self.assertEqual(migrated["vad_end_sensitivity"], "LOW")
-        self.assertEqual(migrated["vad_start_sensitivity"], "LOW")
         db.set_setting("vad_silence_ms", "900")
         db._init_db()
         self.assertEqual(db.get_all_settings()["vad_silence_ms"], "900")
@@ -463,7 +468,7 @@ class TurnTakingAndWatchdogTests(unittest.TestCase):
                 ws = _FakeSocket()
                 with mock.patch.object(gemini_live, "_TOOL_SPEAK_FALLBACK_SEC", 0.01):
                     await gemini_live._answer_function_calls(
-                        session, asyncio.Lock(), ws, asyncio.Lock(), db.create_call("gemini"),
+                        session, asyncio.Lock(), ws, asyncio.Lock(), db.create_call(),
                         _new_telemetry(), [_Call("next_question", {}, "fc-silent")],
                         set(), set(), cursor, turn, thresholds=thresholds,
                     )
@@ -483,7 +488,7 @@ class TurnTakingAndWatchdogTests(unittest.TestCase):
                 cursor_audio.state = json.loads(json.dumps(state))
                 sess_audio = _FakeSession()
                 ws_audio = _FakeSocket()
-                cid = db.create_call("gemini")
+                cid = db.create_call()
                 with mock.patch.object(gemini_live, "_TOOL_SPEAK_FALLBACK_SEC", 0.05):
                     await gemini_live._answer_function_calls(
                         sess_audio, asyncio.Lock(), ws_audio, asyncio.Lock(), cid,
@@ -506,7 +511,7 @@ class TurnTakingAndWatchdogTests(unittest.TestCase):
                 cursor_fail.state = json.loads(json.dumps(state))
                 sess_fail = _FakeSession(fail_tool=True)
                 await gemini_live._answer_function_calls(
-                    sess_fail, asyncio.Lock(), _FakeSocket(), asyncio.Lock(), db.create_call("gemini"),
+                    sess_fail, asyncio.Lock(), _FakeSocket(), asyncio.Lock(), db.create_call(),
                     _new_telemetry(), [_Call("next_question", {}, "fc-fail")],
                     set(), set(), cursor_fail, turn_fail, thresholds=thresholds,
                 )
@@ -523,7 +528,7 @@ class TurnTakingAndWatchdogTests(unittest.TestCase):
                 sess_tc = _FakeSession()
                 await gemini_live._handle_server_message(
                     _server_message(turn_complete=True, tool_calls=[_Call("next_question", {}, "fc-tc")]),
-                    sess_tc, asyncio.Lock(), _FakeSocket(), asyncio.Lock(), db.create_call("gemini"),
+                    sess_tc, asyncio.Lock(), _FakeSocket(), asyncio.Lock(), db.create_call(),
                     _new_telemetry(), turn_tc, _Recorder(), set(), set(), cursor_tc,
                     stop=asyncio.Event(), thresholds=thresholds,
                 )
@@ -542,7 +547,7 @@ class TurnTakingAndWatchdogTests(unittest.TestCase):
                 keep = await gemini_live._handle_server_message(
                     _server_message(turn_complete=True),
                     _FakeSession(fail_realtime=True), asyncio.Lock(), broken_ws, asyncio.Lock(),
-                    db.create_call("gemini"), broken_tel, broken_turn, _Recorder(), set(), set(),
+                    db.create_call(), broken_tel, broken_turn, _Recorder(), set(), set(),
                     cursor_tc, stop=stop, thresholds=thresholds,
                 )
                 self.assertFalse(keep)
@@ -573,7 +578,7 @@ class TurnTakingAndWatchdogTests(unittest.TestCase):
             ws = _FakeSocket([{"type": "speech_end"}])
             await gemini_live._browser_loop(
                 _FakeSession(), asyncio.Lock(), ws, asyncio.Lock(), asyncio.Event(),
-                db.create_call("gemini"), _new_telemetry(), turn, cursor, _Recorder(),
+                db.create_call(), _new_telemetry(), turn, cursor, _Recorder(),
             )
             self.assertGreater(turn.quiet_from, 0)
             self.assertGreaterEqual(turn.quiet_from, turn.playback_ends_at)
@@ -589,7 +594,7 @@ class TurnTakingAndWatchdogTests(unittest.TestCase):
             wd_ws = _FakeSocket()
             wd_tel = _new_telemetry()
             wd_stop = asyncio.Event()
-            cid = db.create_call("gemini")
+            cid = db.create_call()
             with mock.patch.object(gemini_live, "_WATCHDOG_INTERVAL_SEC", 0.01):
                 task = asyncio.create_task(
                     gemini_live._watchdog_loop(
@@ -614,7 +619,7 @@ class TurnTakingAndWatchdogTests(unittest.TestCase):
             soft_cursor = gemini_live._Cursor()
             soft_cursor.state = json.loads(json.dumps(state))
             soft_stop = asyncio.Event()
-            cid_soft = db.create_call("gemini")
+            cid_soft = db.create_call()
             with mock.patch.object(gemini_live, "_WATCHDOG_INTERVAL_SEC", 0.01):
                 task = asyncio.create_task(
                     gemini_live._watchdog_loop(
@@ -642,7 +647,7 @@ class TurnTakingAndWatchdogTests(unittest.TestCase):
             ws = _FakeSocket()
             keep = await gemini_live._handle_server_message(
                 message, session or _FakeSession(), asyncio.Lock(), ws, asyncio.Lock(),
-                db.create_call("gemini"), _new_telemetry(), turn, _Recorder(), set(), set(), cursor, stop=asyncio.Event(),
+                db.create_call(), _new_telemetry(), turn, _Recorder(), set(), set(), cursor, stop=asyncio.Event(),
             )
             return keep, cursor, ws
 
@@ -712,7 +717,7 @@ class TurnTakingAndWatchdogTests(unittest.TestCase):
             await asyncio.wait_for(
                 gemini_live._gemini_loop(
                     live, asyncio.Lock(), ws, asyncio.Lock(), live.stop,
-                    db.create_call("gemini"), _new_telemetry(), wait_turn, _Recorder(), waiting, reconnect,
+                    db.create_call(), _new_telemetry(), wait_turn, _Recorder(), waiting, reconnect,
                 ),
                 timeout=3,
             )
@@ -730,7 +735,7 @@ class TurnTakingAndWatchdogTests(unittest.TestCase):
             await asyncio.wait_for(
                 gemini_live._gemini_loop(
                     drop, asyncio.Lock(), _FakeSocket(), asyncio.Lock(), drop.stop,
-                    db.create_call("gemini"), _new_telemetry(), drop_turn, _Recorder(), dropped, reconnect,
+                    db.create_call(), _new_telemetry(), drop_turn, _Recorder(), dropped, reconnect,
                 ),
                 timeout=3,
             )
@@ -747,10 +752,17 @@ class TurnTakingAndWatchdogTests(unittest.TestCase):
             )
             cursor = gemini_live._Cursor()
             cursor.state = json.loads(json.dumps(state))
-            call_id = db.create_call("gemini")
+            call_id = db.create_call()
             tel = _new_telemetry()
-            await gemini_live._mark_closing(cursor, "silence", _FakeSocket(), asyncio.Lock(), call_id, tel)
+            for dead_key in ("end_refusals", "end_requested_at", "force_close", "force_close_at", "end_requested", "closing"):
+                self.assertNotIn(dead_key, tel)
+            turn = gemini_live._TurnState()
+            await gemini_live._mark_closing(cursor, "silence", _FakeSocket(), asyncio.Lock(), call_id, tel, turn)
             self.assertEqual(tel["dropoff_qid"], "birth_jaundice")
+            self.assertTrue(turn.end_requested)
+            self.assertGreater(turn.end_requested_at, 0.0)
+            self.assertNotIn("end_requested", tel)
+            self.assertNotIn("closing", tel)
 
             rec = audio_recorder.CallAudioRecorder(call_id, output_dir=str(Path(_TMP) / "audio"))
             rec._started = time.monotonic() - 0.5
@@ -765,7 +777,7 @@ class TurnTakingAndWatchdogTests(unittest.TestCase):
                 self.assertEqual(wf.getnchannels(), 2)
                 self.assertEqual(wf.getframerate(), 16000)
 
-            done_id = db.create_call("gemini")
+            done_id = db.create_call()
             finished = gemini_live._Cursor()
             finished.state = cursor_tests._clear_until(
                 cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
@@ -775,6 +787,70 @@ class TurnTakingAndWatchdogTests(unittest.TestCase):
             finished.state["close_reason"] = "complete"
             await gemini_live._finalize(_FakeSocket(), asyncio.Lock(), done_id, _new_telemetry(), rec, None, finished)
             self.assertEqual(db.get_call(done_id)["telemetry"]["dropoff_qid"], "")
+
+        asyncio.run(run())
+
+    def test_watchdog_and_manual_nudge_preserve_active_speak_kind_and_hindi_prompt(self):
+        state = cursor_tests._clear_until(
+            cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
+            "birth_nicu",
+        )
+
+        async def run():
+            # 1) Watchdog nudge uses active_speak_kind ("clarify")
+            wd_cursor = gemini_live._Cursor()
+            wd_cursor.state = json.loads(json.dumps(state))
+            wd_turn = gemini_live._TurnState()
+            wd_turn.awaiting_bot_reply = True
+            wd_turn.last_user_turn_ts = time.time() - 5.0
+            wd_turn.active_speak_kind = "clarify"
+            wd_sess = _FakeSession()
+            wd_ws = _FakeSocket()
+            wd_stop = asyncio.Event()
+            cid = db.create_call()
+            with mock.patch.object(gemini_live, "_WATCHDOG_INTERVAL_SEC", 0.01):
+                task = asyncio.create_task(
+                    gemini_live._watchdog_loop(
+                        wd_sess, asyncio.Lock(), wd_ws, asyncio.Lock(), wd_stop, cid,
+                        _new_telemetry(), wd_turn, wd_cursor, 0.05,
+                    )
+                )
+                await asyncio.sleep(0.08)
+                wd_stop.set()
+                await task
+            self.assertTrue(wd_sess.sent)
+            wd_cue = wd_sess.sent[0][1]["text"]
+            self.assertIn("she did not understand", wd_cue)
+            self.assertIn("काँच के बक्से", wd_cue)
+
+            # 2) Manual nudge sends speak_cue_text(cursor.state, active_speak_kind) and logs it
+            man_cursor = gemini_live._Cursor()
+            man_cursor.state = json.loads(json.dumps(state))
+            man_turn = gemini_live._TurnState()
+            man_turn.active_speak_kind = "clarify"
+            man_sess = _FakeSession()
+            man_ws = _FakeSocket([{"type": "nudge"}])
+            man_cid = db.create_call()
+            await gemini_live._browser_loop(
+                man_sess, asyncio.Lock(), man_ws, asyncio.Lock(), asyncio.Event(),
+                man_cid, _new_telemetry(), man_turn, man_cursor, _Recorder(),
+            )
+            self.assertEqual(_kinds(man_sess), ["realtime"])
+            man_cue = man_sess.sent[0][1]["text"]
+            self.assertEqual(man_cue, prompts.speak_cue_text(man_cursor.state, "clarify"))
+            self.assertIn("काँच के बक्से", man_cue)
+            nudge_events = [e for e in db.get_call(man_cid)["events"] if e["type"] == "manual_nudge"]
+            self.assertEqual(len(nudge_events), 1)
+            self.assertEqual(nudge_events[0]["detail"], man_cue)
+
+            # 3) _forward_transcript normalizes whitespace cleanly
+            tr_ws = _FakeSocket()
+            text = await gemini_live._forward_transcript(
+                tr_ws, asyncio.Lock(), man_cid, "assistant",
+                SimpleNamespace(text="  क्या   बच्चे को   पीलिया   हुआ? \n"),
+                man_cursor,
+            )
+            self.assertEqual(text, "क्या बच्चे को पीलिया हुआ?")
 
         asyncio.run(run())
 
@@ -795,7 +871,7 @@ class QuickReplyProtocolTests(unittest.TestCase):
             unspoken_sess = _FakeSession()
             await gemini_live._browser_loop(
                 unspoken_sess, asyncio.Lock(), unspoken_ws, asyncio.Lock(), asyncio.Event(),
-                db.create_call("gemini"), _new_telemetry(), gemini_live._TurnState(), unspoken_cursor, _Recorder(),
+                db.create_call(), _new_telemetry(), gemini_live._TurnState(), unspoken_cursor, _Recorder(),
             )
             self.assertEqual(unspoken_cursor.state["active_qid"], "birth_nicu")
             self.assertEqual(_kinds(unspoken_sess), [])
@@ -813,7 +889,7 @@ class QuickReplyProtocolTests(unittest.TestCase):
                 {"type": "quick_reply", "outcome": "concern", "step": step},
             ])
             sess = _FakeSession()
-            call_id = db.create_call("gemini")
+            call_id = db.create_call()
             await gemini_live._browser_loop(
                 sess, asyncio.Lock(), ws, asyncio.Lock(), asyncio.Event(),
                 call_id, _new_telemetry(), turn, cursor, _Recorder(),
@@ -870,7 +946,7 @@ class QuickReplyProtocolTests(unittest.TestCase):
             c_sess = _FakeSession()
             await gemini_live._browser_loop(
                 c_sess, asyncio.Lock(), _FakeSocket([{"type": "quick_reply", "outcome": "clear", "step": c_step}]),
-                asyncio.Lock(), asyncio.Event(), db.create_call("gemini"), _new_telemetry(), c_turn, c_cursor, _Recorder(),
+                asyncio.Lock(), asyncio.Event(), db.create_call(), _new_telemetry(), c_turn, c_cursor, _Recorder(),
             )
             self.assertEqual(c_cursor.state["phase"], "closing")
             self.assertEqual(c_cursor.state["close_reason"], "complete")
@@ -896,7 +972,7 @@ class QuickReplyProtocolTests(unittest.TestCase):
             session = _FakeSession()
             ws = _FakeSocket([{"type": "quick_reply", "outcome": "clear", "step": step}])
             telemetry = _new_telemetry()
-            call_id = db.create_call("gemini")
+            call_id = db.create_call()
 
             with mock.patch.object(decisions, "evaluate_turn") as eval_mock:
                 await gemini_live._browser_loop(
@@ -985,7 +1061,7 @@ class DecisionTurnAndExtractorTests(unittest.TestCase):
             ws = _FakeSocket()
             session = _FakeSession()
             telemetry = _new_telemetry()
-            call_id = db.create_call("gemini-3.1-flash-live-preview")
+            call_id = db.create_call()
 
             async def fake_eval(request, **_kwargs):
                 active_q = json.loads(request["input"])["active_question"]
@@ -1083,7 +1159,7 @@ class DecisionTurnAndExtractorTests(unittest.TestCase):
             ws = _FakeSocket()
             session = _FakeSession()
             telemetry = _new_telemetry()
-            call_id = db.create_call("gemini-3.1-flash-live-preview")
+            call_id = db.create_call()
 
             async def eval_smoke_a(request, **_kwargs):
                 raw = {
@@ -1248,7 +1324,7 @@ class DecisionTurnAndExtractorTests(unittest.TestCase):
             ws = _FakeSocket()
             session = _FakeSession()
             telemetry = _new_telemetry()
-            call_id = db.create_call("gemini-3.1-flash-live-preview")
+            call_id = db.create_call()
 
             async def eval_clear(request, **_kwargs):
                 raw = {
@@ -1429,12 +1505,12 @@ class DecisionTurnAndExtractorTests(unittest.TestCase):
             with mock.patch.object(decisions, "evaluate_turn", side_effect=eval_hist):
                 await gemini_live._handle_server_message(
                     _server_message(user_text="हाँ, रोते समय कभी नीली पड़ती हैं"),
-                    hist_sess, asyncio.Lock(), _FakeSocket(), asyncio.Lock(), db.create_call("gemini"),
+                    hist_sess, asyncio.Lock(), _FakeSocket(), asyncio.Lock(), db.create_call(),
                     _new_telemetry(), hist_turn, _Recorder(), set(), set(), hist_cursor, stop=asyncio.Event(),
                 )
                 await gemini_live._handle_server_message(
                     _server_message(turn_complete=True, tool_calls=[_Call("next_question", {}, "fc-hist")]),
-                    hist_sess, asyncio.Lock(), _FakeSocket(), asyncio.Lock(), db.create_call("gemini"),
+                    hist_sess, asyncio.Lock(), _FakeSocket(), asyncio.Lock(), db.create_call(),
                     _new_telemetry(), hist_turn, _Recorder(), set(), set(), hist_cursor, stop=asyncio.Event(), thresholds=thresholds,
                 )
                 await _drop_fallback(hist_turn)
@@ -1450,7 +1526,7 @@ class DecisionTurnAndExtractorTests(unittest.TestCase):
             emg_turn.spoken_qid = step_id(emg_cursor.state)
             emg_sess = _FakeSession()
             emg_tel = _new_telemetry()
-            emg_call = db.create_call("gemini")
+            emg_call = db.create_call()
 
             async def eval_emg(request, **_kwargs):
                 return _decision_result(request, {
@@ -1495,7 +1571,7 @@ class DecisionTurnAndExtractorTests(unittest.TestCase):
             fail_turn.spoken_qid = step_id(fail_cursor.state)
             fail_sess = _FakeSession()
             fail_tel = _new_telemetry()
-            fail_call = db.create_call("gemini")
+            fail_call = db.create_call()
 
             async def eval_fail(request, **_kwargs):
                 return _decision_result(request, {}, ok=False, error_reason="timeout", attempts=2)
@@ -1539,7 +1615,7 @@ class DecisionTurnAndExtractorTests(unittest.TestCase):
             ext_turn = gemini_live._TurnState()
             ext_sess = _FakeSession()
             ext_tel = _new_telemetry()
-            ext_call = db.create_call("gemini")
+            ext_call = db.create_call()
 
             async def eval_profile(request, **_kwargs):
                 return _decision_result(request, {
@@ -1599,7 +1675,7 @@ class DecisionTurnAndExtractorTests(unittest.TestCase):
                 profile_extractor, "extract_profile_entities", side_effect=fail_extract
             ):
                 await live_decision_bridge.run_decision_turn(
-                    gate_cursor, gate_turn.capture, db.create_call("gemini"), _new_telemetry(),
+                    gate_cursor, gate_turn.capture, db.create_call(),
                     tool_body_fn=gemini_live._tool_body, mark_closing_fn=lambda _r: asyncio.sleep(0),
                     thresholds=thresholds,
                 )
@@ -1607,7 +1683,7 @@ class DecisionTurnAndExtractorTests(unittest.TestCase):
             self.assertEqual(gate_cursor.state["active_qid"], "birth_jaundice")
             self.assertEqual(gate_turn.capture.extractor_failures, 0)
 
-            # intro clarify skips extractor; ever_pregnant clear skips extractor
+            # intro clarify skips extractor; empty updates on intro_name still triggers hold via apply_interpreted_turn
             clar_cursor = gemini_live._Cursor()
             clar_cursor.state = call_cursor.new_cursor_state()
             clar_turn = gemini_live._TurnState()
@@ -1625,7 +1701,7 @@ class DecisionTurnAndExtractorTests(unittest.TestCase):
                 profile_extractor, "extract_profile_entities"
             ) as ext_mock:
                 body, clar_flag, _ = await live_decision_bridge.run_decision_turn(
-                    clar_cursor, clar_turn.capture, db.create_call("gemini"), _new_telemetry(),
+                    clar_cursor, clar_turn.capture, db.create_call(),
                     tool_body_fn=gemini_live._tool_body, mark_closing_fn=lambda _r: asyncio.sleep(0),
                     thresholds=thresholds,
                 )
@@ -1633,6 +1709,28 @@ class DecisionTurnAndExtractorTests(unittest.TestCase):
             self.assertTrue(clar_flag)
             self.assertTrue(body.get("clarify"))
             self.assertIsNone(clar_cursor.state["hold_reason"])
+
+            # Empty extractor updates on intro_name holds with name_fragment via apply_interpreted_turn
+            frag_cursor = gemini_live._Cursor()
+            frag_cursor.state = call_cursor.new_cursor_state()
+            frag_turn = gemini_live._TurnState()
+            frag_turn.capture.user_turn_buffer = "मेरा नाम"
+
+            async def empty_extract(*_args, **_kwargs):
+                return profile_extractor.ProfileExtractionResult(
+                    ok=True, updates={}, error_reason="", extractor_ms=10
+                )
+
+            with mock.patch.object(decisions, "evaluate_turn", side_effect=eval_profile), mock.patch.object(
+                profile_extractor, "extract_profile_entities", side_effect=empty_extract
+            ):
+                frag_body, _, _ = await live_decision_bridge.run_decision_turn(
+                    frag_cursor, frag_turn.capture, db.create_call(),
+                    tool_body_fn=gemini_live._tool_body, mark_closing_fn=lambda _r: asyncio.sleep(0),
+                    thresholds=thresholds,
+                )
+            self.assertEqual(frag_cursor.state["hold_reason"], "name_fragment")
+            self.assertIn("पूरा नाम", frag_body["say"])
 
         asyncio.run(run())
 

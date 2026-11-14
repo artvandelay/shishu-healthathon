@@ -18,10 +18,18 @@
     },
     "mentions_profile": {
       "type": "noul",
-      "instructions": "Does caller_utterance state or update the caller's own name, marital status (married, about to marry, or unmarried), number of children, children's ages, sex, or names, or ever-pregnant history?",
+      "instructions": "Does caller_utterance state or update the caller's own name, marital status (married, about to marry, or unmarried), or her children (count, ages, sex, or names)?",
       "criteria": {
-        "true_description": "Caller states or updates her name, marital status, child count, children's ages, sex, or names, or whether she has ever been pregnant.",
-        "false_description": "Caller only answers a clinical question, asks for clarification, or makes no statement or update about her demographic profile."
+        "true_description": "Caller states or updates her name, marital status, child count, or her children's ages, sex, or names.",
+        "false_description": "Caller only answers a clinical or pregnancy question, asks for clarification, or makes no statement or update about her name, marital status, or children."
+      }
+    },
+    "mentions_diagnosis": {
+      "type": "noul",
+      "instructions": "Does caller_utterance name a specific genetic, inherited, or rare disease diagnosis label (such as hemophilia, Duchenne muscular dystrophy, Pompe, Gaucher, SCID, SMA, MPS, Wiskott-Aldrich, sickle cell disease, cystic fibrosis, Fanconi anemia, PKU, thalassemia major, or any other named rare disorder or syndrome) rather than plain everyday symptoms, common conditions (BP, sugar, thyroid, jaundice, fits, cancer, kidney stones), or routine thalassemia minor/trait carrier screening?",
+      "criteria": {
+        "true_description": "Names a specific genetic, inherited, or rare disease diagnosis or syndrome label (including thalassemia major) in caller_utterance.",
+        "false_description": "Describes only plain everyday symptoms, treatments, body parts, common conditions (such as BP, diabetes, thyroid, jaundice, seizures, generic cancer), or routine thalassemia minor/trait carrier checks without naming a rare or genetic disease diagnosis."
       }
     },
     "current_outcome": {

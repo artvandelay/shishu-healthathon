@@ -10,12 +10,10 @@
       const consentCheck = document.getElementById("consent-check");
       const stageEl = document.getElementById("stage");
       const thanksEl = document.getElementById("thanks");
-      const summaryEl = document.getElementById("summary");
       const thanksSubEl = document.getElementById("thanks-sub");
       const adminView = document.getElementById("admin-view");
       const adminLink = document.getElementById("admin-link");
       const errorEl = document.getElementById("error");
-      const engineNote = document.getElementById("engine-note");
       const avatarWrap = document.getElementById("avatar-wrap");
       const newCallBtn = document.getElementById("new-call");
       const micMeter = document.getElementById("mic-meter");
@@ -29,7 +27,6 @@
       const hudStep = document.getElementById("hud-step");
       const logoutBtn = document.getElementById("logout-btn");
       let flowGroup = "";
-      let summaryTimer = 0;
       const bugSave = document.getElementById("bug-save");
       const bugClose = document.getElementById("bug-close");
       const bugConfirm = document.getElementById("bug-confirm");
@@ -90,7 +87,6 @@
       let stepQueuedSec = 0;
       let stepStreamDone = false;
       let quickRevealRaf = 0;
-      let engine = "gemini";
       let captureRate = 16000;
       let ws = null;
       let audioCtx = null;
@@ -214,12 +210,6 @@
       function loginRedirect() {
         const next = location.pathname + location.search;
         location.href = "/login?next=" + encodeURIComponent(next || "/");
-      }
-
-      function showEngine() {
-        engine = "gemini";
-        captureRate = 16000;
-        engineNote.textContent = "";
       }
 
       function pad(n) {
@@ -588,7 +578,6 @@
         if (!telemetry) return "—";
         const samples = telemetry.turn_latencies_ms;
         if (Array.isArray(samples) && samples.length) return msText(samples[samples.length - 1]);
-        if (telemetry.last_latency_ms != null) return msText(Number(telemetry.last_latency_ms));
         return "—";
       }
 
@@ -622,7 +611,7 @@
         hudTools.textContent = dash(telemetry.tool_calls);
         hudNudges.textContent = dash(telemetry.watchdog_nudges);
         hudAudio.textContent = dash(telemetry.audio_chunks_in) + " / " + dash(telemetry.audio_chunks_out);
-        if (hudStep) hudStep.textContent = flowGroup || telemetry.progress_group || "—";
+        if (hudStep) hudStep.textContent = flowGroup || "—";
         hudEvents.replaceChildren();
         recentEvents.forEach(function (evt) {
           const li = document.createElement("li");
@@ -715,7 +704,7 @@
           rememberShareToken(msg);
           if (msg.caller_name) callerName = msg.caller_name;
           if (msg.user_role) userRole = msg.user_role;
-          if (msg.engine) modelName = msg.engine;
+          if (msg.model) modelName = msg.model;
           if (msg.voice) voiceName = msg.voice;
           renderHud();
           if (phase === "live") setStatus({ hi: "सुन रही हूँ…", en: "Listening" });
@@ -742,9 +731,6 @@
         } else if (msg.type === "telemetry") {
           lastTelemetry = msg.telemetry || {};
           pushEvent(msg.last_event);
-          renderHud();
-        } else if (msg.type === "progress") {
-          flowGroup = msg.group || "";
           renderHud();
         } else if (msg.type === "bot_turn_complete") {
           if (!msg.step || msg.step === questionStep) {
@@ -932,10 +918,9 @@
             loginRedirect();
             return;
           }
-          if (!res.ok) throw new Error("Could not read the voice engine setting.");
+          if (!res.ok) throw new Error("Could not read the call configuration.");
           const cfg = await res.json();
           if (phase !== "connecting") return;
-          showEngine();
           applyConfig(cfg);
           await wireMic();
           if (phase !== "connecting") {
@@ -1146,8 +1131,6 @@
       }
 
       function showThanks(msg) {
-        if (summaryTimer) clearTimeout(summaryTimer);
-        summaryTimer = 0;
         phase = "done";
         resetQuickState();
         releaseWakeLock();
@@ -1160,7 +1143,6 @@
         avatarWrap.classList.remove("working");
         waitEl.hidden = true;
         stageEl.hidden = true;
-        summaryEl.textContent = "इस रिपोर्ट (PDF) में वे सवाल हैं जो आप अगली मुलाकात में डॉक्टर या ASHA / ANM दीदी से पूछ सकती हैं। इसे व्हाट्सएप पर भेजने या सेव करने के लिए नीचे 'शेयर करें' दबाएँ।";
         const bits = [];
         if (callId != null && userRole === "admin") bits.push("Call #" + callId);
         bits.push(frozenDuration);
@@ -1196,7 +1178,6 @@
         captionRole = "";
         captionText = "";
         captionEl.textContent = "";
-        summaryEl.textContent = "इस रिपोर्ट (PDF) में वे सवाल हैं जो आप अगली मुलाकात में डॉक्टर या ASHA / ANM दीदी से पूछ सकती हैं। इसे व्हाट्सएप पर भेजने या सेव करने के लिए नीचे 'शेयर करें' दबाएँ।";
         pdfFile = null;
         document.getElementById("share-pdf").hidden = true;
         document.getElementById("retry-pdf").hidden = true;
@@ -1285,7 +1266,6 @@
           call_elapsed_sec: startedAt ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000)) : 0,
           client_state: {
             phase: phase,
-            engine: engine,
             flowGroup: flowGroup,
             captureRate: captureRate,
             captionText: captionText,
@@ -1474,7 +1454,6 @@
         })
         .then(function (cfg) {
           if (!cfg) return;
-          showEngine();
           applyConfig(cfg);
         })
         .catch(function () { /* the start button reports a real failure */ });
