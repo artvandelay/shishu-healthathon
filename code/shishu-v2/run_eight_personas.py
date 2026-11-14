@@ -501,7 +501,9 @@ def _personas() -> list[Persona]:
 
 
 def _login() -> str:
-    passcode = os.environ.get("APP_PASSCODE") or "shishu2026"
+    passcode = (os.environ.get("APP_PASSCODE") or "").strip()
+    if not passcode:
+        raise RuntimeError("APP_PASSCODE is not set in .env")
     body = json.dumps({"username": "persona", "passcode": passcode}).encode()
     request = urllib.request.Request(
         BASE + "/api/login",
