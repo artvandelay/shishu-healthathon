@@ -61,12 +61,7 @@ _pdf_rebuilds: dict[str, list[float]] = {}
 
 
 def _passcode() -> str:
-    configured = (os.environ.get("APP_PASSCODE") or "").strip()
-    if configured:
-        return configured
-    if not (os.environ.get("RAILWAY_ENVIRONMENT") or "").strip():
-        return "shishu2026"
-    return ""
+    return (os.environ.get("APP_PASSCODE") or "").strip() or "shishu2026"
 
 
 def _admin_passcode() -> str:
