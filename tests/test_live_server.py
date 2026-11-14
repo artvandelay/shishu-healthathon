@@ -5,6 +5,7 @@ import base64
 import io
 import json
 import os
+import sys
 import tempfile
 import time
 import unittest
@@ -13,6 +14,11 @@ from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+import tests  # noqa: E402, F401
 
 _TMP = tempfile.mkdtemp(prefix="shishu-v4-live-")
 os.environ["DATA_DIR"] = _TMP
@@ -26,7 +32,7 @@ import gemini_live  # noqa: E402
 import live_decision_bridge  # noqa: E402
 import profile_extractor  # noqa: E402
 import prompts  # noqa: E402
-import test_v4_cursor as cursor_tests  # noqa: E402
+import test_cursor as cursor_tests  # noqa: E402
 from call_cursor import apply_profile, apply_turn, close_technical_failure  # noqa: E402
 
 
@@ -1822,38 +1828,32 @@ class Phase3ShadowModeTests(unittest.TestCase):
             go_away=None,
         )
 
-    def _fake_raw_answers(self, *, active_qid="", utterance=""):
-        noul_other = 0.91 if "कैंसर" in utterance else 0.05
-        ref_qid = (
-            {"choice": "fam_cancer", "probabilities": {"fam_cancer": 0.90, "none_or_unclear": 0.06, "fam_related": 0.04}}
-            if "कैंसर" in utterance
-            else {"choice": "none_or_unclear", "probabilities": {"none_or_unclear": 0.94, "fam_cancer": 0.03}}
+    def _fake_raw_answers(self, *, active_question="", utterance=""):
+        has_side = "कैंसर" in utterance
+        side_intent = (
+            {"choice": "add_concern", "probabilities": {"add_concern": 0.89, "other": 0.06, "clarify_other": 0.05}}
+            if has_side
+            else {"choice": "other", "probabilities": {"other": 0.95, "add_concern": 0.03}}
         )
-        ref_act = (
-            {"choice": "add_or_correct", "probabilities": {"add_or_correct": 0.89, "not_a_side_action": 0.06, "clarify_meaning": 0.05}}
-            if "कैंसर" in utterance
-            else {"choice": "not_a_side_action", "probabilities": {"not_a_side_action": 0.95, "add_or_correct": 0.03}}
-        )
-        ref_pol = (
-            {"choice": "concern", "probabilities": {"concern": 0.88, "not_applicable_or_none": 0.07, "clear": 0.05}}
-            if "कैंसर" in utterance
-            else {"choice": "not_applicable_or_none", "probabilities": {"not_applicable_or_none": 0.95, "concern": 0.03}}
+        side_qid = (
+            {"choice": "fam_cancer", "probabilities": {"fam_cancer": 0.90, "other": 0.06, "fam_related": 0.04}}
+            if has_side
+            else {"choice": "other", "probabilities": {"other": 0.94, "fam_cancer": 0.03}}
         )
         outcome_choice = "concern" if ("हाँ" in utterance or "तीन दिन" in utterance or "रेखा" in utterance) else "clear"
         outcome_probs = (
-            {"concern": 0.91, "not_about_active": 0.05, "clear": 0.04}
+            {"concern": 0.91, "other": 0.05, "clear": 0.04}
             if outcome_choice == "concern"
-            else {"clear": 0.93, "not_about_active": 0.04, "concern": 0.03}
+            else {"clear": 0.93, "other": 0.04, "concern": 0.03}
         )
+        is_intro = any(tok in active_question for tok in ("नाम क्या", "शादी हो गई", "कितने बच्चे"))
         return {
             "danger_now": {"noul": 0.02},
             "caller_stop": {"noul": 0.01},
-            "mentions_profile": {"noul": 0.92 if active_qid.startswith("intro_") else 0.04},
-            "mentions_other_item": {"noul": noul_other},
+            "mentions_profile": {"noul": 0.92 if is_intro else 0.04},
             "current_outcome": {"choice": outcome_choice, "probabilities": outcome_probs},
-            "referenced_qid": ref_qid,
-            "referenced_act": ref_act,
-            "referenced_polarity": ref_pol,
+            "side_intent": side_intent,
+            "side_qid": side_qid,
             "detail_present": {"noul": 0.88 if "तीन दिन" in utterance else 0.12},
         }
 
@@ -1948,6 +1948,7 @@ class Phase3ShadowModeTests(unittest.TestCase):
 
             async def fake_eval(request, **_kwargs):
                 seen_evals.append(request)
+                ctx = json.loads(request["input"])
                 return decisions.DecisionCallResult(
                     ok=True,
                     error_reason="",
@@ -1955,10 +1956,13 @@ class Phase3ShadowModeTests(unittest.TestCase):
                     decision_ms=42,
                     request_bytes=len(json.dumps(request, ensure_ascii=False).encode("utf-8")),
                     question_count=len(request["questions"]),
-                    catalog_option_count=len(request["questions"]["referenced_qid"]["criteria"]),
+                    catalog_option_count=len(((request["questions"].get("side_qid") or {}).get("criteria")) or {}),
                     usage_present=True,
                     total_input_tokens=321,
-                    raw_answers=self._fake_raw_answers(active_qid="birth_jaundice", utterance=request["input"]),
+                    raw_answers=self._fake_raw_answers(
+                        active_question=ctx.get("active_question", ""),
+                        utterance=ctx.get("caller_utterance", ""),
+                    ),
                 )
 
             with mock.patch.dict(os.environ, {"DECISION_MODE": "shadow"}):
@@ -2025,8 +2029,9 @@ class Phase3ShadowModeTests(unittest.TestCase):
             self.assertEqual(turn.capture.user_turn_buffer, "")
             self.assertEqual(turn.last_user_text, expected)
             self.assertEqual(len(seen_evals), 1)
-            self.assertIn("active_qid: birth_jaundice", seen_evals[0]["input"])
-            self.assertIn(expected, seen_evals[0]["input"])
+            ctx0 = json.loads(seen_evals[0]["input"])
+            self.assertIn("पीलिया", ctx0["active_question"])
+            self.assertEqual(ctx0["caller_utterance"], expected)
 
             # 2) Explicit finished=True chunk followed by empty-text finished=True / tool_call
             cursor2 = gemini_live._Cursor()
@@ -2113,15 +2118,7 @@ class Phase3ShadowModeTests(unittest.TestCase):
 
             async def fake_eval(request, **_kwargs):
                 seen_requests.append(request)
-                active_line = next(
-                    (ln for ln in str(request["input"]).splitlines() if ln.startswith("active_qid:")),
-                    "",
-                )
-                active_qid = active_line.split(":", 1)[1].strip()
-                utt_line = next(
-                    (ln for ln in str(request["input"]).splitlines() if ln.startswith("caller_utterance:")),
-                    "",
-                )
+                ctx = json.loads(request["input"])
                 return decisions.DecisionCallResult(
                     ok=True,
                     error_reason="",
@@ -2129,10 +2126,13 @@ class Phase3ShadowModeTests(unittest.TestCase):
                     decision_ms=57,
                     request_bytes=len(json.dumps(request, ensure_ascii=False).encode("utf-8")),
                     question_count=len(request["questions"]),
-                    catalog_option_count=len(request["questions"]["referenced_qid"]["criteria"]),
+                    catalog_option_count=len(((request["questions"].get("side_qid") or {}).get("criteria")) or {}),
                     usage_present=True,
                     total_input_tokens=450,
-                    raw_answers=self._fake_raw_answers(active_qid=active_qid, utterance=utt_line),
+                    raw_answers=self._fake_raw_answers(
+                        active_question=ctx.get("active_question", ""),
+                        utterance=ctx.get("caller_utterance", ""),
+                    ),
                 )
 
             with mock.patch.dict(os.environ, {"DECISION_MODE": mode}):
@@ -2392,31 +2392,35 @@ class Phase3ShadowModeTests(unittest.TestCase):
                 active_qids,
                 ["intro_name", "intro_married", "intro_children", "birth_mode_detail"],
             )
-            for evt in sh_events:
+            for idx, evt in enumerate(sh_events):
                 meta = evt["meta"]
                 self.assertTrue(meta["ok"])
                 self.assertEqual(meta["error_reason"], "")
                 self.assertEqual(meta["decision_ms"], 57)
                 self.assertEqual(meta["attempts"], 1)
                 self.assertGreater(meta["request_bytes"], 100)
-                self.assertGreaterEqual(meta["question_count"], 8)
-                self.assertEqual(meta["catalog_option_count"], 59)
+                if idx < 3:
+                    self.assertEqual(meta["question_count"], 4)
+                    self.assertEqual(meta["catalog_option_count"], 0)
+                else:
+                    self.assertGreaterEqual(meta["question_count"], 6)
+                    self.assertEqual(meta["catalog_option_count"], 59)
                 self.assertTrue(meta["usage_present"])
                 self.assertEqual(meta["total_input_tokens"], 450)
                 self.assertIn("diagnostics", meta)
             diag_last = sh_events[-1]["meta"]["diagnostics"]
             self.assertIsNone(diag_last["future_qid_match"])
             self.assertEqual(
-                diag_last["raw_referenced_qid_candidate"]["qid"],
+                diag_last["raw_side_candidate"]["qid"],
                 "fam_cancer",
             )
             self.assertAlmostEqual(
-                diag_last["raw_referenced_qid_candidate"]["confidence"],
+                diag_last["raw_side_candidate"]["confidence"],
                 0.90,
             )
             self.assertEqual(
-                diag_last["raw_referenced_qid_candidate"]["act"],
-                "add_or_correct",
+                diag_last["raw_side_candidate"]["side_intent"],
+                "add_concern",
             )
 
         asyncio.run(compare())
@@ -2520,18 +2524,14 @@ def _calibrated_test_thresholds() -> decisions.DecisionThresholds:
         caller_stop_min_yes=0.80,
         mentions_profile_min_yes=0.65,
         detail_present_min_yes=0.65,
-        mentions_other_min_yes=0.70,
         outcome_min_confidence=0.65,
-        outcome_min_catchall_margin=0.20,
-        outcome_min_runnerup_margin=0.10,
+        outcome_min_margin=0.15,
+        side_intent_min_confidence=0.65,
+        side_intent_min_margin=0.15,
         side_qid_min_confidence=0.70,
-        side_qid_min_catchall_margin=0.25,
-        side_qid_min_runnerup_margin=0.15,
-        side_act_min_confidence=0.65,
-        side_polarity_min_confidence=0.60,
+        side_qid_min_margin=0.20,
         child_ref_min_confidence=0.65,
-        child_ref_min_catchall_margin=0.20,
-        child_ref_min_runnerup_margin=0.10,
+        child_ref_min_margin=0.15,
     )
 
 
@@ -2574,7 +2574,7 @@ def _choice_ans(winner: str, probs: dict[str, float]) -> dict:
 
 def _make_decision_result(request: dict, raw_answers: dict, *, ok: bool = True, error_reason: str = "", attempts: int = 1):
     questions = request.get("questions") or {}
-    ref_criteria = (questions.get("referenced_qid") or {}).get("criteria") or {}
+    side_criteria = (questions.get("side_qid") or {}).get("criteria") or {}
     return decisions.DecisionCallResult(
         ok=ok,
         error_reason=error_reason,
@@ -2582,7 +2582,7 @@ def _make_decision_result(request: dict, raw_answers: dict, *, ok: bool = True, 
         decision_ms=48,
         request_bytes=len(json.dumps(request, ensure_ascii=False).encode("utf-8")),
         question_count=len(questions),
-        catalog_option_count=len(ref_criteria),
+        catalog_option_count=len(side_criteria),
         usage_present=True,
         total_input_tokens=380,
         raw_answers=raw_answers if ok else {},
@@ -2754,23 +2754,18 @@ class Phase4AuthorityModeTests(unittest.TestCase):
                     "danger_now": _noul_ans(0.02),
                     "caller_stop": _noul_ans(0.01),
                     "mentions_profile": _noul_ans(0.03),
-                    "mentions_other_item": _noul_ans(0.95),
                     "detail_present": _noul_ans(0.05),
                     "current_outcome": _choice_ans(
                         "clear",
-                        {"clear": 0.92, "not_about_active": 0.04, "concern": 0.03, "unknown": 0.01},
+                        {"clear": 0.92, "other": 0.04, "concern": 0.03, "unknown": 0.01},
                     ),
-                    "referenced_qid": _choice_ans(
+                    "side_intent": _choice_ans(
+                        "add_concern",
+                        {"add_concern": 0.93, "other": 0.05, "clarify_other": 0.02},
+                    ),
+                    "side_qid": _choice_ans(
                         "fam_cancer",
-                        {"fam_cancer": 0.91, "none_or_unclear": 0.04, "fam_lumps": 0.03, "fam_heart_kidney": 0.02},
-                    ),
-                    "referenced_act": _choice_ans(
-                        "add_or_correct",
-                        {"add_or_correct": 0.93, "not_a_side_action": 0.05, "clarify_meaning": 0.02},
-                    ),
-                    "referenced_polarity": _choice_ans(
-                        "concern",
-                        {"concern": 0.94, "clear": 0.02, "retract": 0.02, "not_applicable_or_none": 0.02},
+                        {"fam_cancer": 0.91, "other": 0.04, "fam_lumps": 0.03, "fam_heart_kidney": 0.02},
                     ),
                 }
                 return _make_decision_result(request, raw)
@@ -2908,22 +2903,17 @@ class Phase4AuthorityModeTests(unittest.TestCase):
                     "danger_now": _noul_ans(0.01),
                     "caller_stop": _noul_ans(0.01),
                     "mentions_profile": _noul_ans(0.01),
-                    "mentions_other_item": _noul_ans(0.92),
                     "detail_present": _noul_ans(0.05),
                     "current_outcome": _choice_ans(
-                        "clear", {"clear": 0.91, "not_about_active": 0.05, "concern": 0.04}
+                        "clear", {"clear": 0.91, "other": 0.05, "concern": 0.04}
                     ),
-                    "referenced_qid": _choice_ans(
+                    "side_intent": _choice_ans(
+                        "clarify_other",
+                        {"clarify_other": 0.91, "add_concern": 0.05, "other": 0.04},
+                    ),
+                    "side_qid": _choice_ans(
                         "preg_thalassemia",
-                        {"preg_thalassemia": 0.90, "none_or_unclear": 0.05, "fam_related": 0.05},
-                    ),
-                    "referenced_act": _choice_ans(
-                        "clarify_meaning",
-                        {"clarify_meaning": 0.91, "add_or_correct": 0.05, "not_a_side_action": 0.04},
-                    ),
-                    "referenced_polarity": _choice_ans(
-                        "not_applicable_or_none",
-                        {"not_applicable_or_none": 0.92, "concern": 0.08},
+                        {"preg_thalassemia": 0.90, "other": 0.05, "fam_related": 0.05},
                     ),
                 }
                 return _make_decision_result(request, raw)
@@ -2985,22 +2975,17 @@ class Phase4AuthorityModeTests(unittest.TestCase):
                     "danger_now": _noul_ans(0.01),
                     "caller_stop": _noul_ans(0.01),
                     "mentions_profile": _noul_ans(0.01),
-                    "mentions_other_item": _noul_ans(0.92),
                     "detail_present": _noul_ans(0.05),
                     "current_outcome": _choice_ans(
-                        "clear", {"clear": 0.90, "not_about_active": 0.06, "concern": 0.04}
+                        "clear", {"clear": 0.90, "other": 0.06, "concern": 0.04}
                     ),
-                    "referenced_qid": _choice_ans(
+                    "side_intent": _choice_ans(
+                        "add_concern",
+                        {"add_concern": 0.91, "other": 0.06, "clarify_other": 0.03},
+                    ),
+                    "side_qid": _choice_ans(
                         "fam_cancer",
-                        {"fam_cancer": 0.93, "none_or_unclear": 0.04, "fam_lumps": 0.03},
-                    ),
-                    "referenced_act": _choice_ans(
-                        "add_or_correct",
-                        {"add_or_correct": 0.91, "not_a_side_action": 0.06, "clarify_meaning": 0.03},
-                    ),
-                    "referenced_polarity": _choice_ans(
-                        "concern",
-                        {"concern": 0.92, "clear": 0.04, "not_applicable_or_none": 0.04},
+                        {"fam_cancer": 0.93, "other": 0.04, "fam_lumps": 0.03},
                     ),
                 }
                 return _make_decision_result(request, raw)
@@ -3082,14 +3067,12 @@ class Phase4AuthorityModeTests(unittest.TestCase):
                     "danger_now": _noul_ans(0.01),
                     "caller_stop": _noul_ans(0.01),
                     "mentions_profile": _noul_ans(0.01),
-                    "mentions_other_item": _noul_ans(0.02),
                     "detail_present": _noul_ans(0.05),
                     "current_outcome": _choice_ans(
-                        "clear", {"clear": 0.94, "not_about_active": 0.04, "concern": 0.02}
+                        "clear", {"clear": 0.94, "other": 0.04, "concern": 0.02}
                     ),
-                    "referenced_qid": _choice_ans("none_or_unclear", {"none_or_unclear": 0.96, "birth_nicu": 0.04}),
-                    "referenced_act": _choice_ans("not_a_side_action", {"not_a_side_action": 0.96, "add_or_correct": 0.04}),
-                    "referenced_polarity": _choice_ans("not_applicable_or_none", {"not_applicable_or_none": 0.96, "concern": 0.04}),
+                    "side_intent": _choice_ans("other", {"other": 0.96, "add_concern": 0.04}),
+                    "side_qid": _choice_ans("other", {"other": 0.96, "birth_nicu": 0.04}),
                 }
                 return _make_decision_result(request, raw)
 
@@ -3257,14 +3240,12 @@ class Phase4AuthorityModeTests(unittest.TestCase):
                     "danger_now": _noul_ans(0.01),
                     "caller_stop": _noul_ans(0.01),
                     "mentions_profile": _noul_ans(0.01),
-                    "mentions_other_item": _noul_ans(0.01),
                     "detail_present": _noul_ans(0.02),
                     "current_outcome": _choice_ans(
-                        "clear", {"clear": 0.93, "not_about_active": 0.04, "concern": 0.03}
+                        "clear", {"clear": 0.93, "other": 0.04, "concern": 0.03}
                     ),
-                    "referenced_qid": _choice_ans("none_or_unclear", {"none_or_unclear": 0.96, "birth_nicu": 0.04}),
-                    "referenced_act": _choice_ans("not_a_side_action", {"not_a_side_action": 0.96, "add_or_correct": 0.04}),
-                    "referenced_polarity": _choice_ans("not_applicable_or_none", {"not_applicable_or_none": 0.96, "concern": 0.04}),
+                    "side_intent": _choice_ans("other", {"other": 0.96, "add_concern": 0.04}),
+                    "side_qid": _choice_ans("other", {"other": 0.96, "birth_nicu": 0.04}),
                 }
                 return _make_decision_result(request, raw)
 
@@ -3379,14 +3360,12 @@ class Phase4AuthorityModeTests(unittest.TestCase):
                     "danger_now": _noul_ans(0.08),
                     "caller_stop": _noul_ans(0.01),
                     "mentions_profile": _noul_ans(0.01),
-                    "mentions_other_item": _noul_ans(0.01),
                     "detail_present": _noul_ans(0.10),
                     "current_outcome": _choice_ans(
-                        "concern", {"concern": 0.92, "not_about_active": 0.05, "clear": 0.03}
+                        "concern", {"concern": 0.92, "other": 0.05, "clear": 0.03}
                     ),
-                    "referenced_qid": _choice_ans("none_or_unclear", {"none_or_unclear": 0.96, "body_fits": 0.04}),
-                    "referenced_act": _choice_ans("not_a_side_action", {"not_a_side_action": 0.96, "add_or_correct": 0.04}),
-                    "referenced_polarity": _choice_ans("not_applicable_or_none", {"not_applicable_or_none": 0.96, "concern": 0.04}),
+                    "side_intent": _choice_ans("other", {"other": 0.96, "add_concern": 0.04}),
+                    "side_qid": _choice_ans("other", {"other": 0.96, "body_fits": 0.04}),
                 }
                 return _make_decision_result(request, raw)
 
@@ -3457,14 +3436,12 @@ class Phase4AuthorityModeTests(unittest.TestCase):
                     "danger_now": _noul_ans(0.96),
                     "caller_stop": _noul_ans(0.01),
                     "mentions_profile": _noul_ans(0.01),
-                    "mentions_other_item": _noul_ans(0.01),
                     "detail_present": _noul_ans(0.85),
                     "current_outcome": _choice_ans(
-                        "concern", {"concern": 0.90, "not_about_active": 0.06, "clear": 0.04}
+                        "concern", {"concern": 0.90, "other": 0.06, "clear": 0.04}
                     ),
-                    "referenced_qid": _choice_ans("none_or_unclear", {"none_or_unclear": 0.96, "body_fits": 0.04}),
-                    "referenced_act": _choice_ans("not_a_side_action", {"not_a_side_action": 0.96, "add_or_correct": 0.04}),
-                    "referenced_polarity": _choice_ans("not_applicable_or_none", {"not_applicable_or_none": 0.96, "concern": 0.04}),
+                    "side_intent": _choice_ans("other", {"other": 0.96, "add_concern": 0.04}),
+                    "side_qid": _choice_ans("other", {"other": 0.96, "body_fits": 0.04}),
                 }
                 return _make_decision_result(request, raw)
 
@@ -3789,11 +3766,7 @@ class Phase4AuthorityModeTests(unittest.TestCase):
                     "danger_now": _noul_ans(0.01),
                     "caller_stop": _noul_ans(0.01),
                     "mentions_profile": _noul_ans(0.90),
-                    "mentions_other_item": _noul_ans(0.01),
-                    "current_outcome": _choice_ans("not_about_active", {"not_about_active": 0.90, "clear": 0.10}),
-                    "referenced_qid": _choice_ans("none_or_unclear", {"none_or_unclear": 0.96, "fam_cancer": 0.04}),
-                    "referenced_act": _choice_ans("not_a_side_action", {"not_a_side_action": 0.96, "add_or_correct": 0.04}),
-                    "referenced_polarity": _choice_ans("not_applicable_or_none", {"not_applicable_or_none": 0.96, "concern": 0.04}),
+                    "current_outcome": _choice_ans("other", {"other": 0.90, "clear": 0.10}),
                 }
                 return _make_decision_result(request, raw)
 
@@ -3863,14 +3836,12 @@ class Phase4AuthorityModeTests(unittest.TestCase):
                     "danger_now": _noul_ans(0.01),
                     "caller_stop": _noul_ans(0.01),
                     "mentions_profile": _noul_ans(0.01),
-                    "mentions_other_item": _noul_ans(0.01),
                     "detail_present": _noul_ans(0.05),
                     "current_outcome": _choice_ans(
-                        "clear", {"clear": 0.94, "not_about_active": 0.04, "concern": 0.02}
+                        "clear", {"clear": 0.94, "other": 0.04, "concern": 0.02}
                     ),
-                    "referenced_qid": _choice_ans("none_or_unclear", {"none_or_unclear": 0.96, "birth_nicu": 0.04}),
-                    "referenced_act": _choice_ans("not_a_side_action", {"not_a_side_action": 0.96, "add_or_correct": 0.04}),
-                    "referenced_polarity": _choice_ans("not_applicable_or_none", {"not_applicable_or_none": 0.96, "concern": 0.04}),
+                    "side_intent": _choice_ans("other", {"other": 0.96, "add_concern": 0.04}),
+                    "side_qid": _choice_ans("other", {"other": 0.96, "birth_nicu": 0.04}),
                 }
                 return _make_decision_result(request, raw)
 
@@ -3931,26 +3902,18 @@ class Phase4AuthorityModeTests(unittest.TestCase):
             call_id = db.create_call("gemini-3.1-flash-live-preview")
 
             async def fake_eval(request, **_kwargs):
-                active_line = [
-                    line for line in str(request["input"]).splitlines()
-                    if line.startswith("active_qid: ")
-                ][0]
-                qid = active_line.split(": ", 1)[1]
-                is_bridge = qid == "intro_bridge"
+                active_q = json.loads(request["input"])["active_question"]
+                is_bridge = "शुरू करें" in active_q
                 raw = {
                     "danger_now": _noul_ans(0.01),
                     "caller_stop": _noul_ans(0.01),
                     "mentions_profile": _noul_ans(0.02 if is_bridge else 0.92),
-                    "mentions_other_item": _noul_ans(0.01),
                     "current_outcome": _choice_ans(
-                        "concern" if is_bridge else "not_about_active",
-                        {"concern": 0.93, "not_about_active": 0.05, "clear": 0.02}
+                        "concern" if is_bridge else "other",
+                        {"concern": 0.93, "other": 0.05, "clear": 0.02}
                         if is_bridge
-                        else {"not_about_active": 0.90, "clear": 0.06, "concern": 0.04},
+                        else {"other": 0.90, "clear": 0.06, "concern": 0.04},
                     ),
-                    "referenced_qid": _choice_ans("none_or_unclear", {"none_or_unclear": 0.96, "birth_nicu": 0.04}),
-                    "referenced_act": _choice_ans("not_a_side_action", {"not_a_side_action": 0.96, "add_or_correct": 0.04}),
-                    "referenced_polarity": _choice_ans("not_applicable_or_none", {"not_applicable_or_none": 0.96, "concern": 0.04}),
                 }
                 return _make_decision_result(request, raw)
 
@@ -4068,13 +4031,9 @@ class Phase4AuthorityModeTests(unittest.TestCase):
                     "danger_now": _noul_ans(0.01),
                     "caller_stop": _noul_ans(0.01),
                     "mentions_profile": _noul_ans(0.92),
-                    "mentions_other_item": _noul_ans(0.01),
                     "current_outcome": _choice_ans(
-                        "not_about_active", {"not_about_active": 0.91, "clear": 0.09}
+                        "other", {"other": 0.91, "clear": 0.09}
                     ),
-                    "referenced_qid": _choice_ans("none_or_unclear", {"none_or_unclear": 0.96, "birth_nicu": 0.04}),
-                    "referenced_act": _choice_ans("not_a_side_action", {"not_a_side_action": 0.96, "add_or_correct": 0.04}),
-                    "referenced_polarity": _choice_ans("not_applicable_or_none", {"not_applicable_or_none": 0.96, "concern": 0.04}),
                 }
                 return _make_decision_result(request, raw)
 
@@ -4211,11 +4170,9 @@ class Phase4AuthorityModeTests(unittest.TestCase):
                     "danger_now": _noul_ans(0.01),
                     "caller_stop": _noul_ans(0.01),
                     "mentions_profile": _noul_ans(0.05),
-                    "mentions_other_item": _noul_ans(0.01),
-                    "current_outcome": _choice_ans("clear", {"clear": 0.94, "not_about_active": 0.04, "concern": 0.02}),
-                    "referenced_qid": _choice_ans("none_or_unclear", {"none_or_unclear": 0.96, "fam_cancer": 0.04}),
-                    "referenced_act": _choice_ans("not_a_side_action", {"not_a_side_action": 0.96, "add_or_correct": 0.04}),
-                    "referenced_polarity": _choice_ans("not_applicable_or_none", {"not_applicable_or_none": 0.96, "concern": 0.04}),
+                    "current_outcome": _choice_ans("clear", {"clear": 0.94, "other": 0.04, "concern": 0.02}),
+                    "side_intent": _choice_ans("other", {"other": 0.96, "add_concern": 0.04}),
+                    "side_qid": _choice_ans("other", {"other": 0.96, "fam_cancer": 0.04}),
                 }
                 return _make_decision_result(request, raw)
 
@@ -4233,7 +4190,6 @@ class Phase4AuthorityModeTests(unittest.TestCase):
                     turn.capture,
                     call_id,
                     telemetry,
-                    current_step_fn=gemini_live._current_step,
                     tool_body_fn=gemini_live._tool_body,
                     mark_closing_fn=lambda _r: asyncio.sleep(0),
                     authority_thresholds=thresholds,
@@ -4264,11 +4220,9 @@ class Phase4AuthorityModeTests(unittest.TestCase):
                     "danger_now": _noul_ans(0.01),
                     "caller_stop": _noul_ans(0.01),
                     "mentions_profile": _noul_ans(0.88),
-                    "mentions_other_item": _noul_ans(0.90),
-                    "current_outcome": _choice_ans("clear", {"clear": 0.90, "not_about_active": 0.06, "concern": 0.04}),
-                    "referenced_qid": _choice_ans("ever_pregnant", {"ever_pregnant": 0.90, "none_or_unclear": 0.06, "fam_cancer": 0.04}),
-                    "referenced_act": _choice_ans("add_or_correct", {"add_or_correct": 0.91, "not_a_side_action": 0.05, "clarify_meaning": 0.04}),
-                    "referenced_polarity": _choice_ans("clear", {"clear": 0.91, "concern": 0.05, "not_applicable_or_none": 0.04}),
+                    "current_outcome": _choice_ans("clear", {"clear": 0.90, "other": 0.06, "concern": 0.04}),
+                    "side_intent": _choice_ans("clear_or_retract", {"clear_or_retract": 0.91, "other": 0.05, "clarify_other": 0.04}),
+                    "side_qid": _choice_ans("ever_pregnant", {"ever_pregnant": 0.90, "other": 0.06, "fam_cancer": 0.04}),
                 }
                 return _make_decision_result(request, raw)
 
@@ -4286,7 +4240,6 @@ class Phase4AuthorityModeTests(unittest.TestCase):
                     turn.capture,
                     call_id,
                     telemetry,
-                    current_step_fn=gemini_live._current_step,
                     tool_body_fn=gemini_live._tool_body,
                     mark_closing_fn=lambda _r: asyncio.sleep(0),
                     authority_thresholds=thresholds,
@@ -4308,12 +4261,10 @@ class Phase4AuthorityModeTests(unittest.TestCase):
                     "danger_now": _noul_ans(0.01),
                     "caller_stop": _noul_ans(0.01),
                     "mentions_profile": _noul_ans(0.85),
-                    "mentions_other_item": _noul_ans(0.01),
                     "detail_present": _noul_ans(0.05),
-                    "current_outcome": _choice_ans("clear", {"clear": 0.93, "not_about_active": 0.04, "concern": 0.03}),
-                    "referenced_qid": _choice_ans("none_or_unclear", {"none_or_unclear": 0.96, "birth_jaundice": 0.04}),
-                    "referenced_act": _choice_ans("not_a_side_action", {"not_a_side_action": 0.96, "add_or_correct": 0.04}),
-                    "referenced_polarity": _choice_ans("not_applicable_or_none", {"not_applicable_or_none": 0.96, "concern": 0.04}),
+                    "current_outcome": _choice_ans("clear", {"clear": 0.93, "other": 0.04, "concern": 0.03}),
+                    "side_intent": _choice_ans("other", {"other": 0.96, "add_concern": 0.04}),
+                    "side_qid": _choice_ans("other", {"other": 0.96, "birth_jaundice": 0.04}),
                 }
                 return _make_decision_result(request, raw)
 
@@ -4331,7 +4282,6 @@ class Phase4AuthorityModeTests(unittest.TestCase):
                     turn.capture,
                     call_id,
                     telemetry,
-                    current_step_fn=gemini_live._current_step,
                     tool_body_fn=gemini_live._tool_body,
                     mark_closing_fn=lambda _r: asyncio.sleep(0),
                     authority_thresholds=thresholds,
@@ -4363,11 +4313,7 @@ class Phase4AuthorityModeTests(unittest.TestCase):
                     "danger_now": _noul_ans(0.01),
                     "caller_stop": _noul_ans(0.01),
                     "mentions_profile": _noul_ans(0.05),
-                    "mentions_other_item": _noul_ans(0.01),
-                    "current_outcome": _choice_ans("clarify", {"clarify": 0.92, "not_about_active": 0.05, "clear": 0.03}),
-                    "referenced_qid": _choice_ans("none_or_unclear", {"none_or_unclear": 0.96, "fam_cancer": 0.04}),
-                    "referenced_act": _choice_ans("not_a_side_action", {"not_a_side_action": 0.96, "add_or_correct": 0.04}),
-                    "referenced_polarity": _choice_ans("not_applicable_or_none", {"not_applicable_or_none": 0.96, "concern": 0.04}),
+                    "current_outcome": _choice_ans("clarify", {"clarify": 0.92, "other": 0.05, "clear": 0.03}),
                 }
                 return _make_decision_result(request, raw)
 
@@ -4385,7 +4331,6 @@ class Phase4AuthorityModeTests(unittest.TestCase):
                     turn.capture,
                     call_id,
                     telemetry,
-                    current_step_fn=gemini_live._current_step,
                     tool_body_fn=gemini_live._tool_body,
                     mark_closing_fn=lambda _r: asyncio.sleep(0),
                     authority_thresholds=thresholds,
@@ -4407,11 +4352,7 @@ class Phase4AuthorityModeTests(unittest.TestCase):
                     "danger_now": _noul_ans(0.01),
                     "caller_stop": _noul_ans(0.01),
                     "mentions_profile": _noul_ans(0.10),
-                    "mentions_other_item": _noul_ans(0.01),
-                    "current_outcome": _choice_ans("not_about_active", {"not_about_active": 0.90, "clarify": 0.05, "clear": 0.05}),
-                    "referenced_qid": _choice_ans("none_or_unclear", {"none_or_unclear": 0.96, "fam_cancer": 0.04}),
-                    "referenced_act": _choice_ans("not_a_side_action", {"not_a_side_action": 0.96, "add_or_correct": 0.04}),
-                    "referenced_polarity": _choice_ans("not_applicable_or_none", {"not_applicable_or_none": 0.96, "concern": 0.04}),
+                    "current_outcome": _choice_ans("other", {"other": 0.90, "clarify": 0.05, "clear": 0.05}),
                 }
                 return _make_decision_result(request, raw)
 
@@ -4424,7 +4365,6 @@ class Phase4AuthorityModeTests(unittest.TestCase):
                     turn.capture,
                     call_id,
                     telemetry,
-                    current_step_fn=gemini_live._current_step,
                     tool_body_fn=gemini_live._tool_body,
                     mark_closing_fn=lambda _r: asyncio.sleep(0),
                     authority_thresholds=thresholds,

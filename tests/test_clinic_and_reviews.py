@@ -2,9 +2,15 @@
 
 import asyncio
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+from tests import APP_DIR  # noqa: E402
 
 _TMP = tempfile.mkdtemp(prefix="shishu-v3-stage4-")
 os.environ["DATA_DIR"] = _TMP
@@ -15,11 +21,10 @@ import app  # noqa: E402
 import db  # noqa: E402
 import gemini_live  # noqa: E402
 import prompts  # noqa: E402
-import test_v4_cursor as cursor_tests  # noqa: E402
+import test_cursor as cursor_tests  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-_HERE = Path(__file__).resolve().parent
-_STATIC = _HERE / "static"
+_STATIC = APP_DIR / "static"
 
 
 class _FakeSocket:

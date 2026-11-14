@@ -156,7 +156,7 @@ def apply_profile(
     return state, None
 
 
-def _accepted_target(state: dict, target_qid: str) -> str:
+def accepted_target(state: dict, target_qid: str) -> str:
     """An earlier answered gate, or ever_pregnant. Anything else is ignored."""
     target = str(target_qid or "").strip()
     if not target or target == state.get("active_qid"):
@@ -174,6 +174,45 @@ def _accepted_target(state: dict, target_qid: str) -> str:
     if not isinstance(entry, dict) or entry.get("state") not in _ANSWERED:
         return ""
     return target
+
+
+_accepted_target = accepted_target
+
+
+def has_answered_gates(state: dict) -> bool:
+    """True when at least one screening gate (or post-intro ever_pregnant) has an answer."""
+    if not isinstance(state, dict):
+        return False
+    answers = state.get("answers") or {}
+    if isinstance(answers, dict):
+        for qid, entry in answers.items():
+            if qid == "intro_bridge":
+                continue
+            if isinstance(entry, dict) and entry.get("state") in _ANSWERED:
+                return True
+    active_qid = str(state.get("active_qid") or "")
+    past_intro = state.get("phase") != "asking" or (
+        bool(active_qid) and active_qid not in _EARLY and active_qid != "intro_bridge"
+    )
+    if past_intro and (state.get("profile") or {}).get("ever_pregnant") is not None:
+        return True
+    return False
+
+
+def is_answered_or_na(state: dict, qid: str) -> bool:
+    """True if answers[qid].state is answered or not_applicable."""
+    if not isinstance(state, dict) or not qid:
+        return False
+    entry = (state.get("answers") or {}).get(qid)
+    if not isinstance(entry, dict):
+        return False
+    status = entry.get("state")
+    return status in _ANSWERED or status == "not_applicable"
+
+
+def ever_pregnant_prompt_hi() -> str:
+    """Return the Hindi question for the ever_pregnant gate."""
+    return _EVER_PREGNANT_HI
 
 
 def _rewind_target(state: dict, target: str) -> dict:
@@ -503,25 +542,123 @@ def apply_interpreted_turn(state: dict, interpreted: dict) -> dict:
     )
 
 
+def step_id(state: dict) -> str:
+    """Identity of the question she should hear before an answer can be saved."""
+    phase = str(state.get("phase") or "asking")
+    if phase != "asking":
+        return "closing:" + str(state.get("close_reason") or "complete")
+    qid = str(state.get("active_qid") or "")
+    idx = state.get("pending_followup_idx")
+    step = qid if idx is None else f"{qid}:{idx}"
+    rounds = int(state.get("close_rounds") or 0)
+    if qid == "close_anything_else" and rounds:
+        step = f"{step}:more:{rounds}"
+    hold = str(state.get("hold_reason") or "").strip()
+    if hold:
+        step = f"{step}:hold:{hold}"
+    attempts = int(state.get("step_attempts") or 0)
+    if attempts:
+        step = f"{step}:try:{attempts}"
+    return step
+
+
+def step_kind(state: dict) -> str:
+    """Return 'profile' | 'bridge' | 'main' | 'which_child' | 'followup' | 'close'."""
+    if not isinstance(state, dict):
+        return "main"
+    hold = state.get("hold_reason")
+    if hold in _HARD_HOLDS:
+        return "profile"
+    active_qid = str(state.get("active_qid") or "")
+    if active_qid == "ever_pregnant":
+        return "main"
+    pending_idx = state.get("pending_followup_idx")
+    if pending_idx == -1:
+        return "which_child"
+    spec = _spec_or_none(active_qid)
+    if (
+        isinstance(pending_idx, int)
+        and pending_idx >= 0
+        and spec is not None
+        and pending_idx < len(spec.followups)
+    ):
+        return "followup"
+    if active_qid == "close_anything_else":
+        return "close"
+    if spec is not None and spec.kind == "profile":
+        return "profile"
+    if spec is not None and spec.kind == "bridge":
+        return "bridge"
+    return "main"
+
+
+def active_prompt_hi(state: dict) -> str:
+    """Return the exact single Hindi question for state, or '' when not asking."""
+    if not isinstance(state, dict) or state.get("phase") != "asking":
+        return ""
+    hold = state.get("hold_reason")
+    if hold in _HOLD_HI:
+        return _HOLD_HI[hold]
+    active_qid = str(state.get("active_qid") or "")
+    if active_qid == "ever_pregnant":
+        return _EVER_PREGNANT_HI
+    pending_idx = state.get("pending_followup_idx")
+    if pending_idx == -1:
+        children = (state.get("profile") or {}).get("children") or []
+        return _which_child_hi(children)
+    spec = _spec_or_none(active_qid)
+    if spec is None:
+        return ""
+    if isinstance(pending_idx, int) and 0 <= pending_idx < len(spec.followups):
+        return FOLLOWUP_HI[spec.followups[pending_idx]]
+    answer = (state.get("answers") or {}).get(active_qid) or {}
+    if active_qid == "close_anything_else" and answer.get("state") == "concern":
+        return _CLOSE_MORE_HI
+    return question_hi_for(state, spec)
+
+
+def followup_prompt_hi(state: dict) -> str:
+    """Return the follow-up Hindi prompt for the active step, or ''."""
+    if not isinstance(state, dict):
+        return ""
+    kind = step_kind(state)
+    active_qid = str(state.get("active_qid") or "")
+    spec = _spec_or_none(active_qid)
+    pending_idx = state.get("pending_followup_idx")
+    if (
+        kind == "followup"
+        and spec is not None
+        and isinstance(pending_idx, int)
+        and 0 <= pending_idx < len(spec.followups)
+    ):
+        return FOLLOWUP_HI[spec.followups[pending_idx]]
+    if kind == "main" and spec is not None and spec.followups:
+        return FOLLOWUP_HI[spec.followups[0]]
+    if kind == "close":
+        return FOLLOWUP_HI["open_concern_detail"]
+    return ""
+
+
+def last_answered_prompt_hi(state: dict) -> tuple[str, str]:
+    """Return (last_qid, prompt_hi) for the last non-bridge answered question, else ('', '')."""
+    if not isinstance(state, dict):
+        return "", ""
+    last_qid = str(state.get("last_answered_qid") or "").strip()
+    if not last_qid or last_qid == "intro_bridge":
+        return "", ""
+    if last_qid == "ever_pregnant":
+        return last_qid, _EVER_PREGNANT_HI
+    spec = _spec_or_none(last_qid)
+    if spec is None:
+        return "", ""
+    return last_qid, question_hi_for(state, spec)
+
+
 def prompt_directive(state: dict) -> str:
     """One speakable instruction: the single Hindi question to ask next."""
     if state["phase"] != "asking":
         return "Say one short warm Hindi closing, then stop. Do not ask another screening question."
-    hold = state.get("hold_reason")
-    if hold in _HOLD_HI:
-        return _ask(_HOLD_HI[hold])
-    if state["active_qid"] == "ever_pregnant":
-        return _ask(_EVER_PREGNANT_HI)
-    if state.get("pending_followup_idx") == -1:
-        return _ask(_which_child_hi(state["profile"]["children"]))
-    spec = get_spec(state["active_qid"])
-    idx = state.get("pending_followup_idx")
-    if isinstance(idx, int) and idx >= 0:
-        return _ask(FOLLOWUP_HI[spec.followups[idx]])
-    answer = state["answers"].get(state["active_qid"]) or {}
-    if state["active_qid"] == "close_anything_else" and answer.get("state") == "concern":
-        return _ask(_CLOSE_MORE_HI)
-    return _ask(_question_hi(state, spec))
+    return _ask(active_prompt_hi(state))
 
 
 def _ask(hindi: str) -> str:

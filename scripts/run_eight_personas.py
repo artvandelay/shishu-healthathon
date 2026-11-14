@@ -18,10 +18,11 @@ import urllib.request
 import wave
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-HERE = Path(__file__).resolve().parent
-os.environ.setdefault("DATA_DIR", str(HERE / "storage" / "personas"))
-sys.path.insert(0, str(HERE))
+ROOT = Path(__file__).resolve().parents[1]
+APP_DIR = ROOT / "code" / "shishu-v2"
+os.environ.setdefault("DATA_DIR", str(APP_DIR / "storage" / "personas"))
+if str(APP_DIR) not in sys.path:
+    sys.path.insert(0, str(APP_DIR))
 
 from dotenv import load_dotenv
 

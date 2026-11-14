@@ -4,10 +4,16 @@ import asyncio
 import io
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+import tests  # noqa: E402, F401
 
 _TMP = tempfile.mkdtemp(prefix="shishu-v3-reports-")
 os.environ["DATA_DIR"] = _TMP
@@ -20,7 +26,7 @@ import db  # noqa: E402
 import mother_report  # noqa: E402
 import post_call  # noqa: E402
 import report_service  # noqa: E402
-import test_v4_cursor as cursor_tests  # noqa: E402
+import test_cursor as cursor_tests  # noqa: E402
 from call_cursor import apply_profile, apply_turn, close_technical_failure  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from pypdf import PdfReader  # noqa: E402

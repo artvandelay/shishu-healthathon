@@ -3,12 +3,18 @@
 import ast
 import json
 import re
+import sys
 import unittest
 from pathlib import Path
 
-import call_cursor
-import triage_catalog
-from call_cursor import (
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+from tests import REPO_ROOT  # noqa: E402
+
+import call_cursor  # noqa: E402
+import triage_catalog  # noqa: E402
+from call_cursor import (  # noqa: E402
     apply_interpreted_turn,
     apply_profile,
     apply_turn,
@@ -18,9 +24,9 @@ from call_cursor import (
     prompt_directive,
     routable_qids,
 )
-from triage_catalog import FOLLOWUP_HI, active_specs, get_spec
+from triage_catalog import FOLLOWUP_HI, active_specs, get_spec  # noqa: E402
 
-_DOC = Path(__file__).resolve().parents[2] / "docs" / "requirements-v4.md"
+_DOC = REPO_ROOT / "docs" / "requirements-v4.md"
 _PREG_HISTORY = (
     "preg_conditions",
     "preg_scan",
@@ -1095,6 +1101,78 @@ class DecisionApiPhase1Tests(unittest.TestCase):
         # Already closing state is untouched.
         already_complete = dict(closed, close_reason="complete")
         self.assertEqual(close_technical_failure(already_complete), already_complete)
+
+    def test_canonical_state_inspection_api(self):
+        intro = new_cursor_state()
+        self.assertEqual(call_cursor.step_kind(intro), "profile")
+        self.assertIn("नाम", call_cursor.active_prompt_hi(intro))
+        self.assertEqual(call_cursor.followup_prompt_hi(intro), "")
+        self.assertEqual(call_cursor.last_answered_prompt_hi(intro), ("", ""))
+        self.assertEqual(call_cursor.step_id(intro), "intro_name")
+        self.assertFalse(call_cursor.has_answered_gates(intro))
+        self.assertFalse(call_cursor.is_answered_or_na(intro, "birth_jaundice"))
+
+        held, _ = apply_profile(intro, caller_name="मेरा नाम")
+        self.assertEqual(call_cursor.step_kind(held), "profile")
+        self.assertEqual(call_cursor.step_id(held), "intro_name:hold:name_fragment")
+        self.assertIn("पूरा नाम", call_cursor.active_prompt_hi(held))
+
+        bridge = _profile(children=[_child(6, "male", 1), _child(2, "female", 2)])
+        self.assertEqual(call_cursor.step_kind(bridge), "bridge")
+        self.assertFalse(call_cursor.has_answered_gates(bridge))
+
+        first_gate = apply_turn(bridge, "clear")
+        self.assertEqual(call_cursor.step_kind(first_gate), "main")
+        self.assertTrue(call_cursor.has_answered_gates(first_gate))
+        self.assertEqual(call_cursor.last_answered_prompt_hi(first_gate), ("", ""))
+        self.assertEqual(call_cursor.followup_prompt_hi(first_gate), FOLLOWUP_HI["operation_reason"])
+
+        childless = apply_turn(_profile(children=[]), "clear")
+        self.assertEqual(childless["active_qid"], "ever_pregnant")
+        self.assertFalse(call_cursor.has_answered_gates(childless))
+        self.assertEqual(call_cursor.step_kind(childless), "main")
+        self.assertEqual(call_cursor.active_prompt_hi(childless), call_cursor.ever_pregnant_prompt_hi())
+        after_ever = apply_turn(childless, "concern")
+        self.assertTrue(call_cursor.has_answered_gates(after_ever))
+        self.assertEqual(
+            call_cursor.last_answered_prompt_hi(after_ever),
+            ("ever_pregnant", call_cursor.ever_pregnant_prompt_hi()),
+        )
+        self.assertEqual(call_cursor.accepted_target(after_ever, "ever_pregnant"), "ever_pregnant")
+        self.assertTrue(call_cursor.is_answered_or_na(after_ever, "ever_pregnant"))
+        self.assertTrue(call_cursor.is_answered_or_na(after_ever, "birth_jaundice"))
+
+        multi_jaundice = _clear_until(
+            _profile(children=[_child(6, "male", 1), _child(2, "female", 2)]),
+            "birth_jaundice",
+        )
+        self.assertEqual(
+            call_cursor.last_answered_prompt_hi(multi_jaundice)[0],
+            "birth_nicu",
+        )
+        self.assertIn(
+            "आपके किसी भी बच्चे",
+            call_cursor.last_answered_prompt_hi(multi_jaundice)[1],
+        )
+        which = apply_turn(multi_jaundice, "concern")
+        self.assertEqual(call_cursor.step_kind(which), "which_child")
+        self.assertEqual(call_cursor.step_id(which), "birth_jaundice:-1")
+        self.assertEqual(call_cursor.followup_prompt_hi(which), "")
+        fup = apply_turn(which, "concern", child_ref="child_1")
+        self.assertEqual(call_cursor.step_kind(fup), "followup")
+        self.assertEqual(call_cursor.step_id(fup), "birth_jaundice:0")
+        self.assertEqual(call_cursor.active_prompt_hi(fup), FOLLOWUP_HI["jaundice_days"])
+        self.assertEqual(call_cursor.followup_prompt_hi(fup), FOLLOWUP_HI["jaundice_days"])
+
+        close = _clear_until(_profile(children=[_child(4, "male")]), "close_anything_else")
+        self.assertEqual(call_cursor.step_kind(close), "close")
+        self.assertEqual(call_cursor.followup_prompt_hi(close), FOLLOWUP_HI["open_concern_detail"])
+        close_more = apply_turn(close, "concern", note="पेट दर्द")
+        self.assertEqual(call_cursor.step_id(close_more), "close_anything_else:more:1")
+        self.assertIn("कुछ और बताना चाहेंगी", call_cursor.active_prompt_hi(close_more))
+        closed = apply_turn(close_more, "clear")
+        self.assertEqual(call_cursor.active_prompt_hi(closed), "")
+        self.assertEqual(call_cursor.step_id(closed), "closing:complete")
 
 
 if __name__ == "__main__":

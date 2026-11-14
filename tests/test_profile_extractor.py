@@ -6,15 +6,21 @@ import asyncio
 import json
 import os
 import re
+import sys
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from google.genai import types
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+from tests import APP_DIR  # noqa: E402
 
-import profile_extractor
-import test_v4_cursor as cursor_tests
-from call_cursor import apply_interpreted_turn, apply_profile, new_cursor_state
+from google.genai import types  # noqa: E402
+
+import profile_extractor  # noqa: E402
+import test_cursor as cursor_tests  # noqa: E402
+from call_cursor import apply_interpreted_turn, apply_profile, new_cursor_state  # noqa: E402
 
 
 def _full_raw(**overrides) -> dict:
@@ -32,7 +38,7 @@ def _full_raw(**overrides) -> dict:
 class ProfileExtractorOfflineTests(unittest.TestCase):
     def test_source_guard_no_devanagari_and_no_legacy_helpers(self):
         src = (
-            Path(__file__).resolve().parent / "profile_extractor.py"
+            APP_DIR / "profile_extractor.py"
         ).read_text(encoding="utf-8")
         self.assertLessEqual(len(src.splitlines()), 270)
         self.assertIsNone(

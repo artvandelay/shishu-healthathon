@@ -5,6 +5,7 @@ thread. The live session calls it with asyncio.to_thread. _remember only
 stores the raw chunk.
 """
 
+import io
 import os
 import threading
 import time
@@ -16,7 +17,24 @@ import db
 TARGET_RATE = 16000
 
 
-def _resample_int16_mono(pcm_bytes: bytes, src_rate: int, dst_rate: int = TARGET_RATE) -> bytes:
+def pcm16_to_wav_bytes(pcm: bytes, sample_rate: int = TARGET_RATE) -> bytes:
+    """Wrap raw signed 16-bit mono little-endian PCM bytes in a WAV container."""
+    rate = int(sample_rate)
+    if rate <= 0:
+        raise ValueError(f"sample_rate must be positive, got {sample_rate!r}")
+    data = bytes(pcm)
+    if len(data) % 2 == 1:
+        data = data[:-1]
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(rate)
+        wf.writeframes(data)
+    return buf.getvalue()
+
+
+def resample_int16_mono(pcm_bytes: bytes, src_rate: int, dst_rate: int = TARGET_RATE) -> bytes:
     if not pcm_bytes:
         return b""
     if src_rate == dst_rate or src_rate <= 0:
@@ -128,7 +146,7 @@ class CallAudioRecorder:
     def _placed(self, raw: list[tuple[float, bytes, int]]) -> list[tuple[int, array]]:
         placed: list[tuple[int, array]] = []
         for elapsed, pcm, rate in raw:
-            resampled = _resample_int16_mono(pcm, rate, TARGET_RATE)
+            resampled = resample_int16_mono(pcm, rate, TARGET_RATE)
             if len(resampled) % 2 != 0:
                 resampled = resampled[:-1]
             if not resampled:

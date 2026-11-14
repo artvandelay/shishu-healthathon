@@ -14,40 +14,36 @@
     "emergency_recall": 1.0,
     "history_false_emergency_rate": 0.0,
     "danger_now_separation_gap": [
-      0.1277,
-      0.9171
+      0.2337,
+      0.9749
     ],
     "caller_stop_recall": 1.0,
     "caller_stop_false_positive_rate": 0.0,
-    "outcome_exact_accuracy": 0.9048,
-    "outcome_macro_precision": 0.875,
-    "outcome_macro_recall": 0.9333,
+    "outcome_exact_accuracy": 0.9524,
+    "outcome_macro_precision": 0.9722,
+    "outcome_macro_recall": 0.9444,
     "side_qid_precision": 1.0,
-    "side_qid_recall": 0.6667,
+    "side_qid_recall": 1.0,
     "side_qid_false_writes": 0,
     "future_qid_recall": 1.0,
     "child_ref_accuracy": 1.0,
     "detail_present_accuracy": 1.0,
     "mentions_profile_accuracy": 1.0,
-    "avg_decision_ms": 396.5
+    "avg_decision_ms": 395.5
   },
   "thresholds": {
     "calibrated": true,
-    "danger_now_min_yes": 0.5224,
-    "caller_stop_min_yes": 0.5221,
-    "mentions_profile_min_yes": 0.7348,
-    "detail_present_min_yes": 0.7779,
-    "mentions_other_min_yes": 0.5052,
+    "danger_now_min_yes": 0.6043,
+    "caller_stop_min_yes": 0.4978,
+    "mentions_profile_min_yes": 0.6865,
+    "detail_present_min_yes": 0.8725,
     "outcome_min_confidence": 0.45,
-    "outcome_min_catchall_margin": 0.2,
-    "outcome_min_runnerup_margin": 0.05,
-    "side_qid_min_confidence": 0.65,
-    "side_qid_min_catchall_margin": 0.05,
-    "side_qid_min_runnerup_margin": 0.05,
-    "side_act_min_confidence": 0.45,
-    "side_polarity_min_confidence": 0.55,
+    "outcome_min_margin": 0.05,
+    "side_intent_min_confidence": 0.75,
+    "side_intent_min_margin": 0.3,
+    "side_qid_min_confidence": 0.627,
+    "side_qid_min_margin": 0.05,
     "child_ref_min_confidence": 0.65,
-    "child_ref_min_catchall_margin": 0.05,
-    "child_ref_min_runnerup_margin": 0.05
+    "child_ref_min_margin": 0.05
   }
 }

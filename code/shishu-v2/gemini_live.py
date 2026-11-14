@@ -25,12 +25,13 @@ import live_decision_bridge
 
 logger = logging.getLogger(__name__)
 from call_cursor import (
+    active_prompt_hi,
     apply_profile,
     apply_turn,
     children_roster,
     expect_yes_no,
     new_cursor_state,
-    prompt_directive,
+    step_id,
 )
 from live_decision_bridge import (
     TurnCapture,
@@ -811,22 +812,7 @@ def _followup_note(
 
 def _current_step(state: dict) -> str:
     """Identity of the question she should hear before an answer can be saved."""
-    phase = str(state.get("phase") or "asking")
-    if phase != "asking":
-        return "closing:" + str(state.get("close_reason") or "complete")
-    qid = str(state.get("active_qid") or "")
-    idx = state.get("pending_followup_idx")
-    step = qid if idx is None else f"{qid}:{idx}"
-    rounds = int(state.get("close_rounds") or 0)
-    if qid == "close_anything_else" and rounds:
-        step = f"{step}:more:{rounds}"
-    hold = str(state.get("hold_reason") or "").strip()
-    if hold:
-        step = f"{step}:hold:{hold}"
-    attempts = int(state.get("step_attempts") or 0)
-    if attempts:
-        step = f"{step}:try:{attempts}"
-    return step
+    return step_id(state)
 
 
 def _question_group(state: dict) -> str:
@@ -844,7 +830,7 @@ def _question_group(state: dict) -> str:
 def _question_state_payload(cursor_state: dict) -> dict:
     return {
         "type": "question_state",
-        "step": _current_step(cursor_state),
+        "step": step_id(cursor_state),
         "qid": str(cursor_state.get("active_qid") or ""),
         "group": _question_group(cursor_state),
         "expect_yes_no": expect_yes_no(cursor_state),
@@ -874,7 +860,7 @@ async def _send_greeting(
 
 
 def _question_already_spoken(turn: _TurnState, cursor_state: dict) -> bool:
-    step = _current_step(cursor_state)
+    step = step_id(cursor_state)
     return bool(step) and turn.spoken_qid == step
 
 
@@ -905,13 +891,7 @@ def _speak_cue_text(state: dict, kind: str = "speak") -> str:
 def _say_hindi(state: dict) -> str:
     if state.get("phase") != "asking":
         return _closing_hi(state)
-    text = prompt_directive(state)
-    marker = "then wait: "
-    if marker in text:
-        text = text.split(marker, 1)[1]
-    if " Say " in text:
-        text = text.split(" Say ", 1)[0]
-    return text.strip()
+    return active_prompt_hi(state)
 
 
 def _closing_hi(state: dict) -> str:
@@ -1105,7 +1085,7 @@ async def _fallback_speak_after_tool(
             return
         if turn.bot_replied_since_user or turn.bot_speaking:
             return
-        if _current_step(cursor.state) != step_after_tool:
+        if step_id(cursor.state) != step_after_tool:
             return
         text = _speak_cue_text(cursor.state, kind)
         turn.active_speak_kind = kind
@@ -1218,7 +1198,7 @@ async def _answer_function_calls(
         try:
             if mode == "authority":
                 if name == "next_question":
-                    current_step = _current_step(cursor.state)
+                    current_step = step_id(cursor.state)
                     stale_turn = (
                         turn.user_turn_step != current_step
                         if turn.user_turn_step
@@ -1266,7 +1246,6 @@ async def _answer_function_calls(
                                 cap,
                                 call_id,
                                 telemetry,
-                                current_step_fn=_current_step,
                                 tool_body_fn=_tool_body,
                                 mark_closing_fn=_mark_closing_cb,
                                 settings=settings,
@@ -1316,7 +1295,7 @@ async def _answer_function_calls(
                     "retracted": "retract",
                     "take_back": "retract",
                 }.get(outcome, outcome)
-                current_step = _current_step(cursor.state)
+                current_step = step_id(cursor.state)
                 stale_turn = (
                     turn.user_turn_step != current_step
                     if turn.user_turn_step
@@ -1422,7 +1401,7 @@ async def _answer_function_calls(
             "Could not send the tool response to Gemini",
         )
     if handled:
-        step_after_tool = _current_step(cursor.state)
+        step_after_tool = step_id(cursor.state)
         cue_sent = bool(step_after_tool) and turn.speak_cue_step == step_after_tool
         already_spoken = _question_already_spoken(turn, cursor.state)
         # A late tool call after quick_reply already spoke this step. Keep the
@@ -1438,7 +1417,7 @@ async def _answer_function_calls(
         elif clarify_applied:
             kind = "clarify"
         delay = 0.0 if send_failed else _TOOL_SPEAK_FALLBACK_SEC
-        step_after_tool = _current_step(cursor.state)
+        step_after_tool = step_id(cursor.state)
         turn.pending_speak_step = step_after_tool
         turn.pending_speak_kind = kind
         turn.active_speak_kind = kind
@@ -1523,7 +1502,7 @@ async def _on_bot_audio(
                 latency_ms = 0
             telemetry["turn_latencies_ms"].append(latency_ms)
         state.nudges_for_current_turn = 0
-        state.spoken_qid = _current_step(cursor.state)
+        state.spoken_qid = step_id(cursor.state)
     state.awaiting_bot_reply = False
     state.speech_end_waiting = False
     state.bot_replied_since_user = True
@@ -1628,7 +1607,7 @@ async def _handle_server_message(
                     cap.user_turn_buffer, user_text
                 )
                 state.last_user_text = cap.user_turn_buffer
-                state.user_turn_step = _current_step(cursor.state)
+                state.user_turn_step = step_id(cursor.state)
                 state.last_quick_reply_step = ""
                 cap.authority_speech_allowed = False
                 cap.authority_handled_turn = False
@@ -1732,7 +1711,7 @@ async def _handle_server_message(
 
     if server_content is not None and server_content.turn_complete:
         if mode == "authority" and not telemetry.get("end_requested"):
-            current_step = _current_step(cursor.state)
+            current_step = step_id(cursor.state)
             stale_turn = (
                 state.user_turn_step != current_step
                 if state.user_turn_step
@@ -1756,7 +1735,6 @@ async def _handle_server_message(
                     cap,
                     call_id,
                     telemetry,
-                    current_step_fn=_current_step,
                     tool_body_fn=_tool_body,
                     mark_closing_fn=_mark_closing_cb,
                     settings=settings,
@@ -1785,7 +1763,7 @@ async def _handle_server_message(
                     text=_speak_cue_text(cursor.state, missed_kind),
                 )
                 if ok and not state.reconnect_requested:
-                    state.speak_cue_step = _current_step(cursor.state)
+                    state.speak_cue_step = step_id(cursor.state)
                 if not ok:
                     telemetry["tool_errors"] = int(telemetry.get("tool_errors") or 0) + 1
                     await _report_error(
@@ -1821,7 +1799,7 @@ async def _handle_server_message(
             reset_turn_capture(cap)
         elif not authority_ran_in_msg and (
             cap.user_turn_is_quick_reply_stale
-            or (state.user_turn_step and state.user_turn_step != _current_step(cursor.state))
+            or (state.user_turn_step and state.user_turn_step != step_id(cursor.state))
         ):
             reset_turn_capture(cap)
         cap.authority_handled_turn = False
@@ -1836,7 +1814,7 @@ async def _handle_server_message(
         stop_is_set = stop is not None and stop.is_set()
         if (
             speak_step
-            and speak_step == _current_step(cursor.state)
+            and speak_step == step_id(cursor.state)
             and not state.bot_replied_since_user
             and not stop_is_set
             and not state.reconnect_requested
@@ -1874,7 +1852,7 @@ async def _handle_server_message(
                 ws_lock,
                 {
                     "type": "bot_turn_complete",
-                    "step": _current_step(cursor.state),
+                    "step": step_id(cursor.state),
                 },
             )
         if not state.awaiting_bot_reply or telemetry.get("end_requested"):
@@ -2000,7 +1978,7 @@ async def _gemini_loop(
                 text=_speak_cue_text(cursor.state, state.active_speak_kind),
             )
             if sent and not state.reconnect_requested:
-                state.speak_cue_step = _current_step(cursor.state)
+                state.speak_cue_step = step_id(cursor.state)
 
 
 async def _watchdog_loop(
@@ -2192,7 +2170,7 @@ async def _browser_loop(
                 pcm_16k = (
                     pcm
                     if rate == _INPUT_RATE
-                    else audio_recorder._resample_int16_mono(pcm, rate, _INPUT_RATE)
+                    else audio_recorder.resample_int16_mono(pcm, rate, _INPUT_RATE)
                 )
                 in_quick_stale = _in_quick_reply_stale_window(state, cursor.state)
                 cap = state.capture
@@ -2207,7 +2185,7 @@ async def _browser_loop(
                             and not cap.user_turn_pcm
                         ):
                             cap.user_turn_cursor_snapshot = copy.deepcopy(cursor.state)
-                        state.user_turn_step = _current_step(cursor.state)
+                        state.user_turn_step = step_id(cursor.state)
                         state.last_quick_reply_step = ""
                         cap.authority_speech_allowed = False
                         cap.authority_handled_turn = False
@@ -2300,7 +2278,7 @@ async def _browser_loop(
                 reset_turn_capture(cap)
                 cap.user_turn_buffer = text
                 cap.user_turn_cursor_snapshot = copy.deepcopy(cursor.state)
-                state.user_turn_step = _current_step(cursor.state)
+                state.user_turn_step = step_id(cursor.state)
                 state.last_quick_reply_step = ""
                 cap.authority_speech_allowed = False
                 cap.authority_handled_turn = False
@@ -2330,7 +2308,7 @@ async def _browser_loop(
                     continue
                 if not expect_yes_no(cursor.state):
                     continue
-                if payload.get("step") != _current_step(cursor.state):
+                if payload.get("step") != step_id(cursor.state):
                     continue
                 if not _question_already_spoken(state, cursor.state):
                     continue
@@ -2400,7 +2378,7 @@ async def _browser_loop(
                         "Could not speak the next question",
                     )
                 elif not state.reconnect_requested:
-                    state.speak_cue_step = _current_step(cursor.state)
+                    state.speak_cue_step = step_id(cursor.state)
             elif kind == "hangup":
                 stop.set()
                 return

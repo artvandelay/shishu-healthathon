@@ -2,11 +2,17 @@
 
 import asyncio
 import os
+import sys
 import tempfile
 import unittest
 import wave
 from pathlib import Path
 from unittest.mock import patch
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+from tests import APP_DIR  # noqa: E402
 
 _TMP = tempfile.mkdtemp(prefix="shishu-v3-security-")
 os.environ["DATA_DIR"] = _TMP
@@ -22,7 +28,7 @@ import seed  # noqa: E402
 from call_cursor import apply_profile, new_cursor_state  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-_HERE = Path(__file__).resolve().parent
+_HERE = APP_DIR
 
 
 class SessionTests(unittest.TestCase):

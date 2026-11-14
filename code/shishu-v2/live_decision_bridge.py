@@ -15,13 +15,15 @@ from typing import Any
 import db
 import decisions
 import profile_extractor
-from call_cursor import apply_interpreted_turn, apply_profile, close_technical_failure
+from audio_recorder import pcm16_to_wav_bytes
+from call_cursor import apply_interpreted_turn, apply_profile, close_technical_failure, step_id
 
 logger = logging.getLogger(__name__)
 
 DECISION_MODES = frozenset({"off", "shadow", "authority"})
 USER_TURN_PCM_MAX_BYTES = 960_000
 USER_TURN_PCM_TAIL_CHUNKS = 6
+_PROFILE_REASK_QIDS = frozenset({"intro_name", "intro_married", "intro_children", "ever_pregnant"})
 
 
 @dataclass
@@ -43,25 +45,18 @@ class TurnCapture:
     extractor_failure_step: str = ""
 
 
-def decision_mode(
-    settings: dict | None = None,
-    *,
-    capture: TurnCapture | None = None,
-) -> str:
+def decision_mode(settings: dict | None = None, *, capture: TurnCapture | None = None) -> str:
     """Resolve decision mode ('off', 'shadow', or 'authority'). Defaults to 'off'."""
-    raw = None
-    if isinstance(settings, dict) and "decision_mode" in settings:
-        val = settings.get("decision_mode")
-        if val is not None and str(val).strip() != "":
-            raw = str(val)
-    if raw is None and capture is not None and capture.decision_mode is not None:
-        val = str(capture.decision_mode).strip()
-        if val != "":
-            raw = val
-    if raw is None:
-        raw = os.environ.get("DECISION_MODE", "off")
-    mode = str(raw or "").strip().lower()
-    return mode if mode in DECISION_MODES else "off"
+    candidates = (
+        settings.get("decision_mode") if isinstance(settings, dict) else None,
+        capture.decision_mode if capture is not None else None,
+        os.environ.get("DECISION_MODE", "off"),
+    )
+    for val in candidates:
+        text = str(val).strip().lower() if val is not None else ""
+        if text:
+            return text if text in DECISION_MODES else "off"
+    return "off"
 
 
 def load_authority_thresholds(
@@ -71,42 +66,31 @@ def load_authority_thresholds(
     authority_thresholds: decisions.DecisionThresholds | None = None,
 ) -> decisions.DecisionThresholds:
     """Resolve, load, and validate calibrated thresholds for Decision authority mode."""
-    if authority_thresholds is not None:
-        return decisions.validate_thresholds(
-            authority_thresholds, require_calibrated=True
-        )
-    if capture is not None and capture.authority_thresholds is not None:
-        return decisions.validate_thresholds(
-            capture.authority_thresholds, require_calibrated=True
-        )
+    chosen = authority_thresholds or (capture.authority_thresholds if capture else None)
+    if chosen is not None:
+        return decisions.validate_thresholds(chosen, require_calibrated=True)
     raw_path = ""
-    if isinstance(settings, dict):
-        val = settings.get("decision_thresholds_path")
-        if val is not None and str(val).strip():
-            raw_path = str(val).strip()
-    if not raw_path:
-        env_path = os.environ.get("DECISION_THRESHOLDS_PATH")
-        if env_path is not None and str(env_path).strip():
-            raw_path = str(env_path).strip()
+    for candidate in (
+        settings.get("decision_thresholds_path") if isinstance(settings, dict) else None,
+        os.environ.get("DECISION_THRESHOLDS_PATH"),
+    ):
+        if candidate is not None and str(candidate).strip():
+            raw_path = str(candidate).strip()
+            break
     path = (
-        Path(raw_path)
-        if raw_path
-        else (Path(__file__).resolve().parent / "decision_thresholds.json")
+        Path(raw_path) if raw_path else Path(__file__).resolve().parent / "decision_thresholds.json"
     )
     return decisions.load_thresholds(path, require_calibrated=True)
 
 
 def merge_transcript_chunk(prev: str, chunk: str) -> str:
-    prev_s = str(prev or "").strip()
-    chunk_s = str(chunk or "").strip()
+    prev_s, chunk_s = str(prev or "").strip(), str(chunk or "").strip()
     if not prev_s:
         return chunk_s
-    if not chunk_s:
+    if not chunk_s or prev_s.endswith(chunk_s):
         return prev_s
     if chunk_s.startswith(prev_s):
         return chunk_s
-    if prev_s.endswith(chunk_s):
-        return prev_s
     if prev_s[-1].isspace() or chunk_s[0] in ",.;:!?।":
         return prev_s + chunk_s
     return prev_s + " " + chunk_s
@@ -135,52 +119,67 @@ def append_turn_pcm(capture: TurnCapture, pcm_16k: bytes) -> None:
 
 
 def consume_task_error(task: asyncio.Task) -> None:
-    if task.cancelled():
-        return
-    try:
-        task.exception()
-    except Exception:
-        return
+    if not task.cancelled():
+        try:
+            task.exception()
+        except Exception:
+            return
 
 
 async def extract_profile_updates(
-    state: dict,
-    utterance_text: str,
-    audio_wav_bytes: bytes | None,
+    state: dict, utterance_text: str, audio_wav_bytes: bytes | None
 ) -> profile_extractor.ProfileExtractionResult:
     """Phase 5 generative profile entity extraction."""
     return await profile_extractor.extract_profile_entities(
-        state,
-        utterance_text=utterance_text,
-        audio_wav_bytes=audio_wav_bytes,
+        state, utterance_text=utterance_text, audio_wav_bytes=audio_wav_bytes
     )
 
 
-async def run_shadow_decision(
-    call_id: int,
-    snapshot_state: dict,
-    utterance_text: str,
-) -> None:
+def _decision_meta(
+    res: decisions.DecisionCallResult | None = None, *, error_reason: str = ""
+) -> dict[str, Any]:
+    return {
+        "ok": bool(res.ok) if res is not None else False,
+        "error_reason": str(res.error_reason or "") if res is not None else error_reason,
+        "decision_ms": int(res.decision_ms) if res is not None else 0,
+        "attempts": int(res.attempts) if res is not None else 0,
+        "request_bytes": int(res.request_bytes) if res is not None else 0,
+        "question_count": int(res.question_count) if res is not None else 0,
+        "catalog_option_count": int(res.catalog_option_count) if res is not None else 0,
+        "usage_present": bool(res.usage_present) if res is not None else False,
+        "total_input_tokens": res.total_input_tokens if res is not None else None,
+    }
+
+
+async def _log_event(call_id: int, event_type: str, detail: str, meta: dict[str, Any]) -> None:
+    try:
+        await asyncio.to_thread(db.append_call_event, call_id, event_type, detail, meta)
+    except Exception:
+        pass
+
+
+async def _save_state_safe(call_id: int, state: dict) -> None:
+    try:
+        copied = json.loads(json.dumps(state, ensure_ascii=False))
+        await asyncio.to_thread(db.save_cursor_state, call_id, copied)
+    except Exception:
+        pass
+
+
+def _turn_detail(active_qid: str, outcome: str) -> str:
+    if active_qid and outcome:
+        return f"{active_qid}:{outcome}"
+    return active_qid or outcome or "ok"
+
+
+async def run_shadow_decision(call_id: int, snapshot_state: dict, utterance_text: str) -> None:
     utterance = " ".join(str(utterance_text or "").split())
     if not utterance:
         return
     try:
-        request = decisions.build_turn_request(
-            snapshot_state,
-            utterance_text=utterance,
-        )
+        request = decisions.build_turn_request(snapshot_state, utterance_text=utterance)
         result = await decisions.evaluate_turn(request)
-        meta: dict[str, Any] = {
-            "ok": bool(result.ok),
-            "error_reason": str(result.error_reason or ""),
-            "decision_ms": int(result.decision_ms),
-            "attempts": int(result.attempts),
-            "request_bytes": int(result.request_bytes),
-            "question_count": int(result.question_count),
-            "catalog_option_count": int(result.catalog_option_count),
-            "usage_present": bool(result.usage_present),
-            "total_input_tokens": result.total_input_tokens,
-        }
+        meta = _decision_meta(result)
         if result.ok:
             interpreted = decisions.interpret_turn_decision(
                 snapshot_state,
@@ -191,46 +190,17 @@ async def run_shadow_decision(
             )
             meta["diagnostics"] = interpreted.diagnostics
             outcome_diag = interpreted.diagnostics.get("current_outcome") or {}
-            outcome_winner = outcome_diag.get("winner") or outcome_diag.get("top_option") or ""
-            active_qid = str(interpreted.diagnostics.get("active_qid") or "")
-            detail = (
-                f"{active_qid}:{outcome_winner}"
-                if active_qid and outcome_winner
-                else (active_qid or outcome_winner or "ok")
-            )
+            winner = outcome_diag.get("winner") or outcome_diag.get("top_option") or ""
+            detail = _turn_detail(str(interpreted.diagnostics.get("active_qid") or ""), winner)
         else:
             detail = f"error:{result.error_reason}" if result.error_reason else "error"
-        await asyncio.to_thread(
-            db.append_call_event,
-            call_id,
-            "decision_shadow",
-            detail,
-            meta,
-        )
+        await _log_event(call_id, "decision_shadow", detail, meta)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
         logger.debug("shadow decision failed for call %s: %s", call_id, exc)
-        try:
-            await asyncio.to_thread(
-                db.append_call_event,
-                call_id,
-                "decision_shadow",
-                "error:exception",
-                {
-                    "ok": False,
-                    "error_reason": type(exc).__name__,
-                    "decision_ms": 0,
-                    "attempts": 0,
-                    "request_bytes": 0,
-                    "question_count": 0,
-                    "catalog_option_count": 0,
-                    "usage_present": False,
-                    "total_input_tokens": None,
-                },
-            )
-        except Exception:
-            pass
+        err_meta = _decision_meta(error_reason=type(exc).__name__)
+        await _log_event(call_id, "decision_shadow", "error:exception", err_meta)
 
 
 def schedule_shadow_decision(
@@ -240,9 +210,7 @@ def schedule_shadow_decision(
     utterance_text: str,
     settings: dict | None = None,
 ) -> asyncio.Task | None:
-    if decision_mode(settings, capture=capture) != "shadow":
-        return None
-    if call_id is None or int(call_id) <= 0:
+    if decision_mode(settings, capture=capture) != "shadow" or not call_id or int(call_id) <= 0:
         return None
     clean = " ".join(str(utterance_text or "").split())
     if not clean:
@@ -260,11 +228,7 @@ def schedule_shadow_decision(
     return task
 
 
-async def drain_shadow_tasks(
-    capture: TurnCapture | None,
-    *,
-    timeout_sec: float = 0.25,
-) -> None:
+async def drain_shadow_tasks(capture: TurnCapture | None, *, timeout_sec: float = 0.25) -> None:
     if capture is None or not capture.shadow_tasks:
         return
     pending = [task for task in list(capture.shadow_tasks) if not task.done()]
@@ -282,15 +246,8 @@ async def drain_shadow_tasks(
     capture.shadow_tasks.clear()
 
 
-def _json_copy(value: Any) -> Any:
-    return json.loads(json.dumps(value, ensure_ascii=False))
-
-
 def _sync_ever_pregnant(
-    payload: dict[str, Any],
-    profile_updates: dict[str, Any],
-    *,
-    active_qid: str = "",
+    payload: dict[str, Any], profile_updates: dict[str, Any], *, active_qid: str = ""
 ) -> None:
     if "ever_pregnant" not in profile_updates:
         return
@@ -300,9 +257,8 @@ def _sync_ever_pregnant(
         and payload.get("side_action") == "add_or_correct"
     ):
         side_out = str(payload.get("side_outcome") or "concern")
-        agrees = (
-            (side_out == "concern" and ep_val is True)
-            or (side_out in ("clear", "retract") and ep_val is False)
+        agrees = (side_out == "concern" and ep_val is True) or (
+            side_out in ("clear", "retract") and ep_val is False
         )
         if not agrees:
             profile_updates.pop("ever_pregnant", None)
@@ -326,12 +282,36 @@ def _sync_ever_pregnant(
             profile_updates.pop("ever_pregnant", None)
 
 
-_PROFILE_REASK_QIDS = frozenset({
-    "intro_name",
-    "intro_married",
-    "intro_children",
-    "ever_pregnant",
-})
+def _is_superseded(cursor: Any, telemetry: dict, step_at_start: str) -> bool:
+    return bool(
+        telemetry.get("end_requested")
+        or cursor.state.get("phase") != "asking"
+        or step_id(cursor.state) != step_at_start
+    )
+
+
+def _held_body(
+    tool_body_fn: Callable[..., dict[str, Any]], cursor: Any, capture: TurnCapture, reason: str
+) -> tuple[dict[str, Any], bool, str]:
+    body = tool_body_fn(cursor.state)
+    body["result"] = "held"
+    body["reason"] = reason
+    capture.authority_speech_allowed = True
+    return body, False, "held"
+
+
+async def _fail_authority_turn(
+    cursor: Any,
+    capture: TurnCapture,
+    call_id: int,
+    tool_body_fn: Callable[..., dict[str, Any]],
+    mark_closing_fn: Callable[[str], Awaitable[None]],
+) -> tuple[dict[str, Any], bool, str]:
+    cursor.state = close_technical_failure(cursor.state)
+    await _save_state_safe(call_id, cursor.state)
+    await mark_closing_fn("technical_failure")
+    capture.authority_speech_allowed = True
+    return tool_body_fn(cursor.state), False, "technical_failure"
 
 
 async def run_authority_turn(
@@ -340,7 +320,6 @@ async def run_authority_turn(
     call_id: int,
     telemetry: dict,
     *,
-    current_step_fn: Callable[[dict], str],
     tool_body_fn: Callable[..., dict[str, Any]],
     mark_closing_fn: Callable[[str], Awaitable[None]],
     settings: dict | None = None,
@@ -354,146 +333,54 @@ async def run_authority_turn(
     utterance_text = capture.user_turn_buffer.strip()
     pcm_bytes = bytes(capture.user_turn_pcm)
     if not utterance_text and not pcm_bytes:
-        body = tool_body_fn(cursor.state)
-        body["result"] = "held"
-        body["reason"] = "empty_turn"
-        capture.authority_speech_allowed = True
-        return body, False, "held"
+        return _held_body(tool_body_fn, cursor, capture, "empty_turn")
 
-    step_at_start = current_step_fn(cursor.state)
+    step_at_start = step_id(cursor.state)
     if capture.extractor_failure_step and capture.extractor_failure_step != step_at_start:
         capture.extractor_failures = 0
         capture.extractor_failure_step = ""
-    normalized_utterance = " ".join(utterance_text.split())
-    dedup_key = (step_at_start, normalized_utterance, len(pcm_bytes))
+    dedup_key = (step_at_start, " ".join(utterance_text.split()), len(pcm_bytes))
     if capture.authority_last_key == dedup_key:
-        body = tool_body_fn(cursor.state)
-        body["result"] = "held"
-        body["reason"] = "duplicate_turn"
-        capture.authority_speech_allowed = True
-        return body, False, "held"
+        return _held_body(tool_body_fn, cursor, capture, "duplicate_turn")
 
     try:
         thresholds = load_authority_thresholds(
-            settings,
-            capture=capture,
-            authority_thresholds=authority_thresholds,
+            settings, capture=capture, authority_thresholds=authority_thresholds
         )
     except Exception as exc:
         logger.exception("authority thresholds invalid on call %s", call_id)
-        try:
-            await asyncio.to_thread(
-                db.append_call_event,
-                call_id,
-                "decision_authority",
-                "error:uncalibrated_thresholds",
-                {
-                    "ok": False,
-                    "error_reason": type(exc).__name__,
-                    "decision_ms": 0,
-                    "attempts": 0,
-                    "request_bytes": 0,
-                    "question_count": 0,
-                    "catalog_option_count": 0,
-                    "usage_present": False,
-                    "total_input_tokens": None,
-                },
-            )
-        except Exception:
-            pass
+        err_meta = _decision_meta(error_reason=type(exc).__name__)
+        await _log_event(call_id, "decision_authority", "error:uncalibrated_thresholds", err_meta)
         reset_turn_capture(capture)
-        cursor.state = close_technical_failure(cursor.state)
-        try:
-            await asyncio.to_thread(
-                db.save_cursor_state, call_id, _json_copy(cursor.state)
-            )
-        except Exception:
-            pass
-        await mark_closing_fn("technical_failure")
-        capture.authority_speech_allowed = True
-        return tool_body_fn(cursor.state), False, "technical_failure"
+        return await _fail_authority_turn(cursor, capture, call_id, tool_body_fn, mark_closing_fn)
 
     capture.authority_last_key = dedup_key
     capture.authority_handled_turn = True
-    state_snapshot = (
-        copy.deepcopy(capture.user_turn_cursor_snapshot)
-        if capture.user_turn_cursor_snapshot is not None
-        and current_step_fn(capture.user_turn_cursor_snapshot) == step_at_start
-        else copy.deepcopy(cursor.state)
+    snap = capture.user_turn_cursor_snapshot
+    state_snapshot = copy.deepcopy(
+        snap if snap is not None and step_id(snap) == step_at_start else cursor.state
     )
-    audio_wav_bytes = (
-        decisions.pcm16_to_wav_bytes(pcm_bytes, input_rate)
-        if (not utterance_text and pcm_bytes)
-        else None
+    audio_wav = (
+        pcm16_to_wav_bytes(pcm_bytes, input_rate) if (not utterance_text and pcm_bytes) else None
     )
     reset_turn_capture(capture)
     req = decisions.build_turn_request(
-        state_snapshot,
-        utterance_text=utterance_text,
-        audio_wav_bytes=audio_wav_bytes,
+        state_snapshot, utterance_text=utterance_text, audio_wav_bytes=audio_wav
     )
     res = await decisions.evaluate_turn(req)
-    meta: dict[str, Any] = {
-        "ok": bool(res.ok),
-        "error_reason": str(res.error_reason or ""),
-        "decision_ms": int(res.decision_ms),
-        "attempts": int(res.attempts),
-        "request_bytes": int(res.request_bytes),
-        "question_count": int(res.question_count),
-        "catalog_option_count": int(res.catalog_option_count),
-        "usage_present": bool(res.usage_present),
-        "total_input_tokens": res.total_input_tokens,
-    }
+    meta = _decision_meta(res)
 
-    if (
-        telemetry.get("end_requested")
-        or cursor.state.get("phase") != "asking"
-        or current_step_fn(cursor.state) != step_at_start
-    ):
-        try:
-            await asyncio.to_thread(
-                db.append_call_event,
-                call_id,
-                "decision_authority",
-                "superseded",
-                meta,
-            )
-        except Exception:
-            pass
-        body = tool_body_fn(cursor.state)
-        body["result"] = "held"
-        body["reason"] = "stale_turn"
-        capture.authority_speech_allowed = True
-        return body, False, "held"
+    if _is_superseded(cursor, telemetry, step_at_start):
+        await _log_event(call_id, "decision_authority", "superseded", meta)
+        return _held_body(tool_body_fn, cursor, capture, "stale_turn")
 
     if not res.ok:
         detail = f"error:{res.error_reason}" if res.error_reason else "error"
-        try:
-            await asyncio.to_thread(
-                db.append_call_event,
-                call_id,
-                "decision_authority",
-                detail,
-                meta,
-            )
-        except Exception:
-            pass
-        cursor.state = close_technical_failure(cursor.state)
-        try:
-            await asyncio.to_thread(
-                db.save_cursor_state, call_id, _json_copy(cursor.state)
-            )
-        except Exception:
-            pass
-        await mark_closing_fn("technical_failure")
-        capture.authority_speech_allowed = True
-        return tool_body_fn(cursor.state), False, "technical_failure"
+        await _log_event(call_id, "decision_authority", detail, meta)
+        return await _fail_authority_turn(cursor, capture, call_id, tool_body_fn, mark_closing_fn)
 
     interp = decisions.interpret_for_authority(
-        cursor.state,
-        res.raw_answers,
-        utterance_text=utterance_text,
-        thresholds=thresholds,
+        cursor.state, res.raw_answers, utterance_text=utterance_text, thresholds=thresholds
     )
     if interp.future_qid_match is not None:
         meta["future_qid_match"] = interp.future_qid_match
@@ -507,11 +394,7 @@ async def run_authority_turn(
         outcome_label = "caller_stop"
     else:
         outcome_label = str(payload.get("current_outcome") or "")
-    detail = (
-        f"{active_qid}:{outcome_label}"
-        if active_qid and outcome_label
-        else (active_qid or outcome_label or "ok")
-    )
+    detail = _turn_detail(active_qid, outcome_label)
 
     ext: profile_extractor.ProfileExtractionResult | None = None
     if (
@@ -519,116 +402,66 @@ async def run_authority_turn(
         and not payload.get("emergency")
         and not payload.get("caller_stop")
     ):
-        ext = await extract_profile_updates(
-            cursor.state, utterance_text, audio_wav_bytes
-        )
+        ext = await extract_profile_updates(cursor.state, utterance_text, audio_wav)
         meta["extractor_ok"] = bool(ext.ok)
         meta["extractor_ms"] = int(ext.extractor_ms)
         meta["extractor_error"] = str(ext.error_reason or "")
 
-    if (
-        telemetry.get("end_requested")
-        or cursor.state.get("phase") != "asking"
-        or current_step_fn(cursor.state) != step_at_start
-    ):
-        try:
-            await asyncio.to_thread(
-                db.append_call_event,
-                call_id,
-                "decision_authority",
-                "superseded",
-                meta,
-            )
-        except Exception:
-            pass
-        body = tool_body_fn(cursor.state)
-        body["result"] = "held"
-        body["reason"] = "stale_turn"
-        capture.authority_speech_allowed = True
-        return body, False, "held"
+    if _is_superseded(cursor, telemetry, step_at_start):
+        await _log_event(call_id, "decision_authority", "superseded", meta)
+        return _held_body(tool_body_fn, cursor, capture, "stale_turn")
 
-    try:
-        await asyncio.to_thread(
-            db.append_call_event,
-            call_id,
-            "decision_authority",
-            detail,
-            meta,
-        )
-    except Exception:
-        pass
+    await _log_event(call_id, "decision_authority", detail, meta)
 
-    if ext is not None:
-        if ext.ok:
+    if ext is not None and ext.ok:
+        capture.extractor_failures = 0
+        capture.extractor_failure_step = ""
+        profile_updates = dict(ext.updates)
+        _sync_ever_pregnant(payload, profile_updates, active_qid=active_qid)
+        if (
+            active_qid in ("intro_name", "intro_married", "intro_children")
+            and not profile_updates
+            and payload.get("current_outcome") != "clarify"
+        ):
+            cursor.state, _ = apply_profile(cursor.state)
+        if profile_updates:
+            payload["profile_updates"] = profile_updates
+    elif ext is not None:
+        if capture.extractor_failure_step != step_at_start:
+            capture.extractor_failures = 0
+            capture.extractor_failure_step = step_at_start
+        capture.extractor_failures += 1
+        if capture.extractor_failures >= 2:
             capture.extractor_failures = 0
             capture.extractor_failure_step = ""
-            profile_updates = dict(ext.updates)
-            _sync_ever_pregnant(payload, profile_updates, active_qid=active_qid)
-            if (
-                active_qid in ("intro_name", "intro_married", "intro_children")
-                and not profile_updates
-                and payload.get("current_outcome") != "clarify"
-            ):
-                cursor.state, _ = apply_profile(cursor.state)
-            if profile_updates:
-                payload["profile_updates"] = profile_updates
-        else:
-            if capture.extractor_failure_step != step_at_start:
-                capture.extractor_failures = 0
-                capture.extractor_failure_step = step_at_start
-            capture.extractor_failures += 1
-            if capture.extractor_failures >= 2:
-                capture.extractor_failures = 0
-                capture.extractor_failure_step = ""
-                cursor.state = close_technical_failure(cursor.state)
-                try:
-                    await asyncio.to_thread(
-                        db.save_cursor_state, call_id, _json_copy(cursor.state)
-                    )
-                except Exception:
-                    pass
-                await mark_closing_fn("technical_failure")
-                capture.authority_speech_allowed = True
-                return tool_body_fn(cursor.state), False, "technical_failure"
-
-            payload.pop("profile_updates", None)
-            if active_qid in _PROFILE_REASK_QIDS:
-                capture.authority_speech_allowed = True
-                return tool_body_fn(cursor.state), False, (outcome_label or "reask")
+            return await _fail_authority_turn(
+                cursor, capture, call_id, tool_body_fn, mark_closing_fn
+            )
+        payload.pop("profile_updates", None)
+        if active_qid in _PROFILE_REASK_QIDS:
+            capture.authority_speech_allowed = True
+            return tool_body_fn(cursor.state), False, (outcome_label or "reask")
 
     new_state = apply_interpreted_turn(cursor.state, payload)
     cursor.state = new_state
-    if current_step_fn(new_state) != step_at_start:
+    if step_id(new_state) != step_at_start:
         capture.extractor_failures = 0
         capture.extractor_failure_step = ""
-    try:
-        await asyncio.to_thread(
-            db.save_cursor_state, call_id, _json_copy(new_state)
-        )
-    except Exception:
-        pass
+    await _save_state_safe(call_id, new_state)
     if new_state.get("phase") == "closing":
         await mark_closing_fn(str(new_state.get("close_reason") or "complete"))
-    clarify_applied = (
-        (
-            payload.get("current_outcome") == "clarify"
-            and not payload.get("emergency")
-            and not payload.get("caller_stop")
-        )
+
+    not_closing = not payload.get("emergency") and not payload.get("caller_stop")
+    clarify_applied = not_closing and (
+        payload.get("current_outcome") == "clarify"
         or (
             payload.get("side_action") == "clarify_meaning"
-            and not payload.get("emergency")
-            and not payload.get("caller_stop")
             and cursor.state.get("active_qid") == payload.get("side_qid")
         )
     )
     body = tool_body_fn(
         cursor.state,
-        outcome=(
-            "clarify"
-            if clarify_applied
-            else str(payload.get("current_outcome") or "")
-        ),
+        outcome="clarify" if clarify_applied else str(payload.get("current_outcome") or ""),
     )
     if clarify_applied:
         body["clarify"] = True

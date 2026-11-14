@@ -1,0 +1,73 @@
+{
+  "questions": {
+    "danger_now": {
+      "type": "noul",
+      "instructions": "Is the caller describing an active life-threatening medical emergency happening RIGHT NOW in caller_utterance (such as not breathing, severe fast breathing, blue lips now, unconsciousness, unstoppable seizures, unstoppable bleeding, or explicitly stating an emergency right now)?",
+      "criteria": {
+        "true_description": "Active life-threatening danger sign happening right now in caller_utterance, or explicit statement of a medical emergency happening right now.",
+        "false_description": "Past medical history, a resolved event from earlier in life, a routine yes/no or symptom answer, or no emergency happening right now."
+      }
+    },
+    "caller_stop": {
+      "type": "noul",
+      "instructions": "Does the caller explicitly ask to end, stop, or disconnect the call now in caller_utterance?",
+      "criteria": {
+        "true_description": "Caller explicitly asks to end, stop, or hang up the call now or continue another time.",
+        "false_description": "Caller asks only to pause or wait briefly, asks a clarification question, or gives a normal reply."
+      }
+    },
+    "mentions_profile": {
+      "type": "noul",
+      "instructions": "Does caller_utterance state or update the caller's own name, marital status (married, about to marry, or unmarried), number of children, children's ages, sex, or names, or ever-pregnant history?",
+      "criteria": {
+        "true_description": "Caller states or updates her name, marital status, child count, children's ages, sex, or names, or whether she has ever been pregnant.",
+        "false_description": "Caller only answers a clinical question, asks for clarification, or makes no statement or update about her demographic profile."
+      }
+    },
+    "current_outcome": {
+      "type": "choice",
+      "instructions": "How does caller_utterance respond to active_question?",
+      "criteria": {
+        "clear": "Denies, answers no, negative, normal, or nothing further regarding active_question.",
+        "concern": "Affirms, answers yes, agrees to start, identifies a child when active_question asks which child, or provides the answer requested by active_question.",
+        "unknown": "States that she does not know, does not remember, or is unsure about active_question.",
+        "clarify": "Asks what active_question itself or a term inside active_question means, or says she did not understand active_question.",
+        "retract": "Takes back or reverses a yes or affirmative answer just given for active_question (or its parent_question when active_question is a sub-question).",
+        "other": "caller_utterance does not answer active_question, for example when it only addresses a different topic or question, only updates demographic profile details, or is unrelated chatter."
+      }
+    },
+    "side_intent": {
+      "type": "choice",
+      "instructions": "Does caller_utterance act on a screening question OTHER than active_question and parent_question (for example last_answered_question or another health or family topic)?",
+      "criteria": {
+        "add_concern": "Reports or adds a positive symptom, event, or affected relative or child for a screening topic outside active_question and parent_question.",
+        "clear_or_retract": "Denies, corrects to negative, or retracts a prior affirmative answer for a DIFFERENT screening topic outside active_question and parent_question (not taking back the answer to parent_question).",
+        "clarify_other": "Asks the meaning of a medical term or screening question outside active_question and parent_question (such as asking about last_answered_question after the call moved to active_question).",
+        "other": "Addresses only active_question or takes back parent_question, gives demographic profile info, pauses, or makes unrelated remarks."
+      }
+    },
+    "detail_present": {
+      "type": "noul",
+      "instructions": "Does caller_utterance already include concrete factual or clinical detail answering followup_question, rather than only a bare yes/no or acknowledgement?",
+      "criteria": {
+        "true_description": "Includes concrete factual or clinical detail (such as duration, count, cause, symptom, age, or affected person) answering followup_question.",
+        "false_description": "Only a bare yes or no, bare acknowledgement, statement of not knowing, clarification question, or no concrete detail."
+      }
+    }
+  },
+  "side_qid_template": {
+    "type": "choice",
+    "instructions": "Which screening item outside active_question is caller_utterance referring to?",
+    "option_template": "{question_hi} ({need_en})",
+    "ever_pregnant_need_en": "whether the caller has ever been pregnant",
+    "other_description": "The caller is not referring to any screening item outside active_question, or there is not enough evidence to identify another screening item."
+  },
+  "child_ref_template": {
+    "type": "choice",
+    "instructions": "Which child from children_roster is caller_utterance referring to?",
+    "option_template": "Refers to child {id} (rank={rank}, age={age_label_hi}, sex={sex}, name={name_or_unnamed}).",
+    "unnamed_label": "unnamed",
+    "all_description": "Refers to all or every child in children_roster (such as both or all of them).",
+    "other_description": "No specific child from children_roster is mentioned or identifiable in caller_utterance."
+  }
+}

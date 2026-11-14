@@ -140,7 +140,7 @@ async def _synthesize_utterance(
                         break
                 if time.perf_counter() > deadline:
                     break
-        raw_16k = audio_recorder._resample_int16_mono(bytes(pcm_24k), 24000, 16000)
+        raw_16k = audio_recorder.resample_int16_mono(bytes(pcm_24k), 24000, 16000)
         pcm_16k = _trim_pcm_silence(raw_16k)
         out_text = "".join(out_text_chunks).strip()
         if len(phrase.split()) <= 1 or len(pcm_16k) >= int(0.75 * 16000 * 2):
