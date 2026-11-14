@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="hi">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -18,7 +18,9 @@
       --navy-soft: #eef4f9;
       --yellow: #e89d2d;
       --yellow-dark: #cf861b;
+      --amber-ink: #9a5b00;
       --yellow-soft: #fef6e9;
+      --control-border: #64748b;
       --red: #dc2626;
       --red-dark: #b91c1c;
       --red-soft: #fef2f2;
@@ -31,6 +33,7 @@
     body {
       margin: 0;
       min-height: 100vh;
+      min-height: 100dvh;
       color: var(--ink);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Nirmala UI", "Noto Sans Devanagari", sans-serif;
       background:
@@ -87,9 +90,6 @@
       font-family: inherit;
       cursor: pointer;
     }
-
-    .admin-link:hover,
-    .header-btn:hover { color: var(--yellow); }
 
     main {
       width: min(460px, 100%);
@@ -196,7 +196,7 @@
     }
 
     #status.reconnecting {
-      color: var(--yellow-dark);
+      color: var(--amber-ink);
     }
 
     #status.thinking {
@@ -214,8 +214,11 @@
       line-height: 1.2;
     }
 
-    .call-btn .en { color: rgba(255, 255, 255, 0.88); font-size: 10px; }
-    .nudge-btn.hot .en, .text-btn .en { color: rgba(255, 255, 255, 0.88); }
+    .call-btn .en { font-size: 10px; }
+    .call-btn:not(.end):not(.yes-btn):not(.no-btn) .en,
+    .nudge-btn.hot .en { color: var(--navy); opacity: 0.82; }
+    .call-btn.end .en,
+    .text-btn .en { color: rgba(255, 255, 255, 0.88); }
     #error .en { color: var(--red-dark); opacity: 0.85; }
 
     #timer {
@@ -320,7 +323,7 @@
       border: 0;
       border-radius: 50%;
       background: var(--yellow);
-      color: #fff;
+      color: var(--navy);
       font: inherit;
       font-size: 16px;
       font-weight: 750;
@@ -329,16 +332,23 @@
       cursor: pointer;
       box-shadow: 0 8px 18px rgba(232, 157, 45, 0.35);
       touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
     }
 
-    .call-btn:hover { background: var(--yellow-dark); }
+    .call-btn:not(.end):not(.yes-btn):not(.no-btn),
+    .nudge-btn.hot { color: var(--navy); }
+
+    .call-btn:not(:disabled):active { transform: scale(0.96); }
+
+    @media (prefers-reduced-motion: reduce) {
+      .call-btn:not(:disabled):active { transform: none; }
+    }
 
     .call-btn.end {
       background: var(--red);
+      color: #ffffff;
       box-shadow: 0 12px 30px rgba(220, 38, 38, 0.28);
     }
-
-    .call-btn.end:hover { background: var(--red-dark); }
 
     .call-btn:disabled:not(.quick-btn) { opacity: 0.65; cursor: wait; }
 
@@ -359,8 +369,6 @@
 
     .no-btn .en { color: var(--muted); }
 
-    .no-btn:hover:not(:disabled) { background: var(--navy-soft); }
-
     .yes-btn {
       background: var(--navy);
       color: #ffffff;
@@ -368,8 +376,6 @@
     }
 
     .yes-btn .en { color: rgba(255, 255, 255, 0.88); }
-
-    .yes-btn:hover:not(:disabled) { background: var(--navy-dark); }
 
     .quick-btn.is-visible {
       opacity: 1;
@@ -397,6 +403,13 @@
       cursor: pointer;
     }
 
+    #consent-check {
+      width: 20px;
+      height: 20px;
+      accent-color: var(--navy);
+      flex: 0 0 auto;
+    }
+
     .consent-row a {
       color: var(--navy, #1b2a4a);
       font-weight: 700;
@@ -407,7 +420,7 @@
       min-height: 36px;
       padding: 0 12px;
       border-radius: 999px;
-      border: 1px solid var(--line);
+      border: 1px solid var(--control-border);
       background: #fff;
       color: var(--ink);
       font: inherit;
@@ -420,7 +433,7 @@
     .nudge-btn.hot {
       background: var(--yellow);
       border-color: var(--yellow);
-      color: #fff;
+      color: var(--navy);
       box-shadow: 0 0 0 4px rgba(232, 157, 45, 0.28);
     }
 
@@ -504,8 +517,6 @@
       fill: currentColor;
     }
 
-    .text-btn:hover { background: var(--navy-dark); }
-
     .dash-link {
       color: var(--navy);
       background: var(--navy-soft);
@@ -578,10 +589,10 @@
       min-width: 0;
       min-height: 40px;
       border-radius: 10px;
-      border: 1px solid var(--line);
+      border: 1px solid var(--control-border);
       padding: 8px 10px;
       font: inherit;
-      font-size: 14px;
+      font-size: 16px;
     }
 
     .hud-send button {
@@ -594,8 +605,6 @@
       padding: 0 12px;
       cursor: pointer;
     }
-
-    .hud-send button:hover { background: var(--navy-dark); }
 
     .hud-note {
       margin: 8px 0 0;
@@ -618,6 +627,7 @@
       width: min(460px, 100%);
       max-height: min(88vh, 640px);
       overflow: auto;
+      overscroll-behavior: contain;
       padding: 16px;
       text-align: left;
       background: var(--card);
@@ -644,7 +654,7 @@
     }
 
     .chip {
-      border: 1px solid var(--line);
+      border: 1px solid var(--control-border);
       background: #fff;
       color: var(--ink);
       border-radius: 999px;
@@ -665,12 +675,12 @@
       min-height: 72px;
       margin-top: 12px;
       padding: 10px 12px;
-      border: 1px solid var(--line);
+      border: 1px solid var(--control-border);
       border-radius: 12px;
       background: #fff;
       color: var(--ink);
       font: inherit;
-      font-size: 15px;
+      font-size: 16px;
       resize: vertical;
     }
 
@@ -694,11 +704,9 @@
       cursor: pointer;
     }
 
-    .ghost-btn:hover { background: #dce7f2; }
-
     .bug-confirm {
       margin: 10px 0 0;
-      color: var(--yellow-dark);
+      color: var(--amber-ink);
       font-size: 14px;
       font-weight: 600;
     }
@@ -707,6 +715,25 @@
       margin: 10px 0 0;
       color: var(--red-dark);
       font-size: 14px;
+    }
+
+    @media (hover: hover) {
+      .admin-link:hover,
+      .header-btn:hover { color: var(--yellow); }
+
+      .call-btn:hover { background: var(--yellow-dark); }
+
+      .call-btn.end:hover { background: var(--red-dark); }
+
+      .no-btn:hover:not(:disabled) { background: var(--navy-soft); }
+
+      .yes-btn:hover:not(:disabled) { background: var(--navy-dark); }
+
+      .text-btn:hover { background: var(--navy-dark); }
+
+      .hud-send button:hover { background: var(--navy-dark); }
+
+      .ghost-btn:hover { background: #dce7f2; }
     }
   </style>
 </head>
@@ -757,7 +784,7 @@
         <a id="admin-view" class="dash-link" href="/admin" hidden>View in Admin Dashboard</a>
       </div>
     </section>
-    <section id="hud" class="hud" hidden>
+    <section id="hud" class="hud" lang="en" hidden>
       <h2>Testing HUD</h2>
       <div class="hud-grid">
         <div><span class="k">Call</span> <span id="hud-call">—</span></div>
@@ -787,22 +814,22 @@
   </main>
   <div id="bug-overlay" class="bug-overlay" hidden>
     <div class="bug-card" role="dialog" aria-modal="true" aria-labelledby="bug-title">
-      <h2 id="bug-title">Report Bug</h2>
-      <p class="sub">The call keeps running. Pick what went wrong.</p>
-      <div id="bug-cats" class="chip-row" role="radiogroup" aria-label="Issue category">
-        <button class="chip" type="button" data-cat="Model stuck / no reply" aria-pressed="false">Model stuck / no reply</button>
-        <button class="chip" type="button" data-cat="Clipped / misheard Hindi" aria-pressed="false">Clipped / misheard Hindi</button>
-        <button class="chip" type="button" data-cat="Slow response" aria-pressed="false">Slow response</button>
-        <button class="chip" type="button" data-cat="Wrong language" aria-pressed="false">Wrong language</button>
-        <button class="chip" type="button" data-cat="Repeated question" aria-pressed="false">Repeated question</button>
-        <button class="chip" type="button" data-cat="Other" aria-pressed="false">Other</button>
+      <h2 id="bug-title"><span class="hi">समस्या बताएँ</span><span class="en">Report a problem</span></h2>
+      <p class="sub"><span class="hi">कॉल चलती रहेगी। क्या गड़बड़ हुई, चुनें।</span><span class="en">The call keeps running. Pick what went wrong.</span></p>
+      <div id="bug-cats" class="chip-row" role="group" aria-label="समस्या की श्रेणी (Issue category)">
+        <button class="chip" type="button" data-cat="Model stuck / no reply" aria-pressed="false"><span class="hi">जवाब नहीं आ रहा</span><span class="en">Model stuck / no reply</span></button>
+        <button class="chip" type="button" data-cat="Clipped / misheard Hindi" aria-pressed="false"><span class="hi">हिंदी कटी या गलत सुनी</span><span class="en">Clipped / misheard Hindi</span></button>
+        <button class="chip" type="button" data-cat="Slow response" aria-pressed="false"><span class="hi">जवाब धीमा है</span><span class="en">Slow response</span></button>
+        <button class="chip" type="button" data-cat="Wrong language" aria-pressed="false"><span class="hi">गलत भाषा</span><span class="en">Wrong language</span></button>
+        <button class="chip" type="button" data-cat="Repeated question" aria-pressed="false"><span class="hi">सवाल दोहराया</span><span class="en">Repeated question</span></button>
+        <button class="chip" type="button" data-cat="Other" aria-pressed="false"><span class="hi">कुछ और</span><span class="en">Other</span></button>
       </div>
-      <textarea id="bug-note" placeholder="Quick note (e.g. stuck after saying operation)"></textarea>
-      <label class="sub" for="bug-shot">Screenshot, if a picture is easier</label>
+      <textarea id="bug-note" placeholder="थोड़ी सी बात लिखें, जैसे ऑपरेशन के बाद अटक गई / Quick note"></textarea>
+      <label class="sub" for="bug-shot"><span class="hi">अगर फोटो आसान हो, तो स्क्रीनशॉट जोड़ें</span><span class="en">Screenshot, if a picture is easier</span></label>
       <input id="bug-shot" type="file" accept="image/*">
       <div class="bug-actions">
-        <button id="bug-save" class="text-btn" type="button">Save Bug &amp; Copy Debug Snapshot</button>
-        <button id="bug-close" class="ghost-btn" type="button">Close</button>
+        <button id="bug-save" class="text-btn" type="button"><span><span class="hi">सेव करें और कॉपी करें</span><span class="en">Save bug and copy the debug snapshot</span></span></button>
+        <button id="bug-close" class="ghost-btn" type="button"><span class="hi">बंद करें</span><span class="en">Close</span></button>
       </div>
       <p id="bug-confirm" class="bug-confirm" role="status" hidden></p>
       <p id="bug-error" class="bug-error" role="alert" hidden></p>

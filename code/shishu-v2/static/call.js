@@ -253,14 +253,14 @@
       function armEndButton() {
         callBtn.innerHTML = '<span class="hi">बंद</span><span class="en">End</span>';
         callBtn.classList.add("end");
-        callBtn.setAttribute("aria-label", "कॉल बंद करें");
+        callBtn.removeAttribute("aria-label");
         callBtn.disabled = false;
       }
 
       function armStartButton() {
         callBtn.innerHTML = '<span class="hi">शुरू</span><span class="en">Start</span>';
         callBtn.classList.remove("end");
-        callBtn.setAttribute("aria-label", "कॉल शुरू करें");
+        callBtn.removeAttribute("aria-label");
         callBtn.disabled = !consentCheck.checked;
       }
 
@@ -776,7 +776,10 @@
         } else if (msg.type === "report_failed") {
           showReportRetry(msg.call_id);
         } else if (msg.type === "error") {
-          showError(msg.message ? { hi: msg.message, en: "The call hit an error." } : { hi: "कॉल में गड़बड़ी आ गई।", en: "The call hit an error." });
+          showError({
+            hi: "कॉल में गड़बड़ी आ गई। नीचे दबाकर फिर कोशिश करें।",
+            en: "The call hit an error. Tap below to try again."
+          });
         }
       }
 
@@ -1033,7 +1036,10 @@
         try {
           sock.send(JSON.stringify({ type: "hangup" }));
         } catch (err) {
-          showError({ hi: "कॉल बंद नहीं हो पाई।", en: "The call could not end cleanly." });
+          showError({
+            hi: "कॉल बंद नहीं हो पाई। नीचे दबाकर फिर कोशिश करें।",
+            en: "The call could not end cleanly. Tap below to try again."
+          });
         }
       }
 
@@ -1205,8 +1211,23 @@
         clearError();
       }
 
+      function setPageInert(on) {
+        if (!document.querySelector) return;
+        ["header", "main"].forEach(function (sel) {
+          const node = document.querySelector(sel);
+          if (node) node.inert = !!on;
+        });
+      }
+
+      function focusNode(node) {
+        if (!node || typeof node.focus !== "function") return;
+        try { node.focus(); } catch (err) { /* a test DOM may mock focus */ }
+      }
+
       function closeBug() {
         bugOverlay.hidden = true;
+        setPageInert(false);
+        focusNode(bugBtn);
       }
 
       function resetBugDraft() {
@@ -1224,6 +1245,11 @@
         bugConfirm.hidden = true;
         bugError.hidden = true;
         bugOverlay.hidden = false;
+        setPageInert(true);
+        const chip = bugCats && typeof bugCats.querySelector === "function"
+          ? bugCats.querySelector(".chip")
+          : null;
+        focusNode(chip || bugClose);
       }
 
       async function copyText(text) {
@@ -1247,12 +1273,13 @@
         bugConfirm.hidden = true;
         bugError.hidden = true;
         if (!bugCategory) {
-          bugError.textContent = "Pick a category.";
+          bugError.textContent = "श्रेणी चुनें। Pick a category.";
           bugError.hidden = false;
           return;
         }
         const payload = {
           call_id: callId != null ? Number(callId) : 0,
+          share_token: shareToken,
           category: bugCategory,
           note: bugNote.value.trim(),
           call_elapsed_sec: startedAt ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000)) : 0,
@@ -1278,8 +1305,8 @@
           });
           if (!res.ok) {
             bugError.textContent = res.status === 401
-              ? "Sign in again to save this bug. The call is still open."
-              : "Could not save the bug. The call is still open.";
+              ? "फिर साइन-इन करें। कॉल खुली है। Sign in again to save this bug. The call is still open."
+              : "सेव नहीं हो पाया। कॉल खुली है। Could not save the bug. The call is still open.";
             bugError.hidden = false;
             return;
           }
@@ -1290,10 +1317,12 @@
             copied = false;
           }
           resetBugDraft();
-          bugConfirm.textContent = copied ? "Saved. Snapshot copied." : "Saved. Could not copy the snapshot.";
+          bugConfirm.textContent = copied
+            ? "सेव हो गया। स्नैपशॉट कॉपी हो गया। Saved. Snapshot copied."
+            : "सेव हो गया। स्नैपशॉट कॉपी नहीं हो पाया। Saved. Could not copy the snapshot.";
           bugConfirm.hidden = false;
         } catch (err) {
-          bugError.textContent = "Could not save the bug. The call is still open.";
+          bugError.textContent = "सेव नहीं हो पाया। कॉल खुली है। Could not save the bug. The call is still open.";
           bugError.hidden = false;
         } finally {
           bugSave.disabled = false;

@@ -727,6 +727,35 @@ def _optional_bool(value: object) -> bool | None:
     return None
 
 
+_BARE_YES = frozenset({
+    "हाँ", "हां", "हाँ जी", "हां जी", "जी", "जी हाँ", "जी हां",
+    "yes", "haan", "haan ji", "ok", "okay", "ठीक है", "theek hai",
+})
+
+
+def _followup_note(
+    note: str,
+    state: dict,
+    turn: _TurnState,
+    current_step: str,
+    outcome: str,
+    target_qid: str,
+) -> str:
+    """Keep her spoken detail on a follow-up when the tool call omitted note."""
+    if note.strip() or target_qid.strip() or outcome != "concern":
+        return note
+    idx = state.get("pending_followup_idx")
+    if not isinstance(idx, int) or idx < 0:
+        return note
+    if turn.user_turn_step != current_step:
+        return note
+    spoken = " ".join((turn.last_user_text or "").split())
+    bare = spoken.strip(" .,!?।").casefold()
+    if not bare or bare in _BARE_YES:
+        return note
+    return spoken
+
+
 def _current_step(state: dict) -> str:
     """Identity of the question she should hear before an answer can be saved."""
     phase = str(state.get("phase") or "asking")
@@ -1167,13 +1196,22 @@ async def _answer_function_calls(
                         logged.append("record_turn_held")
                         clarify_applied = False
                     else:
+                        target_qid = str(args.get("target_qid") or "")
+                        note = _followup_note(
+                            str(args.get("note") or ""),
+                            cursor.state,
+                            turn,
+                            current_step,
+                            outcome,
+                            target_qid,
+                        )
                         new_state = apply_turn(
                             cursor.state,
                             outcome,
                             child_ref=str(args.get("child_ref") or ""),
-                            note=str(args.get("note") or ""),
+                            note=note,
                             followup_answered=bool(_optional_bool(args.get("followup_answered"))),
-                            target_qid=str(args.get("target_qid") or ""),
+                            target_qid=target_qid,
                         )
                         cursor.state = new_state
                         await asyncio.to_thread(

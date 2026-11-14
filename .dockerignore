@@ -9,6 +9,8 @@
 .DS_Store
 .local-data
 .cursor
+.ua
+.understand-anything
 jd-raw-words.md
 ai_chats
 data

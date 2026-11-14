@@ -290,11 +290,6 @@
       color: var(--navy);
     }
 
-    .badge.openai {
-      background: #eef2fb;
-      color: #2a3f86;
-    }
-
     .pill {
       background: #eeeae4;
       color: var(--muted);
@@ -470,19 +465,6 @@
       outline-offset: 2px;
     }
 
-    .settings {
-      background: var(--card);
-      border-bottom: 1px solid var(--line);
-      padding: 12px 16px 16px;
-    }
-
-    .settings-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 12px;
-    }
-
-    .settings label,
     .bug-form label {
       display: flex;
       flex-direction: column;
@@ -492,8 +474,6 @@
       color: var(--muted);
     }
 
-    .settings input,
-    .settings select,
     .bug-form input,
     .bug-form select {
       font: inherit;
@@ -505,33 +485,16 @@
       padding: 6px 10px;
     }
 
-    .settings-actions,
     .bug-form {
       display: flex;
       flex-wrap: wrap;
-      align-items: center;
+      align-items: flex-end;
       gap: 12px;
       margin-top: 12px;
     }
 
-    .bug-form { align-items: flex-end; }
-
     .bug-form label:nth-child(2) { flex: 1; min-width: 180px; }
 
-    #save-settings {
-      border: 0;
-      background: var(--navy);
-      color: #fff;
-      border-radius: 999px;
-      min-height: 36px;
-      padding: 0 14px;
-      font-weight: 700;
-      cursor: pointer;
-    }
-
-    #save-settings:hover { background: var(--navy-dark); }
-
-    #save-settings:disabled,
     #log-bug:disabled { opacity: 0.6; cursor: default; }
 
     .confirm {
@@ -642,7 +605,6 @@
       body.printing .actions,
       body.printing .empty,
       body.printing .notice,
-      body.printing .settings,
       body.printing .telemetry,
       body.printing .review-bar { display: none !important; }
       body.printing { height: auto; background: #fff; }

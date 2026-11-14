@@ -170,9 +170,16 @@ class QuickReplyScreenTests(unittest.TestCase):
         self.assertIn("background: #ffffff", html)
         self.assertIn("border: 2px solid var(--navy)", html)
         self.assertIn(".no-btn .en { color: var(--muted); }", html)
-        self.assertIn(".no-btn:hover:not(:disabled) { background: var(--navy-soft); }", html)
         self.assertIn(".yes-btn .en { color: rgba(255, 255, 255, 0.88); }", html)
-        self.assertIn(".yes-btn:hover:not(:disabled) { background: var(--navy-dark); }", html)
+        self.assertIn("@media (hover: hover)", html)
+        hover = html.split("@media (hover: hover)", 1)[1]
+        self.assertIn(".no-btn:hover:not(:disabled) { background: var(--navy-soft); }", hover)
+        self.assertIn(".yes-btn:hover:not(:disabled) { background: var(--navy-dark); }", hover)
+        self.assertIn(".call-btn:not(:disabled):active { transform: scale(0.96); }", html)
+        self.assertGreater(
+            html.rindex(".call-btn:not(:disabled):active { transform: none; }"),
+            html.index(".call-btn:not(:disabled):active { transform: scale(0.96); }"),
+        )
         self.assertIn("opacity: 0;", html)
         self.assertIn("transform: scale(0.9);", html)
         self.assertIn("visibility: hidden;", html)

@@ -18,7 +18,8 @@
       --yellow: #e89d2d;
       --yellow-dark: #cf861b;
       --yellow-soft: #fef6e9;
-      --danger: #dc2626;
+      --danger: #b91c1c;
+      --control-border: #64748b;
       --danger-bg: #fef2f2;
     }
 
@@ -29,6 +30,7 @@
     body {
       margin: 0;
       min-height: 100vh;
+      min-height: 100dvh;
       display: grid;
       place-items: center;
       padding: 24px 16px;
@@ -110,7 +112,7 @@
       width: 100%;
       min-height: 52px;
       padding: 12px 14px;
-      border: 1px solid var(--line);
+      border: 1px solid var(--control-border);
       border-radius: 12px;
       background: #fff;
       color: var(--ink);
@@ -137,7 +139,9 @@
       cursor: pointer;
     }
 
-    button:hover { background: var(--navy-dark); }
+    @media (hover: hover) {
+      button:hover { background: var(--navy-dark); }
+    }
 
     button:disabled {
       opacity: 0.7;

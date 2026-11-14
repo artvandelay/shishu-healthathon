@@ -26,7 +26,6 @@
       let loadingList = false;
       let refreshQueued = false;
       let loadingBugs = false;
-      let settingsCache = {};
       let clinicFilter = "";
 
       function el(tag, className, text) {
@@ -99,7 +98,6 @@
         const engine = String((call && call.engine) || call || "").toLowerCase();
         const v = (model || engine).toLowerCase();
         if (!v) return "—";
-        if (v.indexOf("openai") !== -1 || v.indexOf("gpt") !== -1) return "gpt-live-1";
         if (v.indexOf("gemini-3.1") !== -1 || v.indexOf("gemini") !== -1) return "Gemini 3.1 Flash Live";
         return model || String(call.engine || call);
       }
@@ -222,7 +220,7 @@
           btn.appendChild(el("div", "people", people(call)));
           const meta = el("div", "meta");
           const badgeName = engineBadge(call);
-          const badge = el("span", badgeName === "gpt-live-1" ? "badge openai" : "badge", badgeName);
+          const badge = el("span", "badge", badgeName);
           meta.appendChild(badge);
           const clinic = clinicCode(call);
           if (clinic) meta.appendChild(el("span", "", clinic));
@@ -522,7 +520,7 @@
         if (type === "error" || type === "bug_reported") return "pill hot";
         if (type === "watchdog_nudge" || type === "manual_nudge") return "pill warn";
         if (type === "session_started" || type === "tool_call" || type === "bot_first_audio") return "badge";
-        if (type === "user_transcript") return "badge openai";
+        if (type === "user_transcript") return "badge";
         return "pill";
       }
 
@@ -554,6 +552,8 @@
           "Audio Packets (In / Out)",
           dashNum(t.audio_chunks_in) + " / " + dashNum(t.audio_chunks_out)
         ));
+        const stopped = String(t.dropoff_qid || "").trim();
+        if (stopped) grid.appendChild(kpi("Stopped at", stopped));
         renderEvents(asList(call.events));
       }
 
@@ -618,8 +618,7 @@
           call_id: current.id,
           telemetry: asObject(current.telemetry),
           events: asList(current.events),
-          transcript: asList(current.transcript),
-          settings: settingsCache
+          transcript: asList(current.transcript)
         };
         return copyText(JSON.stringify(bundle, null, 2), "Debug bundle copied.");
       }

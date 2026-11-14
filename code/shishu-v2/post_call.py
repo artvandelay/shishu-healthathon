@@ -509,15 +509,16 @@ def _insert_line(doctor: str, heading: str, line: str) -> str:
 
 def _concern_visible(doctor: str, spec, entry: dict) -> bool:
     text = doctor or ""
-    note = _human_notes(entry)
-    if spec.id in text and (not note or note in text):
+    if spec.id in text:
         return True
+    note = _human_notes(entry)
     return bool(note) and note in text
 
 
 def _flag_for(spec, entry: dict) -> str:
     note = _human_notes(entry)
-    flag = f"{spec.nrroid_gate or spec.id} {spec.id}: {spec.need_en}"
+    head = f"{spec.nrroid_gate} {spec.id}" if spec.nrroid_gate else spec.id
+    flag = f"{head}: {spec.need_en}"
     if note:
         flag = f"{flag}. {note}"
     return flag
@@ -527,16 +528,16 @@ def _with_every_concern(doctor: str, flags: list[str], concerns: list[tuple]) ->
     for spec, entry in concerns:
         note = _human_notes(entry)
         if spec.id == "close_anything_else":
-            if spec.id not in doctor or (note and note not in doctor):
+            if spec.id not in doctor and (not note or note not in doctor):
                 line = f"- Additional mother disclosure (close_anything_else): {note or spec.need_en}."
                 doctor = _insert_line(doctor, "### Patient Profile & Chief Complaint", line)
         elif not _concern_visible(doctor, spec, entry):
-            line = f"- {spec.nrroid_gate or spec.id} {spec.id}: {spec.need_en}."
+            head = f"{spec.nrroid_gate} {spec.id}" if spec.nrroid_gate else spec.id
+            line = f"- {head}: {spec.need_en}."
             if note:
                 line += f" Mother's words: {note}."
             doctor = _insert_line(doctor, _section_for(spec), line)
-        blob = "\n".join(flags)
-        if spec.id in blob and (not note or note in blob):
+        if any(spec.id in flag for flag in flags):
             continue
         flags.append(_flag_for(spec, entry))
     return doctor, flags
@@ -559,7 +560,8 @@ def _coerce(raw: dict, call: dict) -> dict:
     if not _usable_hindi(questions):
         questions = list(fallback["mother_questions_hi"])
     close = next(((spec, entry) for spec, entry in concerns if spec.id == "close_anything_else"), None)
-    if close and _close_uncovered(questions, close[1]):
+    close_covered = "close_anything_else" in _yes_by_qid(raw) and len(questions) >= len(concerns)
+    if close and not close_covered and _close_uncovered(questions, close[1]):
         pinned = _concern_question(close[0], close[1])
         questions = [pinned] + [item for item in questions if item != pinned]
     # The cursor decides what was हाँ. A childless or all-clear call cannot grow a yes line.

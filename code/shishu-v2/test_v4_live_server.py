@@ -1685,6 +1685,62 @@ class Stage6BTelemetryTests(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_followup_spoken_detail_is_kept_when_tool_omits_note(self):
+        async def run():
+            call_id = db.create_call("gemini")
+            state = cursor_tests._clear_until(
+                cursor_tests._profile(children=[cursor_tests._child(5, "female")]),
+                "close_anything_else",
+            )
+            state = apply_turn(state, "concern")
+            cursor = gemini_live._Cursor()
+            cursor.state = state
+            step = gemini_live._current_step(state)
+            turn = gemini_live._TurnState()
+            turn.spoken_qid = step
+            turn.user_turn_step = step
+            turn.last_user_text = "हाँ।"
+            session = _FakeSession()
+            telemetry = gemini_live._new_telemetry("gemini", "Kore", 1000, 300, 1)
+            await gemini_live._answer_function_calls(
+                session,
+                asyncio.Lock(),
+                _FakeSocket(),
+                asyncio.Lock(),
+                call_id,
+                telemetry,
+                [_Call("record_turn", {"outcome": "concern"}, "f1")],
+                set(),
+                set(),
+                cursor,
+                turn,
+            )
+            self.assertEqual(cursor.state["pending_followup_idx"], 0)
+            self.assertEqual(cursor.state["step_attempts"], 1)
+
+            retry_step = gemini_live._current_step(cursor.state)
+            turn.spoken_qid = retry_step
+            turn.user_turn_step = retry_step
+            turn.last_user_text = "बच्ची को रात में नींद में डर लगता है।"
+            await gemini_live._answer_function_calls(
+                session,
+                asyncio.Lock(),
+                _FakeSocket(),
+                asyncio.Lock(),
+                call_id,
+                telemetry,
+                [_Call("record_turn", {"outcome": "concern"}, "f2")],
+                set(),
+                set(),
+                cursor,
+                turn,
+            )
+            self.assertIsNone(cursor.state["pending_followup_idx"])
+            self.assertEqual(cursor.state["answers"]["close_anything_else"]["state"], "concern")
+            self.assertIn("नींद में डर", cursor.state["answers"]["close_anything_else"]["notes"])
+
+        asyncio.run(run())
+
 
 if __name__ == "__main__":
     unittest.main()

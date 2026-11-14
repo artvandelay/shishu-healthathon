@@ -1,7 +1,7 @@
-"""Four live Gemini calls against the v4 cursor. Run inside tmux.
+"""Six live Gemini calls against the v4 cursor. Run inside tmux.
 
 The filename stays `run_eight_personas.py` so existing docs keep working.
-Default suite is the four focused personas. Exits 0 only when every selected
+Default suite is the six focused personas. Exits 0 only when every selected
 persona has a stereo WAV, both summaries, the expected red-flag band, and a
 valid Mother PDF, with no tool errors, no watchdog nudges, and no leaks.
 """
@@ -166,14 +166,27 @@ class Persona:
         self.counts[key] = self.counts.get(key, 0) + 1
         if self.counts[key] > 4:
             raise RuntimeError(f"stuck on {key}: {text[:180]}")
-        mode, payload = self.lines.get(key, _fallback(state))
+        picked = self.lines.get(key)
+        if picked is None:
+            mode, payload = _fallback(state)
+        elif callable(picked):
+            mode, payload = picked(state)
+        elif picked[0] == "steps":
+            replies = picked[1]
+            mode, payload = replies[min(self.counts[key] - 1, len(replies) - 1)]
+        else:
+            mode, payload = picked
         if mode == "quick" and not expect_yes_no(state):
-            return ("text", "नहीं।")
+            return ("text", "हाँ।" if payload == "concern" else "नहीं।")
         return (mode, payload)
 
 
 def _line(text: str) -> tuple[str, str]:
     return ("text", text)
+
+
+def _steps(*replies: tuple[str, str]) -> tuple[str, tuple[tuple[str, str], ...]]:
+    return ("steps", replies)
 
 
 def _profile(name: str, children: str, extra: dict[str, tuple[str, str]]) -> dict[str, tuple[str, str]]:
@@ -242,6 +255,14 @@ def _check_p3(call: dict, problems: list[str]) -> None:
     cursor = call.get("cursor_state") or {}
     if cursor.get("active_qid") not in {"birth_jaundice", "birth_sudden", ""} and cursor.get("phase") != "closing":
         problems.append(f"emergency did not stop at {cursor.get('active_qid')}")
+    doctor = str(call.get("summary_doctor") or "")
+    mother = str(call.get("summary_mother") or "")
+    if "Active emergency" not in doctor:
+        problems.append("summary_doctor missing Active emergency")
+    if "None documented" in doctor:
+        problems.append("summary_doctor still says None documented")
+    if "टीके के कार्ड" in mother:
+        problems.append("summary_mother has routine vaccine filler")
 
 
 def _middle_child(profile: dict) -> dict | None:
@@ -287,6 +308,102 @@ def _check_p4(persona: Persona, call: dict, problems: list[str]) -> None:
         problems.append(f"bp_age missing: {bp_text}")
 
 
+def _flat(text: str) -> str:
+    return " ".join(str(text or "").split())
+
+
+def _pdf_fold(text: str) -> str:
+    # pypdf drops the pre-base ि matra, so पति on the page extracts as पत.
+    return _flat(text).replace("ि", "")
+
+
+def _pdf_page(call: dict, index: int) -> str:
+    call_id = int(call.get("id") or 0)
+    path = Path(db.DATA_DIR) / "mother-pdfs" / f"call-{call_id}.pdf"
+    if not path.is_file():
+        return ""
+    reader = PdfReader(io.BytesIO(path.read_bytes()))
+    if index < 0 or index >= len(reader.pages):
+        return ""
+    return reader.pages[index].extract_text() or ""
+
+
+def _child_specs():
+    return [spec for spec in active_specs() if "no_children" in spec.skip_if]
+
+
+def _check_p5(persona: Persona, call: dict, problems: list[str]) -> None:
+    profile = (call.get("cursor_state") or {}).get("profile") or {}
+    if profile.get("marital_status") != "about_to_marry":
+        problems.append(f"marital_status={profile.get('marital_status')}")
+    if profile.get("children"):
+        problems.append(f"children={profile.get('children')}")
+    asked = [
+        spec.id
+        for spec in _child_specs()
+        if any(key == spec.id or key.startswith(spec.id + ":") for key in persona.counts)
+    ]
+    if asked:
+        problems.append("child questions asked: " + ", ".join(asked))
+    assistant = _flat(
+        " ".join(
+            str(turn.get("text") or "")
+            for turn in (call.get("transcript") or [])
+            if isinstance(turn, dict) and turn.get("role") == "assistant"
+        )
+    )
+    spoken = [
+        spec.id
+        for spec in _child_specs()
+        if spec.question_hi and _flat(spec.question_hi) in assistant
+    ]
+    if spoken:
+        problems.append("spoken child questions: " + ", ".join(spoken))
+    page2 = _pdf_fold(_pdf_page(call, 1))
+    if _pdf_fold("होने वाले पति") not in page2:
+        problems.append("pdf page 2 missing होने वाले पति")
+    leaked = [
+        spec.id
+        for spec in _child_specs()
+        if spec.question_hi and _pdf_fold(spec.question_hi) in page2
+    ]
+    if leaked:
+        problems.append("pdf page 2 child questions: " + ", ".join(leaked))
+
+
+def _check_p6(call: dict, problems: list[str]) -> None:
+    close = _answer(call, "close_anything_else")
+    if close.get("state") != "concern":
+        problems.append(f"close_anything_else={close.get('state')}")
+    mother = str(call.get("summary_mother") or "")
+    doctor = str(call.get("summary_doctor") or "")
+    flags = call.get("red_flags") or []
+    flag_list = [str(item) for item in flags] if isinstance(flags, list) else [str(flags)]
+    flag_text = " ".join(flag_list)
+    page1 = _flat(_pdf_page(call, 0))
+    for needle in ("नींद", "डर"):
+        for label, text in (("summary_mother", mother), ("pdf page 1", page1)):
+            if needle not in text:
+                problems.append(f"{label} missing {needle}")
+    for label, text in (("summary_doctor", doctor), ("red_flags", flag_text)):
+        if "close_anything_else" not in text:
+            problems.append(f"{label} missing close_anything_else")
+        folded = text.casefold()
+        if not any(word in folded for word in ("sleep", "night", "fear", "terror", "नींद", "डर")):
+            problems.append(f"{label} missing sleep/fear detail")
+    close_flags = [item for item in flag_list if "close_anything_else" in item]
+    if len(close_flags) != 1:
+        problems.append(f"duplicate or missing close_anything_else flags: {close_flags}")
+
+
+def _p6_close(state: dict) -> tuple[str, str]:
+    entry = (state.get("answers") or {}).get("close_anything_else") or {}
+    notes = str(entry.get("notes") or "").strip() if isinstance(entry, dict) else ""
+    if isinstance(entry, dict) and entry.get("state") == "concern" and notes:
+        return ("quick", "clear")
+    return ("quick", "concern")
+
+
 def _personas() -> list[Persona]:
     p4 = Persona(
         "p4_multi_child_multi_family",
@@ -307,11 +424,25 @@ def _personas() -> list[Persona]:
                 "bp_age": _line("42 साल की उम्र में।"),
             },
         ),
-        flags=(2, 4),
+        flags=(2, 8),
         close="complete",
         check=_check_p2,
     )
     p4.check = lambda call, problems, persona=p4: _check_p4(persona, call, problems)
+    p5 = Persona(
+        "p5_unmarried_correction_and_clarify",
+        "नीलिमा",
+        _profile("नीलिमा", "नहीं, मेरी शादी अभी नहीं हुई है, होने वाली है।", {
+            "preg_thalassemia": _steps(
+                _line("थैलेसीमिया का क्या मतलब है?"),
+                ("quick", "clear"),
+            ),
+        }),
+        flags=(0, 0),
+        close="complete",
+        check=_check_p2,
+    )
+    p5.check = lambda call, problems, persona=p5: _check_p5(persona, call, problems)
     return [
         Persona(
             "p1_red_flags",
@@ -323,7 +454,7 @@ def _personas() -> list[Persona]:
                 "body_bleeding_bruise": _line("हाँ, मामूली चोट पर खून देर तक बहता है।"),
                 "body_joint_swelling": _line("हाँ, गिरने पर घुटने में सूजन आती है।"),
             }),
-            flags=(2, 4),
+            flags=(2, 6),
             close="complete",
             check=_check_p1,
         ),
@@ -348,6 +479,24 @@ def _personas() -> list[Persona]:
             check=_check_p3,
         ),
         p4,
+        p5,
+        Persona(
+            "p6_closing_disclosure_and_late_addition",
+            "मीरा",
+            _profile("मीरा", "एक बेटी है, 5 साल की।", {
+                "fam_cancer": _line("हाँ, मामा को कैंसर हुआ था।"),
+                "fam_who": _line("सगे मामा को।"),
+                "fam_heart_kidney": _steps(
+                    _line("नहीं, दिल-गुर्दे की बीमारी किसी को नहीं है, बस चाची को भी कैंसर हुआ था।"),
+                    ("quick", "clear"),
+                ),
+                "close_anything_else": _p6_close,
+                "open_concern_detail": _line("रात में नींद में डर लगता है।"),
+            }),
+            flags=(1, 6),
+            close="complete",
+            check=_check_p6,
+        ),
     ]
 
 
@@ -443,6 +592,9 @@ def _check(call_id: int, persona: Persona) -> dict:
         "mother_name": call.get("mother_name"),
         "child_age": call.get("child_age"),
         "share_token": call.get("share_token"),
+        "duration_sec": call.get("duration_sec"),
+        "avg_latency_ms": telemetry.get("avg_latency_ms"),
+        "max_latency_ms": telemetry.get("max_latency_ms"),
         "asks": persona.counts,
     }
 
@@ -507,7 +659,15 @@ async def _one(persona: Persona, cookie: str) -> dict:
                     if not msg.get("share_token"):
                         return {"persona": persona.pid, "call_id": call_id, "ok": False, "problems": ["completed without share_token"]}
                     result = _check(int(msg.get("call_id") or call_id), persona)
-                    print(("PASS " if result["ok"] else "FAIL ") + persona.pid + " " + ", ".join(result["problems"]), flush=True)
+                    mark = "PASS " if result["ok"] else "FAIL "
+                    print(
+                        mark
+                        + persona.pid
+                        + f" call={result['call_id']} avg_ms={result.get('avg_latency_ms')} dur={result.get('duration_sec')}"
+                        + " "
+                        + ", ".join(result["problems"]),
+                        flush=True,
+                    )
                     return result
                 elif kind in {"report_failed", "error"}:
                     return {
