@@ -184,23 +184,28 @@ class CatalogTests(unittest.TestCase):
             if not spec.question_multi_hi:
                 continue
             seen += 1
-            self.assertEqual(call_cursor._question_hi(state, spec), spec.question_multi_hi, spec.id)
+            self.assertEqual(call_cursor.question_hi_for(state, spec), spec.question_multi_hi, spec.id)
             self.assertNotIn("—", spec.question_multi_hi, spec.id)
         self.assertEqual(seen, 36)
         alone = _profile(children=[_child(4, "male")])
         nicu = get_spec("birth_nicu")
-        self.assertEqual(call_cursor._question_hi(alone, nicu), nicu.question_hi)
+        self.assertEqual(call_cursor.question_hi_for(alone, nicu), nicu.question_hi)
         self.assertNotIn("किसी भी", nicu.question_hi)
 
 
 class ProfileTests(unittest.TestCase):
     def test_fragment_and_missing_ages_ask_for_the_missing_piece(self):
-        state, hold = apply_profile(new_cursor_state(), caller_name="मेरा नाम")
+        state, hold = apply_profile(new_cursor_state())
         self.assertEqual(hold, "name_fragment")
         self.assertEqual(state["hold_reason"], "name_fragment")
         self.assertIsNone(state["profile"]["caller_name"])
         self.assertIn("पूरा नाम", prompt_directive(state))
         self.assertFalse(expect_yes_no(state))
+
+        state, hold = apply_profile(state, caller_name="   ")
+        self.assertEqual(hold, "name_fragment")
+        self.assertEqual(state["hold_reason"], "name_fragment")
+        self.assertIsNone(state["profile"]["caller_name"])
 
         state, hold = apply_profile(state, caller_name="पूजा")
         self.assertIsNone(hold)
@@ -302,7 +307,6 @@ class SkipMatrixTests(unittest.TestCase):
             },
         }
         self.assertEqual(call_cursor.question_hi_for(kids, nicu), nicu.question_multi_hi)
-        self.assertEqual(call_cursor._question_hi(kids, nicu), nicu.question_multi_hi)
 
     def test_age_rules_skip_tooth_periods_and_puberty(self):
         baby = _profile(children=[_child(1, "male")])
@@ -364,7 +368,7 @@ class ChildResolutionTests(unittest.TestCase):
             "Ask only this one Hindi question, then wait: "
             "यह किस बच्चे की बात है — 8 साल वाले रिया, 5 साल वाले अर्जुन (बीच वाले), या 2 साल वाले बेटा?",
         )
-        state = apply_turn(state, "concern", child_ref="बीच वाले")
+        state = apply_turn(state, "concern", child_ref="child_3")
         self.assertEqual(state["answers"]["birth_jaundice"]["child_ids"], ["child_3"])
         self.assertEqual(state["answers"]["birth_jaundice"]["state"], "concern")
         self.assertEqual(state["pending_followup_idx"], 0)
@@ -386,30 +390,25 @@ class ChildResolutionTests(unittest.TestCase):
         self.assertEqual(retracted["step_attempts"], 0)
         self.assertNotEqual(retracted["active_qid"], "body_bleeding_bruise")
 
-    def test_child_ref_resolves_exact_id_name_ordinal_sex_and_everyone(self):
+    def test_child_ref_resolves_only_closed_world_ids_and_all(self):
         state = _profile(children=self._three())
         ordered = ["child_2", "child_3", "child_1"]
-        for ref in ("all", "both", "दोनों", "सभी", "तीनों", "Both"):
-            self.assertEqual(call_cursor._resolve_child_ids(state, ref), ordered, ref)
+        self.assertEqual(call_cursor._resolve_child_ids(state, "all"), ordered)
         self.assertEqual(call_cursor._resolve_child_ids(state, "child_1"), ["child_1"])
-        self.assertEqual(call_cursor._resolve_child_ids(state, "रिया"), ["child_2"])
-        self.assertEqual(call_cursor._resolve_child_ids(state, "बड़े"), ["child_2"])
-        self.assertEqual(call_cursor._resolve_child_ids(state, "पहले"), ["child_2"])
-        self.assertEqual(call_cursor._resolve_child_ids(state, "बीच वाले"), ["child_3"])
-        self.assertEqual(call_cursor._resolve_child_ids(state, "मंझले"), ["child_3"])
-        self.assertEqual(call_cursor._resolve_child_ids(state, "दूसरे"), ["child_3"])
-        self.assertEqual(call_cursor._resolve_child_ids(state, "तीसरे"), ["child_1"])
-        self.assertEqual(call_cursor._resolve_child_ids(state, "छोटे"), ["child_1"])
-        self.assertEqual(call_cursor._resolve_child_ids(state, "आखिरी"), ["child_1"])
-        self.assertEqual(call_cursor._resolve_child_ids(state, "बेटी"), ["child_2"])
-        self.assertEqual(call_cursor._resolve_child_ids(state, "बेटा"), [])
-        for phrase in ("5", "5 साल", "6 महीने", "बीच वाले का", "पाँच साल", "oldest child"):
-            self.assertEqual(call_cursor._resolve_child_ids(state, phrase), [], phrase)
+        self.assertEqual(call_cursor._resolve_child_ids(state, "child_2"), ["child_2"])
+        self.assertEqual(call_cursor._resolve_child_ids(state, "child_3"), ["child_3"])
+        for raw in (
+            "both", "दोनों", "सभी", "तीनों", "Both", "ALL",
+            "रिया", "बड़े", "पहले", "बीच वाले", "मंझले", "दूसरे",
+            "तीसरे", "छोटे", "आखिरी", "बेटी", "बेटा", "oldest", "middle", "youngest",
+            "5", "5 साल", "6 महीने", "बीच वाले का", "पाँच साल", "oldest child", "child_9",
+        ):
+            self.assertEqual(call_cursor._resolve_child_ids(state, raw), [], raw)
         months = _profile(children=[_child(4, "male", 1), _child(0.5, "female", 2)])
         self.assertEqual(call_cursor._resolve_child_ids(months, "6 महीने"), [])
         self.assertEqual(call_cursor._resolve_child_ids(months, "child_2"), ["child_2"])
 
-    def test_cursor_has_no_regex_and_roster_is_oldest_first(self):
+    def test_cursor_has_no_regex_or_semantic_token_lists_and_roster_is_oldest_first(self):
         source = Path(call_cursor.__file__).read_text(encoding="utf-8")
         tree = ast.parse(source)
         for node in ast.walk(tree):
@@ -429,6 +428,17 @@ class ChildResolutionTests(unittest.TestCase):
             "_hit",
             "_pool_for_sex",
             "_ordinal_id",
+            "_BARE_NAMES",
+            "_ALL_CHILDREN",
+            "_OLDEST",
+            "_MIDDLE",
+            "_SECOND",
+            "_THIRD",
+            "_YOUNGEST",
+            "_MALE",
+            "_FEMALE",
+            "_accepted_target",
+            "_question_hi",
         ):
             self.assertFalse(hasattr(call_cursor, name), name)
         state = _profile(children=self._three())
@@ -628,12 +638,13 @@ class CallNineReplayTests(unittest.TestCase):
         state = apply_turn(state, "concern", note="मामा")
         state = _clear_until(state, "fam_heart_kidney")
         self.assertEqual(state["active_qid"], "fam_heart_kidney")
-        updated = apply_turn(
-            state,
-            "concern",
-            note="चाची को भी ब्लड कैंसर",
-            target_qid="fam_cancer",
-        )
+        updated = apply_interpreted_turn(state, {
+            "current_outcome": "not_about_active",
+            "side_qid": "fam_cancer",
+            "side_action": "add_or_correct",
+            "side_outcome": "concern",
+            "side_note": "चाची को भी ब्लड कैंसर",
+        })
         self.assertEqual(updated["active_qid"], "fam_heart_kidney")
         self.assertEqual(updated["pending_followup_idx"], state["pending_followup_idx"])
         self.assertEqual(updated["step_attempts"], state["step_attempts"])
@@ -654,7 +665,11 @@ class CallNineReplayTests(unittest.TestCase):
         self.assertEqual(state["active_qid"], "fam_related")
         self.assertEqual(state["answers"]["preg_thalassemia"]["state"], "unknown")
         self.assertEqual(state["answers"]["birth_mode_detail"]["state"], "clear")
-        rewound = apply_turn(state, "clarify", target_qid="preg_thalassemia")
+        rewound = apply_interpreted_turn(state, {
+            "current_outcome": "not_about_active",
+            "side_qid": "preg_thalassemia",
+            "side_action": "clarify_meaning",
+        })
         self.assertEqual(rewound["active_qid"], "preg_thalassemia")
         self.assertIsNone(rewound["pending_followup_idx"])
         self.assertEqual(rewound["step_attempts"], 0)
@@ -744,18 +759,36 @@ class CallNineReplayTests(unittest.TestCase):
         state = apply_turn(state, "concern", note="तीन दिन")
         self.assertNotEqual(state["active_qid"], "birth_nicu")
         later = state["active_qid"]
-        updated = apply_turn(state, "concern", note="और बुखार", target_qid="birth_nicu")
+        updated = apply_interpreted_turn(state, {
+            "current_outcome": "not_about_active",
+            "side_qid": "birth_nicu",
+            "side_action": "add_or_correct",
+            "side_outcome": "concern",
+            "side_note": "और बुखार",
+        })
         self.assertEqual(updated["active_qid"], later)
         followups = updated["answers"]["birth_nicu"]["followups"]
         self.assertEqual(followups["nicu_reason"]["note"], "सांस")
         self.assertEqual(followups["nicu_days"]["note"], "तीन दिन; और बुखार")
-        again = apply_turn(updated, "concern", note="और बुखार", target_qid="birth_nicu")
+        again = apply_interpreted_turn(updated, {
+            "current_outcome": "not_about_active",
+            "side_qid": "birth_nicu",
+            "side_action": "add_or_correct",
+            "side_outcome": "concern",
+            "side_note": "और बुखार",
+        })
         self.assertEqual(again["answers"]["birth_nicu"]["followups"]["nicu_days"]["note"], "तीन दिन; और बुखार")
         self.assertEqual(again["answers"]["birth_nicu"]["followups"]["nicu_reason"]["note"], "सांस")
 
         open_slot = json.loads(json.dumps(state))
         del open_slot["answers"]["birth_nicu"]["followups"]["nicu_days"]
-        routed = apply_turn(open_slot, "concern", note="चार दिन", target_qid="birth_nicu")
+        routed = apply_interpreted_turn(open_slot, {
+            "current_outcome": "not_about_active",
+            "side_qid": "birth_nicu",
+            "side_action": "add_or_correct",
+            "side_outcome": "concern",
+            "side_note": "चार दिन",
+        })
         routed_followups = routed["answers"]["birth_nicu"]["followups"]
         self.assertEqual(routed_followups["nicu_reason"]["note"], "सांस")
         self.assertEqual(routed_followups["nicu_days"]["note"], "चार दिन")
@@ -766,7 +799,11 @@ class CallNineReplayTests(unittest.TestCase):
         state = apply_turn(state, "concern")
         self.assertEqual(state["pending_followup_idx"], 0)
         self.assertEqual(state["answers"]["birth_nicu"]["state"], "concern")
-        rewound = apply_turn(state, "clarify", target_qid="birth_mode_detail")
+        rewound = apply_interpreted_turn(state, {
+            "current_outcome": "not_about_active",
+            "side_qid": "birth_mode_detail",
+            "side_action": "clarify_meaning",
+        })
         self.assertEqual(rewound["active_qid"], "birth_mode_detail")
         self.assertNotIn("birth_nicu", rewound["answers"])
         self.assertNotIn("birth_mode_detail", rewound["answers"])
@@ -782,7 +819,11 @@ class CallNineReplayTests(unittest.TestCase):
         which = apply_turn(which, "concern")
         self.assertEqual(which["pending_followup_idx"], -1)
         self.assertEqual(which["answers"]["birth_nicu"]["state"], "concern")
-        which = apply_turn(which, "clarify", target_qid="birth_term")
+        which = apply_interpreted_turn(which, {
+            "current_outcome": "not_about_active",
+            "side_qid": "birth_term",
+            "side_action": "clarify_meaning",
+        })
         self.assertNotIn("birth_nicu", which["answers"])
         self.assertEqual(which["answers"]["birth_mode_detail"]["state"], "clear")
         which = apply_turn(which, "clear")
@@ -793,7 +834,11 @@ class CallNineReplayTests(unittest.TestCase):
         close = apply_turn(close, "concern", note="पेट दर्द")
         close = apply_turn(close, "concern")
         self.assertEqual(close["pending_followup_idx"], 0)
-        close = apply_turn(close, "clarify", target_qid="birth_mode_detail")
+        close = apply_interpreted_turn(close, {
+            "current_outcome": "not_about_active",
+            "side_qid": "birth_mode_detail",
+            "side_action": "clarify_meaning",
+        })
         self.assertEqual(close["answers"]["close_anything_else"]["state"], "concern")
         self.assertEqual(close["answers"]["close_anything_else"]["notes"], "पेट दर्द")
 
@@ -1112,7 +1157,7 @@ class DecisionApiPhase1Tests(unittest.TestCase):
         self.assertFalse(call_cursor.has_answered_gates(intro))
         self.assertFalse(call_cursor.is_answered_or_na(intro, "birth_jaundice"))
 
-        held, _ = apply_profile(intro, caller_name="मेरा नाम")
+        held, _ = apply_profile(intro)
         self.assertEqual(call_cursor.step_kind(held), "profile")
         self.assertEqual(call_cursor.step_id(held), "intro_name:hold:name_fragment")
         self.assertIn("पूरा नाम", call_cursor.active_prompt_hi(held))

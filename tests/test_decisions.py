@@ -42,9 +42,8 @@ _SMOKE_TEST_FLOATS = (
 )
 
 
-def _test_thresholds(*, calibrated: bool = True) -> decisions.DecisionThresholds:
+def _test_thresholds() -> decisions.DecisionThresholds:
     return decisions.DecisionThresholds(
-        calibrated=calibrated,
         danger_now_min_yes=0.80,
         caller_stop_min_yes=0.80,
         mentions_profile_min_yes=0.65,
@@ -147,7 +146,7 @@ class SchemaBuilderTests(unittest.TestCase):
         )
 
     def test_hold_ever_pregnant_and_close_more_prompts(self):
-        held_name, hold = apply_profile(new_cursor_state(), caller_name="मेरा नाम")
+        held_name, hold = apply_profile(new_cursor_state())
         self.assertEqual(hold, "name_fragment")
         req_hold = decisions.build_turn_request(held_name, utterance_text="पूजा शर्मा")
         self.assertEqual(_parsed_input(req_hold)["active_question"], call_cursor._HOLD_HI["name_fragment"])
@@ -335,8 +334,10 @@ class ThresholdAndGuardTests(unittest.TestCase):
         for forbidden in _SMOKE_TEST_FLOATS:
             self.assertNotIn(forbidden, found_floats, forbidden)
 
-    def test_uncalibrated_refused_and_probabilities_required(self):
-        self.assertFalse(decisions.UNCALIBRATED_THRESHOLDS.calibrated)
+    def test_thresholds_validation_and_probabilities_required(self):
+        self.assertEqual(len(decisions._ALL_NUMERIC_THRESHOLD_FIELDS), 12)
+        self.assertNotIn("calibrated", decisions.DecisionThresholds.__dataclass_fields__)
+
         state = cursor_tests._clear_until(
             cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
             "birth_jaundice",
@@ -351,25 +352,21 @@ class ThresholdAndGuardTests(unittest.TestCase):
             "side_qid": _choice("other", {"other": 0.96, "fam_cancer": 0.04}),
         }
 
-        with self.assertRaises(ValueError):
-            decisions.validate_thresholds(decisions.UNCALIBRATED_THRESHOLDS)
-        with self.assertRaises(ValueError):
-            decisions.interpret_for_authority(state, answers, utterance_text="नहीं")
-        with self.assertRaises(ValueError):
-            decisions.interpret_turn_decision(
-                state, answers, utterance_text="नहीं",
-                thresholds=decisions.UNCALIBRATED_THRESHOLDS, require_calibrated=True,
-            )
+        with self.assertRaises(TypeError):
+            decisions.validate_thresholds({"danger_now_min_yes": 0.5})  # type: ignore[arg-type]
 
-        for bad in (
-            decisions.DecisionThresholds(calibrated=True, danger_now_min_yes=0.01),
-            decisions.DecisionThresholds(calibrated=True, danger_now_min_yes=0.99),
+        base = asdict(_test_thresholds())
+        for bad_kwargs in (
+            {**base, "danger_now_min_yes": 0.01},
+            {**base, "danger_now_min_yes": 0.99},
+            {**base, "outcome_min_confidence": 0.0},
+            {**base, "outcome_min_confidence": 1.0},
+            {**base, "outcome_min_margin": -0.01},
+            {**base, "outcome_min_margin": 1.0},
+            {**base, "child_ref_min_confidence": float("nan")},
         ):
             with self.assertRaises(ValueError):
-                decisions.validate_thresholds(bad)
-
-        for field in decisions._ALL_NUMERIC_THRESHOLD_FIELDS:
-            self.assertEqual(getattr(decisions.UNCALIBRATED_THRESHOLDS, field), 1.0, field)
+                decisions.validate_thresholds(decisions.DecisionThresholds(**bad_kwargs))
 
         # evaluate_choice strictly requires probabilities dict
         no_probs = {"current_outcome": {"type": "choice", "choice": "clear", "confidence": 0.99}}
@@ -379,44 +376,32 @@ class ThresholdAndGuardTests(unittest.TestCase):
         self.assertFalse(ev_missing.accepted)
         self.assertEqual(ev_missing.reject_reason, "missing_answer")
 
-        shadow_answers = {
-            "danger_now": _noul(0.02),
-            "caller_stop": _noul(0.02),
-            "mentions_profile": _noul(0.03),
-            "detail_present": _noul(0.05),
-            "current_outcome": _choice("clear", {"clear": 0.92, "other": 0.05, "concern": 0.03}),
-            "side_intent": _choice("add_concern", {"add_concern": 0.93, "other": 0.05, "clarify_other": 0.02}),
-            "side_qid": _choice("fam_cancer", {"fam_cancer": 0.91, "other": 0.05, "fam_lumps": 0.04}),
-        }
-        shadow_interp = decisions.interpret_turn_decision(
-            state, shadow_answers, utterance_text="नहीं",
-            thresholds=decisions.UNCALIBRATED_THRESHOLDS, require_calibrated=False,
-        )
-        self.assertEqual(shadow_interp.cursor_payload.get("side_qid", ""), "")
-        self.assertIsNone(shadow_interp.future_qid_match)
-        self.assertEqual(shadow_interp.diagnostics["current_outcome"]["winner"], "")
-        self.assertEqual(shadow_interp.diagnostics["current_outcome"]["top_option"], "clear")
-        self.assertAlmostEqual(shadow_interp.diagnostics["current_outcome"]["top_prob"], 0.92)
-        self.assertAlmostEqual(shadow_interp.diagnostics["current_outcome"]["margin"], 0.87)
-        self.assertEqual(
-            shadow_interp.diagnostics["raw_side_candidate"],
-            {
-                "qid": "fam_cancer",
-                "confidence": 0.91,
-                "margin": 0.86,
-                "side_intent": "add_concern",
-                "side_intent_prob": 0.93,
-            },
-        )
-
-        valid = _test_thresholds(calibrated=True)
+        valid = _test_thresholds()
         with tempfile.TemporaryDirectory() as tmp:
             artifact = Path(tmp) / "thresholds.json"
             artifact.write_text(json.dumps(asdict(valid)), encoding="utf-8")
-            loaded = decisions.load_thresholds(artifact)
+            self.assertEqual(decisions.load_thresholds(artifact), valid)
+
+            wrapped = Path(tmp) / "wrapped.json"
+            wrapped.write_text(json.dumps({"thresholds": asdict(valid)}), encoding="utf-8")
+            loaded = decisions.load_thresholds(wrapped)
             self.assertEqual(loaded, valid)
-            res = decisions.interpret_for_authority(state, answers, utterance_text="नहीं", thresholds=loaded)
+            res = decisions.interpret_turn_decision(
+                state, answers, utterance_text="नहीं", thresholds=loaded
+            )
             self.assertEqual(res.cursor_payload["current_outcome"], "clear")
+
+            missing_field = Path(tmp) / "missing.json"
+            incomplete = asdict(valid)
+            incomplete.pop("child_ref_min_margin")
+            missing_field.write_text(json.dumps(incomplete), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                decisions.load_thresholds(missing_field)
+
+            not_obj = Path(tmp) / "list.json"
+            not_obj.write_text("[1, 2, 3]", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                decisions.load_thresholds(not_obj)
 
             bad_artifact = Path(tmp) / "bad.json"
             bad_data = asdict(valid)
@@ -1074,13 +1059,34 @@ class TransportRetryTests(unittest.TestCase):
         self.assertEqual(updated_open["answers"]["close_anything_else"]["followups"]["open_concern_detail"]["note"], "नींद में डर लगता है")
         self.assertIn("नींद में डर लगता है", updated_open["answers"]["close_anything_else"]["notes"])
 
-    def test_provisional_staging_thresholds_load_and_default_authority_is_fail_closed(self):
-        provisional_path = REPO_ROOT / "scripts" / "provisional_staging_thresholds.json"
+    def test_shipped_decision_thresholds_load_and_missing_raises(self):
         default_prod_path = APP_DIR / "decision_thresholds.json"
-        self.assertFalse(default_prod_path.exists())
-        loaded = decisions.load_thresholds(provisional_path, require_calibrated=True)
-        self.assertTrue(loaded.calibrated)
+        self.assertTrue(default_prod_path.exists())
+        loaded = decisions.load_thresholds(default_prod_path)
+        self.assertEqual(decisions.validate_thresholds(loaded), loaded)
         self.assertTrue(0.01 < loaded.danger_now_min_yes < 0.99)
+        self.assertTrue(0.01 < loaded.caller_stop_min_yes < 0.99)
+
+        state = cursor_tests._clear_until(
+            cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
+            "birth_jaundice",
+        )
+        answers = {
+            "danger_now": _noul(0.02),
+            "caller_stop": _noul(0.02),
+            "mentions_profile": _noul(0.02),
+            "detail_present": _noul(0.02),
+            "current_outcome": _choice("clear", {"clear": 0.95, "other": 0.03, "concern": 0.02}),
+            "side_intent": _choice("other", {"other": 0.96, "add_concern": 0.04}),
+            "side_qid": _choice("other", {"other": 0.96, "fam_cancer": 0.04}),
+        }
+        interp = decisions.interpret_turn_decision(
+            state, answers, utterance_text="नहीं", thresholds=loaded
+        )
+        self.assertEqual(interp.cursor_payload["current_outcome"], "clear")
+
+        with self.assertRaises(FileNotFoundError):
+            decisions.load_thresholds(APP_DIR / "nonexistent_thresholds.json")
 
 
 if __name__ == "__main__":

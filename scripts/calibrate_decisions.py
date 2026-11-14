@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 APP_DIR = ROOT / "code" / "shishu-v2"
 CASES_PATH = ROOT / "scripts" / "decision_calibration_cases.json"
 RAW_PATH = APP_DIR / "storage" / "calibration_raw_results.json"
-OUT_PATH = ROOT / "scripts" / "provisional_staging_thresholds.json"
+OUT_PATH = APP_DIR / "decision_thresholds.json"
 
 load_dotenv(ROOT / ".env")
 if str(APP_DIR) not in sys.path:
@@ -364,7 +364,6 @@ def calibrate(rows: list[dict[str, Any]]) -> tuple[decisions.DecisionThresholds,
 
     th = decisions.validate_thresholds(
         decisions.DecisionThresholds(
-            calibrated=True,
             danger_now_min_yes=danger_t,
             caller_stop_min_yes=stop_t,
             mentions_profile_min_yes=prof_t,
@@ -377,8 +376,7 @@ def calibrate(rows: list[dict[str, Any]]) -> tuple[decisions.DecisionThresholds,
             side_qid_min_margin=round(sq_mid[2], 4),
             child_ref_min_confidence=ch_c,
             child_ref_min_margin=ch_m,
-        ),
-        require_calibrated=True,
+        )
     )
 
     interps = [
@@ -387,7 +385,6 @@ def calibrate(rows: list[dict[str, Any]]) -> tuple[decisions.DecisionThresholds,
             r["raw_answers"],
             utterance_text=r["cursor_setup"]["utterance_text"],
             thresholds=th,
-            require_calibrated=True,
         )
         for r in rows
     ]
@@ -544,8 +541,7 @@ def main() -> None:
         "provisional": True,
         "note": (
             f"Calibrated on authored Hindi fixtures (N={len(rows)}). "
-            "Replace with real OPD staging transcript sweep before enabling "
-            "DECISION_MODE=authority in production."
+            "Replace with real OPD staging transcript sweep for production."
         ),
         "n_cases": len(rows),
         "class_counts": counts,
@@ -556,7 +552,7 @@ def main() -> None:
         json.dumps(artifact, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    decisions.load_thresholds(OUT_PATH, require_calibrated=True)
+    decisions.load_thresholds(OUT_PATH)
     print(json.dumps({"metrics": metrics, "thresholds": asdict(th)}, indent=2))
 
 

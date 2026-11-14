@@ -2,12 +2,14 @@
 
 import asyncio
 import io
+import json
 import os
 import re
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 from urllib.parse import unquote
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -23,13 +25,14 @@ os.environ.setdefault("ADMIN_PASSCODE", "admin-test")
 import app  # noqa: E402
 import call_cursor  # noqa: E402
 import db  # noqa: E402
+import decisions  # noqa: E402
 import gemini_live  # noqa: E402
 import mother_report  # noqa: E402
 import post_call  # noqa: E402
 import prompts  # noqa: E402
 import test_cursor as cursor_tests  # noqa: E402
 import test_reports as report_tests  # noqa: E402
-from call_cursor import apply_turn, prompt_directive  # noqa: E402
+from call_cursor import apply_turn, prompt_directive, step_id  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from pypdf import PdfReader  # noqa: E402
 from triage_catalog import FOLLOWUP_HI, active_specs, get_spec  # noqa: E402
@@ -85,19 +88,19 @@ class ScopeTests(unittest.TestCase):
             if not spec.question_multi_hi:
                 continue
             seen += 1
-            text = call_cursor._question_hi(state, spec)
+            text = call_cursor.question_hi_for(state, spec)
             self.assertEqual(text, spec.question_multi_hi, spec.id)
             self.assertNotIn("—", text, spec.id)
             self.assertFalse(text.startswith("आपके किसी भी बच्चे —"), spec.id)
             self.assertFalse(_collision(text), f"{spec.id}: {text}")
         self.assertEqual(seen, 36)
-        term = call_cursor._question_hi(state, get_spec("birth_term"))
-        sudden = call_cursor._question_hi(state, get_spec("birth_sudden"))
-        bleed = call_cursor._question_hi(state, get_spec("body_bleeding_bruise"))
+        term = call_cursor.question_hi_for(state, get_spec("birth_term"))
+        sudden = call_cursor.question_hi_for(state, get_spec("birth_sudden"))
+        bleed = call_cursor.question_hi_for(state, get_spec("body_bleeding_bruise"))
         self.assertIn("आपके किसी भी बच्चे का जन्म", term)
         self.assertIn("आपका कोई भी बच्चा", sudden)
         self.assertIn("आपके किसी भी बच्चे को मामूली चोट", bleed)
-        fasting = call_cursor._question_hi(state, get_spec("ill_fasting"))
+        fasting = call_cursor.question_hi_for(state, get_spec("ill_fasting"))
         self.assertIn("आपका कोई भी बच्चा", fasting)
         self.assertIn("सुस्त", fasting)
 
@@ -183,12 +186,30 @@ class CloseTests(unittest.TestCase):
         self.assertEqual(closed["answers"]["close_anything_else"]["state"], "unknown")
 
 
+def _decision_res(request: dict, raw_answers: dict) -> decisions.DecisionCallResult:
+    questions = request.get("questions") or {}
+    side_criteria = (questions.get("side_qid") or {}).get("criteria") or {}
+    return decisions.DecisionCallResult(
+        ok=True,
+        error_reason="",
+        attempts=1,
+        decision_ms=25,
+        request_bytes=len(json.dumps(request, ensure_ascii=False).encode("utf-8")),
+        question_count=len(questions),
+        catalog_option_count=len(side_criteria),
+        usage_present=True,
+        total_input_tokens=210,
+        raw_answers=raw_answers,
+    )
+
+
 class ClarifyAndDeadAirTests(unittest.TestCase):
     def test_prompt_asks_for_one_simpler_sentence_before_the_question(self):
         text = prompts.GEMINI_LIVE_SYSTEM_PROMPT
-        self.assertIn("outcome clarify", text)
-        self.assertIn("one short simpler Hindi sentence", text)
-        self.assertIn("Do not repeat the question with the same words", text)
+        self.assertIn("next_question", text)
+        self.assertIn("If clarify is true", text)
+        self.assertIn("plain Hindi sentences explaining the question", text)
+        self.assertIn("Do not repeat the question with the exact same words", text)
         state = cursor_tests._profile(children=[cursor_tests._child(4, "male")])
         state = cursor_tests._clear_until(state, "birth_nicu")
         cue = gemini_live._speak_cue_text(state, "clarify")
@@ -208,19 +229,21 @@ class ClarifyAndDeadAirTests(unittest.TestCase):
         async def run():
             call_id = db.create_call("gemini")
             session = _FakeSession()
-            await gemini_live._answer_function_calls(
-                session,
-                asyncio.Lock(),
-                _FakeSocket(),
-                asyncio.Lock(),
-                call_id,
-                {"tool_calls": 0, "tool_errors": 0},
-                [_Call("record_turn", {"outcome": "clear", "note": ""}, "fc-1")],
-                set(),
-                set(),
-                cursor,
-                turn,
-            )
+            with mock.patch.object(decisions, "evaluate_turn") as eval_mock:
+                await gemini_live._answer_function_calls(
+                    session,
+                    asyncio.Lock(),
+                    _FakeSocket(),
+                    asyncio.Lock(),
+                    call_id,
+                    {"tool_calls": 0, "tool_errors": 0},
+                    [_Call("next_question", {}, "fc-1")],
+                    set(),
+                    set(),
+                    cursor,
+                    turn,
+                )
+                eval_mock.assert_not_called()
             self.assertEqual([item[0] for item in session.sent], ["tool"])
             body = session.sent[0][1][0].response
             self.assertNotIn("wait", body)
@@ -241,30 +264,50 @@ class ClarifyAndDeadAirTests(unittest.TestCase):
         state = cursor_tests._profile(children=[cursor_tests._child(4, "male")])
         state = cursor_tests._clear_until(state, "body_private_parts")
         turn = gemini_live._TurnState()
-        turn.spoken_qid = gemini_live._current_step(state)
+        turn.spoken_qid = step_id(state)
+        turn.user_turn_step = turn.spoken_qid
+        turn.capture.user_turn_buffer = "नहीं"
         self.assertTrue(gemini_live._question_already_spoken(turn, state))
         cursor = gemini_live._Cursor()
         cursor.state = state
 
+        async def fake_eval(request, **_kwargs):
+            return _decision_res(
+                request,
+                {
+                    "danger_now": {"noul": 0.01},
+                    "caller_stop": {"noul": 0.01},
+                    "mentions_profile": {"noul": 0.01},
+                    "current_outcome": {
+                        "choice": "clear",
+                        "probabilities": {"clear": 0.94, "other": 0.04, "concern": 0.02},
+                    },
+                    "side_intent": {"choice": "other", "probabilities": {"other": 0.96, "add_concern": 0.04}},
+                    "side_qid": {"choice": "other", "probabilities": {"other": 0.96, "birth_nicu": 0.04}},
+                },
+            )
+
         async def run():
             call_id = db.create_call("gemini")
             session = _FakeSession()
-            await gemini_live._answer_function_calls(
-                session,
-                asyncio.Lock(),
-                _FakeSocket(),
-                asyncio.Lock(),
-                call_id,
-                {"tool_calls": 0, "tool_errors": 0, "end_requested": False},
-                [
-                    _Call("record_turn", {"outcome": "clear"}, "fc-a"),
-                    _Call("record_turn", {"outcome": "clear"}, "fc-b"),
-                ],
-                set(),
-                set(),
-                cursor,
-                turn,
-            )
+            with mock.patch.object(decisions, "evaluate_turn", side_effect=fake_eval) as eval_mock:
+                await gemini_live._answer_function_calls(
+                    session,
+                    asyncio.Lock(),
+                    _FakeSocket(),
+                    asyncio.Lock(),
+                    call_id,
+                    {"tool_calls": 0, "tool_errors": 0, "end_requested": False},
+                    [
+                        _Call("next_question", {}, "fc-a"),
+                        _Call("next_question", {}, "fc-b"),
+                    ],
+                    set(),
+                    set(),
+                    cursor,
+                    turn,
+                )
+                self.assertEqual(eval_mock.await_count, 1)
             self.assertEqual([item[0] for item in session.sent], ["tool"])
             for response in session.sent[0][1]:
                 self.assertNotIn("wait", response.response)
@@ -276,6 +319,7 @@ class ClarifyAndDeadAirTests(unittest.TestCase):
         self.assertEqual(cursor.state["active_qid"], "ill_fasting")
         self.assertEqual(session.sent[0][1][0].response["result"], "ok")
         self.assertEqual(session.sent[0][1][1].response["result"], "held")
+        self.assertEqual(session.sent[0][1][1].response["reason"], "duplicate_turn")
         self.assertIn("सुस्त", session.sent[1][1]["text"])
         self.assertEqual([item[0] for item in session.sent], ["tool", "realtime"])
 
@@ -283,26 +327,46 @@ class ClarifyAndDeadAirTests(unittest.TestCase):
         state = cursor_tests._profile(children=[cursor_tests._child(4, "male")])
         state = cursor_tests._clear_until(state, "birth_nicu")
         turn = gemini_live._TurnState()
-        turn.spoken_qid = gemini_live._current_step(state)
+        turn.spoken_qid = step_id(state)
+        turn.user_turn_step = turn.spoken_qid
+        turn.capture.user_turn_buffer = "काँच के बक्से का क्या मतलब होता है?"
         cursor = gemini_live._Cursor()
         cursor.state = state
+
+        async def fake_eval(request, **_kwargs):
+            return _decision_res(
+                request,
+                {
+                    "danger_now": {"noul": 0.01},
+                    "caller_stop": {"noul": 0.01},
+                    "mentions_profile": {"noul": 0.01},
+                    "detail_present": {"noul": 0.02},
+                    "current_outcome": {
+                        "choice": "clarify",
+                        "probabilities": {"clarify": 0.92, "other": 0.05, "clear": 0.03},
+                    },
+                    "side_intent": {"choice": "other", "probabilities": {"other": 0.96, "add_concern": 0.04}},
+                    "side_qid": {"choice": "other", "probabilities": {"other": 0.96, "birth_jaundice": 0.04}},
+                },
+            )
 
         async def run():
             call_id = db.create_call("gemini")
             session = _FakeSession()
-            await gemini_live._answer_function_calls(
-                session,
-                asyncio.Lock(),
-                _FakeSocket(),
-                asyncio.Lock(),
-                call_id,
-                {"tool_calls": 0, "tool_errors": 0},
-                [_Call("record_turn", {"outcome": "clarify"}, "fc-c")],
-                set(),
-                set(),
-                cursor,
-                turn,
-            )
+            with mock.patch.object(decisions, "evaluate_turn", side_effect=fake_eval):
+                await gemini_live._answer_function_calls(
+                    session,
+                    asyncio.Lock(),
+                    _FakeSocket(),
+                    asyncio.Lock(),
+                    call_id,
+                    {"tool_calls": 0, "tool_errors": 0},
+                    [_Call("next_question", {}, "fc-c")],
+                    set(),
+                    set(),
+                    cursor,
+                    turn,
+                )
             self.assertEqual([item[0] for item in session.sent], ["tool"])
             body = session.sent[0][1][0].response
             self.assertNotIn("wait", body)
@@ -322,16 +386,16 @@ class ClarifyAndDeadAirTests(unittest.TestCase):
         state = cursor_tests._profile(children=[cursor_tests._child(4, "male")])
         state = cursor_tests._clear_until(state, "birth_nicu")
         turn = gemini_live._TurnState()
-        turn.spoken_qid = gemini_live._current_step(state)
+        turn.spoken_qid = step_id(state)
         self.assertTrue(gemini_live._question_already_spoken(turn, state))
         advanced = apply_turn(state, "clear")
         self.assertFalse(gemini_live._question_already_spoken(turn, advanced))
         state = cursor_tests._clear_until(state, "close_anything_else")
-        turn.spoken_qid = gemini_live._current_step(state)
+        turn.spoken_qid = step_id(state)
         noted = apply_turn(state, "concern", note="पेट दर्द")
         self.assertNotEqual(
-            gemini_live._current_step(state),
-            gemini_live._current_step(noted),
+            step_id(state),
+            step_id(noted),
         )
         self.assertFalse(gemini_live._question_already_spoken(turn, noted))
 
@@ -368,7 +432,7 @@ class ClarifyAndDeadAirTests(unittest.TestCase):
             )
 
         asyncio.run(run())
-        self.assertEqual(turn.spoken_qid, gemini_live._current_step(cursor.state))
+        self.assertEqual(turn.spoken_qid, step_id(cursor.state))
         self.assertEqual(turn.spoken_qid, "intro_bridge")
         self.assertEqual(telemetry["bot_turns"], 1)
 
@@ -382,7 +446,7 @@ class ReportAndLoginTests(unittest.TestCase):
             guard += 1
         self.assertEqual(state["phase"], "closing")
         call = report_tests._call_for(state, 11)
-        synthesis = post_call.deterministic_fallback(call)
+        synthesis = post_call.build_reports(call)
         pdf = mother_report.render_pdf(mother_report.build_v3(call, synthesis))
         pages = len(PdfReader(io.BytesIO(pdf)).pages)
         self.assertGreaterEqual(pages, 2)

@@ -26,7 +26,9 @@ os.environ.setdefault("GEMINI_API_KEY", "test-key")
 
 import app  # noqa: E402
 import db  # noqa: E402
+import decisions  # noqa: E402
 import gemini_live  # noqa: E402
+import profile_extractor  # noqa: E402
 import report_service  # noqa: E402
 import test_cursor as cursor_tests  # noqa: E402
 from call_cursor import apply_profile, apply_turn, new_cursor_state  # noqa: E402
@@ -781,9 +783,78 @@ class QuickReplySocketTests(unittest.TestCase):
             tail = json.dumps(messages[-12:], ensure_ascii=False, default=str)
             self.fail("timed out waiting for a call message: " + tail)
 
+        async def fake_eval(request, **_kwargs):
+            ctx = json.loads(request["input"])
+            active_q = ctx.get("active_question", "")
+            is_which_child = "किस बच्चे" in active_q
+            if is_which_child:
+                raw = {
+                    "danger_now": {"noul": 0.01},
+                    "caller_stop": {"noul": 0.01},
+                    "mentions_profile": {"noul": 0.01},
+                    "current_outcome": {
+                        "choice": "concern",
+                        "probabilities": {"concern": 0.94, "other": 0.04, "clear": 0.02},
+                    },
+                    "child_ref": {
+                        "choice": "child_1",
+                        "probabilities": {"child_1": 0.92, "other": 0.04, "child_2": 0.03, "all": 0.01},
+                    },
+                    "side_intent": {"choice": "other", "probabilities": {"other": 0.96, "add_concern": 0.04}},
+                    "side_qid": {"choice": "other", "probabilities": {"other": 0.96, "birth_nicu": 0.04}},
+                }
+            else:
+                raw = {
+                    "danger_now": {"noul": 0.01},
+                    "caller_stop": {"noul": 0.01},
+                    "mentions_profile": {"noul": 0.94},
+                    "current_outcome": {
+                        "choice": "other",
+                        "probabilities": {"other": 0.92, "clear": 0.05, "concern": 0.03},
+                    },
+                }
+            questions = request.get("questions") or {}
+            side_criteria = (questions.get("side_qid") or {}).get("criteria") or {}
+            return decisions.DecisionCallResult(
+                ok=True,
+                error_reason="",
+                attempts=1,
+                decision_ms=22,
+                request_bytes=len(json.dumps(request, ensure_ascii=False).encode("utf-8")),
+                question_count=len(questions),
+                catalog_option_count=len(side_criteria),
+                usage_present=True,
+                total_input_tokens=240,
+                raw_answers=raw,
+            )
+
+        async def fake_extract(state, utterance_text="", audio_wav_bytes=None, **_kwargs):
+            qid = state.get("active_qid")
+            if qid == "intro_name":
+                updates = {"caller_name": profile["caller_name"]}
+            elif qid == "intro_married":
+                updates = {"marital_status": profile["marital_status"]}
+            elif qid == "intro_children":
+                updates = {
+                    "child_count": profile["child_count"],
+                    "children": profile["children"],
+                }
+            else:
+                updates = {}
+            return profile_extractor.ProfileExtractionResult(
+                ok=True,
+                updates=updates,
+                error_reason="",
+                extractor_ms=15,
+            )
+
         with patch.object(gemini_live, "_connect_live", fake_connect), patch.object(
             report_service, "mother_pdf", fast_pdf
-        ):
+        ), patch.object(
+            decisions, "evaluate_turn", side_effect=fake_eval
+        ) as eval_mock, patch.object(
+            profile_extractor, "extract_profile_entities", side_effect=fake_extract
+        ) as ext_mock:
             client = TestClient(app.app)
             logged = client.post(
                 "/api/login",
@@ -800,16 +871,55 @@ class QuickReplySocketTests(unittest.TestCase):
                     self.assertFalse(intro["expect_yes_no"])
                     self.assertGreater(intro["prompt_chars"], 0)
                     self.assertEqual(intro["step"], "intro_name")
+                    session.push(_audio_message())
+                    wait_for(lambda msg: msg.get("type") == "audio")
                     ws.send_json({
                         "type": "quick_reply",
                         "outcome": "concern",
                         "step": intro["step"],
                     })
-                    session.push(_server_message(tool_calls=[
-                        _tool("sp-1", "save_profile", profile),
-                        _tool("sp-2", "save_profile", profile),
-                        _tool("sp-3", "save_profile", profile),
-                    ]))
+                    ws.send_json({"type": "text", "text": "मेरा नाम पूजा है"})
+                    wait_for(
+                        lambda msg: msg.get("type") == "transcript"
+                        and msg.get("role") == "user"
+                        and "पूजा" in str(msg.get("text") or "")
+                    )
+                    session.push(_server_message(
+                        tool_calls=[_tool("nq-1", "next_question", {})],
+                        turn_complete=True,
+                    ))
+                    married = wait_for(
+                        lambda msg: msg.get("type") == "question_state" and msg.get("qid") == "intro_married"
+                    )
+                    self.assertFalse(married["expect_yes_no"])
+                    session.push(_audio_message())
+                    wait_for(lambda msg: msg.get("type") == "audio")
+                    ws.send_json({"type": "text", "text": "हाँ, शादी हो गई है"})
+                    wait_for(
+                        lambda msg: msg.get("type") == "transcript"
+                        and msg.get("role") == "user"
+                        and "शादी" in str(msg.get("text") or "")
+                    )
+                    session.push(_server_message(
+                        tool_calls=[_tool("nq-2", "next_question", {})],
+                        turn_complete=True,
+                    ))
+                    children_qs = wait_for(
+                        lambda msg: msg.get("type") == "question_state" and msg.get("qid") == "intro_children"
+                    )
+                    self.assertFalse(children_qs["expect_yes_no"])
+                    session.push(_audio_message())
+                    wait_for(lambda msg: msg.get("type") == "audio")
+                    ws.send_json({"type": "text", "text": "दो बच्चे हैं, 6 साल का अमन और 2 साल की रिया"})
+                    wait_for(
+                        lambda msg: msg.get("type") == "transcript"
+                        and msg.get("role") == "user"
+                        and "अमन" in str(msg.get("text") or "")
+                    )
+                    session.push(_server_message(
+                        tool_calls=[_tool("nq-3", "next_question", {})],
+                        turn_complete=True,
+                    ))
                     bridge = wait_for(
                         lambda msg: msg.get("type") == "question_state" and msg.get("qid") == "intro_bridge"
                     )
@@ -851,12 +961,10 @@ class QuickReplySocketTests(unittest.TestCase):
                         and msg.get("role") == "user"
                         and "बड़ा" in str(msg.get("text") or "")
                     )
-                    session.push(_server_message(tool_calls=[
-                        _tool("fc-child", "record_turn", {
-                            "outcome": "concern",
-                            "child_ref": "child_1",
-                        }),
-                    ]))
+                    session.push(_server_message(
+                        tool_calls=[_tool("nq-child", "next_question", {})],
+                        turn_complete=True,
+                    ))
                     follow = wait_for(
                         lambda msg: msg.get("type") == "question_state" and msg.get("step") == "birth_mode_detail:0"
                     )
@@ -866,11 +974,16 @@ class QuickReplySocketTests(unittest.TestCase):
                 finally:
                     ws.close()
 
+            self.assertEqual(eval_mock.await_count, 4)
+            self.assertEqual(ext_mock.await_count, 3)
+
         states = [item for item in messages if item.get("type") == "question_state"]
         self.assertEqual(
             [(item["qid"], item["step"], item["expect_yes_no"]) for item in states],
             [
                 ("intro_name", "intro_name", False),
+                ("intro_married", "intro_married", False),
+                ("intro_children", "intro_children", False),
                 ("intro_bridge", "intro_bridge", True),
                 ("birth_mode_detail", "birth_mode_detail", True),
                 ("birth_mode_detail", "birth_mode_detail:-1", False),

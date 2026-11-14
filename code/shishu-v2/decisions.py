@@ -81,22 +81,18 @@ class DecisionCallResult:
 
 @dataclass(frozen=True, slots=True)
 class DecisionThresholds:
-    calibrated: bool = False
-    danger_now_min_yes: float = 1.0
-    caller_stop_min_yes: float = 1.0
-    mentions_profile_min_yes: float = 1.0
-    detail_present_min_yes: float = 1.0
-    outcome_min_confidence: float = 1.0
-    outcome_min_margin: float = 1.0
-    side_intent_min_confidence: float = 1.0
-    side_intent_min_margin: float = 1.0
-    side_qid_min_confidence: float = 1.0
-    side_qid_min_margin: float = 1.0
-    child_ref_min_confidence: float = 1.0
-    child_ref_min_margin: float = 1.0
-
-
-UNCALIBRATED_THRESHOLDS = DecisionThresholds(calibrated=False)
+    danger_now_min_yes: float
+    caller_stop_min_yes: float
+    mentions_profile_min_yes: float
+    detail_present_min_yes: float
+    outcome_min_confidence: float
+    outcome_min_margin: float
+    side_intent_min_confidence: float
+    side_intent_min_margin: float
+    side_qid_min_confidence: float
+    side_qid_min_margin: float
+    child_ref_min_confidence: float
+    child_ref_min_margin: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -371,7 +367,8 @@ async def evaluate_turn(
                 continue
             break
         if 400 <= status <= 499:
-            last_err = "safety_block" if _is_safety_error(_parse_json_body(raw_body)) else f"http_{status}"
+            is_safety = _is_safety_error(_parse_json_body(raw_body))
+            last_err = "safety_block" if is_safety else f"http_{status}"
             break
         parsed = _parse_json_body(raw_body) if 200 <= status <= 299 else None
         if not (200 <= status <= 299):
@@ -395,52 +392,36 @@ async def evaluate_turn(
     return _res(False, last_err, attempts, ms, u_ok, in_tok)
 
 
-def validate_thresholds(
-    thresholds: DecisionThresholds, *, require_calibrated: bool = True
-) -> DecisionThresholds:
-    """Validate DecisionThresholds ranges and enforce calibration when required."""
+def validate_thresholds(thresholds: DecisionThresholds) -> DecisionThresholds:
+    """Validate DecisionThresholds numeric ranges."""
     if not isinstance(thresholds, DecisionThresholds):
         raise TypeError("thresholds must be a DecisionThresholds instance")
-    if require_calibrated and not thresholds.calibrated:
-        raise ValueError(
-            "Uncalibrated DecisionThresholds refused; "
-            "load calibrated thresholds via load_thresholds()."
-        )
-    if thresholds.calibrated:
-        bounds = (
-            (_NOUL_FIELDS, 0.01, 0.99, False),
-            (_CONF_FIELDS, 0.0, 1.0, False),
-            (_MARGIN_FIELDS, 0.0, 1.0, True),
-        )
-        for fields, lo, hi, inclusive_lo in bounds:
-            for f in fields:
-                v = float(getattr(thresholds, f))
-                in_range = (lo <= v < hi) if inclusive_lo else (lo < v < hi)
-                if not math.isfinite(v) or not in_range:
-                    raise ValueError(f"Calibrated threshold {f}={v!r} out of range")
+    bounds = (
+        (_NOUL_FIELDS, 0.01, 0.99, False),
+        (_CONF_FIELDS, 0.0, 1.0, False),
+        (_MARGIN_FIELDS, 0.0, 1.0, True),
+    )
+    for fields, lo, hi, inclusive_lo in bounds:
+        for f in fields:
+            v = float(getattr(thresholds, f))
+            in_range = (lo <= v < hi) if inclusive_lo else (lo < v < hi)
+            if not math.isfinite(v) or not in_range:
+                raise ValueError(f"Threshold {f}={v!r} out of range")
     return thresholds
 
 
-def load_thresholds(path: str | Path, require_calibrated: bool = False) -> DecisionThresholds:
+def load_thresholds(path: str | Path) -> DecisionThresholds:
     """Load and validate a DecisionThresholds JSON artifact."""
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     if isinstance(data, dict) and isinstance(data.get("thresholds"), dict):
         data = data["thresholds"]
     if not isinstance(data, dict):
         raise ValueError("Threshold artifact must be a JSON object")
-    calibrated = bool(data.get("calibrated", False))
-    if calibrated:
-        missing = [f for f in _ALL_NUMERIC_THRESHOLD_FIELDS if f not in data]
-        if missing:
-            raise ValueError(f"Calibrated threshold artifact missing fields: {', '.join(missing)}")
-    kwargs = {
-        f: float(data[f]) if f in data else float(getattr(UNCALIBRATED_THRESHOLDS, f))
-        for f in _ALL_NUMERIC_THRESHOLD_FIELDS
-    }
-    return validate_thresholds(
-        DecisionThresholds(calibrated=calibrated, **kwargs),
-        require_calibrated=require_calibrated,
-    )
+    missing = [f for f in _ALL_NUMERIC_THRESHOLD_FIELDS if f not in data]
+    if missing:
+        raise ValueError(f"Threshold artifact missing fields: {', '.join(missing)}")
+    kwargs = {f: float(data[f]) for f in _ALL_NUMERIC_THRESHOLD_FIELDS}
+    return validate_thresholds(DecisionThresholds(**kwargs))
 
 
 def _noul_prob(raw_answers: dict[str, Any], key: str) -> float | None:
@@ -499,12 +480,11 @@ def interpret_turn_decision(
     state: dict,
     raw_answers: dict[str, Any],
     *,
+    thresholds: DecisionThresholds,
     utterance_text: str = "",
-    thresholds: DecisionThresholds = UNCALIBRATED_THRESHOLDS,
-    require_calibrated: bool = False,
 ) -> InterpretationResult:
     """Translate raw Decisions API probabilities into a cursor payload and telemetry."""
-    validate_thresholds(thresholds, require_calibrated=require_calibrated)
+    validate_thresholds(thresholds)
     answers = raw_answers if isinstance(raw_answers, dict) else {}
     clean_utt = " ".join(str(utterance_text or "").split())
     active_qid, step_kind, _, followup_prompt = turn_view(state)
@@ -634,23 +614,9 @@ def interpret_turn_decision(
             }
         )
 
-    raw_side: dict[str, Any] | None = None
-    if qid_eval is not None and qid_eval.top_option not in ("", "other"):
-        raw_intent = ""
-        if intent_eval is not None and intent_eval.top_option not in ("", "other"):
-            raw_intent = intent_eval.top_option
-        raw_side = {
-            "qid": qid_eval.top_option,
-            "confidence": qid_eval.top_prob,
-            "margin": qid_eval.margin,
-            "side_intent": raw_intent,
-            "side_intent_prob": intent_eval.top_prob if intent_eval is not None else None,
-        }
-
     diagnostics = {
         "active_qid": active_qid,
         "step_kind": step_kind,
-        "calibrated": thresholds.calibrated,
         "danger_now": danger_p,
         "caller_stop": stop_p,
         "mentions_profile": profile_p,
@@ -660,24 +626,5 @@ def interpret_turn_decision(
         "side_qid": qid_eval.as_dict() if qid_eval is not None else None,
         "child_ref": child_eval.as_dict() if child_eval is not None else None,
         "future_qid_match": future_match,
-        "raw_side_candidate": raw_side,
     }
     return InterpretationResult(payload, needs_profile, future_match, diagnostics)
-
-
-def interpret_for_authority(
-    state: dict,
-    raw_answers: dict[str, Any],
-    *,
-    utterance_text: str = "",
-    thresholds: DecisionThresholds = UNCALIBRATED_THRESHOLDS,
-    require_calibrated: bool = True,
-) -> InterpretationResult:
-    """Authority-mode wrapper requiring calibrated thresholds by default."""
-    return interpret_turn_decision(
-        state,
-        raw_answers,
-        utterance_text=utterance_text,
-        thresholds=thresholds,
-        require_calibrated=require_calibrated,
-    )

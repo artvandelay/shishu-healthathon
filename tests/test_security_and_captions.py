@@ -7,7 +7,6 @@ import tempfile
 import unittest
 import wave
 from pathlib import Path
-from unittest.mock import patch
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
@@ -141,20 +140,29 @@ class CaptionAndCopyTests(unittest.TestCase):
         self.assertTrue(prompts.leaked_caption(leaked, prompts.clean_assistant_caption(leaked)))
         mixed = "Aasani se neel پڑ jaate hain?"
         self.assertNotIn("پ", prompts.clean_assistant_caption(mixed))
-        tool = "save_profile record_turn कहो क्या नाल गिरी?"
+        tool = "next_question active_qid SYSTEM CUE: कहो क्या नाल गिरी?"
         cleaned = prompts.clean_assistant_caption(tool)
-        self.assertNotIn("save_profile", cleaned)
-        self.assertNotIn("record_turn", cleaned)
+        self.assertNotIn("next_question", cleaned)
+        self.assertNotIn("active_qid", cleaned)
+        self.assertNotIn("SYSTEM CUE", cleaned)
         self.assertTrue(prompts.leaked_caption(tool, cleaned))
         delta = " haan"
         self.assertEqual(prompts.clean_assistant_caption(delta, exact=True), " haan")
         note = "*Note: Audio is in English, but requested reply language is Hindi.*"
         self.assertEqual(prompts.clean_assistant_caption(note), "")
 
+    def test_clean_user_caption_strips_noise_without_semantic_rewriting(self):
+        self.assertEqual(prompts.clean_user_caption("não"), "não")
+        self.assertEqual(prompts.clean_user_caption("네"), "")
+        self.assertEqual(prompts.clean_user_caption("हाँ   네  सब ठीक है"), "हाँ सब ठीक है")
+        self.assertEqual(prompts.clean_user_caption("6개월"), "6")
+        self.assertEqual(prompts.clean_user_caption("बेटा  پ  ठीक है"), "बेटा ठीक है")
+
     def test_live_prompt_uses_only_the_cursor_tools(self):
         text = prompts.GEMINI_LIVE_SYSTEM_PROMPT
-        self.assertIn("save_profile", text)
-        self.assertIn("record_turn", text)
+        self.assertIn("next_question", text)
+        self.assertNotIn("save_profile", text)
+        self.assertNotIn("record_turn", text)
         self.assertNotIn("record_finding", text)
         self.assertNotIn("end_call", text)
         closing = gemini_live._closing_hi({
@@ -267,17 +275,13 @@ class Stage6BAccessTests(unittest.TestCase):
         db.save_cursor_state(call_id, state)
         db.complete_call(call_id, 20, "", "", "")
 
-        async def explode(_call):
-            raise ConnectionError("offline")
-
         async def render():
             return await report_service.mother_pdf(call_id)
 
-        with patch("post_call._from_gemini", new=explode):
-            first = asyncio.run(render())
-            self.assertEqual(report_service._inflight, {})
-            second = asyncio.run(render())
-            self.assertEqual(report_service._inflight, {})
+        first = asyncio.run(render())
+        self.assertEqual(report_service._inflight, {})
+        second = asyncio.run(render())
+        self.assertEqual(report_service._inflight, {})
         self.assertTrue(first[0].startswith(b"%PDF"))
         self.assertTrue(second[0].startswith(b"%PDF"))
 

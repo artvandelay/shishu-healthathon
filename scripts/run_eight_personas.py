@@ -29,8 +29,8 @@ from dotenv import load_dotenv
 load_dotenv(ROOT / ".env")
 load_dotenv()
 
+import call_cursor  # noqa: E402
 import db  # noqa: E402
-import gemini_live  # noqa: E402
 import uvicorn  # noqa: E402
 from call_cursor import expect_yes_no  # noqa: E402
 from pypdf import PdfReader  # noqa: E402
@@ -314,8 +314,8 @@ def _flat(text: str) -> str:
 
 
 def _pdf_fold(text: str) -> str:
-    # pypdf drops the pre-base ि matra, so पति on the page extracts as पत.
-    return _flat(text).replace("ि", "")
+    # pypdf drops Devanagari matras (ि, ा) from shaped ligatures, e.g. वाले पति -> वले पत.
+    return _flat(text).replace("ि", "").replace("ा", "")
 
 
 def _pdf_page(call: dict, index: int) -> str:
@@ -647,7 +647,7 @@ async def _one(persona: Persona, cookie: str) -> dict:
                             print(f"  closing heard: {heard}", flush=True)
                             continue
                         mode, payload = reply
-                        step = gemini_live._current_step(state)
+                        step = call_cursor.step_id(state)
                         print(f"  [{_route(state) or step}] {mode} {payload[:70]}", flush=True)
                         if mode == "quick":
                             tap_step = step or str(question.get("step") or "")

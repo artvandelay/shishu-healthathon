@@ -1,4 +1,4 @@
-"""Stage 2 reports: cursor PDF, disease-name scrub, and token privacy. No live call."""
+"""Stage 2 reports: deterministic cursor PDF, disease-name scrub, and token privacy."""
 
 import asyncio
 import io
@@ -8,7 +8,6 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
@@ -63,13 +62,13 @@ def _bleed_cursor():
         guard += 1
         qid = state["active_qid"]
         if state["pending_followup_idx"] == -1:
-            state = apply_turn(state, "concern", child_ref="oldest")
+            state = apply_turn(state, "concern", child_ref="child_1")
             continue
         if isinstance(state["pending_followup_idx"], int) and state["pending_followup_idx"] >= 0:
             state = apply_turn(state, "clear")
             continue
         if qid in concerns:
-            state = apply_turn(state, "concern", note=concerns[qid], child_ref="oldest")
+            state = apply_turn(state, "concern", note=concerns[qid], child_ref="child_1")
             continue
         state = apply_turn(state, "clear")
     return state
@@ -104,19 +103,8 @@ def _pages(pdf: bytes) -> int:
     return len(PdfReader(io.BytesIO(pdf)).pages)
 
 
-def _headed(positive_lines: list[str]) -> str:
-    parts = []
-    for heading in post_call._HEADINGS:
-        if heading == post_call._POSITIVE_HEADING:
-            body = "\n".join(positive_lines)
-        else:
-            body = "- Noted."
-        parts.append(f"{heading}\n{body}")
-    return "\n\n".join(parts)
-
-
 def _page2(call: dict) -> str:
-    synthesis = post_call.deterministic_fallback(call)
+    synthesis = post_call.build_reports(call)
     document = mother_report.render_html(mother_report.build_v3(call, synthesis))
     return document.split('class="page2"', 1)[1]
 
@@ -126,11 +114,12 @@ class CursorReportTests(unittest.TestCase):
         state = _childless_cursor()
         self.assertEqual(state["close_reason"], "complete")
         call = _call_for(state, 7)
-        synthesis = post_call.deterministic_fallback(call)
+        synthesis = post_call.build_reports(call)
         for heading in post_call._HEADINGS:
             self.assertIn(heading, synthesis["doctor_markdown"])
         self.assertGreaterEqual(len(synthesis["mother_questions_hi"]), 3)
         self.assertLessEqual(len(synthesis["mother_questions_hi"]), 6)
+        self.assertNotIn("मेरे बच्चे", " ".join(synthesis["mother_questions_hi"]))
         self.assertEqual(synthesis["yes_summaries_hi"], [])
         self.assertEqual(synthesis["children_label_hi"], "")
         report = mother_report.build_v3(call, synthesis)
@@ -150,32 +139,21 @@ class CursorReportTests(unittest.TestCase):
         self.assertIn("SHISHU-7", extracted)
 
     def test_scrubber_strips_disease_names_from_mother_hindi(self):
-        doctor = "\n\n".join(f"{heading}\n- Noted." for heading in post_call._HEADINGS)
-        dirty = {
-            "mother_name_hi": "पूजा",
-            "children_label_hi": "7 साल बेटा",
-            "mother_questions_hi": [
-                "क्या मेरे बच्चे को Duchenne है?",
-                "Hemophilia की जाँच करानी चाहिए?",
-            ],
-            "yes_summaries_hi": ["डॉक्टर ने Hemophilia और Pompe बताया।"],
-            "doctor_markdown": doctor,
-            "red_flags": ["Q04 bleeding"],
-        }
-        clean = post_call._finish(dirty)
-        blob = " ".join(clean["mother_questions_hi"] + clean["yes_summaries_hi"] + [clean["mother_name_hi"]])
+        dirty_questions = [
+            "क्या मेरे बच्चे को Duchenne है?",
+            "Hemophilia की जाँच करानी चाहिए?",
+        ]
+        fitted = post_call._fit_questions(dirty_questions)
+        scrubbed_yes = post_call._scrub_diagnostic_terms("डॉक्टर ने Hemophilia और Pompe बताया।")
+        blob = " ".join([*fitted, scrubbed_yes])
         for name in _FORBIDDEN:
             self.assertNotIn(name, blob)
             self.assertNotIn(name.lower(), blob.lower())
-        self.assertGreaterEqual(len(clean["mother_questions_hi"]), 3)
-        self.assertLessEqual(len(clean["mother_questions_hi"]), 6)
-
-        async def explode(_call):
-            raise ConnectionError("offline")
+        self.assertGreaterEqual(len(fitted), 3)
+        self.assertLessEqual(len(fitted), 6)
 
         call = _call_for(_bleed_cursor(), 3)
-        with patch("post_call._from_gemini", new=explode):
-            synthesis = asyncio.run(post_call.synthesize_call(call, mode="generative"))
+        synthesis = post_call.build_reports(call)
         mother = " ".join(synthesis["mother_questions_hi"] + synthesis["yes_summaries_hi"])
         for name in _FORBIDDEN:
             self.assertNotIn(name.lower(), mother.lower())
@@ -183,7 +161,7 @@ class CursorReportTests(unittest.TestCase):
         for heading in post_call._HEADINGS:
             self.assertIn(heading, synthesis["doctor_markdown"])
 
-    def test_omitted_closing_concern_is_backfilled_into_every_report(self):
+    def test_concerns_unknowns_negatives_and_closing_disclosure_reach_every_report(self):
         note = "पति को गुप्त रोग; बच्चे पति के नहीं हैं"
         qids = [
             "birth_nicu",
@@ -209,6 +187,18 @@ class CursorReportTests(unittest.TestCase):
                 "notes": notes[qid],
                 "followups": {},
             }
+        state["answers"]["birth_jaundice"] = {
+            "state": "clear",
+            "child_ids": [],
+            "notes": "",
+            "followups": {},
+        }
+        state["answers"]["ill_fasting"] = {
+            "state": "unknown",
+            "child_ids": [],
+            "notes": "",
+            "followups": {},
+        }
         state["answers"]["close_anything_else"] = {
             "state": "concern",
             "child_ids": [],
@@ -218,29 +208,9 @@ class CursorReportTests(unittest.TestCase):
         state["phase"] = "closing"
         state["close_reason"] = "complete"
         call = _call_for(state, 9)
-        sections = []
-        for heading in post_call._HEADINGS:
-            if heading.startswith("### Positive"):
-                lines = [f"- {qid}: noted." for qid in qids]
-            else:
-                lines = ["- Noted."]
-            sections.append(heading + "\n" + "\n".join(lines))
-        raw = {
-            "mother_name_hi": "मीना",
-            "children_label_hi": "4 साल बेटा",
-            "mother_questions_hi": [
-                f"डॉक्टर, {notes[qid]} की जाँच क्या होनी चाहिए?" for qid in reversed(qids)
-            ],
-            "yes_items_hi": [
-                {"qid": qid, "summary_hi": f"{notes[qid]} की बात है।"}
-                for qid in reversed(qids)
-            ],
-            "doctor_markdown": "\n\n".join(sections),
-            "red_flags": [f"{qid}: noted" for qid in qids],
-        }
-        synthesis = post_call._finish(post_call._coerce(raw, call))
+        synthesis = post_call.build_reports(call)
         self.assertEqual(
-            [key for key in synthesis],
+            list(synthesis.keys()),
             [
                 "mother_name_hi",
                 "children_label_hi",
@@ -250,38 +220,37 @@ class CursorReportTests(unittest.TestCase):
                 "red_flags",
             ],
         )
+        for heading in post_call._HEADINGS:
+            self.assertIn(heading, synthesis["doctor_markdown"])
         self.assertEqual(len(synthesis["yes_summaries_hi"]), 7)
-        expected = [f"{notes[qid]} की बात है।" for qid in qids]
-        self.assertEqual(synthesis["yes_summaries_hi"][:6], expected)
-        self.assertIn(note, synthesis["yes_summaries_hi"][6])
-        self.assertEqual(synthesis["mother_questions_hi"], raw["mother_questions_hi"])
-        self.assertEqual(len(synthesis["mother_questions_hi"]), 6)
-        asked = "\n".join(synthesis["mother_questions_hi"])
-        self.assertNotIn("मैंने बताया कि", asked)
-        self.assertNotIn("मैंने हाँ कहा कि", asked)
-        self.assertNotIn(note, asked)
-        document = mother_report.render_html(mother_report.build_v3(call, synthesis))
-        page1 = document.split('class="page2"', 1)[0]
         for qid in qids:
-            self.assertIn(notes[qid], page1)
+            self.assertTrue(any(notes[qid] in line for line in synthesis["yes_summaries_hi"]), qid)
             self.assertIn(qid, synthesis["doctor_markdown"])
-        self.assertIn(note, page1)
+            self.assertTrue(any(qid in flag for flag in synthesis["red_flags"]), qid)
+        self.assertIn(note, synthesis["yes_summaries_hi"][-1])
+        self.assertEqual(len(synthesis["mother_questions_hi"]), 6)
+
         profile = synthesis["doctor_markdown"].split("### Positive", 1)[0]
-        self.assertIn("Additional mother disclosure (close_anything_else)", profile)
         self.assertIn(note, profile)
+        positive = synthesis["doctor_markdown"].split("### Positive", 1)[1].split("\n### ", 1)[0]
+        self.assertIn("close_anything_else", positive)
+        self.assertIn(note, positive)
+        self.assertIn("Unknown. " + get_spec("ill_fasting").need_en, synthesis["doctor_markdown"])
+        negatives = synthesis["doctor_markdown"].split("### Pertinent Negatives", 1)[1]
+        self.assertIn("Clear: " + get_spec("birth_jaundice").need_en, negatives)
         self.assertIn(note, "\n".join(synthesis["red_flags"]))
         self.assertTrue(any("close_anything_else" in flag for flag in synthesis["red_flags"]))
-        for qid in qids:
-            self.assertTrue(
-                any(qid in flag for flag in synthesis["red_flags"]),
-                qid,
-            )
-        fallback = post_call.deterministic_fallback(call)
-        self.assertIn(note, fallback["yes_summaries_hi"][-1])
-        self.assertIn(note, fallback["doctor_markdown"].split("### Positive", 1)[0])
-        self.assertTrue(any("close_anything_else" in flag for flag in fallback["red_flags"]))
 
-    def test_devanagari_disease_names_and_followups_reach_the_brief(self):
+        document = mother_report.render_html(mother_report.build_v3(call, synthesis))
+        page1, page2 = document.split('class="page2"', 1)
+        for qid in qids:
+            self.assertIn(notes[qid], page1)
+        self.assertIn(note, page1)
+        self.assertIn("पता नहीं", page2)
+        self.assertIn(get_spec("ill_fasting").question_hi, page2)
+        self.assertIn(get_spec("birth_jaundice").question_hi, page2)
+
+    def test_devanagari_disease_names_and_followups_reach_reports(self):
         scrubbed = post_call._scrub_diagnostic_terms("बच्चे को ड्यूशेन और हीमोफीलिया बताया")
         self.assertNotIn("ड्यूशेन", scrubbed)
         self.assertNotIn("हीमोफीलिया", scrubbed)
@@ -305,30 +274,24 @@ class CursorReportTests(unittest.TestCase):
                 "nicu_days": {"state": "concern", "note": "तीन दिन"},
             },
         }
-        brief = post_call._answered_brief(state)
-        self.assertIn("followups=", brief)
-        self.assertIn("fracture_count_or_bowing", brief)
-        self.assertIn("दो बार", brief)
-        self.assertIn("nicu_reason", brief)
-        self.assertIn("nicu_days", brief)
-        self.assertIn("सांस", brief)
-        self.assertIn("तीन दिन", brief)
         sentence = post_call._concern_sentence(
             get_spec("gate_bones_fractures"),
             state["answers"]["gate_bones_fractures"],
         )
         self.assertIn("दो बार", sentence)
+        synthesis = post_call.build_reports(_call_for(state, 19))
+        for expected in ("दो बार", "सांस", "तीन दिन"):
+            self.assertIn(expected, "\n".join(synthesis["yes_summaries_hi"]))
+            self.assertIn(expected, synthesis["doctor_markdown"])
+            self.assertIn(expected, "\n".join(synthesis["red_flags"]))
+        self.assertNotIn("fracture_count_or_bowing", synthesis["doctor_markdown"])
+        self.assertNotIn("nicu_reason", synthesis["doctor_markdown"])
 
     def test_v3_build_saves_flags_and_admin_labels(self):
         bleed_id = _store(_bleed_cursor(), "Pooja")
         calm_id = _store(_childless_cursor(), "Pooja")
-
-        async def explode(_call):
-            raise ConnectionError("offline")
-
-        with patch("post_call._from_gemini", new=explode):
-            asyncio.run(report_service.mother_pdf(bleed_id))
-            asyncio.run(report_service.mother_pdf(calm_id))
+        asyncio.run(report_service.mother_pdf(bleed_id))
+        asyncio.run(report_service.mother_pdf(calm_id))
         bleed = db.get_call(bleed_id)
         calm = db.get_call(calm_id)
         self.assertTrue(bleed["red_flags"])
@@ -351,26 +314,7 @@ class CursorReportTests(unittest.TestCase):
         self.assertEqual(state["emergency_note"], "अभी बेहोश है")
         self.assertEqual(state["answers"], answers_before)
         call = _call_for(state, 21)
-        content = post_call._user_content(call)
-        self.assertLess(content.index("Close reason: emergency"), content.index("Cursor answers"))
-        self.assertLess(content.index("Emergency note: अभी बेहोश है"), content.index("Cursor answers"))
-
-        raw = {
-            "mother_name_hi": "पूजा",
-            "children_label_hi": "3 साल बेटी",
-            "mother_questions_hi": list(post_call._ROUTINE_HI),
-            "yes_items_hi": [],
-            "doctor_markdown": _headed([
-                "- None documented in this call.",
-                "- No positive gate alerts.",
-                "- Active emergency. Caller was told to go to the nearest hospital or call 108.",
-            ]),
-            "red_flags": [
-                "body_bleeding_bruise: bruising noted",
-                "emergency: active danger sign now; hospital or 108",
-            ],
-        }
-        synthesis = post_call._finish(post_call._coerce(raw, call))
+        synthesis = post_call.build_reports(call)
         flags = "\n".join(synthesis["red_flags"])
         self.assertEqual(flags.count("emergency: active danger sign now"), 1)
         self.assertIn("emergency: active danger sign now; hospital or 108. अभी बेहोश है", flags)
@@ -380,38 +324,26 @@ class CursorReportTests(unittest.TestCase):
             positive,
         )
         self.assertEqual(positive.count("Active emergency."), 1)
-        self.assertNotIn("None documented", positive)
-        self.assertNotIn("No positive", positive)
-        self.assertNotIn("None reported", positive)
+        self.assertNotIn("No positive gate alerts.", positive)
         for routine in post_call._ROUTINE_HI:
             self.assertNotIn(routine, synthesis["mother_questions_hi"])
         self.assertIn("खून", synthesis["mother_questions_hi"][0])
         self.assertEqual(synthesis["mother_questions_hi"][1:], list(post_call._EMERGENCY_HI[:2]))
-        fallback = post_call.deterministic_fallback(call)
-        self.assertIn("Mother's words: अभी बेहोश है.", fallback["doctor_markdown"])
-        self.assertIn("emergency: active danger sign now; hospital or 108. अभी बेहोश है", fallback["red_flags"])
-        for routine in post_call._ROUTINE_HI:
-            self.assertNotIn(routine, fallback["mother_questions_hi"])
+        doc = mother_report.render_html(mother_report.build_v3(call, synthesis))
+        self.assertIn("108", doc)
+        self.assertIn("नज़दीकी अस्पताल", doc)
 
         calm = cursor_tests._clear_until(
             cursor_tests._profile(children=[cursor_tests._child(3, "female")]),
             "ill_fasting",
         )
         calm = apply_turn(calm, "emergency", note="सांस रुक रही है")
-        calm_raw = {
-            "mother_name_hi": "पूजा",
-            "children_label_hi": "3 साल बेटी",
-            "mother_questions_hi": list(post_call._ROUTINE_HI),
-            "yes_items_hi": [],
-            "doctor_markdown": _headed(["- None reported in this call."]),
-            "red_flags": ["nothing urgent"],
-        }
-        calm_out = post_call._finish(post_call._coerce(calm_raw, _call_for(calm, 22)))
+        calm_out = post_call.build_reports(_call_for(calm, 22))
         self.assertEqual(calm_out["mother_questions_hi"], list(post_call._EMERGENCY_HI))
         self.assertEqual(calm_out["yes_summaries_hi"], [])
         self.assertIn("emergency: active danger sign now; hospital or 108. सांस रुक रही है", calm_out["red_flags"])
         calm_positive = calm_out["doctor_markdown"].split(post_call._POSITIVE_HEADING, 1)[1].split("\n### ", 1)[0]
-        self.assertNotIn("None reported", calm_positive)
+        self.assertNotIn("No positive gate alerts.", calm_positive)
         self.assertIn("Mother's words: सांस रुक रही है.", calm_positive)
 
     def test_two_step_followup_notes_reach_reports_without_internal_keys(self):
@@ -436,16 +368,7 @@ class CursorReportTests(unittest.TestCase):
         state["phase"] = "closing"
         state["close_reason"] = "complete"
         call = _call_for(state, 23)
-        raw = {
-            "mother_name_hi": "मीना",
-            "children_label_hi": "4 साल बेटा",
-            "mother_questions_hi": ["क्या टीके पूरे हैं?"],
-            "yes_items_hi": [{"qid": "birth_nicu", "summary_hi": "NICU stay"}],
-            "doctor_markdown": _headed(["- Noted."]),
-            "red_flags": ["screening"],
-        }
-        synthesis = post_call._finish(post_call._coerce(raw, call))
-        fallback = post_call.deterministic_fallback(call)
+        synthesis = post_call.build_reports(call)
         report = mother_report.build_v3(call, synthesis)
         document = mother_report.render_html(report)
         page1 = document.split('class="page2"', 1)[0]
@@ -453,8 +376,6 @@ class CursorReportTests(unittest.TestCase):
             page1,
             synthesis["doctor_markdown"],
             "\n".join(synthesis["red_flags"]),
-            fallback["doctor_markdown"],
-            "\n".join(fallback["red_flags"]),
             "\n".join(synthesis["yes_summaries_hi"]),
         ):
             self.assertIn("साँस की तकलीफ", surface)
@@ -467,193 +388,11 @@ class CursorReportTests(unittest.TestCase):
         self.assertIn("birth_nicu", synthesis["doctor_markdown"])
         self.assertTrue(any("close_anything_else" in flag for flag in synthesis["red_flags"]))
         self.assertTrue(any("birth_nicu" in flag for flag in synthesis["red_flags"]))
-        self.assertEqual(
-            synthesis["mother_questions_hi"],
-            ["क्या टीके पूरे हैं?", *post_call._ROUTINE_HI[:2]],
-        )
-        asked = "\n".join(synthesis["mother_questions_hi"])
-        self.assertNotIn("मैंने बताया कि", asked)
-        self.assertNotIn("मैंने हाँ कहा कि", asked)
-        self.assertNotIn("साँस की तकलीफ", asked)
-        self.assertNotIn("चार दिन", asked)
+        self.assertEqual(len(synthesis["mother_questions_hi"]), 3)
+        self.assertIn(post_call._ROUTINE_HI[0], synthesis["mother_questions_hi"])
         self.assertNotIn("concern", page1.lower())
         self.assertIn("रात को जागना", page1)
         self.assertIn("साँस की तकलीफ", "\n".join(report["yes"]))
-        self.assertNotIn("साँस की तकलीफ", "\n".join(report["questions"]))
-
-    def test_grouped_gemini_questions_are_not_padded_with_templates(self):
-        def planted(name, children, concerns):
-            state = cursor_tests._profile(name=name, children=children)
-            for qid, entry in concerns.items():
-                state["answers"][qid] = entry
-            state["phase"] = "closing"
-            state["close_reason"] = "complete"
-            return state
-
-        def concern(note, followups=None, child_ids=None):
-            return {
-                "state": "concern",
-                "child_ids": child_ids or [],
-                "notes": note,
-                "followups": followups or {},
-            }
-
-        gemini_64 = [
-            "मेरे 6 साल के बेटे को जन्म के बाद पीलिया के लिए 3 दिन नीली लाइट में रखा गया था — क्या आगे कोई दिक्कत हो सकती है?",
-            "मेरे सगे मामा के बेटे को बार-बार खून चढ़ाना पड़ता है — क्या मेरे बच्चों की भी खून की जाँच करानी चाहिए?",
-            "मेरे पिताजी को 42 साल की उम्र में बीपी हुआ था — बच्चों के खान-पान में कोई खास ध्यान रखना चाहिए?",
-        ]
-        call_64 = _call_for(planted(
-            "कविता",
-            [
-                cursor_tests._child(11, "female", 1),
-                cursor_tests._child(6, "male", 2),
-                cursor_tests._child(2, "male", 3),
-            ],
-            {
-                "birth_jaundice": concern(
-                    "3 दिन नीली लाइट",
-                    {"jaundice_days": {"state": "concern", "note": "3 दिन"}},
-                    ["child_2"],
-                ),
-                "fam_transfusion": concern(
-                    "सगे मामा के बेटे को",
-                    {"fam_who": {"state": "concern", "note": "सगे मामा के बेटे को"}},
-                ),
-                "fam_bp_stroke": concern(
-                    "",
-                    {
-                        "bp_who": {"state": "concern", "note": "पिता"},
-                        "bp_age": {"state": "concern", "note": "42 साल"},
-                    },
-                ),
-            },
-        ), 64)
-        yes_64 = [
-            {"qid": "birth_jaundice", "summary_hi": "बीच वाले बेटे को 3 दिन नीली लाइट में रखा गया।"},
-            {"qid": "fam_transfusion", "summary_hi": "सगे मामा के बेटे को बार-बार खून चढ़ता है।"},
-            {"qid": "fam_bp_stroke", "summary_hi": "पिता को 42 साल की उम्र में बीपी हुआ।"},
-        ]
-        raw_64 = {
-            "mother_name_hi": "कविता",
-            "children_label_hi": "11 साल बेटी · 6 साल बेटा · 2 साल बेटा",
-            "mother_questions_hi": gemini_64,
-            "yes_items_hi": yes_64,
-            "doctor_markdown": _headed([
-                "- Q03 birth_jaundice: blue light.",
-                "- Q11 fam_transfusion: family transfusions.",
-                "- Q11 fam_bp_stroke: father at 42.",
-            ]),
-            "red_flags": [f"{item['qid']}: noted" for item in yes_64],
-        }
-        out_64 = post_call._finish(post_call._coerce(raw_64, call_64))
-        self.assertEqual(out_64["mother_questions_hi"], gemini_64)
-        asked_64 = "\n".join(out_64["mother_questions_hi"])
-        self.assertNotIn("मैंने बताया कि", asked_64)
-        self.assertNotIn("मैंने हाँ कहा कि", asked_64)
-        self.assertEqual(
-            out_64["yes_summaries_hi"],
-            [item["summary_hi"] for item in yes_64],
-        )
-        for item in yes_64:
-            self.assertIn(item["qid"], out_64["doctor_markdown"])
-            self.assertTrue(any(item["qid"] in flag for flag in out_64["red_flags"]))
-
-        notes_10 = {
-            "birth_term": "तीन हफ्ते पहले",
-            "birth_nicu": "दो हफ्ते",
-            "body_joint_swelling": "गिरने पर घुटना सूजता है",
-            "preg_thalassemia": "ट्रेट बताया गया",
-            "fam_related": "चचेरे मामा के बेटे",
-            "fam_miscarriage": "3 महीने में एक बार",
-            "fam_infant_death": "6 महीने में गुजर गई",
-            "fam_heart_kidney": "बूढ़ों को दिल की बीमारी",
-            "fam_bp_stroke": "सगे रिश्तेदार को 35 साल में",
-            "fam_same_problem": "बहन के बेटे को भी वही दिक्कत",
-            "close_anything_else": "सर दर्द",
-        }
-        gemini_10 = [
-            "मेरा 2 साल का बच्चा 3 हफ्ते पहले पैदा हुआ और 2 हफ्ते NICU में रहा — आगे कोई खास ध्यान रखना है?",
-            "मेरे तीनों बच्चों के घुटनों में गिरने पर सूजन आ जाती है — क्या कोई खास जाँच करानी चाहिए?",
-            "मेरी और पति की खून जाँच में थैलेसीमिया ट्रेट बताया गया — बच्चों पर इसका क्या असर हो सकता है?",
-            "हमारी शादी रिश्ते में हुई है — बच्चों के लिए कोई खास सलाह लेनी चाहिए?",
-            "मेरी बहन के बेटे को भी बच्चों जैसी दिक्कत है और परिवार में एक बच्चा अचानक गुजर गया — क्या यह परिवार की बात हो सकती है?",
-            "मुझे अक्सर सिरदर्द रहता है — राहत के लिए क्या करना चाहिए?",
-        ]
-        call_10 = _call_for(planted(
-            "रीटा",
-            [
-                cursor_tests._child(3, "male", 1),
-                cursor_tests._child(2, "male", 2),
-                cursor_tests._child(1, "female", 3),
-            ],
-            {
-                qid: concern(
-                    note,
-                    {"open_concern_detail": {"state": "concern", "note": note}}
-                    if qid == "close_anything_else"
-                    else {},
-                    ["child_2"] if qid in {"birth_term", "birth_nicu"} else [],
-                )
-                for qid, note in notes_10.items()
-            },
-        ), 10)
-        yes_10 = [
-            {"qid": qid, "summary_hi": f"{note}।"}
-            for qid, note in notes_10.items()
-        ]
-        raw_10 = {
-            "mother_name_hi": "रीटा",
-            "children_label_hi": "3 साल बेटा · 2 साल बेटा · 1 साल बेटी",
-            "mother_questions_hi": gemini_10,
-            "yes_items_hi": list(reversed(yes_10)),
-            "doctor_markdown": _headed([f"- {qid}: noted." for qid in notes_10]),
-            "red_flags": [f"{qid}: noted" for qid in notes_10],
-        }
-        out_10 = post_call._finish(post_call._coerce(raw_10, call_10))
-        self.assertEqual(out_10["mother_questions_hi"], gemini_10)
-        asked_10 = "\n".join(out_10["mother_questions_hi"])
-        self.assertNotIn("मैंने बताया कि", asked_10)
-        self.assertNotIn("मैंने हाँ कहा कि", asked_10)
-        self.assertNotIn("सर दर्द", asked_10)
-        self.assertIn("सिरदर्द", asked_10)
-        self.assertEqual(
-            out_10["yes_summaries_hi"],
-            [item["summary_hi"] for item in yes_10],
-        )
-        page1 = mother_report.render_html(mother_report.build_v3(call_10, out_10)).split('class="page2"', 1)[0]
-        for qid, note in notes_10.items():
-            self.assertIn(note, page1)
-            self.assertIn(qid, out_10["doctor_markdown"])
-            self.assertTrue(any(qid in flag for flag in out_10["red_flags"]), qid)
-        self.assertNotIn("मैंने बताया कि", page1)
-
-        emergency = cursor_tests._profile(
-            name="पूजा",
-            children=[cursor_tests._child(3, "female")],
-        )
-        emergency["phase"] = "closing"
-        emergency["close_reason"] = "emergency"
-        emergency["emergency_note"] = "अभी सांस नहीं आ रही"
-        paraphrased = [
-            "क्या बच्चे का वज़न और कद उम्र के हिसाब से ठीक बढ़ रहा है?",
-            "क्या सारे टीके लग चुके हैं या टीका कार्ड में कुछ बाकी है?",
-            "घर पर खाने-पीने में क्या ध्यान रखूँ?",
-        ]
-        for line in paraphrased:
-            self.assertNotIn(line, post_call._ROUTINE_HI)
-        calm = post_call._finish(post_call._coerce({
-            "mother_name_hi": "पूजा",
-            "children_label_hi": "3 साल बेटी",
-            "mother_questions_hi": paraphrased,
-            "yes_items_hi": [],
-            "doctor_markdown": _headed(["- None reported in this call."]),
-            "red_flags": [],
-        }, _call_for(emergency, 60)))
-        self.assertEqual(calm["mother_questions_hi"], list(post_call._EMERGENCY_HI))
-        self.assertEqual(calm["yes_summaries_hi"], [])
-        for line in paraphrased:
-            self.assertNotIn(line, calm["mother_questions_hi"])
 
     def test_page2_uses_marital_and_multi_child_wording(self):
         unmarried = apply_turn(cursor_tests._profile(marital="unmarried", name="पूजा"), "clear")
@@ -704,28 +443,23 @@ class CursorReportTests(unittest.TestCase):
         state["phase"] = "closing"
         state["close_reason"] = "complete"
         call = _call_for(state, 34)
-        raw = {
-            "mother_name_hi": "पूजा",
-            "children_label_hi": "4 साल बेटा",
-            "mother_questions_hi": [
-                "क्या मेरे बच्चे को Sickle Cell है?",
-                "क्या सिकल सेल है?",
-            ],
-            "yes_items_hi": [
-                {"qid": "body_bleeding_bruise", "summary_hi": "बच्चे को सिकल सेल है।"},
-            ],
-            "doctor_markdown": _headed(["- Noted."]),
-            "red_flags": ["Q04 bleeding"],
-        }
-        synthesis = post_call._finish(post_call._coerce(raw, call))
+        synthesis = post_call.build_reports(call)
         mother = " ".join(synthesis["mother_questions_hi"] + synthesis["yes_summaries_hi"])
         self.assertNotIn("Sickle", mother)
         self.assertNotIn("सिकल", mother)
-        self.assertNotIn("को है?", mother)
         self.assertIn("खून", synthesis["yes_summaries_hi"][0])
         self.assertIn("खून", synthesis["mother_questions_hi"][0])
         self.assertTrue(all(question.endswith("?") for question in synthesis["mother_questions_hi"]))
         self.assertGreaterEqual(len(synthesis["mother_questions_hi"]), 3)
+
+        fitted = post_call._fit_questions(
+            ["क्या मेरे बच्चे को Sickle Cell है?", "क्या सिकल सेल है?"],
+            concern_questions=synthesis["mother_questions_hi"],
+        )
+        scrubbed_mother = " ".join([*fitted, post_call._scrub_diagnostic_terms("बच्चे को सिकल सेल है।")])
+        self.assertNotIn("Sickle", scrubbed_mother)
+        self.assertNotIn("सिकल", scrubbed_mother)
+        self.assertGreaterEqual(len(fitted), 3)
 
     def test_technical_failure_renders_incomplete_non_emergency_mother_pdf(self):
         state = cursor_tests._clear_until(
@@ -734,14 +468,14 @@ class CursorReportTests(unittest.TestCase):
         )
         state = close_technical_failure(state)
         call = _call_for(state, 99)
-        fallback = post_call.deterministic_fallback(call)
-        self.assertFalse(any("emergency" in flag for flag in fallback["red_flags"]))
-        self.assertNotIn("Active emergency.", fallback["doctor_markdown"])
-        self.assertIn("Close reason: technical_failure.", fallback["doctor_markdown"])
+        synthesis = post_call.build_reports(call)
+        self.assertFalse(any("emergency" in flag for flag in synthesis["red_flags"]))
+        self.assertNotIn("Active emergency.", synthesis["doctor_markdown"])
+        self.assertIn("Close reason: technical_failure.", synthesis["doctor_markdown"])
         for emergency_q in post_call._EMERGENCY_HI:
-            self.assertNotIn(emergency_q, fallback["mother_questions_hi"])
+            self.assertNotIn(emergency_q, synthesis["mother_questions_hi"])
 
-        report = mother_report.build_v3(call, fallback)
+        report = mother_report.build_v3(call, synthesis)
         self.assertTrue(report["incomplete"])
         self.assertFalse(report["emergency"])
         self.assertEqual(report["status"], "अधूरी कॉल")
@@ -754,7 +488,7 @@ class CursorReportTests(unittest.TestCase):
         self.assertNotIn("108", doc)
         self.assertNotIn("नज़दीकी अस्पताल", doc)
 
-    def test_synthesize_call_default_deterministic_skips_gemini(self):
+    def test_build_reports_is_deterministic(self):
         state = _bleed_cursor()
         close_note = "शाम को हल्का बुखार रहता है"
         state["answers"]["close_anything_else"] = {
@@ -764,16 +498,8 @@ class CursorReportTests(unittest.TestCase):
             "followups": {"open_concern_detail": {"state": "concern", "note": close_note}},
         }
         call = _call_for(state, 41)
-        expected = post_call.deterministic_fallback(call)
-        with patch.dict(os.environ):
-            os.environ.pop("POST_CALL_MODE", None)
-            self.assertEqual(post_call.post_call_mode(), "deterministic")
-            self.assertEqual(post_call.post_call_mode("invalid"), "deterministic")
-            self.assertEqual(post_call.post_call_mode("GENERATIVE"), "generative")
-            with patch("post_call._from_gemini", new=AsyncMock()) as mock_gemini:
-                synthesis = asyncio.run(post_call.synthesize_call(call))
-            self.assertEqual(mock_gemini.call_count, 0)
-        self.assertEqual(synthesis, expected)
+        synthesis = post_call.build_reports(call)
+        self.assertEqual(synthesis, post_call.build_reports(call))
         self.assertIn(close_note, "\n".join(synthesis["yes_summaries_hi"]))
         self.assertIn(close_note, synthesis["doctor_markdown"])
         self.assertIn(close_note, "\n".join(synthesis["red_flags"]))
@@ -784,46 +510,11 @@ class CursorReportTests(unittest.TestCase):
         self.assertTrue(pdf.startswith(b"%PDF"))
         self.assertGreaterEqual(_pages(pdf), 2)
 
-    def test_synthesize_call_generative_mode_invokes_gemini_and_falls_back(self):
-        call = _call_for(_bleed_cursor(), 42)
-        sample_raw = {
-            "mother_name_hi": "रेखा",
-            "children_label_hi": "7 साल बेटा · 2 साल बेटी",
-            "mother_questions_hi": [
-                "बेटे को चोट पर खून देर तक बहता है — क्या जाँच करानी चाहिए?",
-                "घुटने की सूजन के लिए डॉक्टर से क्या पूछूँ?",
-                "परिवार में शिशु मृत्यु की बात डॉक्टर को कैसे बताऊँ?",
-            ],
-            "yes_items_hi": [
-                {"qid": "body_bleeding_bruise", "summary_hi": "बड़े बेटे को चोट पर खून देर तक बहता है।"},
-                {"qid": "body_joint_swelling", "summary_hi": "गिरने पर घुटना सूज जाता है।"},
-                {"qid": "fam_infant_death", "summary_hi": "मामा का बेटा छह महीने में गुजर गया।"},
-            ],
-            "doctor_markdown": _headed(["- body_bleeding_bruise: prolonged bleeding."]),
-            "red_flags": ["body_bleeding_bruise: prolonged bleeding"],
-        }
-        mock_ok = AsyncMock(return_value=sample_raw)
-        with patch.dict(os.environ, {"POST_CALL_MODE": "deterministic"}):
-            with patch("post_call._from_gemini", new=mock_ok):
-                out_explicit = asyncio.run(post_call.synthesize_call(call, mode="generative"))
-        self.assertEqual(mock_ok.call_count, 1)
-        self.assertEqual(out_explicit["mother_questions_hi"], sample_raw["mother_questions_hi"])
-
-        mock_env = AsyncMock(return_value=sample_raw)
-        with patch.dict(os.environ, {"POST_CALL_MODE": "generative"}):
-            with patch("post_call._from_gemini", new=mock_env):
-                out_env = asyncio.run(post_call.synthesize_call(call))
-        self.assertEqual(mock_env.call_count, 1)
-        self.assertEqual(out_env["mother_questions_hi"], sample_raw["mother_questions_hi"])
-
-        mock_fail = AsyncMock(side_effect=ConnectionError("offline"))
-        with patch("post_call._from_gemini", new=mock_fail):
-            fallback = asyncio.run(post_call.synthesize_call(call, mode="generative"))
-        self.assertEqual(mock_fail.call_count, 1)
-        self.assertEqual(fallback, post_call.deterministic_fallback(call))
-
     def test_scrubber_strips_disease_names_from_doctor_markdown_and_mother_notes(self):
         state = _bleed_cursor()
+        state["profile"]["caller_name"] = "रेखा Hemophilia"
+        state["profile"]["children"][0]["name"] = "आरव Pompe"
+        state["answers"]["body_bleeding_bruise"]["notes"] = "Suspected Hemophilia and Pompe"
         state["answers"]["close_anything_else"] = {
             "state": "concern",
             "child_ids": [],
@@ -831,32 +522,24 @@ class CursorReportTests(unittest.TestCase):
             "followups": {},
         }
         call = _call_for(state, 43)
-        fallback = post_call.deterministic_fallback(call)
-        dirty_doctor = _headed([
-            "- Q04 body_bleeding_bruise: mother mentioned Hemophilia and ड्यूशेन.",
-            "- Suspected Duchenne or Pompe follow-up.",
+        result = post_call.build_reports(call)
+        for heading in post_call._HEADINGS:
+            prefix = f"{heading}\n" if heading == post_call._HEADINGS[0] else f"\n\n{heading}\n"
+            self.assertIn(prefix, result["doctor_markdown"])
+        combined = "\n".join([
+            result["mother_name_hi"],
+            result["children_label_hi"],
+            result["doctor_markdown"],
+            *result["yes_summaries_hi"],
+            *result["mother_questions_hi"],
+            *result["red_flags"],
         ])
-        cleaned = post_call._finish({
-            "mother_name_hi": "रेखा",
-            "children_label_hi": "7 साल बेटा · 2 साल बेटी",
-            "mother_questions_hi": ["क्या बच्चे की खून की जाँच करानी चाहिए?"],
-            "yes_summaries_hi": ["चोट पर खून देर तक बहता है, Hemophilia बताया।"],
-            "doctor_markdown": dirty_doctor,
-            "red_flags": ["Q04 body_bleeding_bruise: Hemophilia noted"],
-        })
-        for result in (fallback, cleaned):
-            self.assertTrue(post_call._headings_ok(result["doctor_markdown"]))
-            for heading in post_call._HEADINGS:
-                self.assertIn(f"\n\n{heading}\n" if heading != post_call._HEADINGS[0] else f"{heading}\n", result["doctor_markdown"])
-            combined = "\n".join([
-                result["doctor_markdown"],
-                *result["yes_summaries_hi"],
-                *result["mother_questions_hi"],
-                *result["red_flags"],
-            ])
-            for name in _FORBIDDEN:
-                self.assertNotIn(name.lower(), combined.lower())
-        self.assertIn("नाम लिया", fallback["doctor_markdown"])
+        for name in _FORBIDDEN:
+            self.assertNotIn(name.lower(), combined.lower())
+        self.assertNotIn("ड्यूशेन", combined)
+        self.assertIn("नाम लिया", result["doctor_markdown"])
+        self.assertIn("रेखा", result["mother_name_hi"])
+        self.assertIn("आरव", result["children_label_hi"])
 
 
 class TokenPrivacyTests(unittest.TestCase):
@@ -892,10 +575,7 @@ class TokenPrivacyTests(unittest.TestCase):
         self.assertEqual(bleed["mother_name"], "Pooja")
         self.assertNotEqual(calm["share_token"], bleed["share_token"])
 
-        async def explode(_call):
-            raise ConnectionError("offline")
-
-        with TestClient(shishu_app.app) as client, patch("post_call._from_gemini", new=explode):
+        with TestClient(shishu_app.app) as client:
             calm_pdf = client.post(f"/api/calls/by-token/{calm['share_token']}/mother.pdf")
             bleed_pdf = client.post(f"/api/calls/by-token/{bleed['share_token']}/mother.pdf")
             self.assertEqual(calm_pdf.status_code, 200, calm_pdf.text)
@@ -939,72 +619,5 @@ def _store(state, mother_name: str) -> int:
     return call_id
 
 
-def _assert_live(raw: dict, call: dict, label: str) -> dict:
-    if not isinstance(raw, dict):
-        raise AssertionError(f"{label} synthesis was not a JSON object")
-    for key in (
-        "mother_name_hi",
-        "children_label_hi",
-        "mother_questions_hi",
-        "doctor_markdown",
-        "red_flags",
-    ):
-        if key not in raw:
-            raise AssertionError(f"{label} JSON missing {key}")
-    if "yes_items_hi" not in raw and "yes_summaries_hi" not in raw:
-        raise AssertionError(f"{label} JSON missing yes_items_hi")
-    synthesis = post_call._finish(post_call._coerce(raw, call))
-    mother = " ".join(
-        [synthesis["mother_name_hi"], synthesis["children_label_hi"]]
-        + synthesis["mother_questions_hi"]
-        + synthesis["yes_summaries_hi"]
-    )
-    for name in _FORBIDDEN:
-        if name.lower() in mother.lower():
-            raise AssertionError(f"{label} mother text still contains {name}")
-    for heading in post_call._HEADINGS:
-        if heading not in synthesis["doctor_markdown"]:
-            raise AssertionError(f"{label} doctor note missing {heading}")
-    if not (3 <= len(synthesis["mother_questions_hi"]) <= 6):
-        raise AssertionError(f"{label} question count {len(synthesis['mother_questions_hi'])}")
-    report = mother_report.build_v3(call, synthesis)
-    pdf = mother_report.render_pdf(report)
-    if not pdf.startswith(b"%PDF") or _pages(pdf) < 2:
-        raise AssertionError(f"{label} PDF was not a 2-page document")
-    folder = Path(_TMP) / "smoke"
-    folder.mkdir(parents=True, exist_ok=True)
-    (folder / f"{label}.pdf").write_bytes(pdf)
-    print(
-        f"{label}: questions={len(synthesis['mother_questions_hi'])} "
-        f"yes={len(synthesis['yes_summaries_hi'])} pdf_bytes={len(pdf)} pages={_pages(pdf)}"
-    )
-    return synthesis
-
-
-async def _live_smoke() -> None:
-    bleed = _call_for(_bleed_cursor(), 1)
-    calm = _call_for(_childless_cursor(), 2)
-    bleed_raw = await post_call._from_gemini(bleed)
-    calm_raw = await post_call._from_gemini(calm)
-    bleed_out = _assert_live(bleed_raw, bleed, "bleed-infant")
-    calm_out = _assert_live(calm_raw, calm, "childless")
-    if not bleed_out["yes_summaries_hi"]:
-        raise AssertionError("bleed call produced no हाँ lines")
-    if calm_out["yes_summaries_hi"]:
-        raise AssertionError("childless call invented a हाँ line")
-    if calm_out["children_label_hi"].strip():
-        raise AssertionError("childless call invented a child label")
-    document = mother_report.render_html(mother_report.build_v3(calm, calm_out))
-    page2 = document.split('class="page2"', 1)[1]
-    for question in _CHILD_QUESTIONS:
-        if question in page2:
-            raise AssertionError("childless page 2 included a child question")
-    print(f"smoke pdfs: {Path(_TMP) / 'smoke'}")
-
-
-def run_live_smoke() -> None:
-    asyncio.run(_live_smoke())
-
-
 if __name__ == "__main__":
-    run_live_smoke()
+    unittest.main()

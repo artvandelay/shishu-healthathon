@@ -25,22 +25,6 @@ _DEMOGRAPHIC_SKIP = frozenset({
 })
 _EARLY = frozenset({"intro_name", "intro_married", "intro_children"})
 _NO_YES = _EARLY
-_BARE_NAMES = frozenset({
-    "मेरा नाम", "मेरा नाम है", "नाम", "जी मेरा नाम", "हाँ मेरा नाम", "हां मेरा नाम",
-    "mera naam", "mera naam hai", "naam", "my name", "my name is",
-})
-_ALL_CHILDREN = frozenset({"both", "all", "दोनों", "सभी", "सबको", "तीनों", "चारों"})
-_OLDEST = frozenset({"oldest", "बड़े", "बड़ा", "बड़ी", "बड़े वाले", "पहले", "पहला"})
-_MIDDLE = frozenset({
-    "middle", "बीच", "बीच वाले", "बीच वाला", "बीच वाली", "मंझले", "मंझला", "मंझली", "मंझल",
-})
-_SECOND = frozenset({"दूसरे", "दूसरा"})
-_THIRD = frozenset({"तीसरे", "तीसरा"})
-_YOUNGEST = frozenset({
-    "youngest", "छोटे", "छोटा", "छोटी", "छोटे वाले", "आखिरी", "सबसे छोटा",
-})
-_MALE = frozenset({"बेटा", "लड़का", "boy"})
-_FEMALE = frozenset({"बेटी", "लड़की", "girl"})
 _CHILD_GROUPS = frozenset({"birth", "body", "illness"})
 _PROFILE_KWARGS = frozenset({
     "caller_name", "marital_status", "children", "ever_pregnant", "child_count",
@@ -176,9 +160,6 @@ def accepted_target(state: dict, target_qid: str) -> str:
     return target
 
 
-_accepted_target = accepted_target
-
-
 def has_answered_gates(state: dict) -> bool:
     """True when at least one screening gate (or post-intro ever_pregnant) has an answer."""
     if not isinstance(state, dict):
@@ -299,7 +280,6 @@ def apply_turn(
     child_ref: str = "",
     note: str = "",
     followup_answered: bool = False,
-    target_qid: str = "",
 ) -> dict:
     if outcome not in _OUTCOMES:
         raise ValueError(f"unknown outcome {outcome!r}")
@@ -312,11 +292,6 @@ def apply_turn(
         return state
     if state["phase"] != "asking":
         return state
-    target = _accepted_target(state, target_qid)
-    if target and outcome == "clarify":
-        return _rewind_target(state, target)
-    if target and outcome in ("concern", "clear", "unknown", "retract"):
-        return _revise_target(state, target, outcome, child_ref, note)
     if _is_retract(state, outcome, child_ref):
         return _retract(state)
     if outcome == "clarify":
@@ -461,7 +436,7 @@ def apply_interpreted_turn(state: dict, interpreted: dict) -> dict:
     side_note_resolved = raw_side_note if "side_note" in data else raw_note
     raw_side_child_ref = str(data.get("side_child_ref") or "").strip()
 
-    target = _accepted_target(state, side_qid)
+    target = accepted_target(state, side_qid)
     side_applied = False
     rewound_by_side = False
     skip_active_from_side = False
@@ -538,7 +513,6 @@ def apply_interpreted_turn(state: dict, interpreted: dict) -> dict:
         child_ref=raw_child_ref,
         note=active_note,
         followup_answered=bool(data.get("followup_answered")),
-        target_qid="",
     )
 
 
@@ -686,10 +660,6 @@ def question_hi_for(state: dict, spec) -> str:
     if len(children) > 1 and multi:
         return multi
     return spec.question_hi
-
-
-def _question_hi(state: dict, spec) -> str:
-    return question_hi_for(state, spec)
 
 
 def _resolve_main(state, spec, outcome, child_ref, note, followup_answered) -> dict:
@@ -984,8 +954,7 @@ def _profile_hold(state: dict, children_given: bool) -> str | None:
 
 
 def _valid_name(name: str | None) -> bool:
-    cleaned = " ".join((name or "").strip().casefold().split())
-    return bool(cleaned) and cleaned not in _BARE_NAMES
+    return bool(" ".join((name or "").strip().split()))
 
 
 def _missing_ages(children: list) -> bool:
@@ -1069,44 +1038,15 @@ def children_roster(state: dict) -> list[dict]:
 
 
 def _resolve_child_ids(state: dict, child_ref: str) -> list[str]:
-    """Return matching child ids when child_ref equals one closed-world token."""
+    """Return matching child ids when child_ref equals 'all' or an exact child_id."""
     ref = " ".join((child_ref or "").strip().split())
     if not ref:
         return []
     children = state["profile"]["children"]
-    ordered = _ordered_children(children)
-    token = ref.casefold()
-    if token in _ALL_CHILDREN:
-        return [child["id"] for child in ordered]
-    by_id = {child["id"]: child for child in children}
-    if ref in by_id:
+    if ref == "all":
+        return [child["id"] for child in _ordered_children(children)]
+    if ref in {child["id"] for child in children}:
         return [ref]
-    named = [
-        child["id"]
-        for child in children
-        if (raw_name := (child.get("name") or "").strip())
-        and raw_name.casefold() == token
-    ]
-    if len(named) == 1:
-        return named
-    if not ordered:
-        return []
-    if token in _OLDEST:
-        return [ordered[0]["id"]]
-    if token in _MIDDLE:
-        return [ordered[len(ordered) // 2]["id"]]
-    if token in _SECOND and len(ordered) >= 2:
-        return [ordered[1]["id"]]
-    if token in _THIRD and len(ordered) >= 3:
-        return [ordered[2]["id"]]
-    if token in _YOUNGEST:
-        return [ordered[-1]["id"]]
-    males = [child for child in children if child.get("sex") == "male"]
-    females = [child for child in children if child.get("sex") == "female"]
-    if token in _MALE and len(males) == 1:
-        return [males[0]["id"]]
-    if token in _FEMALE and len(females) == 1:
-        return [females[0]["id"]]
     return []
 
 
