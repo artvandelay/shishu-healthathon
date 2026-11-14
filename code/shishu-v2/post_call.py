@@ -608,12 +608,16 @@ def _finish(
         cleaned = _scrub_diagnostic_terms(flag)
         if cleaned and cleaned not in flags:
             flags.append(cleaned)
+    doctor_markdown = "\n".join(
+        _scrub_diagnostic_terms(line) if line.strip() else ""
+        for line in str(result.get("doctor_markdown") or "").strip().splitlines()
+    )
     finished = {
         "mother_name_hi": _scrub_diagnostic_terms(str(result.get("mother_name_hi") or "माँ")) or "माँ",
         "children_label_hi": _scrub_diagnostic_terms(str(result.get("children_label_hi") or "")),
         "mother_questions_hi": questions,
         "yes_summaries_hi": yes,
-        "doctor_markdown": str(result.get("doctor_markdown") or "").strip(),
+        "doctor_markdown": doctor_markdown,
         "red_flags": flags,
     }
     if not _headings_ok(finished["doctor_markdown"]):
@@ -784,8 +788,15 @@ async def _from_gemini(call: dict) -> dict:
         client.close()
 
 
-async def synthesize_call(call: dict) -> dict:
-    """Gemini 3.8 Flash once. Any API failure uses the cursor fallback."""
+def post_call_mode(mode: str | None = None) -> str:
+    raw = mode if mode is not None else os.environ.get("POST_CALL_MODE", "deterministic")
+    return "generative" if str(raw or "").strip().casefold() == "generative" else "deterministic"
+
+
+async def synthesize_call(call: dict, *, mode: str | None = None) -> dict:
+    """Deterministic cursor report by default; Gemini 3.8 Flash only in generative mode."""
+    if post_call_mode(mode) != "generative":
+        return deterministic_fallback(call)
     try:
         raw = await _from_gemini(call)
         if not isinstance(raw, dict):

@@ -9,11 +9,14 @@ from pathlib import Path
 import call_cursor
 import triage_catalog
 from call_cursor import (
+    apply_interpreted_turn,
     apply_profile,
     apply_turn,
+    close_technical_failure,
     expect_yes_no,
     new_cursor_state,
     prompt_directive,
+    routable_qids,
 )
 from triage_catalog import FOLLOWUP_HI, active_specs, get_spec
 
@@ -787,6 +790,311 @@ class CallNineReplayTests(unittest.TestCase):
         close = apply_turn(close, "clarify", target_qid="birth_mode_detail")
         self.assertEqual(close["answers"]["close_anything_else"]["state"], "concern")
         self.assertEqual(close["answers"]["close_anything_else"]["notes"], "पेट दर्द")
+
+
+class DecisionApiPhase1Tests(unittest.TestCase):
+    def test_routable_qids_has_exact_58_ids_in_ask_order(self):
+        qids = routable_qids()
+        self.assertIsInstance(qids, tuple)
+        self.assertEqual(len(qids), 58)
+        self.assertEqual(len(set(qids)), 58)
+        for excluded in ("intro_name", "intro_married", "intro_children", "intro_bridge"):
+            self.assertNotIn(excluded, qids)
+        self.assertIn("ever_pregnant", qids)
+        self.assertEqual(qids[-1], "close_anything_else")
+        self.assertEqual(qids[qids.index("ill_iv_antibiotics") + 1], "ever_pregnant")
+        self.assertEqual(qids[qids.index("ever_pregnant") + 1], "preg_conditions")
+        gates = tuple(spec.id for spec in active_specs() if spec.kind == "gate")
+        self.assertEqual(tuple(q for q in qids if q not in ("ever_pregnant", "close_anything_else")), gates)
+
+    def test_smoke_a_dual_intent_and_side_write_alone(self):
+        state = _clear_until(_profile(children=[_child(4, "male")]), "fam_cancer")
+        state = apply_turn(state, "concern", note="मामा को ब्लड कैंसर")
+        state = apply_turn(state, "concern", note="मामा")
+        state = _clear_until(state, "fam_heart_kidney")
+        self.assertEqual(state["active_qid"], "fam_heart_kidney")
+
+        # Dual-intent: clear on active fam_heart_kidney + concern side write on fam_cancer.
+        dual = apply_interpreted_turn(state, {
+            "current_outcome": "clear",
+            "side_qid": "fam_cancer",
+            "side_action": "add_or_correct",
+            "side_outcome": "concern",
+            "side_note": "चाची को भी कैंसर हुआ था",
+            "note": "चाची को भी कैंसर हुआ था",
+        })
+        self.assertEqual(dual["answers"]["fam_heart_kidney"]["state"], "clear")
+        self.assertEqual(dual["answers"]["fam_heart_kidney"]["notes"], "")
+        self.assertIn("चाची को भी कैंसर हुआ था", dual["answers"]["fam_cancer"]["notes"])
+        self.assertEqual(dual["active_qid"], "fam_bp_stroke")
+
+        # Even when side_note is omitted and only note carries the side text, active clear stays clean.
+        dual_fallback = apply_interpreted_turn(state, {
+            "current_outcome": "clear",
+            "side_qid": "fam_cancer",
+            "side_action": "add_or_correct",
+            "side_outcome": "concern",
+            "note": "चाची को भी कैंसर हुआ था",
+        })
+        self.assertEqual(dual_fallback["answers"]["fam_heart_kidney"]["state"], "clear")
+        self.assertEqual(dual_fallback["answers"]["fam_heart_kidney"]["notes"], "")
+        self.assertIn("चाची को भी कैंसर हुआ था", dual_fallback["answers"]["fam_cancer"]["notes"])
+        self.assertEqual(dual_fallback["active_qid"], "fam_bp_stroke")
+
+        # Side write alone (current_outcome="not_about_active"): stays on fam_heart_kidney with step_attempts == 0.
+        side_only = apply_interpreted_turn(state, {
+            "current_outcome": "not_about_active",
+            "side_qid": "fam_cancer",
+            "side_action": "add_or_correct",
+            "side_outcome": "concern",
+            "note": "चाची को भी कैंसर हुआ था",
+        })
+        self.assertEqual(side_only["active_qid"], "fam_heart_kidney")
+        self.assertEqual(side_only["step_attempts"], 0)
+        self.assertNotIn("fam_heart_kidney", side_only["answers"])
+        self.assertIn("चाची को भी कैंसर हुआ था", side_only["answers"]["fam_cancer"]["notes"])
+
+        # Dual concern + side concern without current_note preserves note on BOTH concerns;
+        # explicit current_note="" suppresses only the active note.
+        dual_concerns = apply_interpreted_turn(state, {
+            "current_outcome": "concern",
+            "side_qid": "fam_cancer",
+            "side_action": "add_or_correct",
+            "side_outcome": "concern",
+            "side_note": "चाची को भी कैंसर और दिल की बीमारी",
+            "note": "चाची को भी कैंसर और दिल की बीमारी",
+        })
+        self.assertEqual(dual_concerns["answers"]["fam_heart_kidney"]["state"], "concern")
+        self.assertEqual(
+            dual_concerns["answers"]["fam_heart_kidney"]["notes"],
+            "चाची को भी कैंसर और दिल की बीमारी",
+        )
+        self.assertIn(
+            "चाची को भी कैंसर और दिल की बीमारी",
+            dual_concerns["answers"]["fam_cancer"]["notes"],
+        )
+
+        explicit_empty_current = apply_interpreted_turn(state, {
+            "current_outcome": "concern",
+            "current_note": "",
+            "side_qid": "fam_cancer",
+            "side_action": "add_or_correct",
+            "side_outcome": "concern",
+            "side_note": "चाची को भी कैंसर",
+            "note": "चाची को भी कैंसर",
+        })
+        self.assertEqual(explicit_empty_current["answers"]["fam_heart_kidney"]["state"], "concern")
+        self.assertEqual(explicit_empty_current["answers"]["fam_heart_kidney"]["notes"], "")
+        self.assertIn("चाची को भी कैंसर", explicit_empty_current["answers"]["fam_cancer"]["notes"])
+
+    def test_invalid_future_bridge_close_and_not_applicable_side_qids_ignored(self):
+        state = _clear_until(_profile(children=[_child(3, "male")]), "birth_jaundice")
+        # mod_tooth_bleed is not_applicable (child is 3 < 5); fam_cancer is future/unanswered.
+        self.assertEqual(state["answers"]["mod_tooth_bleed"]["state"], "not_applicable")
+        for bad_qid in ("fam_cancer", "does_not_exist", "intro_bridge", "close_anything_else", "mod_tooth_bleed"):
+            res = apply_interpreted_turn(state, {
+                "current_outcome": "not_about_active",
+                "side_qid": bad_qid,
+                "side_action": "add_or_correct",
+                "side_outcome": "concern",
+                "note": "कुछ बात",
+            })
+            self.assertEqual(res["active_qid"], "birth_jaundice", bad_qid)
+            self.assertEqual(res["answers"], state["answers"], bad_qid)
+
+    def test_clarify_meaning_on_earlier_gate_preserves_clear_on_active_gate(self):
+        state = _clear_until(_profile(children=[_child(4, "male")]), "preg_thalassemia")
+        state = apply_turn(state, "unknown")
+        self.assertEqual(state["active_qid"], "fam_related")
+
+        rewound = apply_interpreted_turn(state, {
+            "current_outcome": "clear",
+            "side_qid": "preg_thalassemia",
+            "side_action": "clarify_meaning",
+            "note": "रिश्तेदार तो नहीं हैं, पर थैलेसीमिया क्या होता है?",
+        })
+        self.assertEqual(rewound["active_qid"], "preg_thalassemia")
+        self.assertIsNone(rewound["pending_followup_idx"])
+        self.assertNotIn("preg_thalassemia", rewound["answers"])
+        self.assertEqual(rewound["answers"]["fam_related"]["state"], "clear")
+        self.assertEqual(rewound["answers"]["fam_related"]["notes"], "")
+
+        answered = apply_interpreted_turn(rewound, {"current_outcome": "clear"})
+        self.assertEqual(answered["answers"]["preg_thalassemia"]["state"], "clear")
+        self.assertEqual(answered["answers"]["fam_related"]["state"], "clear")
+        self.assertEqual(answered["active_qid"], "fam_miscarriage")
+
+        # Clarify-meaning with not_about_active rewinds cleanly without marking current gate.
+        plain_rewind = apply_interpreted_turn(state, {
+            "current_outcome": "not_about_active",
+            "side_qid": "preg_thalassemia",
+            "side_action": "clarify_meaning",
+        })
+        self.assertEqual(plain_rewind["active_qid"], "preg_thalassemia")
+        self.assertNotIn("fam_related", plain_rewind["answers"])
+
+    def test_emergency_and_caller_stop_override_clear_and_side_qid(self):
+        state = _clear_until(_profile(children=[_child(4, "male")]), "fam_cancer")
+        state = apply_turn(state, "concern", note="मामा को कैंसर")
+        state = apply_turn(state, "concern", note="मामा")
+        state = _clear_until(state, "fam_heart_kidney")
+        before = json.loads(json.dumps(state["answers"]))
+
+        emerg = apply_interpreted_turn(state, {
+            "emergency": True,
+            "current_outcome": "clear",
+            "side_qid": "fam_cancer",
+            "side_action": "add_or_correct",
+            "side_outcome": "clear",
+            "note": "  बच्चे को अभी सांस नहीं आ रही  ",
+        })
+        self.assertEqual(emerg["phase"], "closing")
+        self.assertEqual(emerg["close_reason"], "emergency")
+        self.assertEqual(emerg["emergency_note"], "बच्चे को अभी सांस नहीं आ रही")
+        self.assertEqual(emerg["active_qid"], "fam_heart_kidney")
+        self.assertEqual(emerg["answers"], before)
+
+        # Already closing returns deep copy untouched.
+        still_closed = apply_interpreted_turn(emerg, {"current_outcome": "clear"})
+        self.assertEqual(still_closed, emerg)
+
+        stop = apply_interpreted_turn(state, {
+            "caller_stop": True,
+            "current_outcome": "clear",
+            "side_qid": "fam_cancer",
+            "side_action": "add_or_correct",
+            "side_outcome": "clear",
+        })
+        self.assertEqual(stop["phase"], "closing")
+        self.assertEqual(stop["close_reason"], "caller_stop")
+        self.assertEqual(stop["answers"], before)
+
+    def test_midcall_marital_unmarried_skips_child_gates_drops_child_side_and_no_double_apply(self):
+        state = _clear_until(
+            _profile(children=[_child(4, "male"), _child(2, "female", 2)]),
+            "birth_nicu",
+        )
+        updated = apply_interpreted_turn(state, {
+            "profile_updates": {"marital_status": "unmarried"},
+            "current_outcome": "clear",
+            "side_qid": "birth_mode_detail",
+            "side_action": "add_or_correct",
+            "side_outcome": "concern",
+            "side_note": "ऑपरेशन हुआ था",
+        })
+        self.assertEqual(updated["profile"]["marital_status"], "unmarried")
+        self.assertEqual(updated["profile"]["children"], [])
+        self.assertEqual(updated["answers"]["birth_mode_detail"]["state"], "not_applicable")
+        self.assertEqual(updated["answers"]["birth_nicu"]["state"], "not_applicable")
+        self.assertEqual(updated["active_qid"], "preg_thalassemia")
+        self.assertNotIn("preg_thalassemia", updated["answers"])
+
+    def test_side_child_ref_disambiguation_and_pending_followup_retries(self):
+        kids = [_child(6, "male", 1), _child(2, "female", 2)]
+        state = _clear_until(_profile(children=kids), "birth_jaundice")
+        state["answers"]["birth_nicu"] = {
+            "state": "concern",
+            "child_ids": ["child_1"],
+            "notes": "सांस",
+            "followups": {},
+        }
+        # Both active and side are child-scoped concerns without explicit side_child_ref -> do not guess child_2 onto side!
+        both = apply_interpreted_turn(state, {
+            "current_outcome": "concern",
+            "current_note": "दो दिन पीलिया",
+            "followup_answered": True,
+            "child_ref": "child_2",
+            "side_qid": "birth_nicu",
+            "side_action": "add_or_correct",
+            "side_outcome": "concern",
+            "side_note": "काँच के बक्से में भी",
+        })
+        self.assertEqual(both["answers"]["birth_jaundice"]["child_ids"], ["child_2"])
+        self.assertEqual(both["answers"]["birth_nicu"]["child_ids"], ["child_1"])
+
+        # Explicit side_child_ref applies to the side concern.
+        explicit = apply_interpreted_turn(state, {
+            "current_outcome": "concern",
+            "current_note": "दो दिन पीलिया",
+            "followup_answered": True,
+            "child_ref": "child_2",
+            "side_qid": "birth_nicu",
+            "side_action": "add_or_correct",
+            "side_outcome": "concern",
+            "side_note": "काँच के बक्से में भी",
+            "side_child_ref": "child_2",
+        })
+        self.assertEqual(explicit["answers"]["birth_nicu"]["child_ids"], ["child_1", "child_2"])
+
+        # Non-child-scoped active turn (not_about_active) defaults side_child_ref to child_ref.
+        side_only = apply_interpreted_turn(state, {
+            "current_outcome": "not_about_active",
+            "child_ref": "child_2",
+            "side_qid": "birth_nicu",
+            "side_action": "add_or_correct",
+            "side_outcome": "concern",
+            "side_note": "छोटी को भी NICU",
+        })
+        self.assertEqual(side_only["answers"]["birth_nicu"]["child_ids"], ["child_1", "child_2"])
+        self.assertEqual(side_only["active_qid"], "birth_jaundice")
+
+        # Pending followup / which_child retry mechanics: clarify & side writes preserve step_attempts;
+        # unresolved non-answers increment step_attempts up to MAX_STEP_ATTEMPTS.
+        which = apply_interpreted_turn(state, {"current_outcome": "concern"})
+        self.assertEqual(which["pending_followup_idx"], -1)
+        which_side = apply_interpreted_turn(which, {
+            "current_outcome": "not_about_active",
+            "side_qid": "birth_mode_detail",
+            "side_action": "add_or_correct",
+            "side_outcome": "concern",
+            "side_note": "ऑपरेशन",
+        })
+        self.assertEqual(which_side["pending_followup_idx"], -1)
+        self.assertEqual(which_side["step_attempts"], 0)
+
+        which_1 = apply_interpreted_turn(which_side, {"current_outcome": "not_about_active"})
+        self.assertEqual(which_1["pending_followup_idx"], -1)
+        self.assertEqual(which_1["step_attempts"], 1)
+        which_2 = apply_interpreted_turn(which_1, {"current_outcome": "not_about_active"})
+        self.assertEqual(which_2["pending_followup_idx"], 0)
+        self.assertEqual(which_2["step_attempts"], 0)
+        self.assertEqual(which_2["answers"]["birth_jaundice"]["child_ids"], [])
+
+        clar = apply_interpreted_turn(which_2, {"current_outcome": "clarify"})
+        self.assertEqual(clar["pending_followup_idx"], 0)
+        self.assertEqual(clar["step_attempts"], 0)
+
+        fup_1 = apply_interpreted_turn(clar, {"current_outcome": "not_about_active"})
+        self.assertEqual(fup_1["pending_followup_idx"], 0)
+        self.assertEqual(fup_1["step_attempts"], 1)
+        fup_2 = apply_interpreted_turn(fup_1, {"current_outcome": "not_about_active"})
+        self.assertEqual(
+            fup_2["answers"]["birth_jaundice"]["followups"]["jaundice_days"],
+            {"state": "unknown", "note": ""},
+        )
+        self.assertNotEqual(fup_2["active_qid"], "birth_jaundice")
+
+    def test_close_technical_failure_preserves_answers_and_attempts(self):
+        state = _clear_until(_profile(children=[_child(4, "male")]), "birth_nicu")
+        state = apply_turn(state, "concern")
+        state = apply_turn(state, "concern", note="")
+        self.assertEqual(state["pending_followup_idx"], 0)
+        self.assertEqual(state["step_attempts"], 1)
+        snapshot = json.loads(json.dumps(state))
+
+        closed = close_technical_failure(state)
+        self.assertEqual(state, snapshot)
+        self.assertEqual(closed["phase"], "closing")
+        self.assertEqual(closed["close_reason"], "technical_failure")
+        self.assertIsNone(closed["pending_followup_idx"])
+        self.assertIsNone(closed["hold_reason"])
+        self.assertEqual(closed["answers"], snapshot["answers"])
+        self.assertEqual(closed["step_attempts"], 1)
+        self.assertNotIn("emergency_note", closed)
+
+        # Already closing state is untouched.
+        already_complete = dict(closed, close_reason="complete")
+        self.assertEqual(close_technical_failure(already_complete), already_complete)
 
 
 if __name__ == "__main__":

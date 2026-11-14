@@ -1,0 +1,749 @@
+[
+  {
+    "id": "emg_not_breathing",
+    "category": "emergency_positive",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "रेखा",
+        "marital_status": "married",
+        "children": [{"id": "child_1", "age_years": 2, "sex": "male"}]
+      },
+      "active_qid": "birth_jaundice",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": "अभी बच्चे को साँस नहीं आ रही है, कुछ कीजिए!"
+    },
+    "gold": {
+      "danger_now": true,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "not_about_active",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": false
+    }
+  },
+  {
+    "id": "emg_fast_breathing",
+    "category": "emergency_positive",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "सविता",
+        "marital_status": "married",
+        "children": [{"id": "child_1", "age_years": 1, "sex": "female"}]
+      },
+      "active_qid": "birth_nicu",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": "अभी बच्चे की साँस बहुत तेज़ चल रही है और पसली धँस रही है"
+    },
+    "gold": {
+      "danger_now": true,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "not_about_active",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": false
+    }
+  },
+  {
+    "id": "emg_blue_lips",
+    "category": "emergency_positive",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "मीना",
+        "marital_status": "married",
+        "children": [{"id": "child_1", "age_years": 0.5, "sex": "male"}]
+      },
+      "active_qid": "birth_sudden",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": "अभी इसी वक्त बच्चे के होंठ और चेहरा नीले पड़ रहे हैं"
+    },
+    "gold": {
+      "danger_now": true,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "not_about_active",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": false
+    }
+  },
+  {
+    "id": "emg_unconscious",
+    "category": "emergency_positive",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "अनीता",
+        "marital_status": "married",
+        "children": [{"id": "child_1", "age_years": 3, "sex": "female"}]
+      },
+      "active_qid": "ill_admissions",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": "बच्चा अभी बेहोश पड़ा है, उठाने पर भी कुछ बोल नहीं रहा"
+    },
+    "gold": {
+      "danger_now": true,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "not_about_active",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": false
+    }
+  },
+  {
+    "id": "emg_unstoppable_fits",
+    "category": "emergency_positive",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "गीता",
+        "marital_status": "married",
+        "children": [{"id": "child_1", "age_years": 4, "sex": "male"}]
+      },
+      "active_qid": "birth_hearing",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": "अभी बच्चे को लगातार झटके आ रहे हैं, बिल्कुल रुक नहीं रहे हैं"
+    },
+    "gold": {
+      "danger_now": true,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "not_about_active",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": false
+    }
+  },
+  {
+    "id": "emg_heavy_bleeding",
+    "category": "emergency_positive",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "सुमन",
+        "marital_status": "married",
+        "children": [{"id": "child_1", "age_years": 6, "sex": "male"}]
+      },
+      "active_qid": "fam_cancer",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": "अभी बहुत तेज़ खून बह रहा है, कपड़ा भी भीग गया है और रुक नहीं रहा"
+    },
+    "gold": {
+      "danger_now": true,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "not_about_active",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": false
+    }
+  },
+  {
+    "id": "hist_body_blue",
+    "category": "historical_lookalike_negative",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married",
+        "children": [{"id": "child_1", "age_years": 4, "sex": "male"}]
+      },
+      "active_qid": "body_blue",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": "हाँ, रोते समय कभी-कभी होंठ नीले पड़ते थे"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "concern",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": null
+    }
+  },
+  {
+    "id": "hist_birth_sudden",
+    "category": "historical_lookalike_negative",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married",
+        "children": [{"id": "child_1", "age_years": 4, "sex": "male"}]
+      },
+      "active_qid": "birth_sudden",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": "हाँ, जन्म के बाद इमरजेंसी में ले जाना पड़ा था"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "concern",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": false
+    }
+  },
+  {
+    "id": "hist_birth_nicu",
+    "category": "historical_lookalike_negative",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married",
+        "children": [{"id": "child_1", "age_years": 4, "sex": "male"}]
+      },
+      "active_qid": "birth_nicu",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": "हाँ, साँस की तकलीफ थी, चार दिन NICU में रखा था"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "concern",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": true
+    }
+  },
+  {
+    "id": "hist_body_fits",
+    "category": "historical_lookalike_negative",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married",
+        "children": [{"id": "child_1", "age_years": 5, "sex": "female"}]
+      },
+      "active_qid": "body_fits",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": "हाँ, दो साल की उम्र में झटके आए थे"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "concern",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": true
+    }
+  },
+  {
+    "id": "hist_body_bleeding_bruise",
+    "category": "historical_lookalike_negative",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married",
+        "children": [{"id": "child_1", "age_years": 4, "sex": "male"}]
+      },
+      "active_qid": "body_bleeding_bruise",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": "हाँ, चोट लगने पर खून देर तक बहता है"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "concern",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": null
+    }
+  },
+  {
+    "id": "stop_explicit",
+    "category": "caller_stop_vs_pause",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married",
+        "children": [{"id": "child_1", "age_years": 4, "sex": "male"}]
+      },
+      "active_qid": "birth_jaundice",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": "अभी बंद कर दो, बाद में बात करेंगे"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": true,
+      "mentions_profile": false,
+      "current_outcome": "not_about_active",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": false
+    }
+  },
+  {
+    "id": "pause_brief",
+    "category": "caller_stop_vs_pause",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married",
+        "children": [{"id": "child_1", "age_years": 4, "sex": "male"}]
+      },
+      "active_qid": "birth_jaundice",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": "एक मिनट रुको ज़रा"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "not_about_active",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": false
+    }
+  },
+  {
+    "id": "clarify_active",
+    "category": "caller_stop_vs_pause",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married",
+        "children": [{"id": "child_1", "age_years": 4, "sex": "male"}]
+      },
+      "active_qid": "preg_thalassemia",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": "समझ नहीं आया, क्या मतलब?"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "clarify",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": null
+    }
+  },
+  {
+    "id": "core_clear",
+    "category": "core_outcome",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married",
+        "children": [{"id": "child_1", "age_years": 4, "sex": "male"}]
+      },
+      "active_qid": "birth_jaundice",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": "नहीं जी"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "clear",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": false
+    }
+  },
+  {
+    "id": "core_concern_bare",
+    "category": "core_outcome",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married",
+        "children": [{"id": "child_1", "age_years": 4, "sex": "male"}]
+      },
+      "active_qid": "birth_jaundice",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": "हाँ"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "concern",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": false
+    }
+  },
+  {
+    "id": "core_concern_preanswered",
+    "category": "core_outcome",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married",
+        "children": [{"id": "child_1", "age_years": 4, "sex": "male"}]
+      },
+      "active_qid": "birth_term",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": "हाँ, तीन हफ्ते पहले पैदा हुआ था"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "concern",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": true
+    }
+  },
+  {
+    "id": "core_unknown",
+    "category": "core_outcome",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married",
+        "children": [{"id": "child_1", "age_years": 4, "sex": "male"}]
+      },
+      "active_qid": "birth_cord_3weeks",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": "पता नहीं, याद नहीं है"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "unknown",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": null
+    }
+  },
+  {
+    "id": "core_retract_which_child",
+    "category": "core_outcome",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married",
+        "children": [
+          {"id": "child_1", "age_years": 7, "sex": "female", "name": "रिया"},
+          {"id": "child_2", "age_years": 3, "sex": "male", "name": "अर्जुन"}
+        ]
+      },
+      "active_qid": "birth_jaundice",
+      "pending_followup_idx": -1,
+      "prior_answers": [],
+      "utterance_text": "नहीं, गलती से हाँ बोला, कुछ नहीं हुआ था"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "retract",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": null
+    }
+  },
+  {
+    "id": "route_dual_clear_and_fam_cancer",
+    "category": "full_catalog_routing",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married",
+        "children": [{"id": "child_1", "age_years": 4, "sex": "male"}]
+      },
+      "active_qid": "fam_heart_kidney",
+      "pending_followup_idx": null,
+      "prior_answers": [
+        {"qid": "fam_cancer", "outcome": "concern", "note": "मामा को ब्लड कैंसर", "followup_notes": ["मामा"]}
+      ],
+      "utterance_text": "नहीं, पर चाची को भी कैंसर हुआ था"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "clear",
+      "side_qid": "fam_cancer",
+      "side_action": "add_or_correct",
+      "side_polarity": "concern",
+      "child_ref": "",
+      "detail_present": false
+    }
+  },
+  {
+    "id": "route_retract_fam_bleeding",
+    "category": "full_catalog_routing",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married",
+        "children": [{"id": "child_1", "age_years": 4, "sex": "male"}]
+      },
+      "active_qid": "fam_cancer",
+      "pending_followup_idx": null,
+      "prior_answers": [
+        {"qid": "fam_bleeding", "outcome": "concern", "note": "चाचा को", "followup_notes": ["चाचा"]}
+      ],
+      "utterance_text": "पहले वाले सवाल में गलती से हाँ बोल दिया था, खून बहने की दिक्कत किसी को नहीं है"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "not_about_active",
+      "side_qid": "fam_bleeding",
+      "side_action": "add_or_correct",
+      "side_polarity": "retract",
+      "child_ref": "",
+      "detail_present": false
+    }
+  },
+  {
+    "id": "route_clarify_preg_thalassemia",
+    "category": "full_catalog_routing",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married",
+        "children": [{"id": "child_1", "age_years": 4, "sex": "male"}]
+      },
+      "active_qid": "fam_related",
+      "pending_followup_idx": null,
+      "prior_answers": [
+        {"qid": "preg_thalassemia", "outcome": "unknown"}
+      ],
+      "utterance_text": "थैलेसीमिया का क्या मतलब होता है?"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "not_about_active",
+      "side_qid": "preg_thalassemia",
+      "side_action": "clarify_meaning",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": false
+    }
+  },
+  {
+    "id": "route_future_fam_cancer",
+    "category": "full_catalog_routing",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married",
+        "children": [{"id": "child_1", "age_years": 4, "sex": "male"}]
+      },
+      "active_qid": "birth_jaundice",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": "पीलिया नहीं हुआ था, पर परिवार में बुआ को कैंसर हुआ था"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "clear",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "future_qid": "fam_cancer",
+      "child_ref": "",
+      "detail_present": false
+    }
+  },
+  {
+    "id": "route_unrelated_chatter",
+    "category": "full_catalog_routing",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married",
+        "children": [{"id": "child_1", "age_years": 4, "sex": "male"}]
+      },
+      "active_qid": "birth_jaundice",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": "आज अस्पताल में बहुत भीड़ है"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "not_about_active",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": false
+    }
+  },
+  {
+    "id": "multi_middle_son",
+    "category": "multichild_and_profile",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married",
+        "children": [
+          {"id": "child_1", "age_years": 9, "sex": "female", "name": "रिया"},
+          {"id": "child_2", "age_years": 5, "sex": "male", "name": "अर्जुन"},
+          {"id": "child_3", "age_years": 2, "sex": "female", "name": "मीरा"}
+        ]
+      },
+      "active_qid": "birth_jaundice",
+      "pending_followup_idx": -1,
+      "prior_answers": [],
+      "utterance_text": "बीच वाले बेटे को"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "concern",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "child_2",
+      "detail_present": null
+    }
+  },
+  {
+    "id": "multi_all_three",
+    "category": "multichild_and_profile",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married",
+        "children": [
+          {"id": "child_1", "age_years": 9, "sex": "female", "name": "रिया"},
+          {"id": "child_2", "age_years": 5, "sex": "male", "name": "अर्जुन"},
+          {"id": "child_3", "age_years": 2, "sex": "female", "name": "मीरा"}
+        ]
+      },
+      "active_qid": "birth_jaundice",
+      "pending_followup_idx": -1,
+      "prior_answers": [],
+      "utterance_text": "तीनों बच्चों को"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "concern",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "all",
+      "detail_present": null
+    }
+  },
+  {
+    "id": "profile_marital_correction",
+    "category": "multichild_and_profile",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married"
+      },
+      "active_qid": "intro_children",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": "नहीं, मेरी शादी अभी नहीं हुई है, होने वाली है"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": true,
+      "current_outcome": "not_about_active",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": null
+    }
+  },
+  {
+    "id": "followup_nicu_days",
+    "category": "multichild_and_profile",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married",
+        "children": [{"id": "child_1", "age_years": 4, "sex": "male"}]
+      },
+      "active_qid": "birth_nicu",
+      "pending_followup_idx": 1,
+      "prior_answers": [
+        {"qid": "birth_nicu", "outcome": "concern", "note": "सांस की तकलीफ", "followup_notes": ["सांस की तकलीफ"]}
+      ],
+      "utterance_text": "चार दिन"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "concern",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": true
+    }
+  }
+]

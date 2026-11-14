@@ -1,0 +1,53 @@
+{
+  "provisional": true,
+  "note": "Calibrated on authored Hindi fixtures (N=28). Replace with real OPD staging transcript sweep before enabling DECISION_MODE=authority in production.",
+  "n_cases": 28,
+  "class_counts": {
+    "emergency_positive": 6,
+    "historical_lookalike_negative": 5,
+    "caller_stop_vs_pause": 3,
+    "core_outcome": 5,
+    "full_catalog_routing": 5,
+    "multichild_and_profile": 4
+  },
+  "metrics": {
+    "emergency_recall": 1.0,
+    "history_false_emergency_rate": 0.0,
+    "danger_now_separation_gap": [
+      0.1277,
+      0.9171
+    ],
+    "caller_stop_recall": 1.0,
+    "caller_stop_false_positive_rate": 0.0,
+    "outcome_exact_accuracy": 0.9048,
+    "outcome_macro_precision": 0.875,
+    "outcome_macro_recall": 0.9333,
+    "side_qid_precision": 1.0,
+    "side_qid_recall": 0.6667,
+    "side_qid_false_writes": 0,
+    "future_qid_recall": 1.0,
+    "child_ref_accuracy": 1.0,
+    "detail_present_accuracy": 1.0,
+    "mentions_profile_accuracy": 1.0,
+    "avg_decision_ms": 396.5
+  },
+  "thresholds": {
+    "calibrated": true,
+    "danger_now_min_yes": 0.5224,
+    "caller_stop_min_yes": 0.5221,
+    "mentions_profile_min_yes": 0.7348,
+    "detail_present_min_yes": 0.7779,
+    "mentions_other_min_yes": 0.5052,
+    "outcome_min_confidence": 0.45,
+    "outcome_min_catchall_margin": 0.2,
+    "outcome_min_runnerup_margin": 0.05,
+    "side_qid_min_confidence": 0.65,
+    "side_qid_min_catchall_margin": 0.05,
+    "side_qid_min_runnerup_margin": 0.05,
+    "side_act_min_confidence": 0.45,
+    "side_polarity_min_confidence": 0.55,
+    "child_ref_min_confidence": 0.65,
+    "child_ref_min_catchall_margin": 0.05,
+    "child_ref_min_runnerup_margin": 0.05
+  }
+}

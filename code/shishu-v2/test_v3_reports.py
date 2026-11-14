@@ -7,7 +7,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 _TMP = tempfile.mkdtemp(prefix="shishu-v3-reports-")
 os.environ["DATA_DIR"] = _TMP
@@ -21,7 +21,7 @@ import mother_report  # noqa: E402
 import post_call  # noqa: E402
 import report_service  # noqa: E402
 import test_v4_cursor as cursor_tests  # noqa: E402
-from call_cursor import apply_profile, apply_turn  # noqa: E402
+from call_cursor import apply_profile, apply_turn, close_technical_failure  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from pypdf import PdfReader  # noqa: E402
 from triage_catalog import active_specs, get_spec  # noqa: E402
@@ -169,7 +169,7 @@ class CursorReportTests(unittest.TestCase):
 
         call = _call_for(_bleed_cursor(), 3)
         with patch("post_call._from_gemini", new=explode):
-            synthesis = asyncio.run(post_call.synthesize_call(call))
+            synthesis = asyncio.run(post_call.synthesize_call(call, mode="generative"))
         mother = " ".join(synthesis["mother_questions_hi"] + synthesis["yes_summaries_hi"])
         for name in _FORBIDDEN:
             self.assertNotIn(name.lower(), mother.lower())
@@ -720,6 +720,137 @@ class CursorReportTests(unittest.TestCase):
         self.assertIn("खून", synthesis["mother_questions_hi"][0])
         self.assertTrue(all(question.endswith("?") for question in synthesis["mother_questions_hi"]))
         self.assertGreaterEqual(len(synthesis["mother_questions_hi"]), 3)
+
+    def test_technical_failure_renders_incomplete_non_emergency_mother_pdf(self):
+        state = cursor_tests._clear_until(
+            cursor_tests._profile(children=[cursor_tests._child(4, "male")], name="पूजा"),
+            "birth_jaundice",
+        )
+        state = close_technical_failure(state)
+        call = _call_for(state, 99)
+        fallback = post_call.deterministic_fallback(call)
+        self.assertFalse(any("emergency" in flag for flag in fallback["red_flags"]))
+        self.assertNotIn("Active emergency.", fallback["doctor_markdown"])
+        self.assertIn("Close reason: technical_failure.", fallback["doctor_markdown"])
+        for emergency_q in post_call._EMERGENCY_HI:
+            self.assertNotIn(emergency_q, fallback["mother_questions_hi"])
+
+        report = mother_report.build_v3(call, fallback)
+        self.assertTrue(report["incomplete"])
+        self.assertFalse(report["emergency"])
+        self.assertEqual(report["status"], "अधूरी कॉल")
+        self.assertTrue(report["unasked"])
+
+        doc = mother_report.render_html(report)
+        self.assertIn("अधूरी कॉल", doc)
+        self.assertIn("यह कॉल अधूरी रही।", doc)
+        self.assertIn("पूछा नहीं गया", doc)
+        self.assertNotIn("108", doc)
+        self.assertNotIn("नज़दीकी अस्पताल", doc)
+
+    def test_synthesize_call_default_deterministic_skips_gemini(self):
+        state = _bleed_cursor()
+        close_note = "शाम को हल्का बुखार रहता है"
+        state["answers"]["close_anything_else"] = {
+            "state": "concern",
+            "child_ids": [],
+            "notes": close_note,
+            "followups": {"open_concern_detail": {"state": "concern", "note": close_note}},
+        }
+        call = _call_for(state, 41)
+        expected = post_call.deterministic_fallback(call)
+        with patch.dict(os.environ):
+            os.environ.pop("POST_CALL_MODE", None)
+            self.assertEqual(post_call.post_call_mode(), "deterministic")
+            self.assertEqual(post_call.post_call_mode("invalid"), "deterministic")
+            self.assertEqual(post_call.post_call_mode("GENERATIVE"), "generative")
+            with patch("post_call._from_gemini", new=AsyncMock()) as mock_gemini:
+                synthesis = asyncio.run(post_call.synthesize_call(call))
+            self.assertEqual(mock_gemini.call_count, 0)
+        self.assertEqual(synthesis, expected)
+        self.assertIn(close_note, "\n".join(synthesis["yes_summaries_hi"]))
+        self.assertIn(close_note, synthesis["doctor_markdown"])
+        self.assertIn(close_note, "\n".join(synthesis["red_flags"]))
+        self.assertTrue(synthesis["red_flags"])
+        for heading in post_call._HEADINGS:
+            self.assertIn(heading, synthesis["doctor_markdown"])
+        pdf = mother_report.render_pdf(mother_report.build_v3(call, synthesis))
+        self.assertTrue(pdf.startswith(b"%PDF"))
+        self.assertGreaterEqual(_pages(pdf), 2)
+
+    def test_synthesize_call_generative_mode_invokes_gemini_and_falls_back(self):
+        call = _call_for(_bleed_cursor(), 42)
+        sample_raw = {
+            "mother_name_hi": "रेखा",
+            "children_label_hi": "7 साल बेटा · 2 साल बेटी",
+            "mother_questions_hi": [
+                "बेटे को चोट पर खून देर तक बहता है — क्या जाँच करानी चाहिए?",
+                "घुटने की सूजन के लिए डॉक्टर से क्या पूछूँ?",
+                "परिवार में शिशु मृत्यु की बात डॉक्टर को कैसे बताऊँ?",
+            ],
+            "yes_items_hi": [
+                {"qid": "body_bleeding_bruise", "summary_hi": "बड़े बेटे को चोट पर खून देर तक बहता है।"},
+                {"qid": "body_joint_swelling", "summary_hi": "गिरने पर घुटना सूज जाता है।"},
+                {"qid": "fam_infant_death", "summary_hi": "मामा का बेटा छह महीने में गुजर गया।"},
+            ],
+            "doctor_markdown": _headed(["- body_bleeding_bruise: prolonged bleeding."]),
+            "red_flags": ["body_bleeding_bruise: prolonged bleeding"],
+        }
+        mock_ok = AsyncMock(return_value=sample_raw)
+        with patch.dict(os.environ, {"POST_CALL_MODE": "deterministic"}):
+            with patch("post_call._from_gemini", new=mock_ok):
+                out_explicit = asyncio.run(post_call.synthesize_call(call, mode="generative"))
+        self.assertEqual(mock_ok.call_count, 1)
+        self.assertEqual(out_explicit["mother_questions_hi"], sample_raw["mother_questions_hi"])
+
+        mock_env = AsyncMock(return_value=sample_raw)
+        with patch.dict(os.environ, {"POST_CALL_MODE": "generative"}):
+            with patch("post_call._from_gemini", new=mock_env):
+                out_env = asyncio.run(post_call.synthesize_call(call))
+        self.assertEqual(mock_env.call_count, 1)
+        self.assertEqual(out_env["mother_questions_hi"], sample_raw["mother_questions_hi"])
+
+        mock_fail = AsyncMock(side_effect=ConnectionError("offline"))
+        with patch("post_call._from_gemini", new=mock_fail):
+            fallback = asyncio.run(post_call.synthesize_call(call, mode="generative"))
+        self.assertEqual(mock_fail.call_count, 1)
+        self.assertEqual(fallback, post_call.deterministic_fallback(call))
+
+    def test_scrubber_strips_disease_names_from_doctor_markdown_and_mother_notes(self):
+        state = _bleed_cursor()
+        state["answers"]["close_anything_else"] = {
+            "state": "concern",
+            "child_ids": [],
+            "notes": "डॉक्टर ने Duchenne और ड्यूशेन का नाम लिया",
+            "followups": {},
+        }
+        call = _call_for(state, 43)
+        fallback = post_call.deterministic_fallback(call)
+        dirty_doctor = _headed([
+            "- Q04 body_bleeding_bruise: mother mentioned Hemophilia and ड्यूशेन.",
+            "- Suspected Duchenne or Pompe follow-up.",
+        ])
+        cleaned = post_call._finish({
+            "mother_name_hi": "रेखा",
+            "children_label_hi": "7 साल बेटा · 2 साल बेटी",
+            "mother_questions_hi": ["क्या बच्चे की खून की जाँच करानी चाहिए?"],
+            "yes_summaries_hi": ["चोट पर खून देर तक बहता है, Hemophilia बताया।"],
+            "doctor_markdown": dirty_doctor,
+            "red_flags": ["Q04 body_bleeding_bruise: Hemophilia noted"],
+        })
+        for result in (fallback, cleaned):
+            self.assertTrue(post_call._headings_ok(result["doctor_markdown"]))
+            for heading in post_call._HEADINGS:
+                self.assertIn(f"\n\n{heading}\n" if heading != post_call._HEADINGS[0] else f"{heading}\n", result["doctor_markdown"])
+            combined = "\n".join([
+                result["doctor_markdown"],
+                *result["yes_summaries_hi"],
+                *result["mother_questions_hi"],
+                *result["red_flags"],
+            ])
+            for name in _FORBIDDEN:
+                self.assertNotIn(name.lower(), combined.lower())
+        self.assertIn("नाम लिया", fallback["doctor_markdown"])
 
 
 class TokenPrivacyTests(unittest.TestCase):

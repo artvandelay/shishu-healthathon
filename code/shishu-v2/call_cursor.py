@@ -42,6 +42,14 @@ _YOUNGEST = frozenset({
 _MALE = frozenset({"बेटा", "लड़का", "boy"})
 _FEMALE = frozenset({"बेटी", "लड़की", "girl"})
 _CHILD_GROUPS = frozenset({"birth", "body", "illness"})
+_PROFILE_KWARGS = frozenset({
+    "caller_name", "marital_status", "children", "ever_pregnant", "child_count",
+})
+_INTERPRETED_OUTCOMES = frozenset({
+    "", "not_about_active", "clear", "concern", "unknown", "clarify", "retract",
+})
+_SIDE_OUTCOMES = frozenset({"concern", "clear", "unknown", "retract"})
+_HARD_HOLDS = frozenset({"name_fragment", "marital_status", "children_ages"})
 
 _EVER_PREGNANT_HI = "क्या आप कभी गर्भवती हुई हैं?"
 _CLOSE_MORE_HI = "मैंने यह बात नोट कर ली। इसके अलावा कुछ और बताना चाहेंगी?"
@@ -294,6 +302,205 @@ def apply_turn(
         _advance(state)
         return state
     return _resolve_main(state, spec, outcome, child_ref, note, followup_answered)
+
+
+def routable_qids() -> tuple[str, ...]:
+    """Closed-world routable question IDs in ask order (58 total)."""
+    out: list[str] = []
+    ever_inserted = False
+    for spec in active_specs():
+        if not ever_inserted and "ever_pregnant_no" in spec.skip_if:
+            out.append("ever_pregnant")
+            ever_inserted = True
+        if spec.kind == "gate" or spec.id == "close_anything_else":
+            out.append(spec.id)
+    if not ever_inserted:
+        if "close_anything_else" in out:
+            out.insert(out.index("close_anything_else"), "ever_pregnant")
+        else:
+            out.append("ever_pregnant")
+    return tuple(out)
+
+
+def close_technical_failure(state: dict) -> dict:
+    """Close an active call cleanly after repeated technical failure without guessing answers."""
+    state = copy.deepcopy(state)
+    if state.get("phase") != "asking":
+        return state
+    state["phase"] = "closing"
+    state["close_reason"] = "technical_failure"
+    state["pending_followup_idx"] = None
+    state["hold_reason"] = None
+    return state
+
+
+def _spec_or_none(qid: str | None):
+    if not qid or qid == "ever_pregnant":
+        return None
+    try:
+        return get_spec(qid)
+    except KeyError:
+        return None
+
+
+def _stash_clean_answer_before_rewind(state: dict, outcome: str) -> None:
+    """Record a clean clear/unknown answer on the active gate before rewinding to clarify another."""
+    if (
+        state.get("pending_followup_idx") is not None
+        or state.get("hold_reason") in _HARD_HOLDS
+        or outcome not in ("clear", "unknown")
+    ):
+        return
+    cur_qid = state.get("active_qid")
+    if cur_qid == "ever_pregnant":
+        state["profile"]["ever_pregnant"] = False
+        state["hold_reason"] = None
+        state["answers"]["ever_pregnant"] = _blank(outcome)
+        return
+    cur_spec = _spec_or_none(cur_qid)
+    if cur_spec is not None and cur_spec.kind == "gate":
+        state["answers"][cur_qid] = _blank(outcome)
+    elif cur_qid == "close_anything_else":
+        prior = state["answers"].get("close_anything_else")
+        if not prior or prior.get("state") != "concern":
+            state["answers"]["close_anything_else"] = _blank(outcome)
+
+
+def apply_interpreted_turn(state: dict, interpreted: dict) -> dict:
+    """Apply a structured Decision-API turn interpretation onto a deep-copied cursor state."""
+    state = copy.deepcopy(state)
+    if state.get("phase") != "asking":
+        return state
+    data = interpreted if isinstance(interpreted, dict) else {}
+
+    if bool(data.get("emergency")):
+        return apply_turn(state, "emergency", note=str(data.get("note") or ""))
+    if bool(data.get("caller_stop")):
+        return apply_turn(state, "caller_stop")
+
+    current_outcome = str(data.get("current_outcome") or "").strip()
+    if current_outcome not in _INTERPRETED_OUTCOMES:
+        raise ValueError(f"unknown current_outcome {current_outcome!r}")
+
+    raw_profile = data.get("profile_updates")
+    profile_kwargs = (
+        {
+            key: value
+            for key, value in raw_profile.items()
+            if key in _PROFILE_KWARGS and value is not None
+        }
+        if isinstance(raw_profile, dict)
+        else {}
+    )
+    profile_applied = False
+    skip_active_from_profile = False
+    if profile_kwargs:
+        prev_active_qid = state.get("active_qid")
+        prev_hold = state.get("hold_reason")
+        state, profile_hold = apply_profile(state, **profile_kwargs)
+        profile_applied = True
+        active_changed = state.get("active_qid") != prev_active_qid
+        hold_set_other = (
+            profile_hold is not None
+            and not (state.get("active_qid") == "ever_pregnant" and profile_hold == "ever_pregnant")
+        )
+        hold_cleared = prev_hold is not None and state.get("hold_reason") is None
+        skip_active_from_profile = (
+            active_changed
+            or hold_set_other
+            or hold_cleared
+            or prev_active_qid in _EARLY
+        )
+
+    raw_note = str(data.get("note") or "")
+    raw_child_ref = str(data.get("child_ref") or "").strip()
+    side_qid = str(data.get("side_qid") or "").strip()
+    side_action = str(data.get("side_action") or "").strip()
+    side_outcome_raw = str(data.get("side_outcome") or "").strip()
+    side_outcome = side_outcome_raw or ("concern" if side_action == "add_or_correct" else "")
+    raw_side_note = str(data.get("side_note") or "")
+    side_note_resolved = raw_side_note if "side_note" in data else raw_note
+    raw_side_child_ref = str(data.get("side_child_ref") or "").strip()
+
+    target = _accepted_target(state, side_qid)
+    side_applied = False
+    rewound_by_side = False
+    skip_active_from_side = False
+
+    if target and side_action == "add_or_correct" and side_outcome in _SIDE_OUTCOMES:
+        side_spec = _spec_or_none(target)
+        side_is_child_scoped = side_spec is not None and _is_child_scoped(side_spec)
+        active_spec = _spec_or_none(state.get("active_qid"))
+        active_is_child_scoped = active_spec is not None and _is_child_scoped(active_spec)
+        if not side_is_child_scoped:
+            side_child_ref_resolved = ""
+        elif raw_side_child_ref:
+            side_child_ref_resolved = raw_side_child_ref
+        elif active_is_child_scoped and current_outcome == "concern":
+            side_child_ref_resolved = ""
+        else:
+            side_child_ref_resolved = raw_child_ref
+
+        active_before_side = state.get("active_qid")
+        state = _revise_target(
+            state,
+            target,
+            side_outcome,
+            side_child_ref_resolved,
+            side_note_resolved,
+        )
+        side_applied = True
+        if state.get("phase") != "asking":
+            return state
+        if state.get("active_qid") != active_before_side:
+            skip_active_from_side = True
+    elif target and side_action == "clarify_meaning":
+        if not skip_active_from_profile:
+            _stash_clean_answer_before_rewind(state, current_outcome)
+        state = _rewind_target(state, target)
+        side_applied = True
+        rewound_by_side = True
+
+    if rewound_by_side or skip_active_from_profile or skip_active_from_side:
+        return state
+    if state.get("hold_reason") in _HARD_HOLDS:
+        return state
+
+    if current_outcome in ("", "not_about_active"):
+        if profile_applied or side_applied:
+            return state
+        if state.get("pending_followup_idx") is not None:
+            return apply_turn(state, "concern", child_ref="", note="")
+        return state
+
+    if state.get("active_qid") == "ever_pregnant" and state.get("hold_reason") == "ever_pregnant":
+        if current_outcome in ("clear", "concern", "unknown", "retract"):
+            state["hold_reason"] = None
+
+    pending_idx = state.get("pending_followup_idx")
+    is_pending_followup = isinstance(pending_idx, int) and pending_idx >= 0
+    if "current_note" in data:
+        active_note = str(data.get("current_note") or "")
+    elif (
+        (
+            current_outcome == "concern"
+            or (is_pending_followup and current_outcome not in ("clear", "unknown"))
+            or (pending_idx == -1 and current_outcome == "unknown")
+        )
+        and not (side_applied and current_outcome != "concern")
+    ):
+        active_note = raw_note
+    else:
+        active_note = ""
+
+    return apply_turn(
+        state,
+        current_outcome,
+        child_ref=raw_child_ref,
+        note=active_note,
+        followup_answered=bool(data.get("followup_answered")),
+        target_qid="",
+    )
 
 
 def prompt_directive(state: dict) -> str:

@@ -48,7 +48,9 @@ _GROUP_HI = {
     "family": "परिवार",
     "close": "अंत",
 }
-_INCOMPLETE_REASONS = frozenset({"silence", "time_limit", "emergency", "caller_stop"})
+_INCOMPLETE_REASONS = frozenset({
+    "silence", "time_limit", "emergency", "caller_stop", "technical_failure",
+})
 _CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
 _CSS = """
