@@ -248,9 +248,18 @@ class CursorReportTests(unittest.TestCase):
         expected = [f"{notes[qid]} की बात है।" for qid in qids]
         self.assertEqual(synthesis["yes_summaries_hi"][:6], expected)
         self.assertIn(note, synthesis["yes_summaries_hi"][6])
-        self.assertTrue(any(note in question for question in synthesis["mother_questions_hi"]))
-        self.assertLessEqual(len(synthesis["mother_questions_hi"]), 10)
-        self.assertGreaterEqual(len(synthesis["mother_questions_hi"]), 7)
+        self.assertEqual(synthesis["mother_questions_hi"], raw["mother_questions_hi"])
+        self.assertEqual(len(synthesis["mother_questions_hi"]), 6)
+        asked = "\n".join(synthesis["mother_questions_hi"])
+        self.assertNotIn("मैंने बताया कि", asked)
+        self.assertNotIn("मैंने हाँ कहा कि", asked)
+        self.assertNotIn(note, asked)
+        document = mother_report.render_html(mother_report.build_v3(call, synthesis))
+        page1 = document.split('class="page2"', 1)[0]
+        for qid in qids:
+            self.assertIn(notes[qid], page1)
+            self.assertIn(qid, synthesis["doctor_markdown"])
+        self.assertIn(note, page1)
         profile = synthesis["doctor_markdown"].split("### Positive", 1)[0]
         self.assertIn("Additional mother disclosure (close_anything_else)", profile)
         self.assertIn(note, profile)
@@ -440,16 +449,205 @@ class CursorReportTests(unittest.TestCase):
             "\n".join(synthesis["red_flags"]),
             fallback["doctor_markdown"],
             "\n".join(fallback["red_flags"]),
-            " ".join(synthesis["mother_questions_hi"]),
-            " ".join(synthesis["yes_summaries_hi"]),
+            "\n".join(synthesis["yes_summaries_hi"]),
         ):
             self.assertIn("साँस की तकलीफ", surface)
             self.assertIn("चार दिन", surface)
             self.assertNotIn("nicu_reason", surface)
             self.assertNotIn("open_concern_detail", surface)
+        self.assertEqual(len(synthesis["yes_summaries_hi"]), 2)
+        self.assertIn("रात को जागना", synthesis["yes_summaries_hi"][1])
+        self.assertIn("close_anything_else", synthesis["doctor_markdown"])
+        self.assertIn("birth_nicu", synthesis["doctor_markdown"])
+        self.assertTrue(any("close_anything_else" in flag for flag in synthesis["red_flags"]))
+        self.assertTrue(any("birth_nicu" in flag for flag in synthesis["red_flags"]))
+        self.assertEqual(
+            synthesis["mother_questions_hi"],
+            ["क्या टीके पूरे हैं?", *post_call._ROUTINE_HI[:2]],
+        )
+        asked = "\n".join(synthesis["mother_questions_hi"])
+        self.assertNotIn("मैंने बताया कि", asked)
+        self.assertNotIn("मैंने हाँ कहा कि", asked)
+        self.assertNotIn("साँस की तकलीफ", asked)
+        self.assertNotIn("चार दिन", asked)
         self.assertNotIn("concern", page1.lower())
         self.assertIn("रात को जागना", page1)
-        self.assertIn("साँस की तकलीफ", "\n".join(report["questions"] + report["yes"]))
+        self.assertIn("साँस की तकलीफ", "\n".join(report["yes"]))
+        self.assertNotIn("साँस की तकलीफ", "\n".join(report["questions"]))
+
+    def test_grouped_gemini_questions_are_not_padded_with_templates(self):
+        def planted(name, children, concerns):
+            state = cursor_tests._profile(name=name, children=children)
+            for qid, entry in concerns.items():
+                state["answers"][qid] = entry
+            state["phase"] = "closing"
+            state["close_reason"] = "complete"
+            return state
+
+        def concern(note, followups=None, child_ids=None):
+            return {
+                "state": "concern",
+                "child_ids": child_ids or [],
+                "notes": note,
+                "followups": followups or {},
+            }
+
+        gemini_64 = [
+            "मेरे 6 साल के बेटे को जन्म के बाद पीलिया के लिए 3 दिन नीली लाइट में रखा गया था — क्या आगे कोई दिक्कत हो सकती है?",
+            "मेरे सगे मामा के बेटे को बार-बार खून चढ़ाना पड़ता है — क्या मेरे बच्चों की भी खून की जाँच करानी चाहिए?",
+            "मेरे पिताजी को 42 साल की उम्र में बीपी हुआ था — बच्चों के खान-पान में कोई खास ध्यान रखना चाहिए?",
+        ]
+        call_64 = _call_for(planted(
+            "कविता",
+            [
+                cursor_tests._child(11, "female", 1),
+                cursor_tests._child(6, "male", 2),
+                cursor_tests._child(2, "male", 3),
+            ],
+            {
+                "birth_jaundice": concern(
+                    "3 दिन नीली लाइट",
+                    {"jaundice_days": {"state": "concern", "note": "3 दिन"}},
+                    ["child_2"],
+                ),
+                "fam_transfusion": concern(
+                    "सगे मामा के बेटे को",
+                    {"fam_who": {"state": "concern", "note": "सगे मामा के बेटे को"}},
+                ),
+                "fam_bp_stroke": concern(
+                    "",
+                    {
+                        "bp_who": {"state": "concern", "note": "पिता"},
+                        "bp_age": {"state": "concern", "note": "42 साल"},
+                    },
+                ),
+            },
+        ), 64)
+        yes_64 = [
+            {"qid": "birth_jaundice", "summary_hi": "बीच वाले बेटे को 3 दिन नीली लाइट में रखा गया।"},
+            {"qid": "fam_transfusion", "summary_hi": "सगे मामा के बेटे को बार-बार खून चढ़ता है।"},
+            {"qid": "fam_bp_stroke", "summary_hi": "पिता को 42 साल की उम्र में बीपी हुआ।"},
+        ]
+        raw_64 = {
+            "mother_name_hi": "कविता",
+            "children_label_hi": "11 साल बेटी · 6 साल बेटा · 2 साल बेटा",
+            "mother_questions_hi": gemini_64,
+            "yes_items_hi": yes_64,
+            "doctor_markdown": _headed([
+                "- Q03 birth_jaundice: blue light.",
+                "- Q11 fam_transfusion: family transfusions.",
+                "- Q11 fam_bp_stroke: father at 42.",
+            ]),
+            "red_flags": [f"{item['qid']}: noted" for item in yes_64],
+        }
+        out_64 = post_call._finish(post_call._coerce(raw_64, call_64))
+        self.assertEqual(out_64["mother_questions_hi"], gemini_64)
+        asked_64 = "\n".join(out_64["mother_questions_hi"])
+        self.assertNotIn("मैंने बताया कि", asked_64)
+        self.assertNotIn("मैंने हाँ कहा कि", asked_64)
+        self.assertEqual(
+            out_64["yes_summaries_hi"],
+            [item["summary_hi"] for item in yes_64],
+        )
+        for item in yes_64:
+            self.assertIn(item["qid"], out_64["doctor_markdown"])
+            self.assertTrue(any(item["qid"] in flag for flag in out_64["red_flags"]))
+
+        notes_10 = {
+            "birth_term": "तीन हफ्ते पहले",
+            "birth_nicu": "दो हफ्ते",
+            "body_joint_swelling": "गिरने पर घुटना सूजता है",
+            "preg_thalassemia": "ट्रेट बताया गया",
+            "fam_related": "चचेरे मामा के बेटे",
+            "fam_miscarriage": "3 महीने में एक बार",
+            "fam_infant_death": "6 महीने में गुजर गई",
+            "fam_heart_kidney": "बूढ़ों को दिल की बीमारी",
+            "fam_bp_stroke": "सगे रिश्तेदार को 35 साल में",
+            "fam_same_problem": "बहन के बेटे को भी वही दिक्कत",
+            "close_anything_else": "सर दर्द",
+        }
+        gemini_10 = [
+            "मेरा 2 साल का बच्चा 3 हफ्ते पहले पैदा हुआ और 2 हफ्ते NICU में रहा — आगे कोई खास ध्यान रखना है?",
+            "मेरे तीनों बच्चों के घुटनों में गिरने पर सूजन आ जाती है — क्या कोई खास जाँच करानी चाहिए?",
+            "मेरी और पति की खून जाँच में थैलेसीमिया ट्रेट बताया गया — बच्चों पर इसका क्या असर हो सकता है?",
+            "हमारी शादी रिश्ते में हुई है — बच्चों के लिए कोई खास सलाह लेनी चाहिए?",
+            "मेरी बहन के बेटे को भी बच्चों जैसी दिक्कत है और परिवार में एक बच्चा अचानक गुजर गया — क्या यह परिवार की बात हो सकती है?",
+            "मुझे अक्सर सिरदर्द रहता है — राहत के लिए क्या करना चाहिए?",
+        ]
+        call_10 = _call_for(planted(
+            "रीटा",
+            [
+                cursor_tests._child(3, "male", 1),
+                cursor_tests._child(2, "male", 2),
+                cursor_tests._child(1, "female", 3),
+            ],
+            {
+                qid: concern(
+                    note,
+                    {"open_concern_detail": {"state": "concern", "note": note}}
+                    if qid == "close_anything_else"
+                    else {},
+                    ["child_2"] if qid in {"birth_term", "birth_nicu"} else [],
+                )
+                for qid, note in notes_10.items()
+            },
+        ), 10)
+        yes_10 = [
+            {"qid": qid, "summary_hi": f"{note}।"}
+            for qid, note in notes_10.items()
+        ]
+        raw_10 = {
+            "mother_name_hi": "रीटा",
+            "children_label_hi": "3 साल बेटा · 2 साल बेटा · 1 साल बेटी",
+            "mother_questions_hi": gemini_10,
+            "yes_items_hi": list(reversed(yes_10)),
+            "doctor_markdown": _headed([f"- {qid}: noted." for qid in notes_10]),
+            "red_flags": [f"{qid}: noted" for qid in notes_10],
+        }
+        out_10 = post_call._finish(post_call._coerce(raw_10, call_10))
+        self.assertEqual(out_10["mother_questions_hi"], gemini_10)
+        asked_10 = "\n".join(out_10["mother_questions_hi"])
+        self.assertNotIn("मैंने बताया कि", asked_10)
+        self.assertNotIn("मैंने हाँ कहा कि", asked_10)
+        self.assertNotIn("सर दर्द", asked_10)
+        self.assertIn("सिरदर्द", asked_10)
+        self.assertEqual(
+            out_10["yes_summaries_hi"],
+            [item["summary_hi"] for item in yes_10],
+        )
+        page1 = mother_report.render_html(mother_report.build_v3(call_10, out_10)).split('class="page2"', 1)[0]
+        for qid, note in notes_10.items():
+            self.assertIn(note, page1)
+            self.assertIn(qid, out_10["doctor_markdown"])
+            self.assertTrue(any(qid in flag for flag in out_10["red_flags"]), qid)
+        self.assertNotIn("मैंने बताया कि", page1)
+
+        emergency = cursor_tests._profile(
+            name="पूजा",
+            children=[cursor_tests._child(3, "female")],
+        )
+        emergency["phase"] = "closing"
+        emergency["close_reason"] = "emergency"
+        emergency["emergency_note"] = "अभी सांस नहीं आ रही"
+        paraphrased = [
+            "क्या बच्चे का वज़न और कद उम्र के हिसाब से ठीक बढ़ रहा है?",
+            "क्या सारे टीके लग चुके हैं या टीका कार्ड में कुछ बाकी है?",
+            "घर पर खाने-पीने में क्या ध्यान रखूँ?",
+        ]
+        for line in paraphrased:
+            self.assertNotIn(line, post_call._ROUTINE_HI)
+        calm = post_call._finish(post_call._coerce({
+            "mother_name_hi": "पूजा",
+            "children_label_hi": "3 साल बेटी",
+            "mother_questions_hi": paraphrased,
+            "yes_items_hi": [],
+            "doctor_markdown": _headed(["- None reported in this call."]),
+            "red_flags": [],
+        }, _call_for(emergency, 60)))
+        self.assertEqual(calm["mother_questions_hi"], list(post_call._EMERGENCY_HI))
+        self.assertEqual(calm["yes_summaries_hi"], [])
+        for line in paraphrased:
+            self.assertNotIn(line, calm["mother_questions_hi"])
 
     def test_page2_uses_marital_and_multi_child_wording(self):
         unmarried = apply_turn(cursor_tests._profile(marital="unmarried", name="पूजा"), "clear")
@@ -630,7 +828,7 @@ def _assert_live(raw: dict, call: dict, label: str) -> dict:
     for heading in post_call._HEADINGS:
         if heading not in synthesis["doctor_markdown"]:
             raise AssertionError(f"{label} doctor note missing {heading}")
-    if not (3 <= len(synthesis["mother_questions_hi"]) <= 10):
+    if not (3 <= len(synthesis["mother_questions_hi"]) <= 6):
         raise AssertionError(f"{label} question count {len(synthesis['mother_questions_hi'])}")
     report = mother_report.build_v3(call, synthesis)
     pdf = mother_report.render_pdf(report)

@@ -290,36 +290,29 @@ def _keep_question(question: str, kept: list[str], *, emergency: bool) -> None:
 def _fit_questions(
     questions: list[str],
     *,
-    concern_count: int = 0,
     emergency: bool = False,
     concern_questions: list[str] | None = None,
 ) -> list[str]:
-    cap = min(10, max(6, concern_count))
+    if emergency and not concern_questions:
+        return list(_EMERGENCY_HI)
+    cap = 6
     kept: list[str] = []
     for question in questions:
         if len(kept) >= cap:
             break
         _keep_question(question, kept, emergency=emergency)
-    for question in concern_questions or []:
-        if len(kept) >= cap:
-            break
-        _keep_question(question, kept, emergency=emergency)
+    if not kept:
+        for question in concern_questions or ():
+            if len(kept) >= cap:
+                break
+            _keep_question(question, kept, emergency=emergency)
     fillers = _EMERGENCY_HI if emergency else _ROUTINE_HI
     for filler in fillers:
         if len(kept) >= 3:
             break
         if filler not in kept:
             kept.append(filler)
-    if emergency and concern_count == 0:
-        rest = [item for item in kept if item not in _EMERGENCY_HI]
-        merged: list[str] = []
-        for item in list(_EMERGENCY_HI) + rest:
-            if item not in merged:
-                merged.append(item)
-            if len(merged) == cap:
-                break
-        kept = merged
-    return kept[:cap]
+    return kept[:6]
 
 
 def _rows(state: dict) -> list[tuple]:
@@ -415,7 +408,6 @@ def deterministic_fallback(call: dict) -> dict:
             "doctor_markdown": doctor,
             "red_flags": flags,
         },
-        concern_count=len(concerns),
         emergency=reason == "emergency",
         concern_questions=questions,
     )
@@ -487,14 +479,6 @@ def _summaries_for(concerns: list[tuple], raw: dict) -> list[str]:
     return lines
 
 
-def _close_uncovered(questions: list[str], entry: dict) -> bool:
-    note = _human_notes(entry)
-    blob = "\n".join(questions)
-    if note:
-        return note not in blob
-    return "इसके अलावा" not in blob
-
-
 def _insert_line(doctor: str, heading: str, line: str) -> str:
     if line in doctor:
         return doctor
@@ -559,11 +543,6 @@ def _coerce(raw: dict, call: dict) -> dict:
         doctor = fallback["doctor_markdown"]
     if not _usable_hindi(questions):
         questions = list(fallback["mother_questions_hi"])
-    close = next(((spec, entry) for spec, entry in concerns if spec.id == "close_anything_else"), None)
-    close_covered = "close_anything_else" in _yes_by_qid(raw) and len(questions) >= len(concerns)
-    if close and not close_covered and _close_uncovered(questions, close[1]):
-        pinned = _concern_question(close[0], close[1])
-        questions = [pinned] + [item for item in questions if item != pinned]
     # The cursor decides what was हाँ. A childless or all-clear call cannot grow a yes line.
     if concerns:
         yes = _summaries_for(concerns, raw)
@@ -598,7 +577,6 @@ def _coerce(raw: dict, call: dict) -> dict:
         "yes_summaries_hi": yes,
         "doctor_markdown": doctor.strip(),
         "red_flags": flags,
-        "_concern_count": len(concerns),
         "_emergency": emergency,
         "_concern_questions": [_concern_question(spec, entry) for spec, entry in concerns],
     }
@@ -607,12 +585,9 @@ def _coerce(raw: dict, call: dict) -> dict:
 def _finish(
     result: dict,
     *,
-    concern_count: int | None = None,
     emergency: bool | None = None,
     concern_questions: list[str] | None = None,
 ) -> dict:
-    if concern_count is None:
-        concern_count = int(result.get("_concern_count") or 0)
     if emergency is None:
         emergency = bool(result.get("_emergency"))
     if concern_questions is None:
@@ -620,7 +595,6 @@ def _finish(
         concern_questions = list(supplied) if isinstance(supplied, list) else []
     questions = _fit_questions(
         _str_list(result.get("mother_questions_hi")),
-        concern_count=concern_count,
         emergency=emergency,
         concern_questions=concern_questions,
     )
@@ -714,7 +688,7 @@ _PROMPT = """You write two reports for one SHISHU screening call.
 Return JSON with exactly these fields:
 - mother_name_hi: her name in Devanagari. If the profile name is already Devanagari, copy it. Do not transliterate English letter by letter.
 - children_label_hi: ages and बेटा/बेटी. Empty string when she has no children.
-- mother_questions_hi: 3 to 10 first-person Hindi questions she can ask her doctor or ASHA/ANM. Include one question for every concern, including close_anything_else. If there are fewer than 3 concerns, add routine questions about growth, vaccines, or home warning signs. Never say nothing concerning was found. Never say she does not need a doctor.
+- mother_questions_hi: 3 to 6 first-person Hindi questions she can ask her doctor or ASHA/ANM, grouping related concerns naturally. Never say nothing concerning was found. Never say she does not need a doctor.
 - yes_items_hi: one object for every concern, in cursor order. Each object has qid (the cursor question id) and summary_hi (one Devanagari sentence using her notes). Include close_anything_else when its state is concern. No English words except BCG, NICU, ASHA, ANM.
 - doctor_markdown: English Markdown for a clinician. Mention every concern question id, including close_anything_else, under the matching heading. Use these headings, each exactly once, in this order:
 ### Patient Profile & Chief Complaint
