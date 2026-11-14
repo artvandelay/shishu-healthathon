@@ -271,9 +271,10 @@ Profile fields in `state["profile"]`:
    - `_profile_kwargs(qid, args)` parses **any** non-empty field (`caller_name`, `marital_status`, `child_count`, `children`, `ever_pregnant`) regardless of `qid`, and `_marital()` maps `"no" / "nahi" / "नहीं" / "अभी नहीं" / "अविवाहित" / "कुंवारी"` -> `"unmarried"`.
 
 ### 6.2 WebSocket Quick-Reply Protocol
-- **Server -> Browser (`question_state`)**:
-  - `gemini_live.py` sends `question_state` after the greeting cue and whenever `_current_step(cursor.state)` changes:
-    `{"type": "question_state", "step": _current_step(cursor.state), "qid": active_qid, "group": group, "expect_yes_no": expect_yes_no(cursor.state)}`
+- **Server -> Browser (`question_state` + `bot_turn_complete`)**:
+  - `gemini_live.py` sends `question_state` after the greeting cue and after every handled tool call or `quick_reply`:
+    `{"type": "question_state", "step": _current_step(cursor.state), "qid": active_qid, "group": group, "expect_yes_no": expect_yes_no(cursor.state), "prompt_chars": len(_say_hindi(cursor.state))}`
+  - On `server_content.turn_complete` when the bot is done streaming that question, `gemini_live.py` sends `{"type": "bot_turn_complete", "step": _current_step(cursor.state)}`.
 - **Browser -> Server (`quick_reply`)**:
   - Payload: `{"type": "quick_reply", "outcome": "clear" | "concern", "step": currentStep}`
   - Server handling:
@@ -291,12 +292,13 @@ Profile fields in `state["profile"]`:
   - **Center**: `<button id="call-btn" class="call-btn" type="button" disabled><span class="hi">शुरू</span><span class="en">Start</span></button>`
   - **Right**: `<button id="yes-btn" class="call-btn quick-btn yes-btn" type="button" hidden><span class="hi">हाँ</span><span class="en">Yes</span></button>`
 - **Sizing & Styling**:
-  - All three buttons share `.call-btn` dimensions (`84px × 84px` circle; `74px × 74px` under `@media (max-width: 360px)` so all 3 stay on one horizontal row with `16–22px` gap).
+  - All three buttons share `.call-btn` dimensions (`clamp(68px, 21vw, 84px)` circle so all 3 stay on one horizontal row down to `320px` width with `clamp(12px, 4vw, 20px)` gap).
+  - `#call-btn` (`शुरू / Start`): warm amber (`var(--yellow)` `#e89d2d`) with high-contrast `var(--navy)` text (`9.68:1`).
   - `#no-btn`: white background (`#ffffff`), `2px solid var(--navy)` border, `var(--navy)` text (`--en` muted).
   - `#call-btn.end`: red (`var(--red)` `#dc2626`), white text (`बंद / End`).
   - `#yes-btn`: navy (`var(--navy)` `#1b2a4a`), white text (`हाँ / Yes`).
-  - `#no-btn` and `#yes-btn` are shown (`hidden = false`) **only** when `phase === "live"` and the latest `question_state.expect_yes_no === true`. Hidden immediately during `idle`, `connecting`, `preparing`, `done`, `error`, and non-yes/no steps.
-  - On tap: immediately disable `#no-btn` & `#yes-btn` until the next `question_state` arrives, call `flushPlayback()`, display `"You: नहीं"` or `"You: हाँ"` in `#caption`, call `startThinkingWatch()`, and send `quick_reply` over WebSocket.
+  - `#no-btn` and `#yes-btn` stay mounted during `phase === "live"` (`hidden = !live`) so `#call-dock` never jumps, and fade in via `.quick-btn.is-visible` **only** when `question_state.expect_yes_no === true` AND speaker-clock playback (`audioCtx.currentTime - stepAudioStart`) reaches halfway through the spoken question (or `bot_turn_complete` finishes). Hidden immediately during `idle`, `connecting`, `preparing`, `done`, `error`, and non-yes/no steps.
+  - On tap: immediately disable `#no-btn` & `#yes-btn` until the next `question_state` arrives, call `flushPlayback()`, display `"You: नहीं।"` or `"You: हाँ।"` in `#caption`, call `startThinkingWatch()`, and send `quick_reply` over WebSocket.
 
 ---
 
@@ -306,8 +308,8 @@ Profile fields in `state["profile"]`:
    - Secrets stay in root `.env`.
    - Python env: `~/pyenv/shishu/bin/python` (packages via `uv`).
    - Long-running servers and live persona suites run inside `tmux`.
-2. **4 Small Stages on `next_v2`**:
+2. **Stages on `next_v2`**:
    - **Stage 1**: Pure offline `triage_catalog.py` + `call_cursor.py` + `test_v4_cursor.py` (including replays of Staging Calls #3, #6, #8).
    - **Stage 2**: `gemini_live.py` + `prompts.py` + `db.py` (VAD defaults) + server `question_state`/`quick_reply` + `test_v4_live_server.py`.
    - **Stage 3**: `static/call.html` + `static/call.js` flanking `नहीं` / `हाँ` buttons + end-to-end WebSocket `TestClient` tests (`test_v4_quick_reply_ui.py`).
-   - **Stage 4**: 12-Persona live Gemini verification in `tmux` (`run_eight_personas.py` expanded with 4 adversarial personas: retract-yes loop, `about_to_marry` + correction, 3-kids middle-child pause, double-clarify) + deploy `next_v2` to `shishu-staging`.
+   - **Stages 4–6**: Speaker-clock halfway button reveal, atomic `fam_maternal_*` split, closed-world `target_qid` revisions/clarifications, emergency & report synthesis hardening, mobile clinic WCAG contrast/accessibility polish, **102 offline unit/socket tests + 6-Persona live Gemini verification in `tmux`** (`run_eight_personas.py`: red-flags, all-clear, midway emergency, 3-kids middle-child + retraction, `about_to_marry` mid-call correction + clarify, and `target_qid` late addition + `close_anything_else` disclosure) + deploy `next_v2` to `shishu-staging`.
