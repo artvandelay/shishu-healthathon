@@ -37,6 +37,7 @@ _SECTION = {
     "illness": "### Systemic, Infections & Hematology",
     "pregnancy": "### Antenatal (Pregnancy) History",
     "family": "### Family & Pedigree History",
+    "close": "### Patient Profile & Chief Complaint",
 }
 
 _HEMATOLOGY = frozenset({
@@ -163,20 +164,21 @@ def _concern_question(spec, entry: dict) -> str:
     return f"मैंने हाँ कहा कि {body}। डॉक्टर, अब क्या जाँच करनी चाहिए?"
 
 
-def _fit_questions(questions: list[str]) -> list[str]:
+def _fit_questions(questions: list[str], *, concern_count: int = 0) -> list[str]:
+    cap = min(10, max(6, concern_count))
     kept: list[str] = []
     for question in questions:
         text = _scrub_diagnostic_terms(question)
         if text and text not in kept:
             kept.append(text)
-        if len(kept) == 6:
+        if len(kept) == cap:
             break
     for routine in _ROUTINE_HI:
         if len(kept) >= 3:
             break
         if routine not in kept:
             kept.append(routine)
-    return kept[:6]
+    return kept[:cap]
 
 
 def _rows(state: dict) -> list[tuple]:
@@ -266,6 +268,7 @@ def deterministic_fallback(call: dict) -> dict:
         "yes_summaries_hi": [_concern_sentence(spec, entry) for spec, entry in concerns],
         "doctor_markdown": "\n\n".join(doctor_parts),
         "red_flags": flags,
+        "_concern_count": len(concerns),
     })
 
 
@@ -294,26 +297,133 @@ def _usable_hindi(items: list[str]) -> bool:
     return bool(items) and all(_DEVANAGARI.search(item) for item in items)
 
 
+def _concern_rows(call: dict) -> list[tuple]:
+    return [
+        (spec, entry)
+        for spec, entry, status in _rows(cursor_of(call))
+        if status == "concern"
+    ]
+
+
+def _summary_text(value: object) -> str:
+    if isinstance(value, dict):
+        return str(value.get("summary_hi") or "").strip()
+    return str(value or "").strip()
+
+
+def _yes_by_qid(raw: dict) -> dict[str, str]:
+    items = raw.get("yes_items_hi")
+    pairs: list[tuple] = []
+    if isinstance(items, dict):
+        pairs = list(items.items())
+    elif isinstance(items, list):
+        for item in items:
+            if isinstance(item, dict):
+                pairs.append((item.get("qid"), item))
+    found: dict[str, str] = {}
+    for qid, value in pairs:
+        key = str(qid or "").strip()
+        text = _summary_text(value)
+        if key and text:
+            found[key] = text
+    return found
+
+
+def _summaries_for(concerns: list[tuple], raw: dict) -> list[str]:
+    by_qid = _yes_by_qid(raw)
+    lines = []
+    for spec, entry in concerns:
+        summary = by_qid.get(spec.id, "")
+        if summary and _usable_hindi([summary]):
+            lines.append(summary)
+        else:
+            lines.append(_concern_sentence(spec, entry))
+    return lines
+
+
+def _close_uncovered(questions: list[str], entry: dict) -> bool:
+    note = str(entry.get("notes") or "").strip()
+    blob = "\n".join(questions)
+    if note:
+        return note not in blob
+    return "इसके अलावा" not in blob
+
+
+def _insert_line(doctor: str, heading: str, line: str) -> str:
+    if line in doctor:
+        return doctor
+    if heading not in doctor:
+        return doctor.rstrip() + f"\n\n{heading}\n{line}\n"
+    head, rest = doctor.split(heading, 1)
+    nxt = rest.find("\n### ")
+    if nxt < 0:
+        return head + heading + rest.rstrip() + "\n" + line + "\n"
+    return head + heading + rest[:nxt].rstrip() + "\n" + line + "\n" + rest[nxt:]
+
+
+def _concern_visible(doctor: str, spec, entry: dict) -> bool:
+    if spec.id in (doctor or ""):
+        return True
+    note = str(entry.get("notes") or "").strip()
+    return bool(note) and note in (doctor or "")
+
+
+def _flag_for(spec, entry: dict) -> str:
+    note = str(entry.get("notes") or "").strip()
+    flag = f"{spec.nrroid_gate or spec.id} {spec.id}: {spec.need_en}"
+    if note:
+        flag = f"{flag}. {note}"
+    return flag
+
+
+def _with_every_concern(doctor: str, flags: list[str], concerns: list[tuple]) -> tuple[str, list[str]]:
+    for spec, entry in concerns:
+        note = str(entry.get("notes") or "").strip()
+        if spec.id == "close_anything_else":
+            if spec.id not in doctor or (note and note not in doctor):
+                line = f"- Additional mother disclosure (close_anything_else): {note or spec.need_en}."
+                doctor = _insert_line(doctor, "### Patient Profile & Chief Complaint", line)
+        elif not _concern_visible(doctor, spec, entry):
+            line = f"- {spec.nrroid_gate or spec.id} {spec.id}: {spec.need_en}."
+            if note:
+                line += f" Mother's words: {note}."
+            doctor = _insert_line(doctor, _section_for(spec), line)
+        blob = "\n".join(flags)
+        if spec.id in blob and (spec.id != "close_anything_else" or not note or note in blob):
+            continue
+        flags.append(_flag_for(spec, entry))
+    return doctor, flags
+
+
 def _headings_ok(doctor: str) -> bool:
     return all(heading in (doctor or "") for heading in _HEADINGS)
 
 
 def _coerce(raw: dict, call: dict) -> dict:
     fallback = deterministic_fallback(call)
+    concerns = _concern_rows(call)
     questions = _str_list(raw.get("mother_questions_hi"))
-    yes = _str_list(raw.get("yes_summaries_hi"))
     doctor = raw.get("doctor_markdown") if isinstance(raw.get("doctor_markdown"), str) else ""
     if not _headings_ok(doctor):
         doctor = fallback["doctor_markdown"]
     if not _usable_hindi(questions):
         questions = list(fallback["mother_questions_hi"])
-    profile = (cursor_of(call).get("profile") or {})
-    concern_count = sum(1 for _spec, _entry, status in _rows(cursor_of(call)) if status == "concern")
+    close = next(((spec, entry) for spec, entry in concerns if spec.id == "close_anything_else"), None)
+    if close and _close_uncovered(questions, close[1]):
+        pinned = _concern_question(close[0], close[1])
+        questions = [pinned] + [item for item in questions if item != pinned]
     # The cursor decides what was हाँ. A childless or all-clear call cannot grow a yes line.
-    if concern_count == 0:
+    if concerns:
+        yes = _summaries_for(concerns, raw)
+        doctor, flags = _with_every_concern(
+            doctor,
+            _str_list(raw.get("red_flags")) or list(fallback["red_flags"]),
+            concerns,
+        )
+    else:
         yes = []
-    elif not yes or not _usable_hindi(yes):
-        yes = list(fallback["yes_summaries_hi"])
+        flags = _str_list(raw.get("red_flags")) or list(fallback["red_flags"])
+    profile = (cursor_of(call).get("profile") or {})
     name = raw.get("mother_name_hi")
     profile_name = str(profile.get("caller_name") or "").strip()
     if profile_name and _DEVANAGARI.search(profile_name):
@@ -326,7 +436,6 @@ def _coerce(raw: dict, call: dict) -> dict:
         children = raw.get("children_label_hi")
         if not isinstance(children, str) or not children.strip():
             children = fallback["children_label_hi"]
-    flags = _str_list(raw.get("red_flags")) or list(fallback["red_flags"])
     return {
         "mother_name_hi": name.strip(),
         "children_label_hi": children.strip(),
@@ -334,11 +443,15 @@ def _coerce(raw: dict, call: dict) -> dict:
         "yes_summaries_hi": yes,
         "doctor_markdown": doctor.strip(),
         "red_flags": flags,
+        "_concern_count": len(concerns),
     }
 
 
 def _finish(result: dict) -> dict:
-    questions = _fit_questions(_str_list(result.get("mother_questions_hi")))
+    questions = _fit_questions(
+        _str_list(result.get("mother_questions_hi")),
+        concern_count=int(result.get("_concern_count") or 0),
+    )
     yes = []
     for line in _str_list(result.get("yes_summaries_hi")):
         cleaned = _scrub_diagnostic_terms(line)
@@ -418,9 +531,9 @@ _PROMPT = """You write two reports for one SHISHU screening call.
 Return JSON with exactly these fields:
 - mother_name_hi: her name in Devanagari. If the profile name is already Devanagari, copy it. Do not transliterate English letter by letter.
 - children_label_hi: ages and बेटा/बेटी. Empty string when she has no children.
-- mother_questions_hi: 3 to 6 first-person Hindi questions she can ask her doctor or ASHA/ANM. Start from concern answers. If there are fewer than 3 concerns, add routine questions about growth, vaccines, or home warning signs. Never say nothing concerning was found. Never say she does not need a doctor.
-- yes_summaries_hi: one Devanagari sentence for each concern, using her notes. No English words except BCG, NICU, ASHA, ANM.
-- doctor_markdown: English Markdown for a clinician. Use these headings, each exactly once, in this order:
+- mother_questions_hi: 3 to 10 first-person Hindi questions she can ask her doctor or ASHA/ANM. Include one question for every concern, including close_anything_else. If there are fewer than 3 concerns, add routine questions about growth, vaccines, or home warning signs. Never say nothing concerning was found. Never say she does not need a doctor.
+- yes_items_hi: one object for every concern, in cursor order. Each object has qid (the cursor question id) and summary_hi (one Devanagari sentence using her notes). Include close_anything_else when its state is concern. No English words except BCG, NICU, ASHA, ANM.
+- doctor_markdown: English Markdown for a clinician. Mention every concern question id, including close_anything_else, under the matching heading. Use these headings, each exactly once, in this order:
 ### Patient Profile & Chief Complaint
 ### Positive Red Flags & NRROID Gate Alerts
 ### Birth & Neonatal History
@@ -429,7 +542,7 @@ Return JSON with exactly these fields:
 ### Antenatal (Pregnancy) History
 ### Family & Pedigree History
 ### Pertinent Negatives
-- red_flags: short English strings for concern gates. Use the NRROID gate id and the plain finding. Do not name a diagnosis.
+- red_flags: one short English string for every concern, including close_anything_else. Use the question id and the plain finding. Do not name a diagnosis.
 
 Never name a genetic or rare disease. Never advise starting, stopping, or changing a medicine.
 The PDF already tells every mother to have thalassemia screening before the next pregnancy. Do not turn that universal line into her personal concern unless preg_thalassemia state is concern.
@@ -442,13 +555,18 @@ def _schema():
 
     text = types.Schema(type=types.Type.STRING)
     texts = types.Schema(type=types.Type.ARRAY, items=text)
+    item = types.Schema(
+        type=types.Type.OBJECT,
+        properties={"qid": text, "summary_hi": text},
+        required=["qid", "summary_hi"],
+    )
     return types.Schema(
         type=types.Type.OBJECT,
         properties={
             "mother_name_hi": text,
             "children_label_hi": text,
             "mother_questions_hi": texts,
-            "yes_summaries_hi": texts,
+            "yes_items_hi": types.Schema(type=types.Type.ARRAY, items=item),
             "doctor_markdown": text,
             "red_flags": texts,
         },
@@ -456,7 +574,7 @@ def _schema():
             "mother_name_hi",
             "children_label_hi",
             "mother_questions_hi",
-            "yes_summaries_hi",
+            "yes_items_hi",
             "doctor_markdown",
             "red_flags",
         ],

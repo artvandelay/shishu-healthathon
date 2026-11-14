@@ -79,6 +79,8 @@ When she answers, call exactly one tool before you speak again. Then speak ONLY 
   outcome is clear for नहीं, concern for हाँ or a matching story, unknown for पता नहीं, outcome clarify when she did not understand or asked the meaning, retract when she explicitly takes back a हाँ she just said (नहीं गलती से बोला, कुछ नहीं हुआ था, or नॉर्मल था). Never use retract for a plain नहीं to इसके अलावा कुछ और? emergency when a danger sign is happening right now, caller_stop when she asks to end the call.
   If her first हाँ sentence already gives the first follow-up detail, set followup_answered true and put that detail in note.
   When the tool result includes children, set child_ref to the exact id from that list (child_1 through child_n) or all. Never pass an age, a name, or an ordinal. Leave child_ref empty when there is one child or the question is not about a child. Put her detail in note as a short phrase, and do not invent anything.
+- When her reply is about an earlier question instead of active_qid, call record_turn with target_qid set to that earlier question id from the latest tool result's last_answered_qid or answered_qids. Do this when she adds a detail to an answer she already gave (for example another relative with cancer on the next question), corrects that answer, or asks what an earlier term meant right after you moved on.
+- Leave target_qid empty on a normal turn, when she is answering the current question.
 - A danger sign RIGHT NOW means not breathing, breathing very fast, blue lips now, unconscious, fits that do not stop, bleeding that does not stop, or she says it is an emergency. Call record_turn with outcome emergency. A past event is not an emergency.
 - अभी बंद कर दो or बाद में बात करेंगे is caller_stop. रुको or एक मिनट is not a stop. Wait.
 - If say is the same question again and clarify is not true, she has not answered it yet. Ask it once more. Do not move on.
@@ -101,10 +103,11 @@ _LEAK_RE = re.compile(
     r"|<no speech>"
     r"|\{pause\}"
     r"|save_profile|record_turn|say_hindi|do_not_read|active_qid"
+    r"|last_answered_qid|answered_qids|target_qid|recorded_concerns"
     r"|ask only this"
 )
 _TOOL_LEAK_RE = re.compile(
-    r"save_profile|record_turn|say_hindi|do_not_read|active_qid|system\s*cue|ask only this",
+    r"save_profile|record_turn|say_hindi|do_not_read|active_qid|last_answered_qid|answered_qids|target_qid|recorded_concerns|system\s*cue|ask only this",
     re.I,
 )
 _OTHER_SCRIPT_RE = re.compile(

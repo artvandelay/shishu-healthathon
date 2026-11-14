@@ -98,7 +98,11 @@ class ScopeTests(unittest.TestCase):
 class CatalogTests(unittest.TestCase):
     def test_atomic_gates_and_bridge_offer_one_question_at_a_time(self):
         gates = [spec.id for spec in active_specs() if spec.kind == "gate"]
-        self.assertEqual(len(gates), 54)
+        self.assertEqual(len(gates), 56)
+        self.assertIn("fam_maternal_bleeding", gates)
+        self.assertIn("fam_maternal_infections", gates)
+        self.assertIn("fam_maternal_eczema", gates)
+        self.assertNotIn("fam_maternal_side", gates)
         self.assertIn("birth_nicu", gates)
         self.assertIn("body_bleeding_bruise", gates)
         self.assertIn("fam_infant_death", gates)

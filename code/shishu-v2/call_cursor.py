@@ -148,6 +148,75 @@ def apply_profile(
     return state, None
 
 
+def _accepted_target(state: dict, target_qid: str) -> str:
+    """An earlier answered gate, or ever_pregnant. Anything else is ignored."""
+    target = str(target_qid or "").strip()
+    if not target or target == state.get("active_qid"):
+        return ""
+    if target in _EARLY or target == "close_anything_else":
+        return ""
+    if target != "ever_pregnant":
+        try:
+            spec = get_spec(target)
+        except KeyError:
+            return ""
+        if spec.kind != "gate":
+            return ""
+    entry = (state.get("answers") or {}).get(target)
+    if not isinstance(entry, dict) or entry.get("state") not in _ANSWERED:
+        return ""
+    return target
+
+
+def _rewind_target(state: dict, target: str) -> dict:
+    """Ask an already-answered question again. Later answers stay put."""
+    state["active_qid"] = target
+    state["pending_followup_idx"] = None
+    state["step_attempts"] = 0
+    state["hold_reason"] = None
+    state["answers"].pop(target, None)
+    if target == "ever_pregnant":
+        state["profile"]["ever_pregnant"] = None
+    _recompute(state)
+    return state
+
+
+def _revise_target(state: dict, target: str, outcome: str, child_ref: str, note: str) -> dict:
+    """Revise an earlier answer and stay on the question she is hearing now."""
+    if outcome in ("retract", "clear"):
+        state["answers"][target] = _blank("clear")
+        if target == "ever_pregnant":
+            state["profile"]["ever_pregnant"] = False
+    elif outcome == "unknown":
+        state["answers"][target] = _blank("unknown")
+    else:
+        prior = state["answers"].get(target) or _blank("concern")
+        followups = dict(prior.get("followups") or {})
+        child_ids = [cid for cid in (prior.get("child_ids") or []) if cid]
+        if target == "ever_pregnant":
+            state["profile"]["ever_pregnant"] = True
+        else:
+            spec = get_spec(target)
+            for cid in _child_ids_for(state, spec, child_ref):
+                if cid not in child_ids:
+                    child_ids.append(cid)
+            if spec.followups and note.strip():
+                fid = spec.followups[0]
+                slot = followups.get(fid)
+                old = str(slot.get("note") or "") if isinstance(slot, dict) else ""
+                followups[fid] = {"state": "concern", "note": _join_notes(old, note.strip())}
+        state["answers"][target] = _blank(
+            "concern",
+            note=_join_notes(str(prior.get("notes") or ""), note),
+            child_ids=child_ids,
+            followups=followups,
+        )
+    _recompute(state)
+    if _active_is_skipped(state):
+        _advance(state)
+    return state
+
+
 def apply_turn(
     state: dict,
     outcome: str,
@@ -155,6 +224,7 @@ def apply_turn(
     child_ref: str = "",
     note: str = "",
     followup_answered: bool = False,
+    target_qid: str = "",
 ) -> dict:
     if outcome not in _OUTCOMES:
         raise ValueError(f"unknown outcome {outcome!r}")
@@ -165,9 +235,14 @@ def apply_turn(
         return state
     if state["phase"] != "asking":
         return state
+    target = _accepted_target(state, target_qid)
+    if target and outcome == "clarify":
+        return _rewind_target(state, target)
+    if target and outcome in ("concern", "clear", "unknown", "retract"):
+        return _revise_target(state, target, outcome, child_ref, note)
     if _is_retract(state, outcome, child_ref):
         return _retract(state)
-    if outcome == "clarify" and state.get("pending_followup_idx") is None:
+    if outcome == "clarify":
         return state
     if state["active_qid"] == "ever_pregnant":
         return _resolve_ever(state, outcome)
@@ -474,6 +549,8 @@ def _next_qid(state: dict, after_id: str) -> str | None:
         spec = get_spec(qid)
         if ask_ever and _needs_ever_pregnant(state) and "ever_pregnant_no" in spec.skip_if:
             return "ever_pregnant"
+        if (state["answers"].get(qid) or {}).get("state") in _ANSWERED:
+            continue
         if _is_skipped(spec, state):
             prior = state["answers"].get(qid)
             if not prior or prior.get("state") not in _ANSWERED:

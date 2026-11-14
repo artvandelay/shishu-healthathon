@@ -126,7 +126,7 @@ Profile fields in `state["profile"]`:
 | `intro_bridge` | `intro` | `bridge` | `()` | अब मैं एक-एक करके छोटे और आसान सवाल पूछूँगी। आप बोलकर या नीचे हाँ या नहीं का बटन दबाकर जवाब दे सकती हैं, और कुछ समझ न आए तो पूछ सकती हैं। शुरू करें? |
 | `close_anything_else` | `close` | `open_capture` | `()` | क्या इसके अलावा डॉक्टर के लिए कुछ और बताना है जो आपके मन में हो? |
 
-### 4.3 Atomic Clinical Questions (50 Items — All `kind="gate"`, `opens=()`)
+### 4.3 Atomic Clinical Questions (56 Items — All `kind="gate"`, `opens=()`)
 
 | # | ID | Group | NRROID | `skip_if` | `question_hi` (1 Child / General) | `question_multi_hi` (2+ Children) | `followups` |
 |---|---|---|---|---|---|---|---|
@@ -181,9 +181,11 @@ Profile fields in `state["profile"]`:
 | 49 | `fam_cancer` | `family` | `Q11` | `()` | क्या परिवार में किसी बच्चे या बड़े को कैंसर हुआ है? | *(empty)* | `fam_who` |
 | 50 | `fam_heart_kidney` | `family` | `Q11` | `()` | क्या परिवार में किसी बच्चे या बड़े को दिल या गुर्दे (किडनी) की गंभीर बीमारी है? | *(empty)* | `fam_who` |
 | 51 | `fam_bp_stroke` | `family` | `Q11` | `()` | क्या परिवार में 40-50 साल से कम उम्र के किसी व्यक्ति को बीपी, शुगर या लकवा हुआ है? | *(empty)* | `bp_who`, `bp_age` |
-| 52 | `fam_maternal_side` | `family` | `Q11` | `()` | क्या आपके मायके की तरफ किसी बच्चे या बड़े को ज़्यादा खून बहने, बार-बार इंफेक्शन, या सूखे खुजली वाले धब्बों की दिक्कत है? | *(empty)* | `fam_who` |
-| 53 | `fam_lumps` | `family` | `Q11` | `()` | क्या परिवार में किसी बच्चे या बड़े के शरीर पर सूजन या गाँठें हैं? | *(empty)* | `fam_who` |
-| 54 | `fam_same_problem` | `family` | `Q11` | `no_children`, `no_family_concern` | क्या परिवार में किसी और को भी आपके बच्चे जैसी ही दिक्कत है? | *(empty)* | `fam_who` |
+| 52 | `fam_maternal_bleeding` | `family` | `Q11` | `()` | क्या आपके मायके की तरफ किसी बच्चे या बड़े को चोट पर ज़्यादा खून बहने की दिक्कत है? | *(empty)* | `fam_who` |
+| 53 | `fam_maternal_infections` | `family` | `Q11` | `()` | क्या आपके मायके की तरफ किसी बच्चे या बड़े को बार-बार गंभीर इंफेक्शन की दिक्कत है? | *(empty)* | `fam_who` |
+| 54 | `fam_maternal_eczema` | `family` | `Q11` | `()` | क्या आपके मायके की तरफ किसी बच्चे या बड़े को त्वचा पर सूखे खुजली वाले धब्बों की दिक्कत है? | *(empty)* | `fam_who` |
+| 55 | `fam_lumps` | `family` | `Q11` | `()` | क्या परिवार में किसी बच्चे या बड़े के शरीर पर सूजन या गाँठें हैं? | *(empty)* | `fam_who` |
+| 56 | `fam_same_problem` | `family` | `Q11` | `no_children`, `no_family_concern` | क्या परिवार में किसी और को भी आपके बच्चे जैसी ही दिक्कत है? | *(empty)* | `fam_who` |
 
 ---
 
@@ -249,7 +251,7 @@ Profile fields in `state["profile"]`:
      - If `outcome == "concern"` WITH `note.strip()`: appends `note` to `close_anything_else["notes"]`, increments `close_rounds`, and asks `"मैंने यह बात नोट कर ली। इसके अलावा कुछ और बताना चाहेंगी?"`.
      - If `outcome in ("clear", "unknown")`: preserves any prior `"concern"` note (or writes `"clear"`/`"unknown"` if none) and transitions `phase = "closing"`, `close_reason = "complete"`.
 3. **`expect_yes_no(state) -> bool`**:
-   - Returns `True` **only** when `state["phase"] == "asking"`, `state["pending_followup_idx"] is None`, and `state["active_qid"]` is NOT in `{"intro_name", "intro_married", "intro_children"}` (i.e. `True` on `intro_bridge`, `ever_pregnant`, all 50 clinical `gate` questions, and `close_anything_else` when `pending_followup_idx is None`; `False` on `intro_name`, `intro_married`, `intro_children`, `which_child`, and all detail `followups`).
+   - Returns `True` **only** when `state["phase"] == "asking"`, `state["pending_followup_idx"] is None`, and `state["active_qid"]` is NOT in `{"intro_name", "intro_married", "intro_children"}` (i.e. `True` on `intro_bridge`, `ever_pregnant`, all 56 clinical `gate` questions, and `close_anything_else` when `pending_followup_idx is None`; `False` on `intro_name`, `intro_married`, `intro_children`, `which_child`, and all detail `followups`).
 
 ---
 

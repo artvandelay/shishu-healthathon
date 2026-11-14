@@ -125,6 +125,15 @@ _RECORD_TURN_DECL = {
                 "type": "BOOLEAN",
                 "description": "True when her हाँ sentence already included the follow-up detail.",
             },
+            "target_qid": {
+                "type": "STRING",
+                "description": (
+                    "Leave empty when she is answering the current question. "
+                    "Set to an earlier answered question id (such as last_answered_qid) "
+                    "only when she adds a detail, corrects an answer, or asks the meaning "
+                    "of an earlier question."
+                ),
+            },
         },
         "required": ["outcome"],
     },
@@ -884,8 +893,24 @@ def _recorded_concerns(state: dict) -> list[str]:
     return lines
 
 
+def _answered_qids(state: dict) -> list[str]:
+    found = []
+    for qid, ans in (state.get("answers") or {}).items():
+        if qid == "intro_bridge":
+            continue
+        if isinstance(ans, dict) and ans.get("state") in ("clear", "concern", "unknown"):
+            found.append(str(qid))
+    return found
+
+
 def _tool_body(state: dict, *, outcome: str = "") -> dict:
-    body = {"result": "ok", "say": _say_hindi(state)}
+    body = {
+        "result": "ok",
+        "say": _say_hindi(state),
+        "active_qid": str(state.get("active_qid") or ""),
+        "last_answered_qid": str(state.get("last_answered_qid") or ""),
+        "answered_qids": _answered_qids(state),
+    }
     if state.get("phase") == "closing":
         body["stop"] = True
     children = (state.get("profile") or {}).get("children") or []
@@ -1119,6 +1144,7 @@ async def _answer_function_calls(
                             child_ref=str(args.get("child_ref") or ""),
                             note=str(args.get("note") or ""),
                             followup_answered=bool(_optional_bool(args.get("followup_answered"))),
+                            target_qid=str(args.get("target_qid") or ""),
                         )
                         cursor.state = new_state
                         db.save_cursor_state(call_id, new_state)

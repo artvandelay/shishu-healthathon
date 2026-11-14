@@ -16,6 +16,7 @@ os.environ.setdefault("ADMIN_PASSCODE", "admin-test")
 import call_cursor  # noqa: E402
 import db  # noqa: E402
 import gemini_live  # noqa: E402
+import prompts  # noqa: E402
 import test_v4_cursor as cursor_tests  # noqa: E402
 from call_cursor import apply_profile, apply_turn  # noqa: E402
 
@@ -1369,6 +1370,116 @@ class Stage5ATests(unittest.TestCase):
             self.assertIn("recorded_concerns", fam_body)
             self.assertTrue(any("सगे मामा" in line for line in fam_body["recorded_concerns"]))
             self.assertEqual(fam.state["active_qid"], "fam_same_problem")
+
+        asyncio.run(run())
+
+
+class ClosedWorldTargetTests(unittest.TestCase):
+    def _telemetry(self):
+        return {"tool_calls": 0, "tool_errors": 0, "end_requested": False}
+
+    def _cursor(self, state):
+        cursor = gemini_live._Cursor()
+        cursor.state = state
+        turn = gemini_live._TurnState()
+        step = gemini_live._current_step(state)
+        turn.spoken_qid = step
+        turn.user_turn_step = step
+        return cursor, turn
+
+    async def _record(self, state, args):
+        cursor, turn = self._cursor(state)
+        session = _FakeSession()
+        await gemini_live._answer_function_calls(
+            session,
+            asyncio.Lock(),
+            _FakeSocket(),
+            asyncio.Lock(),
+            db.create_call("gemini"),
+            self._telemetry(),
+            [_Call("record_turn", args, "fc-target")],
+            set(),
+            set(),
+            cursor,
+            turn,
+        )
+        await _drop_fallback(turn)
+        body = session.sent[0][1][0].response
+        return cursor.state, body
+
+    def test_tool_result_names_the_current_and_earlier_questions(self):
+        decl = gemini_live._RECORD_TURN_DECL["parameters"]["properties"]["target_qid"]
+        self.assertEqual(decl["type"], "STRING")
+        self.assertIn("Leave empty", decl["description"])
+        self.assertIn("last_answered_qid", decl["description"])
+        prompt = prompts.GEMINI_LIVE_SYSTEM_PROMPT
+        self.assertIn("target_qid", prompt)
+        self.assertIn("last_answered_qid", prompt)
+        self.assertIn("answered_qids", prompt)
+        self.assertIn("Leave target_qid empty", prompt)
+        for token in ("target_qid", "last_answered_qid", "answered_qids", "recorded_concerns"):
+            self.assertTrue(prompts.leaked_caption(token, token))
+        state = cursor_tests._clear_until(
+            cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
+            "birth_jaundice",
+        )
+        body = gemini_live._tool_body(state)
+        self.assertEqual(body["active_qid"], "birth_jaundice")
+        self.assertEqual(body["last_answered_qid"], "birth_nicu")
+        self.assertIn("birth_mode_detail", body["answered_qids"])
+        self.assertNotIn("intro_bridge", body["answered_qids"])
+        self.assertNotIn("birth_jaundice", body["answered_qids"])
+
+    def test_record_turn_can_revise_or_reask_an_earlier_question(self):
+        async def run():
+            heart = cursor_tests._clear_until(
+                cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
+                "fam_cancer",
+            )
+            heart = apply_turn(heart, "concern", note="मामा को ब्लड कैंसर")
+            heart = apply_turn(heart, "concern", note="मामा")
+            heart = cursor_tests._clear_until(heart, "fam_heart_kidney")
+            revised, body = await self._record(heart, {
+                "outcome": "concern",
+                "target_qid": "fam_cancer",
+                "note": "चाची को भी ब्लड कैंसर",
+            })
+            self.assertEqual(revised["active_qid"], "fam_heart_kidney")
+            self.assertEqual(body["active_qid"], "fam_heart_kidney")
+            self.assertIn("दिल या गुर्दे", body["say"])
+            self.assertNotEqual(revised["answers"].get("fam_heart_kidney", {}).get("state"), "concern")
+            self.assertIn("चाची को भी ब्लड कैंसर", revised["answers"]["fam_cancer"]["notes"])
+            self.assertIn("fam_cancer", body["answered_qids"])
+
+            thal = cursor_tests._clear_until(
+                cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
+                "preg_thalassemia",
+            )
+            thal = apply_turn(thal, "unknown")
+            self.assertEqual(thal["active_qid"], "fam_related")
+            rewound, clarify_body = await self._record(thal, {
+                "outcome": "clarify",
+                "target_qid": "preg_thalassemia",
+            })
+            self.assertEqual(rewound["active_qid"], "preg_thalassemia")
+            self.assertTrue(clarify_body["clarify"])
+            self.assertIn("थैलेसीमिया", clarify_body["say"])
+            self.assertNotIn("preg_thalassemia", rewound["answers"])
+            landed, _clear_body = await self._record(rewound, {"outcome": "clear"})
+            self.assertEqual(landed["answers"]["preg_thalassemia"]["state"], "clear")
+            self.assertEqual(landed["active_qid"], "fam_related")
+            self.assertEqual(landed["answers"]["birth_mode_detail"]["state"], "clear")
+
+            follow = cursor_tests._clear_until(
+                cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
+                "fam_maternal_bleeding",
+            )
+            follow = apply_turn(follow, "concern")
+            self.assertEqual(follow["pending_followup_idx"], 0)
+            held, _body = await self._record(follow, {"outcome": "clarify"})
+            self.assertEqual(held["active_qid"], "fam_maternal_bleeding")
+            self.assertEqual(held["pending_followup_idx"], 0)
+            self.assertEqual(held["step_attempts"], 0)
 
         asyncio.run(run())
 

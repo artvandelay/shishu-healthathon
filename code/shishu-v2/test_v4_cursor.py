@@ -92,7 +92,7 @@ def _spec_tables():
     lines = _DOC.read_text(encoding="utf-8").splitlines()
     follow_at = lines.index("### 4.1 Follow-Up Prompts (`FOLLOWUP_HI`)")
     intro_at = lines.index("### 4.2 Intro & Open Capture Items")
-    clin_at = lines.index('### 4.3 Atomic Clinical Questions (50 Items — All `kind="gate"`, `opens=()`)')
+    clin_at = lines.index('### 4.3 Atomic Clinical Questions (56 Items — All `kind="gate"`, `opens=()`)')
     end = lines.index("---", clin_at)
     followups = []
     for line in lines[follow_at:intro_at]:
@@ -145,7 +145,7 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(spec.question_hi, hindi, qid)
             self.assertEqual(spec.opens, (), qid)
         self.assertEqual(get_spec("close_anything_else").followups, ("open_concern_detail",))
-        self.assertEqual(len(clinical), 54)
+        self.assertEqual(len(clinical), 56)
         gates = [spec for spec in triage_catalog.CATALOG if spec.kind == "gate"]
         self.assertEqual([spec.id for spec in gates], [row["id"] for row in clinical])
         child_multi = 0
@@ -413,13 +413,13 @@ class ChildResolutionTests(unittest.TestCase):
         state = apply_turn(state, "concern", note="पता नहीं कौन")
         self.assertEqual(state["pending_followup_idx"], -1)
         self.assertEqual(state["step_attempts"], 1)
-        state = apply_turn(state, "clarify")
+        state = apply_turn(state, "concern")
         self.assertEqual(state["active_qid"], "birth_nicu")
         self.assertEqual(state["pending_followup_idx"], 0)
         self.assertEqual(state["answers"]["birth_nicu"]["child_ids"], [])
         self.assertEqual(state["answers"]["birth_nicu"]["state"], "concern")
         self.assertIn("पता नहीं कौन", state["answers"]["birth_nicu"]["notes"])
-        state = apply_turn(state, "clarify")
+        state = apply_turn(state, "concern", note="")
         self.assertEqual(state["pending_followup_idx"], 0)
         self.assertEqual(state["step_attempts"], 1)
         state = apply_turn(state, "concern", note="")
@@ -429,7 +429,7 @@ class ChildResolutionTests(unittest.TestCase):
         )
         self.assertEqual(state["active_qid"], "birth_nicu")
         self.assertEqual(state["pending_followup_idx"], 1)
-        state = apply_turn(state, "clarify")
+        state = apply_turn(state, "concern", note="")
         state = apply_turn(state, "concern", note="")
         self.assertEqual(
             state["answers"]["birth_nicu"]["followups"]["nicu_days"],
@@ -574,6 +574,120 @@ class CloseAndFinishTests(unittest.TestCase):
             qid for qid, answer in state["answers"].items()
             if answer.get("state") == "not_applicable" and qid == "fam_same_problem"
         ])
+
+
+class CallNineReplayTests(unittest.TestCase):
+    def _boy(self):
+        return _profile(children=[_child(4, "male")])
+
+    def test_late_family_addition_stays_on_the_current_question(self):
+        state = _clear_until(self._boy(), "fam_cancer")
+        state = apply_turn(state, "concern", note="मामा को ब्लड कैंसर")
+        state = apply_turn(state, "concern", note="मामा")
+        state = _clear_until(state, "fam_heart_kidney")
+        self.assertEqual(state["active_qid"], "fam_heart_kidney")
+        updated = apply_turn(
+            state,
+            "concern",
+            note="चाची को भी ब्लड कैंसर",
+            target_qid="fam_cancer",
+        )
+        self.assertEqual(updated["active_qid"], "fam_heart_kidney")
+        self.assertEqual(updated["pending_followup_idx"], state["pending_followup_idx"])
+        self.assertEqual(updated["step_attempts"], state["step_attempts"])
+        heart = updated["answers"].get("fam_heart_kidney")
+        self.assertTrue(heart is None or heart.get("state") != "concern")
+        cancer = updated["answers"]["fam_cancer"]
+        self.assertEqual(cancer["state"], "concern")
+        self.assertIn("मामा को ब्लड कैंसर", cancer["notes"])
+        self.assertIn("चाची को भी ब्लड कैंसर", cancer["notes"])
+        self.assertEqual(cancer["followups"]["fam_who"]["state"], "concern")
+        self.assertIn("मामा", cancer["followups"]["fam_who"]["note"])
+        self.assertIn("चाची को भी ब्लड कैंसर", cancer["followups"]["fam_who"]["note"])
+        self.assertIn("दिल या गुर्दे", prompt_directive(updated))
+
+    def test_clarify_on_an_earlier_question_returns_there_then_resumes(self):
+        state = _clear_until(self._boy(), "preg_thalassemia")
+        state = apply_turn(state, "unknown")
+        self.assertEqual(state["active_qid"], "fam_related")
+        self.assertEqual(state["answers"]["preg_thalassemia"]["state"], "unknown")
+        self.assertEqual(state["answers"]["birth_mode_detail"]["state"], "clear")
+        rewound = apply_turn(state, "clarify", target_qid="preg_thalassemia")
+        self.assertEqual(rewound["active_qid"], "preg_thalassemia")
+        self.assertIsNone(rewound["pending_followup_idx"])
+        self.assertEqual(rewound["step_attempts"], 0)
+        self.assertIsNone(rewound["hold_reason"])
+        self.assertNotIn("preg_thalassemia", rewound["answers"])
+        self.assertEqual(rewound["answers"]["birth_mode_detail"]["state"], "clear")
+        self.assertIn("थैलेसीमिया", prompt_directive(rewound))
+        answered = apply_turn(rewound, "clear")
+        self.assertEqual(answered["answers"]["preg_thalassemia"]["state"], "clear")
+        self.assertEqual(answered["active_qid"], "fam_related")
+        self.assertEqual(answered["answers"]["birth_mode_detail"]["state"], "clear")
+        self.assertNotEqual(
+            (answered["answers"].get("fam_infant_death") or {}).get("state"),
+            "clear",
+        )
+        self.assertNotEqual(answered["active_qid"], "birth_mode_detail")
+
+    def test_maternal_gates_are_atomic_and_clarify_does_not_burn_a_followup(self):
+        bleeding = get_spec("fam_maternal_bleeding")
+        infections = get_spec("fam_maternal_infections")
+        eczema = get_spec("fam_maternal_eczema")
+        self.assertEqual(bleeding.group, "family")
+        self.assertEqual(bleeding.nrroid_gate, "Q11")
+        self.assertEqual(bleeding.kind, "gate")
+        self.assertEqual(bleeding.skip_if, ())
+        self.assertEqual(bleeding.followups, ("fam_who",))
+        self.assertEqual(infections.followups, ("fam_who",))
+        self.assertEqual(eczema.followups, ("fam_who",))
+        self.assertEqual(bleeding.need_en, "on her parents' side: heavy bleeding")
+        self.assertEqual(infections.need_en, "on her parents' side: repeated serious infections")
+        self.assertEqual(eczema.need_en, "on her parents' side: dry itchy skin patches")
+        self.assertEqual(
+            bleeding.question_hi,
+            "क्या आपके मायके की तरफ किसी बच्चे या बड़े को चोट पर ज़्यादा खून बहने की दिक्कत है?",
+        )
+        self.assertEqual(
+            infections.question_hi,
+            "क्या आपके मायके की तरफ किसी बच्चे या बड़े को बार-बार गंभीर इंफेक्शन की दिक्कत है?",
+        )
+        self.assertEqual(
+            eczema.question_hi,
+            "क्या आपके मायके की तरफ किसी बच्चे या बड़े को त्वचा पर सूखे खुजली वाले धब्बों की दिक्कत है?",
+        )
+        self.assertNotIn("इंफेक्शन", bleeding.question_hi)
+        self.assertNotIn("खून", infections.question_hi)
+        self.assertNotIn("इंफेक्शन", eczema.question_hi)
+        with self.assertRaises(KeyError):
+            get_spec("fam_maternal_side")
+
+        state = _clear_until(self._boy(), "fam_maternal_bleeding")
+        state = apply_turn(state, "concern")
+        self.assertEqual(state["pending_followup_idx"], 0)
+        self.assertEqual(state["step_attempts"], 0)
+        state = apply_turn(state, "clarify")
+        self.assertEqual(state["active_qid"], "fam_maternal_bleeding")
+        self.assertEqual(state["pending_followup_idx"], 0)
+        self.assertEqual(state["step_attempts"], 0)
+        state = apply_turn(state, "clarify")
+        self.assertEqual(state["pending_followup_idx"], 0)
+        self.assertEqual(state["step_attempts"], 0)
+        self.assertNotIn("fam_who", state["answers"]["fam_maternal_bleeding"].get("followups") or {})
+
+        kids = [_child(6, "male", 1), _child(2, "female", 2)]
+        which = _clear_until(_profile(children=kids), "birth_nicu")
+        which = apply_turn(which, "concern")
+        which = apply_turn(which, "clarify")
+        self.assertEqual(which["pending_followup_idx"], -1)
+        self.assertEqual(which["step_attempts"], 0)
+
+        close = _clear_until(self._boy(), "close_anything_else")
+        close = apply_turn(close, "concern")
+        close = apply_turn(close, "clarify")
+        self.assertEqual(close["phase"], "asking")
+        self.assertEqual(close["pending_followup_idx"], 0)
+        self.assertEqual(close["step_attempts"], 0)
 
 
 if __name__ == "__main__":

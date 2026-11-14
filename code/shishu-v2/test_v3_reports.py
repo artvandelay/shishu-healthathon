@@ -159,6 +159,95 @@ class CursorReportTests(unittest.TestCase):
         for heading in post_call._HEADINGS:
             self.assertIn(heading, synthesis["doctor_markdown"])
 
+    def test_omitted_closing_concern_is_backfilled_into_every_report(self):
+        note = "पति को गुप्त रोग; बच्चे पति के नहीं हैं"
+        qids = [
+            "birth_nicu",
+            "body_bleeding_bruise",
+            "body_transfusion",
+            "fam_fits_delay",
+            "fam_cancer",
+            "fam_heart_kidney",
+        ]
+        notes = {
+            "birth_nicu": "तीन दिन काँच का बक्सा",
+            "body_bleeding_bruise": "चोट पर खून देर तक बहता है",
+            "body_transfusion": "दो बार खून चढ़ा",
+            "fam_fits_delay": "भाभी के बेटे को दौरे",
+            "fam_cancer": "मामा को कैंसर",
+            "fam_heart_kidney": "दादा को दिल की बीमारी",
+        }
+        state = cursor_tests._profile(name="मीना", children=[cursor_tests._child(4, "male")])
+        for qid in qids:
+            state["answers"][qid] = {
+                "state": "concern",
+                "child_ids": ["child_1"] if not qid.startswith("fam_") else [],
+                "notes": notes[qid],
+                "followups": {},
+            }
+        state["answers"]["close_anything_else"] = {
+            "state": "concern",
+            "child_ids": [],
+            "notes": note,
+            "followups": {"open_concern_detail": {"state": "concern", "note": note}},
+        }
+        state["phase"] = "closing"
+        state["close_reason"] = "complete"
+        call = _call_for(state, 9)
+        sections = []
+        for heading in post_call._HEADINGS:
+            if heading.startswith("### Positive"):
+                lines = [f"- {qid}: noted." for qid in qids]
+            else:
+                lines = ["- Noted."]
+            sections.append(heading + "\n" + "\n".join(lines))
+        raw = {
+            "mother_name_hi": "मीना",
+            "children_label_hi": "4 साल बेटा",
+            "mother_questions_hi": [
+                f"डॉक्टर, {notes[qid]} की जाँच क्या होनी चाहिए?" for qid in reversed(qids)
+            ],
+            "yes_items_hi": [
+                {"qid": qid, "summary_hi": f"{notes[qid]} की बात है।"}
+                for qid in reversed(qids)
+            ],
+            "doctor_markdown": "\n\n".join(sections),
+            "red_flags": [f"{qid}: noted" for qid in qids],
+        }
+        synthesis = post_call._finish(post_call._coerce(raw, call))
+        self.assertEqual(
+            [key for key in synthesis],
+            [
+                "mother_name_hi",
+                "children_label_hi",
+                "mother_questions_hi",
+                "yes_summaries_hi",
+                "doctor_markdown",
+                "red_flags",
+            ],
+        )
+        self.assertEqual(len(synthesis["yes_summaries_hi"]), 7)
+        expected = [f"{notes[qid]} की बात है।" for qid in qids]
+        self.assertEqual(synthesis["yes_summaries_hi"][:6], expected)
+        self.assertIn(note, synthesis["yes_summaries_hi"][6])
+        self.assertTrue(any(note in question for question in synthesis["mother_questions_hi"]))
+        self.assertLessEqual(len(synthesis["mother_questions_hi"]), 10)
+        self.assertGreaterEqual(len(synthesis["mother_questions_hi"]), 7)
+        profile = synthesis["doctor_markdown"].split("### Positive", 1)[0]
+        self.assertIn("Additional mother disclosure (close_anything_else)", profile)
+        self.assertIn(note, profile)
+        self.assertIn(note, "\n".join(synthesis["red_flags"]))
+        self.assertTrue(any("close_anything_else" in flag for flag in synthesis["red_flags"]))
+        for qid in qids:
+            self.assertTrue(
+                any(qid in flag for flag in synthesis["red_flags"]),
+                qid,
+            )
+        fallback = post_call.deterministic_fallback(call)
+        self.assertIn(note, fallback["yes_summaries_hi"][-1])
+        self.assertIn(note, fallback["doctor_markdown"].split("### Positive", 1)[0])
+        self.assertTrue(any("close_anything_else" in flag for flag in fallback["red_flags"]))
+
     def test_devanagari_disease_names_and_followups_reach_the_brief(self):
         scrubbed = post_call._scrub_diagnostic_terms("बच्चे को ड्यूशेन और हीमोफीलिया बताया")
         self.assertNotIn("ड्यूशेन", scrubbed)
@@ -301,12 +390,13 @@ def _assert_live(raw: dict, call: dict, label: str) -> dict:
         "mother_name_hi",
         "children_label_hi",
         "mother_questions_hi",
-        "yes_summaries_hi",
         "doctor_markdown",
         "red_flags",
     ):
         if key not in raw:
             raise AssertionError(f"{label} JSON missing {key}")
+    if "yes_items_hi" not in raw and "yes_summaries_hi" not in raw:
+        raise AssertionError(f"{label} JSON missing yes_items_hi")
     synthesis = post_call._finish(post_call._coerce(raw, call))
     mother = " ".join(
         [synthesis["mother_name_hi"], synthesis["children_label_hi"]]
@@ -319,7 +409,7 @@ def _assert_live(raw: dict, call: dict, label: str) -> dict:
     for heading in post_call._HEADINGS:
         if heading not in synthesis["doctor_markdown"]:
             raise AssertionError(f"{label} doctor note missing {heading}")
-    if not (3 <= len(synthesis["mother_questions_hi"]) <= 6):
+    if not (3 <= len(synthesis["mother_questions_hi"]) <= 10):
         raise AssertionError(f"{label} question count {len(synthesis['mother_questions_hi'])}")
     report = mother_report.build_v3(call, synthesis)
     pdf = mother_report.render_pdf(report)
