@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
-import decisions
+from call_cursor import active_prompt_hi
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -215,9 +215,8 @@ async def extract_profile_entities(
     """Extract schema-validated profile entities from one caller turn."""
     started = time.perf_counter()
     if (active_qid is None or active_prompt is None) and isinstance(state, dict):
-        view_qid, _step_kind, view_prompt, _followup = decisions.turn_view(state)
-        active_qid = view_qid if active_qid is None else active_qid
-        active_prompt = view_prompt if active_prompt is None else active_prompt
+        active_qid = str(state.get("active_qid") or "") if active_qid is None else active_qid
+        active_prompt = active_prompt_hi(state) if active_prompt is None else active_prompt
 
     clean_utt = " ".join(str(utterance_text or "").split())
     audio_data = bytes(audio_wav_bytes) if audio_wav_bytes else b""

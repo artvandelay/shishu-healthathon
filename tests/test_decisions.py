@@ -573,7 +573,8 @@ class InterpreterEndToEndTests(unittest.TestCase):
         interp = decisions.interpret_turn_decision(state, answers, utterance_text=utterance, thresholds=thresholds)
         self.assertEqual(interp.cursor_payload["child_ref"], "child_2")
         self.assertTrue(interp.cursor_payload["followup_answered"])
-        self.assertEqual(interp.cursor_payload["note"], utterance)
+        self.assertEqual(interp.cursor_payload["current_note"], utterance)
+        self.assertNotIn("note", interp.cursor_payload)
 
         updated = apply_interpreted_turn(state, interp.cursor_payload)
         self.assertEqual(updated["answers"]["birth_jaundice"]["state"], "concern")
@@ -600,7 +601,8 @@ class InterpreterEndToEndTests(unittest.TestCase):
         interp = decisions.interpret_turn_decision(state, answers, utterance_text="हाँ", thresholds=thresholds)
         self.assertEqual(interp.cursor_payload["current_outcome"], "concern")
         self.assertFalse(interp.cursor_payload["followup_answered"])
-        self.assertEqual(interp.cursor_payload["note"], "")
+        self.assertEqual(interp.cursor_payload["current_note"], "")
+        self.assertNotIn("note", interp.cursor_payload)
 
         updated = apply_interpreted_turn(state, interp.cursor_payload)
         self.assertEqual(updated["active_qid"], "birth_jaundice")
@@ -1038,7 +1040,8 @@ class TransportRetryTests(unittest.TestCase):
             nicu_state, followup_answers, utterance_text="चार दिन", thresholds=thresholds,
         )
         self.assertIsNone(interp_nicu.diagnostics["detail_present"])
-        self.assertEqual(interp_nicu.cursor_payload["note"], "चार दिन")
+        self.assertEqual(interp_nicu.cursor_payload["current_note"], "चार दिन")
+        self.assertNotIn("note", interp_nicu.cursor_payload)
         updated_nicu = apply_interpreted_turn(nicu_state, interp_nicu.cursor_payload)
         self.assertEqual(updated_nicu["answers"]["birth_nicu"]["followups"]["nicu_days"], {"state": "concern", "note": "चार दिन"})
         self.assertIsNone(updated_nicu["pending_followup_idx"])
@@ -1053,7 +1056,8 @@ class TransportRetryTests(unittest.TestCase):
         interp_open = decisions.interpret_turn_decision(
             open_detail_state, followup_answers, utterance_text="नींद में डर लगता है", thresholds=thresholds,
         )
-        self.assertEqual(interp_open.cursor_payload["note"], "नींद में डर लगता है")
+        self.assertEqual(interp_open.cursor_payload["current_note"], "नींद में डर लगता है")
+        self.assertNotIn("note", interp_open.cursor_payload)
         updated_open = apply_interpreted_turn(open_detail_state, interp_open.cursor_payload)
         self.assertIsNone(updated_open["pending_followup_idx"])
         self.assertEqual(updated_open["answers"]["close_anything_else"]["followups"]["open_concern_detail"]["note"], "नींद में डर लगता है")

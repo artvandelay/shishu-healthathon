@@ -51,3 +51,14 @@ class StereoWavTests(unittest.TestCase):
             self.assertEqual(wf.getframerate(), 16000)
             self.assertEqual(wf.getsampwidth(), 2)
             self.assertEqual(wf.readframes(wf.getnframes()), pcm[:-1])
+
+    def test_audio_pcm_helpers_and_mime_rate(self):
+        import base64
+        self.assertEqual(audio_recorder.rate_from_mime("audio/pcm;rate=24000", 16000), 24000)
+        self.assertEqual(audio_recorder.rate_from_mime("audio/pcm;rate=bad", 16000), 16000)
+        raw = b"\x00\x40" * 4
+        b64 = base64.b64encode(raw + b"\x01").decode("ascii")
+        self.assertEqual(audio_recorder.pcm_bytes(b64), raw)
+        self.assertIsNone(audio_recorder.pcm_bytes("not-valid-base64!!!"))
+        self.assertAlmostEqual(audio_recorder.pcm_rms(raw), 16384.0 / 32768.0, places=4)
+        self.assertEqual(audio_recorder.pcm_rms(b""), 0.0)

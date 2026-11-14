@@ -32,7 +32,7 @@ load_dotenv()
 import call_cursor  # noqa: E402
 import db  # noqa: E402
 import uvicorn  # noqa: E402
-from call_cursor import expect_yes_no  # noqa: E402
+from call_cursor import answer_notes_text, expect_yes_no  # noqa: E402
 from pypdf import PdfReader  # noqa: E402
 from triage_catalog import FOLLOWUP_HI, active_specs, get_spec  # noqa: E402
 import app as shishu_app  # noqa: E402
@@ -201,16 +201,6 @@ def _profile(name: str, children: str, extra: dict[str, tuple[str, str]]) -> dic
     return lines
 
 
-def _notes(entry: dict) -> str:
-    bits = [str(entry.get("notes") or "")]
-    followups = entry.get("followups") or {}
-    if isinstance(followups, dict):
-        for item in followups.values():
-            if isinstance(item, dict):
-                bits.append(str(item.get("note") or ""))
-    return " ".join(bit for bit in bits if bit)
-
-
 def _has(text: str, *needles: str) -> bool:
     return any(needle in text for needle in needles)
 
@@ -231,7 +221,7 @@ def _check_p1(call: dict, problems: list[str]) -> None:
         problems.append(f"body_bleeding_bruise={bleed.get('state')}")
     if joint.get("state") != "concern":
         problems.append(f"body_joint_swelling={joint.get('state')}")
-    nicu_text = _notes(nicu)
+    nicu_text = answer_notes_text(nicu)
     if not _has(nicu_text, "तकलीफ", "साँस", "सांस"):
         problems.append(f"nicu reason missing: {nicu_text}")
     if not _has(nicu_text, "4", "चार"):
@@ -298,11 +288,11 @@ def _check_p4(persona: Persona, call: dict, problems: list[str]) -> None:
         problems.append(f"children={profile.get('children')}")
     elif middle.get("id") not in (jaundice.get("child_ids") or []):
         problems.append(f"jaundice child {jaundice.get('child_ids')} middle {middle}")
-    if not _has(_notes(jaundice), "3", "तीन"):
-        problems.append(f"jaundice days missing: {_notes(jaundice)}")
-    if "मामा" not in _notes(transfusion):
-        problems.append(f"fam_who missing: {_notes(transfusion)}")
-    bp_text = _notes(bp)
+    if not _has(answer_notes_text(jaundice), "3", "तीन"):
+        problems.append(f"jaundice days missing: {answer_notes_text(jaundice)}")
+    if "मामा" not in answer_notes_text(transfusion):
+        problems.append(f"fam_who missing: {answer_notes_text(transfusion)}")
+    bp_text = answer_notes_text(bp)
     if "पिता" not in bp_text:
         problems.append(f"bp_who missing: {bp_text}")
     if not _has(bp_text, "42", "बयालीस"):

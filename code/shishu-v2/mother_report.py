@@ -1,7 +1,6 @@
 """Hindi mother PDF. Built only after the call is saved."""
 
 import html
-import json
 import logging
 import os
 import subprocess
@@ -178,23 +177,6 @@ def _duration(seconds: int) -> str:
     return f"{secs} सेकंड"
 
 
-def _cursor(call: dict) -> dict:
-    state = call.get("cursor_state")
-    if isinstance(state, dict) and state.get("active_qid"):
-        return state
-    raw = call.get("cursor_json") or ""
-    if isinstance(raw, dict) and raw.get("active_qid"):
-        return raw
-    if isinstance(raw, str) and raw.strip():
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            return {}
-        if isinstance(data, dict) and data.get("active_qid"):
-            return data
-    return {}
-
-
 def _page2_from_cursor(state: dict, incomplete: bool) -> tuple[list, list, list]:
     """Clear, unknown, and unanswered rows. not_applicable is omitted."""
     answers = state.get("answers") or {}
@@ -241,7 +223,7 @@ def build_v3(call: dict, synthesis: dict) -> dict:
 
     Hindi lines are used as written. This path does not transliterate.
     """
-    state = _cursor(call)
+    state = call_cursor.cursor_from_call(call)
     when = _ist(str(call.get("started_at") or ""))
     if when:
         date = f"{when.day} {_MONTHS[when.month]} {when.year}"

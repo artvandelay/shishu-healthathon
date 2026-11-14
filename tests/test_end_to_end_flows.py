@@ -32,7 +32,7 @@ import post_call  # noqa: E402
 import prompts  # noqa: E402
 import test_cursor as cursor_tests  # noqa: E402
 import test_reports as report_tests  # noqa: E402
-from call_cursor import apply_turn, prompt_directive, step_id  # noqa: E402
+from call_cursor import active_prompt_hi, apply_turn, step_id  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from pypdf import PdfReader  # noqa: E402
 from triage_catalog import FOLLOWUP_HI, active_specs, get_spec  # noqa: E402
@@ -139,10 +139,10 @@ class CatalogTests(unittest.TestCase):
         state = cursor_tests._clear_until(state, "birth_nicu")
         state = apply_turn(state, "concern", note="सांस की वजह से")
         self.assertEqual(state["pending_followup_idx"], 0)
-        self.assertIn("किस वजह से", prompt_directive(state))
+        self.assertIn("किस वजह से", active_prompt_hi(state))
         state = apply_turn(state, "concern", note="सांस")
         self.assertEqual(state["pending_followup_idx"], 1)
-        self.assertIn("कितने दिन", prompt_directive(state))
+        self.assertIn("कितने दिन", active_prompt_hi(state))
         self.assertEqual(
             state["answers"]["birth_nicu"]["followups"]["nicu_reason"]["note"],
             "सांस",
@@ -164,7 +164,7 @@ class CloseTests(unittest.TestCase):
         self.assertEqual(state["phase"], "asking")
         self.assertEqual(state["active_qid"], "close_anything_else")
         self.assertEqual(state["answers"]["close_anything_else"]["notes"], "पेट में दर्द")
-        self.assertIn("मैंने यह बात नोट कर ली। इसके अलावा कुछ और बताना चाहेंगी?", prompt_directive(state))
+        self.assertIn("मैंने यह बात नोट कर ली। इसके अलावा कुछ और बताना चाहेंगी?", active_prompt_hi(state))
         state = apply_turn(state, "concern", note="नींद कम है")
         self.assertEqual(
             state["answers"]["close_anything_else"]["notes"],
@@ -212,7 +212,7 @@ class ClarifyAndDeadAirTests(unittest.TestCase):
         self.assertIn("Do not repeat the question with the exact same words", text)
         state = cursor_tests._profile(children=[cursor_tests._child(4, "male")])
         state = cursor_tests._clear_until(state, "birth_nicu")
-        cue = gemini_live._speak_cue_text(state, "clarify")
+        cue = prompts.speak_cue_text(state, "clarify")
         self.assertIn("one short simpler Hindi sentence", cue)
         self.assertIn("Do not repeat it with the same words", cue)
         self.assertIn("काँच के बक्से", cue)

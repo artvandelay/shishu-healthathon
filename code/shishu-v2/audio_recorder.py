@@ -5,6 +5,7 @@ thread. The live session calls it with asyncio.to_thread. _remember only
 stores the raw chunk.
 """
 
+import base64
 import io
 import os
 import threading
@@ -78,6 +79,45 @@ def resample_int16_mono(pcm_bytes: bytes, src_rate: int, dst_rate: int = TARGET_
             dst_samples[i] = iv
 
     return dst_samples.tobytes()
+
+
+def rate_from_mime(mime: str, default: int) -> int:
+    for piece in (mime or "").split(";"):
+        piece = piece.strip().lower()
+        if not piece.startswith("rate="):
+            continue
+        try:
+            rate = int(piece.split("=", 1)[1])
+        except ValueError:
+            return default
+        if rate > 0:
+            return rate
+    return default
+
+
+def pcm_bytes(raw: object) -> bytes | None:
+    if isinstance(raw, str):
+        try:
+            raw = base64.b64decode(raw)
+        except Exception:
+            return None
+    if not isinstance(raw, (bytes, bytearray)) or not raw:
+        return None
+    data = bytes(raw)
+    if len(data) % 2 == 1:
+        data = data[:-1]
+    return data or None
+
+
+def pcm_rms(pcm: bytes) -> float:
+    count = len(pcm) // 2
+    if count <= 0:
+        return 0.0
+    total = 0
+    for index in range(0, count * 2, 2):
+        sample = int.from_bytes(pcm[index : index + 2], "little", signed=True)
+        total += sample * sample
+    return (total / count) ** 0.5 / 32768.0
 
 
 def _timeline(chunks: list[tuple[int, array]]) -> array:

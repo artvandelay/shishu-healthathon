@@ -413,7 +413,7 @@ class TurnTakingAndWatchdogTests(unittest.TestCase):
             "followups": {"nicu_days": {"state": "concern", "note": "चार दिन"}},
         }
         self.assertNotIn("recorded_concerns", gemini_live._tool_body(state))
-        lines = gemini_live._recorded_concerns(state)
+        lines = prompts.recorded_concerns_hi(state)
         self.assertEqual(len(lines), 1)
         self.assertIn("काँच के बक्से", lines[0])
         self.assertIn("4 साल", lines[0])

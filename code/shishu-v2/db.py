@@ -6,6 +6,8 @@ import threading
 import time
 from typing import Any
 
+import call_cursor
+
 DATA_DIR = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), "storage"))
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(os.path.join(DATA_DIR, "audio"), exist_ok=True)
@@ -344,18 +346,7 @@ def _cursor_labels(state: dict) -> tuple[str, str]:
     if not isinstance(profile, dict):
         profile = {}
     name = str(profile.get("caller_name") or "").strip()
-    sex_hi = {"male": "बेटा", "female": "बेटी"}
-    bits = []
-    for child in profile.get("children") or []:
-        if not isinstance(child, dict):
-            continue
-        age = str(child.get("age_label_hi") or "").strip()
-        sex = sex_hi.get(child.get("sex") or "", "")
-        child_name = str(child.get("name") or "").strip()
-        label = " ".join(part for part in (child_name, age, sex) if part)
-        if label:
-            bits.append(label)
-    return name, " · ".join(bits)
+    return name, call_cursor.children_label_hi(profile)
 
 def save_cursor_state(call_id: int, state: dict) -> None:
     name, child_age = _cursor_labels(state or {})

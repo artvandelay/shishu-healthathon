@@ -9,6 +9,7 @@ unknown and the cursor moves on.
 from __future__ import annotations
 
 import copy
+import json
 
 from triage_catalog import FOLLOWUP_HI, active_specs, get_spec, spine_ids
 
@@ -388,7 +389,7 @@ def apply_interpreted_turn(state: dict, interpreted: dict) -> dict:
     data = interpreted if isinstance(interpreted, dict) else {}
 
     if bool(data.get("emergency")):
-        return apply_turn(state, "emergency", note=str(data.get("note") or ""))
+        return apply_turn(state, "emergency", note=str(data.get("current_note") or ""))
     if bool(data.get("caller_stop")):
         return apply_turn(state, "caller_stop")
 
@@ -426,14 +427,12 @@ def apply_interpreted_turn(state: dict, interpreted: dict) -> dict:
             or prev_active_qid in _EARLY
         )
 
-    raw_note = str(data.get("note") or "")
     raw_child_ref = str(data.get("child_ref") or "").strip()
     side_qid = str(data.get("side_qid") or "").strip()
     side_action = str(data.get("side_action") or "").strip()
     side_outcome_raw = str(data.get("side_outcome") or "").strip()
     side_outcome = side_outcome_raw or ("concern" if side_action == "add_or_correct" else "")
-    raw_side_note = str(data.get("side_note") or "")
-    side_note_resolved = raw_side_note if "side_note" in data else raw_note
+    side_note = str(data.get("side_note") or "")
     raw_side_child_ref = str(data.get("side_child_ref") or "").strip()
 
     target = accepted_target(state, side_qid)
@@ -461,7 +460,7 @@ def apply_interpreted_turn(state: dict, interpreted: dict) -> dict:
             target,
             side_outcome,
             side_child_ref_resolved,
-            side_note_resolved,
+            side_note,
         )
         side_applied = True
         if state.get("phase") != "asking":
@@ -493,19 +492,12 @@ def apply_interpreted_turn(state: dict, interpreted: dict) -> dict:
 
     pending_idx = state.get("pending_followup_idx")
     is_pending_followup = isinstance(pending_idx, int) and pending_idx >= 0
-    if "current_note" in data:
-        active_note = str(data.get("current_note") or "")
-    elif (
-        (
-            current_outcome == "concern"
-            or (is_pending_followup and current_outcome not in ("clear", "unknown"))
-            or (pending_idx == -1 and current_outcome == "unknown")
-        )
-        and not (side_applied and current_outcome != "concern")
-    ):
-        active_note = raw_note
-    else:
-        active_note = ""
+    keep_active_note = (
+        current_outcome == "concern"
+        or (is_pending_followup and current_outcome not in ("clear", "unknown"))
+        or (pending_idx == -1 and current_outcome == "unknown")
+    )
+    active_note = str(data.get("current_note") or "") if keep_active_note else ""
 
     return apply_turn(
         state,
@@ -628,15 +620,58 @@ def last_answered_prompt_hi(state: dict) -> tuple[str, str]:
     return last_qid, question_hi_for(state, spec)
 
 
-def prompt_directive(state: dict) -> str:
-    """One speakable instruction: the single Hindi question to ask next."""
-    if state["phase"] != "asking":
-        return "Say one short warm Hindi closing, then stop. Do not ask another screening question."
-    return _ask(active_prompt_hi(state))
+def children_label_hi(profile: dict) -> str:
+    """Format the children's names, ages, and sexes joined with ' · '."""
+    if not isinstance(profile, dict):
+        return ""
+    sex_hi = {"male": "बेटा", "female": "बेटी"}
+    bits = []
+    for child in profile.get("children") or []:
+        if not isinstance(child, dict):
+            continue
+        child_name = str(child.get("name") or "").strip()
+        age = str(child.get("age_label_hi") or "").strip()
+        sex = sex_hi.get(child.get("sex") or "", "")
+        label = " ".join(part for part in (child_name, age, sex) if part)
+        if label:
+            bits.append(label)
+    return " · ".join(bits)
 
 
-def _ask(hindi: str) -> str:
-    return f"Ask only this one Hindi question, then wait: {hindi}"
+def answer_notes_text(entry: dict) -> str:
+    """Mother's words only: entry notes and follow-up slot notes, deduplicated."""
+    if not isinstance(entry, dict):
+        return ""
+    raw_parts: list[object] = [entry.get("notes")]
+    followups = entry.get("followups")
+    if isinstance(followups, dict):
+        for val in followups.values():
+            if isinstance(val, (dict, str)):
+                raw_parts.append(val.get("note") if isinstance(val, dict) else val)
+    parts: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_parts:
+        cleaned = " ".join(str(raw or "").split())
+        if cleaned and cleaned.casefold() not in seen:
+            seen.add(cleaned.casefold())
+            parts.append(cleaned)
+    return "; ".join(parts)
+
+
+def cursor_from_call(call: dict | None) -> dict:
+    """Extract the active cursor state dict from a call record."""
+    if not isinstance(call, dict):
+        return {}
+    for key in ("cursor_state", "cursor_json"):
+        raw = call.get(key)
+        if isinstance(raw, str) and raw.strip():
+            try:
+                raw = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+        if isinstance(raw, dict) and raw.get("active_qid"):
+            return raw
+    return {}
 
 
 def question_hi_for(state: dict, spec) -> str:

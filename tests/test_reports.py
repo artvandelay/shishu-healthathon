@@ -356,7 +356,7 @@ class CursorReportTests(unittest.TestCase):
                 "nicu_days": {"state": "concern", "note": "चार दिन"},
             },
         }
-        self.assertEqual(post_call._human_notes(entry), "साँस की तकलीफ; चार दिन")
+        self.assertEqual(call_cursor.answer_notes_text(entry), "साँस की तकलीफ; चार दिन")
         state = cursor_tests._profile(name="मीना", children=[cursor_tests._child(4, "male")])
         state["answers"]["birth_nicu"] = entry
         state["answers"]["close_anything_else"] = {

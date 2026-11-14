@@ -165,7 +165,7 @@ class CaptionAndCopyTests(unittest.TestCase):
         self.assertNotIn("record_turn", text)
         self.assertNotIn("record_finding", text)
         self.assertNotIn("end_call", text)
-        closing = gemini_live._closing_hi({
+        closing = prompts.closing_hi({
             "phase": "closing",
             "close_reason": "emergency",
             "profile": {"caller_name": "आशा"},

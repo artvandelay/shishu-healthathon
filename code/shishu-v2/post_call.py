@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import json
 import re
 
+import call_cursor
 from triage_catalog import active_specs
 
 _HEADINGS = (
@@ -61,26 +61,6 @@ _DISEASE = re.compile(
     r"|सिकल\s*सेल|सिस्टिक\s*फाइब्रोसिस|फैंकोनी|थैलेसीमिया मेजर)",
     re.IGNORECASE,
 )
-_SEX_HI = {"male": "बेटा", "female": "बेटी"}
-
-
-def cursor_of(call: dict | None) -> dict:
-    if not isinstance(call, dict):
-        return {}
-    for key in ("cursor_state", "cursor_json"):
-        raw = call.get(key)
-        if isinstance(raw, str) and raw.strip():
-            try:
-                raw = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-        if isinstance(raw, dict) and raw.get("active_qid"):
-            return raw
-    return {}
-
-
-def has_cursor(call: dict | None) -> bool:
-    return bool(cursor_of(call))
 
 
 def _scrub_diagnostic_terms(text: str) -> str:
@@ -103,49 +83,19 @@ def _section_for(spec) -> str:
     return _HEADINGS[4] if spec.id in _HEMATOLOGY else _SECTION.get(spec.group, _HEADINGS[-1])
 
 
-def _children_label(profile: dict) -> str:
-    bits = []
-    for child in profile.get("children") or []:
-        sex = _SEX_HI.get(child.get("sex") or "", "")
-        age = str(child.get("age_label_hi") or "").strip()
-        name = str(child.get("name") or "").strip()
-        bits.append(" ".join(part for part in (name, age, sex) if part))
-    return " · ".join(bit for bit in bits if bit)
-
-
-def _human_notes(entry: dict) -> str:
-    """Mother's words only: no follow-up ids and no clear/concern/unknown labels."""
-    if not isinstance(entry, dict):
-        return ""
-    raw_parts: list[object] = [entry.get("notes")]
-    followups = entry.get("followups")
-    if isinstance(followups, dict):
-        for val in followups.values():
-            if isinstance(val, (dict, str)):
-                raw_parts.append(val.get("note") if isinstance(val, dict) else val)
-    parts: list[str] = []
-    seen: set[str] = set()
-    for raw in raw_parts:
-        cleaned = " ".join(str(raw or "").split())
-        if cleaned and cleaned.casefold() not in seen:
-            seen.add(cleaned.casefold())
-            parts.append(cleaned)
-    return "; ".join(parts)
-
-
 def _question_stem(spec) -> str:
     body = spec.question_hi.strip().rstrip("?")
     return body[4:] if body.startswith("क्या ") else body
 
 
 def _concern_sentence(spec, entry: dict) -> str:
-    note = _human_notes(entry)
+    note = call_cursor.answer_notes_text(entry)
     stem = _question_stem(spec)
     return f"{stem} — {note}।" if note else f"{stem}।"
 
 
 def _concern_question(spec, entry: dict) -> str:
-    note = _human_notes(entry)
+    note = call_cursor.answer_notes_text(entry)
     if note:
         return f"मैंने बताया कि {note}। डॉक्टर, इसकी जाँच क्या होनी चाहिए?"
     return f"मैंने हाँ कहा कि {_question_stem(spec)}। डॉक्टर, अब क्या जाँच करनी चाहिए?"
@@ -198,7 +148,7 @@ def _rows(state: dict) -> list[tuple]:
 
 
 def _flag_for(spec, entry: dict) -> str:
-    note = _human_notes(entry)
+    note = call_cursor.answer_notes_text(entry)
     head = f"{spec.nrroid_gate} {spec.id}" if spec.nrroid_gate else spec.id
     flag = f"{head}: {spec.need_en}"
     return f"{flag}. {note}" if note else flag
@@ -206,7 +156,7 @@ def _flag_for(spec, entry: dict) -> str:
 
 def build_reports(call: dict) -> dict:
     """Both reports from the cursor alone. No disease names, no transliteration."""
-    state = cursor_of(call)
+    state = call_cursor.cursor_from_call(call)
     profile = state.get("profile") or {}
     name = str(profile.get("caller_name") or "").strip() or "माँ"
     reason = state.get("close_reason") or "incomplete"
@@ -235,7 +185,7 @@ def build_reports(call: dict) -> dict:
         sections[_HEADINGS[1]].append(f"{_EMERGENCY_BULLET}{suffix}")
     for spec, entry, status in rows:
         if status == "concern":
-            note = _human_notes(entry)
+            note = call_cursor.answer_notes_text(entry)
             gate = spec.nrroid_gate or spec.id
             words = f" Mother's words: {note}." if note else ""
             sections[_HEADINGS[1]].append(f"{gate} {spec.id}: {spec.need_en}.{words}")
@@ -274,7 +224,7 @@ def build_reports(call: dict) -> dict:
     yes = _scrub_unique(_concern_sentence(spec, entry) for spec, entry in concerns)
     return {
         "mother_name_hi": _scrub_diagnostic_terms(name) or "माँ",
-        "children_label_hi": _scrub_diagnostic_terms(_children_label(profile)),
+        "children_label_hi": _scrub_diagnostic_terms(call_cursor.children_label_hi(profile)),
         "mother_questions_hi": fitted,
         "yes_summaries_hi": yes,
         "doctor_markdown": "\n\n".join(doctor_parts),

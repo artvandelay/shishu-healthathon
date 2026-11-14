@@ -15,13 +15,13 @@ from tests import REPO_ROOT  # noqa: E402
 import call_cursor  # noqa: E402
 import triage_catalog  # noqa: E402
 from call_cursor import (  # noqa: E402
+    active_prompt_hi,
     apply_interpreted_turn,
     apply_profile,
     apply_turn,
     close_technical_failure,
     expect_yes_no,
     new_cursor_state,
-    prompt_directive,
     routable_qids,
 )
 from triage_catalog import FOLLOWUP_HI, active_specs, get_spec  # noqa: E402
@@ -199,7 +199,7 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(hold, "name_fragment")
         self.assertEqual(state["hold_reason"], "name_fragment")
         self.assertIsNone(state["profile"]["caller_name"])
-        self.assertIn("पूरा नाम", prompt_directive(state))
+        self.assertIn("पूरा नाम", active_prompt_hi(state))
         self.assertFalse(expect_yes_no(state))
 
         state, hold = apply_profile(state, caller_name="   ")
@@ -218,7 +218,7 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(state["hold_reason"], "children_ages")
         self.assertEqual(state["profile"]["children"], [])
         self.assertIsNone(state["profile"]["ever_pregnant"])
-        self.assertIn("उम्र", prompt_directive(state))
+        self.assertIn("उम्र", active_prompt_hi(state))
         self.assertFalse(expect_yes_no(state))
 
     def test_bridge_yes_records_clear_and_yes_no_is_off_for_intro_profile(self):
@@ -267,17 +267,17 @@ class SkipMatrixTests(unittest.TestCase):
 
     def test_dynamic_thalassemia_and_related_wording(self):
         married = _clear_until(_profile(children=[_child(4, "female")]), "preg_thalassemia")
-        self.assertIn("आपके पति", prompt_directive(married))
-        self.assertNotIn("होने वाले", prompt_directive(married))
+        self.assertIn("आपके पति", active_prompt_hi(married))
+        self.assertNotIn("होने वाले", active_prompt_hi(married))
         about = apply_turn(_profile(marital="about_to_marry"), "clear")
         self.assertEqual(about["active_qid"], "preg_thalassemia")
-        self.assertIn("होने वाले पति", prompt_directive(about))
+        self.assertIn("होने वाले पति", active_prompt_hi(about))
         about = apply_turn(about, "clear")
         self.assertEqual(about["active_qid"], "fam_related")
-        self.assertIn("होने वाले पति", prompt_directive(about))
+        self.assertIn("होने वाले पति", active_prompt_hi(about))
         unmarried = apply_turn(_profile(marital="unmarried"), "clear")
         self.assertEqual(unmarried["active_qid"], "preg_thalassemia")
-        spoken = prompt_directive(unmarried)
+        spoken = active_prompt_hi(unmarried)
         self.assertIn("थैलेसीमिया", spoken)
         self.assertNotIn("पति", spoken)
         unmarried = apply_turn(unmarried, "clear")
@@ -341,7 +341,7 @@ class SkipMatrixTests(unittest.TestCase):
         self.assertFalse(state["profile"]["ever_pregnant"])
         self.assertEqual(state["answers"]["birth_nicu"]["state"], "not_applicable")
         self.assertEqual(state["active_qid"], "preg_thalassemia")
-        self.assertNotIn("पति", prompt_directive(state))
+        self.assertNotIn("पति", active_prompt_hi(state))
 
         stayed = _clear_until(_profile(children=[_child(3, "female")]), "fam_infant_death")
         stayed, hold = apply_profile(stayed, marital_status="unmarried")
@@ -362,10 +362,9 @@ class ChildResolutionTests(unittest.TestCase):
         state = apply_turn(state, "concern")
         self.assertEqual(state["pending_followup_idx"], -1)
         self.assertEqual(state["step_attempts"], 0)
-        prompt = prompt_directive(state)
+        prompt = active_prompt_hi(state)
         self.assertEqual(
             prompt,
-            "Ask only this one Hindi question, then wait: "
             "यह किस बच्चे की बात है — 8 साल वाले रिया, 5 साल वाले अर्जुन (बीच वाले), या 2 साल वाले बेटा?",
         )
         state = apply_turn(state, "concern", child_ref="child_3")
@@ -382,7 +381,7 @@ class ChildResolutionTests(unittest.TestCase):
         asked = apply_turn(asked, "concern")
         self.assertIn(
             "8 साल वाले, 5 साल वाले (बीच वाले), या 2 साल वाले",
-            prompt_directive(asked),
+            active_prompt_hi(asked),
         )
         retracted = apply_turn(asked, "clear")
         self.assertEqual(retracted["answers"]["body_bleeding_bruise"]["state"], "clear")
@@ -523,7 +522,7 @@ class ChildResolutionTests(unittest.TestCase):
             self.assertEqual(state["pending_followup_idx"], 1, qid)
             self.assertEqual(state["answers"][qid]["followups"][first]["note"], "पहली बात")
             self.assertNotIn(second, state["answers"][qid]["followups"])
-            self.assertIn(second_prompt, prompt_directive(state))
+            self.assertIn(second_prompt, active_prompt_hi(state))
             state = apply_turn(state, "concern", note="दूसरी बात")
             self.assertIsNone(state["pending_followup_idx"], qid)
             self.assertEqual(state["answers"][qid]["followups"][second]["note"], "दूसरी बात")
@@ -538,7 +537,7 @@ class ChildResolutionTests(unittest.TestCase):
         multi = apply_turn(multi, "concern", child_ref="child_1")
         self.assertEqual(multi["answers"]["birth_nicu"]["child_ids"], ["child_1"])
         self.assertEqual(multi["pending_followup_idx"], 1)
-        self.assertIn("कितने दिन", prompt_directive(multi))
+        self.assertIn("कितने दिन", active_prompt_hi(multi))
 
     def test_retract_on_a_followup_clears_the_concern(self):
         state = _clear_until(_profile(children=[_child(4, "male")]), "birth_nicu")
@@ -559,12 +558,12 @@ class CloseAndFinishTests(unittest.TestCase):
         self.assertEqual(state["phase"], "asking")
         self.assertEqual(state["pending_followup_idx"], 0)
         self.assertFalse(expect_yes_no(state))
-        self.assertIn("क्या बात नोट करूँ", prompt_directive(state))
+        self.assertIn("क्या बात नोट करूँ", active_prompt_hi(state))
         state = apply_turn(state, "concern", note="पेट में दर्द")
         self.assertIsNone(state["pending_followup_idx"])
         self.assertEqual(state["answers"]["close_anything_else"]["state"], "concern")
         self.assertEqual(state["answers"]["close_anything_else"]["notes"], "पेट में दर्द")
-        self.assertIn("मैंने यह बात नोट कर ली। इसके अलावा कुछ और बताना चाहेंगी?", prompt_directive(state))
+        self.assertIn("मैंने यह बात नोट कर ली। इसके अलावा कुछ और बताना चाहेंगी?", active_prompt_hi(state))
         self.assertTrue(expect_yes_no(state))
         state = apply_turn(state, "concern", note="नींद कम है")
         self.assertEqual(
@@ -657,7 +656,7 @@ class CallNineReplayTests(unittest.TestCase):
         self.assertEqual(cancer["followups"]["fam_who"]["state"], "concern")
         self.assertIn("मामा", cancer["followups"]["fam_who"]["note"])
         self.assertIn("चाची को भी ब्लड कैंसर", cancer["followups"]["fam_who"]["note"])
-        self.assertIn("दिल या गुर्दे", prompt_directive(updated))
+        self.assertIn("दिल या गुर्दे", active_prompt_hi(updated))
 
     def test_clarify_on_an_earlier_question_returns_there_then_resumes(self):
         state = _clear_until(self._boy(), "preg_thalassemia")
@@ -676,7 +675,7 @@ class CallNineReplayTests(unittest.TestCase):
         self.assertIsNone(rewound["hold_reason"])
         self.assertNotIn("preg_thalassemia", rewound["answers"])
         self.assertEqual(rewound["answers"]["birth_mode_detail"]["state"], "clear")
-        self.assertIn("थैलेसीमिया", prompt_directive(rewound))
+        self.assertIn("थैलेसीमिया", active_prompt_hi(rewound))
         answered = apply_turn(rewound, "clear")
         self.assertEqual(answered["answers"]["preg_thalassemia"]["state"], "clear")
         self.assertEqual(answered["active_qid"], "fam_related")
@@ -868,29 +867,33 @@ class DecisionApiPhase1Tests(unittest.TestCase):
         # Dual-intent: clear on active fam_heart_kidney + concern side write on fam_cancer.
         dual = apply_interpreted_turn(state, {
             "current_outcome": "clear",
+            "current_note": "",
             "side_qid": "fam_cancer",
             "side_action": "add_or_correct",
             "side_outcome": "concern",
             "side_note": "चाची को भी कैंसर हुआ था",
-            "note": "चाची को भी कैंसर हुआ था",
         })
         self.assertEqual(dual["answers"]["fam_heart_kidney"]["state"], "clear")
         self.assertEqual(dual["answers"]["fam_heart_kidney"]["notes"], "")
         self.assertIn("चाची को भी कैंसर हुआ था", dual["answers"]["fam_cancer"]["notes"])
         self.assertEqual(dual["active_qid"], "fam_bp_stroke")
 
-        # Even when side_note is omitted and only note carries the side text, active clear stays clean.
-        dual_fallback = apply_interpreted_turn(state, {
+        # Even if current_note is passed alongside clear, or a stray "note" key is passed,
+        # active clear stays clean and "note" is ignored.
+        dual_clean = apply_interpreted_turn(state, {
             "current_outcome": "clear",
+            "current_note": "चाची को भी कैंसर हुआ था",
             "side_qid": "fam_cancer",
             "side_action": "add_or_correct",
             "side_outcome": "concern",
-            "note": "चाची को भी कैंसर हुआ था",
+            "side_note": "चाची को भी कैंसर हुआ था",
+            "note": "अमान्य नोट",
         })
-        self.assertEqual(dual_fallback["answers"]["fam_heart_kidney"]["state"], "clear")
-        self.assertEqual(dual_fallback["answers"]["fam_heart_kidney"]["notes"], "")
-        self.assertIn("चाची को भी कैंसर हुआ था", dual_fallback["answers"]["fam_cancer"]["notes"])
-        self.assertEqual(dual_fallback["active_qid"], "fam_bp_stroke")
+        self.assertEqual(dual_clean["answers"]["fam_heart_kidney"]["state"], "clear")
+        self.assertEqual(dual_clean["answers"]["fam_heart_kidney"]["notes"], "")
+        self.assertIn("चाची को भी कैंसर हुआ था", dual_clean["answers"]["fam_cancer"]["notes"])
+        self.assertNotIn("अमान्य नोट", dual_clean["answers"]["fam_cancer"]["notes"])
+        self.assertEqual(dual_clean["active_qid"], "fam_bp_stroke")
 
         # Side write alone (current_outcome="not_about_active"): stays on fam_heart_kidney with step_attempts == 0.
         side_only = apply_interpreted_turn(state, {
@@ -898,22 +901,22 @@ class DecisionApiPhase1Tests(unittest.TestCase):
             "side_qid": "fam_cancer",
             "side_action": "add_or_correct",
             "side_outcome": "concern",
-            "note": "चाची को भी कैंसर हुआ था",
+            "side_note": "चाची को भी कैंसर हुआ था",
         })
         self.assertEqual(side_only["active_qid"], "fam_heart_kidney")
         self.assertEqual(side_only["step_attempts"], 0)
         self.assertNotIn("fam_heart_kidney", side_only["answers"])
         self.assertIn("चाची को भी कैंसर हुआ था", side_only["answers"]["fam_cancer"]["notes"])
 
-        # Dual concern + side concern without current_note preserves note on BOTH concerns;
+        # Dual concern + side concern uses current_note for active and side_note for side;
         # explicit current_note="" suppresses only the active note.
         dual_concerns = apply_interpreted_turn(state, {
             "current_outcome": "concern",
+            "current_note": "चाची को भी कैंसर और दिल की बीमारी",
             "side_qid": "fam_cancer",
             "side_action": "add_or_correct",
             "side_outcome": "concern",
             "side_note": "चाची को भी कैंसर और दिल की बीमारी",
-            "note": "चाची को भी कैंसर और दिल की बीमारी",
         })
         self.assertEqual(dual_concerns["answers"]["fam_heart_kidney"]["state"], "concern")
         self.assertEqual(
@@ -932,7 +935,6 @@ class DecisionApiPhase1Tests(unittest.TestCase):
             "side_action": "add_or_correct",
             "side_outcome": "concern",
             "side_note": "चाची को भी कैंसर",
-            "note": "चाची को भी कैंसर",
         })
         self.assertEqual(explicit_empty_current["answers"]["fam_heart_kidney"]["state"], "concern")
         self.assertEqual(explicit_empty_current["answers"]["fam_heart_kidney"]["notes"], "")
@@ -948,7 +950,7 @@ class DecisionApiPhase1Tests(unittest.TestCase):
                 "side_qid": bad_qid,
                 "side_action": "add_or_correct",
                 "side_outcome": "concern",
-                "note": "कुछ बात",
+                "side_note": "कुछ बात",
             })
             self.assertEqual(res["active_qid"], "birth_jaundice", bad_qid)
             self.assertEqual(res["answers"], state["answers"], bad_qid)
@@ -962,7 +964,7 @@ class DecisionApiPhase1Tests(unittest.TestCase):
             "current_outcome": "clear",
             "side_qid": "preg_thalassemia",
             "side_action": "clarify_meaning",
-            "note": "रिश्तेदार तो नहीं हैं, पर थैलेसीमिया क्या होता है?",
+            "current_note": "रिश्तेदार तो नहीं हैं, पर थैलेसीमिया क्या होता है?",
         })
         self.assertEqual(rewound["active_qid"], "preg_thalassemia")
         self.assertIsNone(rewound["pending_followup_idx"])
@@ -997,7 +999,7 @@ class DecisionApiPhase1Tests(unittest.TestCase):
             "side_qid": "fam_cancer",
             "side_action": "add_or_correct",
             "side_outcome": "clear",
-            "note": "  बच्चे को अभी सांस नहीं आ रही  ",
+            "current_note": "  बच्चे को अभी सांस नहीं आ रही  ",
         })
         self.assertEqual(emerg["phase"], "closing")
         self.assertEqual(emerg["close_reason"], "emergency")

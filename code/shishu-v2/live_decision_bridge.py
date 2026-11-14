@@ -39,6 +39,62 @@ class TurnCapture:
     extractor_failures: int = 0
     extractor_failure_step: str = ""
 
+    def reset(self, *, clear_pcm: bool = True, clear_turn_lock: bool = True) -> None:
+        self.user_turn_buffer = ""
+        self.user_turn_cursor_snapshot = None
+        self.user_turn_finalized = False
+        self.user_turn_is_quick_reply_stale = False
+        if clear_pcm:
+            self.user_turn_pcm.clear()
+            self.user_turn_pcm_tail = 0
+        if clear_turn_lock:
+            self.handled_turn = False
+            self.last_key = None
+
+    def append_pcm(self, pcm_16k: bytes) -> None:
+        avail = USER_TURN_PCM_MAX_BYTES - len(self.user_turn_pcm)
+        piece = pcm_16k[:avail] if (avail > 0 and pcm_16k) else b""
+        if len(piece) % 2 == 1:
+            piece = piece[:-1]
+        if piece:
+            self.user_turn_pcm.extend(piece)
+
+    def begin_audio_speech(self, cursor_state: dict, pcm_16k: bytes) -> None:
+        if self.user_turn_finalized:
+            self.reset()
+        if (
+            self.user_turn_cursor_snapshot is None
+            and not self.user_turn_buffer
+            and not self.user_turn_pcm
+        ):
+            self.user_turn_cursor_snapshot = copy.deepcopy(cursor_state)
+        self.speech_allowed = False
+        self.handled_turn = False
+        self.last_key = None
+        self.user_turn_pcm_tail = USER_TURN_PCM_TAIL_CHUNKS
+        self.append_pcm(pcm_16k)
+
+    def begin_text_turn(self, cursor_state: dict, text: str) -> None:
+        self.reset()
+        self.user_turn_buffer = text
+        self.user_turn_cursor_snapshot = copy.deepcopy(cursor_state)
+        self.speech_allowed = False
+        self.handled_turn = False
+        self.last_key = None
+
+    def begin_transcript_chunk(self, cursor_state: dict, text: str) -> None:
+        if self.user_turn_finalized:
+            self.reset(clear_pcm=False)
+        if not self.user_turn_buffer:
+            if self.user_turn_cursor_snapshot is None:
+                self.user_turn_cursor_snapshot = copy.deepcopy(cursor_state)
+            self.user_turn_finalized = False
+            self.user_turn_is_quick_reply_stale = False
+        self.user_turn_buffer = merge_transcript_chunk(self.user_turn_buffer, text)
+        self.speech_allowed = False
+        self.handled_turn = False
+        self.last_key = None
+
 
 def load_turn_thresholds(
     settings: dict | None = None, *, capture: TurnCapture | None = None,
@@ -61,25 +117,6 @@ def merge_transcript_chunk(prev: str, chunk: str) -> str:
         return prev_s
     sep = "" if (prev_s[-1].isspace() or chunk_s[0] in ",.;:!?।") else " "
     return prev_s + sep + chunk_s
-
-
-def reset_turn_capture(capture: TurnCapture, *, clear_pcm: bool = True) -> None:
-    capture.user_turn_buffer = ""
-    capture.user_turn_cursor_snapshot = None
-    capture.user_turn_finalized = False
-    capture.user_turn_is_quick_reply_stale = False
-    if clear_pcm:
-        capture.user_turn_pcm.clear()
-        capture.user_turn_pcm_tail = 0
-
-
-def append_turn_pcm(capture: TurnCapture, pcm_16k: bytes) -> None:
-    avail = USER_TURN_PCM_MAX_BYTES - len(capture.user_turn_pcm)
-    piece = pcm_16k[:avail] if (avail > 0 and pcm_16k) else b""
-    if len(piece) % 2 == 1:
-        piece = piece[:-1]
-    if piece:
-        capture.user_turn_pcm.extend(piece)
 
 
 def consume_task_error(task: asyncio.Task) -> None:
@@ -197,14 +234,14 @@ async def run_decision_turn(
         logger.exception("decision thresholds invalid on call %s", call_id)
         em = _decision_meta(error_reason=type(exc).__name__)
         await _log_event(call_id, "decision_turn", "error:invalid_thresholds", em)
-        reset_turn_capture(capture)
+        capture.reset()
         return await _fail_decision_turn(cursor, capture, call_id, tool_body_fn, mark_closing_fn)
 
     capture.last_key, capture.handled_turn = dedup_key, True
     snap = capture.user_turn_cursor_snapshot
     state_snap = copy.deepcopy(snap if snap and step_id(snap) == step else cursor.state)
     audio_wav = pcm16_to_wav_bytes(pcm, input_rate) if (not utt and pcm) else None
-    reset_turn_capture(capture)
+    capture.reset(clear_turn_lock=False)
     res = await decisions.evaluate_turn(
         decisions.build_turn_request(state_snap, utterance_text=utt, audio_wav_bytes=audio_wav)
     )

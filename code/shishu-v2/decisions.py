@@ -118,16 +118,6 @@ class InterpretationResult:
     diagnostics: dict[str, Any]
 
 
-def turn_view(state: dict) -> tuple[str, str, str, str]:
-    """Return (active_qid, step_kind, active_prompt, followup_prompt) for state."""
-    return (
-        str(state.get("active_qid") or ""),
-        call_cursor.step_kind(state),
-        call_cursor.active_prompt_hi(state),
-        call_cursor.followup_prompt_hi(state),
-    )
-
-
 def _side_qid_question(state: dict) -> dict[str, Any]:
     t = _SCHEMA["side_qid_template"]
     opt = t["option_template"]
@@ -168,7 +158,10 @@ def build_turn_request(
     audio_mime_type: str = "audio/wav",
 ) -> dict[str, Any]:
     """Build a single-pass Gemini Decisions API request for one caller turn."""
-    active_qid, step_kind, active_prompt, followup_prompt = turn_view(state)
+    active_qid = str(state.get("active_qid") or "")
+    step_kind = call_cursor.step_kind(state)
+    active_prompt = call_cursor.active_prompt_hi(state)
+    followup_prompt = call_cursor.followup_prompt_hi(state)
     parent_prompt = ""
     if step_kind in ("which_child", "followup") and active_qid and active_qid != "ever_pregnant":
         parent_prompt = question_hi_for(state, get_spec(active_qid))
@@ -487,7 +480,9 @@ def interpret_turn_decision(
     validate_thresholds(thresholds)
     answers = raw_answers if isinstance(raw_answers, dict) else {}
     clean_utt = " ".join(str(utterance_text or "").split())
-    active_qid, step_kind, _, followup_prompt = turn_view(state)
+    active_qid = str(state.get("active_qid") or "")
+    step_kind = call_cursor.step_kind(state)
+    followup_prompt = call_cursor.followup_prompt_hi(state)
     roster = children_roster(state)
     needs_detail = step_kind in ("main", "close") and bool(followup_prompt)
     has_side = step_kind not in ("profile", "bridge") or call_cursor.has_answered_gates(state)
@@ -599,20 +594,14 @@ def interpret_turn_decision(
         "emergency": emergency,
         "caller_stop": caller_stop,
         "current_outcome": resolved_outcome,
+        "current_note": active_note,
         "child_ref": child_ref,
-        "note": (side_note or active_note) if side_qid else active_note,
         "followup_answered": followup_answered,
+        "side_qid": side_qid,
+        "side_action": side_action,
+        "side_outcome": side_outcome,
+        "side_note": side_note,
     }
-    if side_qid:
-        payload.update(
-            {
-                "current_note": active_note,
-                "side_qid": side_qid,
-                "side_action": side_action,
-                "side_outcome": side_outcome,
-                "side_note": side_note,
-            }
-        )
 
     diagnostics = {
         "active_qid": active_qid,
