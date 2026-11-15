@@ -261,6 +261,70 @@ def _fit_choice(
     return _plateau_midpoint(candidates, 0.01)
 
 
+def _fit_side_route(
+    rows: list[dict[str, Any]], side_intent: tuple[float, float]
+) -> tuple[float, float]:
+    """Fit ``side_qid``'s gates inside the real joint routing rule.
+
+    ``side_qid`` never fires alone: ``decisions._route_side`` requires both the
+    intent and the qid head to accept, and the accepted target still has to
+    survive ``engine.accepted_side_target``. Fitting the qid head in isolation
+    charges it for rows the intent head had already blocked, so the two gates
+    are scored here exactly as the router composes them.
+    """
+    allowed = frozenset(spec.id for spec in decisions.routable_specs())
+    states = {row["id"]: build_state(row["cursor_setup"]) for row in rows}
+    items = []
+    for row in rows:
+        qid, qid_conf, qid_margin = _top_two(row["raw_answers"], "side_qid", "other", allowed)
+        intent, intent_conf, intent_margin = _top_two(
+            row["raw_answers"], "side_intent", "other", decisions.VALID_SIDE_INTENTS
+        )
+        items.append(
+            (
+                states[row["id"]],
+                qid,
+                qid_conf,
+                qid_margin,
+                intent,
+                intent_conf,
+                intent_margin,
+                str(row["gold"]["side_qid"] or ""),
+                str(row["gold"].get("future_qid") or ""),
+            )
+        )
+    confidence_grid = _grid([i[2] for i in items if i[1]], 0.01, 0.99, [0.45, 0.55, 0.65, 0.75, 0.85])
+    margin_grid = _grid([i[3] for i in items if i[1]], 0.0, 0.99, [0.05, 0.15, 0.25, 0.35])
+    candidates = []
+    for min_confidence in confidence_grid:
+        for min_margin in margin_grid:
+            loss = 0.0
+            for (
+                state, qid, qid_conf, qid_margin, intent, intent_conf, intent_margin, want, future
+            ) in items:
+                qid_ok = bool(qid and qid_conf >= min_confidence and qid_margin >= min_margin)
+                intent_ok = bool(
+                    intent and intent_conf >= side_intent[0] and intent_margin >= side_intent[1]
+                )
+                both_ok = qid_ok and intent_ok
+                target = engine.accepted_side_target(state, qid) if both_ok else ""
+                if not want and target:
+                    loss += 10000.0
+                elif want and target != want:
+                    loss += 10000.0 if target else 100.0
+                future_hit = bool(
+                    both_ok
+                    and not target
+                    and qid == future
+                    and qid != state.cursor.qid
+                    and not engine.is_answered_or_na(state, qid)
+                )
+                if future and not future_hit:
+                    loss += 50.0
+            candidates.append((loss, min_confidence, min_margin))
+    return _plateau_midpoint(candidates, 0.01)
+
+
 def _gold_side_intent(row: dict[str, Any]) -> str:
     action = row["gold"]["side_action"]
     if action == "clarify_meaning":
@@ -301,7 +365,9 @@ def fit_thresholds(rows: list[dict[str, Any]]) -> decisions.DecisionThresholds:
         [
             (r["raw_answers"]["detail_present"]["noul"], r["gold"]["detail_present"])
             for r in calm
-            if "detail_present" in r["raw_answers"] and r["gold"]["detail_present"] is not None
+            if r["gold"]["current_outcome"] == "concern"
+            and "detail_present" in r["raw_answers"]
+            and r["gold"]["detail_present"] is not None
         ],
         10.0,
         15.0,
@@ -315,11 +381,7 @@ def fit_thresholds(rows: list[dict[str, Any]]) -> decisions.DecisionThresholds:
         "side_intent", "other", frozenset(decisions.VALID_SIDE_INTENTS),
         _gold_side_intent, fp_cost=50.0, fn_cost=10.0,
     )
-    side_qid = _fit_choice(
-        [r for r in calm if "side_qid" in r["raw_answers"]],
-        "side_qid", "other", frozenset(spec.id for spec in decisions.routable_specs()),
-        lambda r: r["gold"]["side_qid"], fp_cost=100.0, fn_cost=20.0,
-    )
+    side_qid = _fit_side_route([r for r in calm if "side_qid" in r["raw_answers"]], side_intent)
     child_rows = [r for r in calm if "child_ref" in r["raw_answers"]]
     child = _fit_choice(
         child_rows, "child_ref", "other", frozenset(_child_ids(child_rows)),
