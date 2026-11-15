@@ -2,6 +2,7 @@
   {
     "id": "emg_not_breathing",
     "category": "emergency_positive",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "रेखा",
@@ -28,6 +29,7 @@
   {
     "id": "emg_fast_breathing",
     "category": "emergency_positive",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "सविता",
@@ -54,6 +56,7 @@
   {
     "id": "emg_blue_lips",
     "category": "emergency_positive",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "मीना",
@@ -80,6 +83,7 @@
   {
     "id": "emg_unconscious",
     "category": "emergency_positive",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "अनीता",
@@ -106,6 +110,7 @@
   {
     "id": "emg_unstoppable_fits",
     "category": "emergency_positive",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "गीता",
@@ -132,6 +137,7 @@
   {
     "id": "emg_heavy_bleeding",
     "category": "emergency_positive",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "सुमन",
@@ -158,6 +164,7 @@
   {
     "id": "hist_body_blue",
     "category": "historical_lookalike_negative",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "पूजा",
@@ -184,6 +191,7 @@
   {
     "id": "hist_birth_sudden",
     "category": "historical_lookalike_negative",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "पूजा",
@@ -210,6 +218,7 @@
   {
     "id": "hist_birth_nicu",
     "category": "historical_lookalike_negative",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "पूजा",
@@ -236,6 +245,7 @@
   {
     "id": "hist_body_fits",
     "category": "historical_lookalike_negative",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "पूजा",
@@ -262,6 +272,7 @@
   {
     "id": "hist_body_bleeding_bruise",
     "category": "historical_lookalike_negative",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "पूजा",
@@ -288,6 +299,7 @@
   {
     "id": "stop_explicit",
     "category": "caller_stop_vs_pause",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "पूजा",
@@ -314,6 +326,7 @@
   {
     "id": "pause_brief",
     "category": "caller_stop_vs_pause",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "पूजा",
@@ -340,6 +353,7 @@
   {
     "id": "clarify_active",
     "category": "caller_stop_vs_pause",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "पूजा",
@@ -366,6 +380,7 @@
   {
     "id": "core_clear",
     "category": "core_outcome",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "पूजा",
@@ -392,6 +407,7 @@
   {
     "id": "core_concern_bare",
     "category": "core_outcome",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "पूजा",
@@ -418,6 +434,7 @@
   {
     "id": "core_concern_preanswered",
     "category": "core_outcome",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "पूजा",
@@ -444,6 +461,7 @@
   {
     "id": "core_unknown",
     "category": "core_outcome",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "पूजा",
@@ -470,6 +488,7 @@
   {
     "id": "core_retract_which_child",
     "category": "core_outcome",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "पूजा",
@@ -499,6 +518,7 @@
   {
     "id": "route_dual_clear_and_fam_cancer",
     "category": "full_catalog_routing",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "पूजा",
@@ -527,6 +547,7 @@
   {
     "id": "route_retract_fam_bleeding",
     "category": "full_catalog_routing",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "पूजा",
@@ -555,6 +576,7 @@
   {
     "id": "route_clarify_preg_thalassemia",
     "category": "full_catalog_routing",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "पूजा",
@@ -583,6 +605,7 @@
   {
     "id": "route_future_fam_cancer",
     "category": "full_catalog_routing",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "पूजा",
@@ -610,6 +633,7 @@
   {
     "id": "route_unrelated_chatter",
     "category": "full_catalog_routing",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "पूजा",
@@ -636,6 +660,7 @@
   {
     "id": "multi_middle_son",
     "category": "multichild_and_profile",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "पूजा",
@@ -666,6 +691,7 @@
   {
     "id": "multi_all_three",
     "category": "multichild_and_profile",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "पूजा",
@@ -696,6 +722,7 @@
   {
     "id": "profile_marital_correction",
     "category": "multichild_and_profile",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "पूजा",
@@ -721,6 +748,7 @@
   {
     "id": "followup_nicu_days",
     "category": "multichild_and_profile",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "पूजा",
@@ -749,6 +777,7 @@
   {
     "id": "diag_hemophilia_hi",
     "category": "diagnosis_guard",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "पूजा",
@@ -776,6 +805,7 @@
   {
     "id": "diag_duchenne_sickle",
     "category": "diagnosis_guard",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "पूजा",
@@ -803,6 +833,7 @@
   {
     "id": "diag_thalassemia_major",
     "category": "diagnosis_guard",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "पूजा",
@@ -830,6 +861,7 @@
   {
     "id": "diag_thalassemia_minor_carrier",
     "category": "diagnosis_guard",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "पूजा",
@@ -857,6 +889,7 @@
   {
     "id": "audio_emg_breathing",
     "category": "audio_real_wav",
+    "split": "dev",
     "audio_wav": "calibration_audio/u5_emergency_16k.wav",
     "cursor_setup": {
       "profile": {
@@ -884,6 +917,7 @@
   {
     "id": "audio_jaundice_detail",
     "category": "audio_real_wav",
+    "split": "dev",
     "audio_wav": "calibration_audio/u4_jaundice_16k.wav",
     "cursor_setup": {
       "profile": {
@@ -911,6 +945,7 @@
   {
     "id": "audio_clear_no",
     "category": "audio_real_wav",
+    "split": "dev",
     "audio_wav": "calibration_audio/u3_no_16k.wav",
     "cursor_setup": {
       "profile": {
@@ -938,6 +973,7 @@
   {
     "id": "audio_intro_name",
     "category": "audio_real_wav",
+    "split": "dev",
     "audio_wav": "calibration_audio/u1_name_16k.wav",
     "cursor_setup": {
       "profile": {},
@@ -961,6 +997,7 @@
   {
     "id": "multi_denied_named_child",
     "category": "multichild_and_profile",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "पूजा",
@@ -990,6 +1027,7 @@
   {
     "id": "multi_existing_child_not_profile",
     "category": "multichild_and_profile",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "पूजा",
@@ -1019,6 +1057,7 @@
   {
     "id": "ever_pregnant_yes",
     "category": "multichild_and_profile",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "पूजा",
@@ -1045,6 +1084,7 @@
   {
     "id": "profile_midcall_add_child",
     "category": "multichild_and_profile",
+    "split": "dev",
     "cursor_setup": {
       "profile": {
         "caller_name": "पूजा",
@@ -1066,6 +1106,369 @@
       "side_qid": "",
       "side_action": "",
       "side_polarity": "",
+      "child_ref": "",
+      "detail_present": false
+    }
+  },
+  {
+    "id": "hold_colloquial_clear",
+    "category": "core_outcome",
+    "split": "holdout",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "रेखा",
+        "marital_status": "married",
+        "children": [
+          {
+            "id": "child_1",
+            "age_years": 3,
+            "sex": "male"
+          }
+        ]
+      },
+      "active_qid": "birth_mode_detail",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": "Nahi didi, normal delivery thi, operation nahi hua"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "clear",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": false
+    }
+  },
+  {
+    "id": "hold_colloquial_nicu_detail",
+    "category": "historical_lookalike_negative",
+    "split": "holdout",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "सविता",
+        "marital_status": "married",
+        "children": [
+          {
+            "id": "child_1",
+            "age_years": 1,
+            "sex": "female"
+          }
+        ]
+      },
+      "active_qid": "birth_nicu",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": "Haan, baby ko NICU mein 4 din rakha tha breathing problem ke liye"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "concern",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": true
+    }
+  },
+  {
+    "id": "hold_ruled_out_child_which_child",
+    "category": "multichild_and_profile",
+    "split": "holdout",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "मीना",
+        "marital_status": "married",
+        "children": [
+          {
+            "id": "child_1",
+            "age_years": 8,
+            "sex": "female",
+            "name": "रिया"
+          },
+          {
+            "id": "child_2",
+            "age_years": 5,
+            "sex": "male",
+            "name": "अर्जुन"
+          },
+          {
+            "id": "child_3",
+            "age_years": 1,
+            "sex": "female",
+            "name": "गुड़िया"
+          }
+        ]
+      },
+      "active_qid": "birth_jaundice",
+      "pending_followup_idx": -1,
+      "prior_answers": [],
+      "utterance_text": "मंझले बेटे को तो बिल्कुल नहीं हुआ था"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "not_about_active",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": null
+    }
+  },
+  {
+    "id": "hold_youngest_by_age_which_child",
+    "category": "multichild_and_profile",
+    "split": "holdout",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "मीना",
+        "marital_status": "married",
+        "children": [
+          {
+            "id": "child_1",
+            "age_years": 8,
+            "sex": "female",
+            "name": "रिया"
+          },
+          {
+            "id": "child_2",
+            "age_years": 5,
+            "sex": "male",
+            "name": "अर्जुन"
+          },
+          {
+            "id": "child_3",
+            "age_years": 1,
+            "sex": "female",
+            "name": "गुड़िया"
+          }
+        ]
+      },
+      "active_qid": "birth_jaundice",
+      "pending_followup_idx": -1,
+      "prior_answers": [],
+      "utterance_text": "सबसे छोटी 1 साल वाली गुड़िया को"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "concern",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "child_3",
+      "detail_present": null
+    }
+  },
+  {
+    "id": "hold_named_rare_syndrome",
+    "category": "diagnosis_guard",
+    "split": "holdout",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "अनीता",
+        "marital_status": "married",
+        "children": [
+          {
+            "id": "child_1",
+            "age_years": 7,
+            "sex": "male"
+          }
+        ]
+      },
+      "active_qid": "body_proportion",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": "हाँ, बड़े अस्पताल में डॉक्टर ने Marfan syndrome बताया था"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "mentions_diagnosis": true,
+      "current_outcome": "concern",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": null
+    }
+  },
+  {
+    "id": "hold_routine_thyroid_sugar",
+    "category": "diagnosis_guard",
+    "split": "holdout",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "गीता",
+        "marital_status": "married",
+        "children": [
+          {
+            "id": "child_1",
+            "age_years": 2,
+            "sex": "female"
+          }
+        ]
+      },
+      "active_qid": "preg_conditions",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": "हाँ, मुझे प्रेग्नेंसी में थायरॉइड और शुगर दोनों थे"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "mentions_diagnosis": false,
+      "current_outcome": "concern",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": true
+    }
+  },
+  {
+    "id": "hold_past_emergency_history",
+    "category": "historical_lookalike_negative",
+    "split": "holdout",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "सुमन",
+        "marital_status": "married",
+        "children": [
+          {
+            "id": "child_1",
+            "age_years": 4,
+            "sex": "male"
+          }
+        ]
+      },
+      "active_qid": "birth_sudden",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": "हाँ, जन्म के दूसरे दिन साँस रुक गई थी तब इमरजेंसी ले गए थे, अब 4 साल का है और ठीक है"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "concern",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": true
+    }
+  },
+  {
+    "id": "hold_midcall_profile_add",
+    "category": "multichild_and_profile",
+    "split": "holdout",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married",
+        "children": [
+          {
+            "id": "child_1",
+            "age_years": 5,
+            "sex": "female"
+          }
+        ]
+      },
+      "active_qid": "body_fits",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": "वैसे मेरी एक 6 महीने की छोटी बेटी भी है"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": true,
+      "current_outcome": "not_about_active",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": null
+    }
+  },
+  {
+    "id": "hold_closing_negative",
+    "category": "caller_stop_vs_pause",
+    "split": "holdout",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married",
+        "children": [
+          {
+            "id": "child_1",
+            "age_years": 4,
+            "sex": "male"
+          }
+        ]
+      },
+      "active_qid": "close_anything_else",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": "नहीं बस, और कुछ नहीं पूछना है धन्यवाद"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "clear",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": false
+    }
+  },
+  {
+    "id": "hold_dual_clear_plus_earlier_gate",
+    "category": "full_catalog_routing",
+    "split": "holdout",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married",
+        "children": [
+          {
+            "id": "child_1",
+            "age_years": 4,
+            "sex": "male"
+          }
+        ]
+      },
+      "active_qid": "fam_lumps",
+      "pending_followup_idx": null,
+      "prior_answers": [
+        {
+          "qid": "fam_blind_deaf",
+          "outcome": "clear"
+        }
+      ],
+      "utterance_text": "नहीं गाँठ तो नहीं है, पर मायके में मामा के बेटे को बचपन से सुनाई नहीं देता"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "clear",
+      "side_qid": "fam_blind_deaf",
+      "side_action": "add_or_correct",
+      "side_polarity": "concern",
       "child_ref": "",
       "detail_present": false
     }

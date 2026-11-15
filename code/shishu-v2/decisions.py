@@ -1,10 +1,13 @@
-"""Gemini Decisions API client, declarative turn schema builder, and interpreter."""
+"""Gemini Decisions API client, turn-schema builder, and turn interpreter.
+
+One caller turn in, one typed ``TurnCommand`` out. Probability gates and side
+routes are decided here; ``engine.reduce_turn`` alone owns note retention.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import base64
-import http.client
 import json
 import math
 import os
@@ -12,60 +15,57 @@ import socket
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any, NamedTuple
 
 from dotenv import load_dotenv
+from pydantic import ConfigDict, Field
 
-import call_cursor
-from call_cursor import children_roster, question_hi_for, routable_qids
-from triage_catalog import get_spec
+import copy_hi
+import engine
+from models import AnswerStatus, CallState, SideAction, Strict, SubStep, TurnCommand, TurnOutcome
+from triage_catalog import get_spec, routable_specs
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 DECISIONS_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/decisions"
 DECISIONS_MODEL = "gemini-decision-1"
-_SCHEMA: dict[str, Any] = json.loads(
+VALID_OUTCOMES = frozenset({"clear", "concern", "unknown", "clarify", "retract"})
+VALID_SIDE_INTENTS = frozenset({"add_concern", "clear_or_retract", "clarify_other"})
+TransportFn = Callable[[str, bytes, dict[str, str], float], tuple[int, bytes]]
+_SCHEMA = json.loads(
     Path(__file__).resolve().with_name("decision_schema.json").read_text(encoding="utf-8")
 )
-
-_RETRYABLE_HTTP = frozenset({408, 429})
+_THRESHOLDS_PATH = Path(__file__).resolve().with_name("decision_thresholds.json")
+_CORE_QUESTIONS = ("danger_now", "caller_stop", "mentions_profile", "current_outcome")
+_SIDE_QUESTIONS = ("mentions_diagnosis", "side_intent")
+_GATES = {
+    "danger_now": "danger_now_min_yes",
+    "caller_stop": "caller_stop_min_yes",
+    "mentions_profile": "mentions_profile_min_yes",
+    "mentions_diagnosis": "mentions_diagnosis_min_yes",
+    "detail_present": "detail_present_min_yes",
+}
+_KEEP_IN_CONTEXT = frozenset({"active_question", "caller_utterance"})
+_AUDIO_ONLY_TEXT = "[spoken audio attached]"
+_RETRYABLE = frozenset({408, 429})
 _SAFETY_CODES = frozenset(
     {"safety", "prohibited_content", "blocklist", "image_safety", "content_blocked"}
 )
-VALID_OUTCOMES = frozenset({"clear", "concern", "unknown", "clarify", "retract"})
-VALID_SIDE_INTENTS = frozenset({"add_concern", "clear_or_retract", "clarify_other"})
-_ROUTABLE_QID_SET = frozenset(routable_qids())
+_SIDE_ACTIONS = {
+    "add_concern": SideAction.ADD_CONCERN,
+    "clear_or_retract": SideAction.CLEAR_OR_RETRACT,
+    "clarify_other": SideAction.CLARIFY_MEANING,
+}
+_ROUTABLE_QIDS = frozenset(spec.id for spec in routable_specs())
+_THRESHOLD_CACHE: dict[tuple[str, int], DecisionThresholds] = {}
 _EPS = 1e-12
 
-_NOUL_FIELDS = (
-    "danger_now_min_yes",
-    "caller_stop_min_yes",
-    "mentions_profile_min_yes",
-    "mentions_diagnosis_min_yes",
-    "detail_present_min_yes",
-)
-_CONF_FIELDS = (
-    "outcome_min_confidence",
-    "side_intent_min_confidence",
-    "side_qid_min_confidence",
-    "child_ref_min_confidence",
-)
-_MARGIN_FIELDS = (
-    "outcome_min_margin",
-    "side_intent_min_margin",
-    "side_qid_min_margin",
-    "child_ref_min_margin",
-)
-_ALL_NUMERIC_THRESHOLD_FIELDS = _NOUL_FIELDS + _CONF_FIELDS + _MARGIN_FIELDS
 
-TransportFn = Callable[[str, bytes, dict[str, str], float], tuple[int, bytes]]
+class DecisionCallResult(NamedTuple):
+    """One Decisions API attempt's outcome and transport telemetry."""
 
-
-@dataclass(frozen=True, slots=True)
-class DecisionCallResult:
     ok: bool
     error_reason: str
     attempts: int
@@ -78,25 +78,9 @@ class DecisionCallResult:
     raw_answers: dict[str, Any]
 
 
-@dataclass(frozen=True, slots=True)
-class DecisionThresholds:
-    danger_now_min_yes: float
-    caller_stop_min_yes: float
-    mentions_profile_min_yes: float
-    mentions_diagnosis_min_yes: float
-    detail_present_min_yes: float
-    outcome_min_confidence: float
-    outcome_min_margin: float
-    side_intent_min_confidence: float
-    side_intent_min_margin: float
-    side_qid_min_confidence: float
-    side_qid_min_margin: float
-    child_ref_min_confidence: float
-    child_ref_min_margin: float
+class ChoiceEvaluation(NamedTuple):
+    """One choice head's verdict, with probabilities kept for calibration."""
 
-
-@dataclass(frozen=True, slots=True)
-class ChoiceEvaluation:
     accepted: bool
     winner: str
     top_option: str
@@ -107,172 +91,200 @@ class ChoiceEvaluation:
     reject_reason: str
 
     def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return dict(self._asdict())
 
 
-@dataclass(frozen=True, slots=True)
-class InterpretationResult:
-    cursor_payload: dict[str, Any]
+class DecisionThresholds(Strict, frozen=True):
+    """Calibrated gates: strict, immutable, and NaN-free by construction."""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    danger_now_min_yes: Annotated[float, Field(gt=0.01, lt=0.99)]
+    caller_stop_min_yes: Annotated[float, Field(gt=0.01, lt=0.99)]
+    mentions_profile_min_yes: Annotated[float, Field(gt=0.01, lt=0.99)]
+    mentions_diagnosis_min_yes: Annotated[float, Field(gt=0.01, lt=0.99)]
+    detail_present_min_yes: Annotated[float, Field(gt=0.01, lt=0.99)]
+    outcome_min_confidence: Annotated[float, Field(gt=0.0, lt=1.0)]
+    side_intent_min_confidence: Annotated[float, Field(gt=0.0, lt=1.0)]
+    side_qid_min_confidence: Annotated[float, Field(gt=0.0, lt=1.0)]
+    child_ref_min_confidence: Annotated[float, Field(gt=0.0, lt=1.0)]
+    outcome_min_margin: Annotated[float, Field(ge=0.0, lt=1.0)]
+    side_intent_min_margin: Annotated[float, Field(ge=0.0, lt=1.0)]
+    side_qid_min_margin: Annotated[float, Field(ge=0.0, lt=1.0)]
+    child_ref_min_margin: Annotated[float, Field(ge=0.0, lt=1.0)]
+
+
+class TurnIntent(Strict, frozen=True):
+    """One interpreted turn: a reducer-ready command plus its telemetry."""
+
+    command: TurnCommand
     needs_profile_extraction: bool
-    future_qid_match: dict[str, Any] | None
     diagnostics: dict[str, Any]
+    future_qid_match: dict[str, Any] | None = None
 
 
-def _side_qid_question(state: dict) -> dict[str, Any]:
-    t = _SCHEMA["side_qid_template"]
-    opt = t["option_template"]
-    criteria: dict[str, str] = {}
-    for qid in routable_qids():
-        spec = get_spec(qid)
-        criteria[qid] = opt.format(question_hi=question_hi_for(state, spec), need_en=spec.need_en)
-    criteria["other"] = t["other_description"]
-    return {"type": t["type"], "instructions": t["instructions"], "criteria": criteria}
+def _step(state: CallState) -> tuple[str, bool, bool]:
+    """Step kind, whether the detail head applies, and whether the side heads do."""
+    kind = engine.step_kind(state)
+    needs_detail = kind in ("main", "close") and bool(engine.followup_prompt_hi(state))
+    sideways = kind not in ("profile", "bridge") or engine.has_answered_gates(state)
+    return kind, needs_detail, sideways
 
 
-def _step_flags(state: dict) -> tuple[str, str, str, bool, bool, list[dict]]:
-    active_qid = str(state.get("active_qid") or "")
-    step_kind = call_cursor.step_kind(state)
-    followup_prompt = call_cursor.followup_prompt_hi(state)
-    roster = children_roster(state)
-    needs_detail = step_kind in ("main", "close") and bool(followup_prompt)
-    has_side = step_kind not in ("profile", "bridge") or call_cursor.has_answered_gates(state)
-    return active_qid, step_kind, followup_prompt, needs_detail, has_side, roster
+def _head(template_key: str, options: dict[str, str]) -> dict[str, Any]:
+    """A choice head over rendered options, plus the schema's own catchall."""
+    template = _SCHEMA[template_key]
+    head = {"type": template["type"], "instructions": template["instructions"]}
+    head["criteria"] = {**options, "other": template["other_description"]}
+    return head
 
 
-def _child_ref_question(roster: list[dict[str, Any]]) -> dict[str, Any]:
-    t = _SCHEMA["child_ref_template"]
-    criteria = {
-        r["id"]: t["option_template"].format(
-            id=r["id"],
-            rank=r["rank"],
-            age_label_hi=r["age_label_hi"],
-            sex=r["sex"],
-            name_or_unnamed=r.get("name") or t["unnamed_label"],
+def _side_qid_head(state: CallState) -> dict[str, Any]:
+    """Every routable item as a side option, worded for this caller."""
+    template = _SCHEMA["side_qid_template"]
+    options = {
+        spec.id: template["option_template"].format(
+            question_hi=copy_hi.question_hi_for(state.profile, spec), need_en=spec.need_en
         )
-        for r in roster
+        for spec in routable_specs()
     }
-    criteria["all"] = t["all_description"]
-    criteria["other"] = t["other_description"]
-    return {"type": t["type"], "instructions": t["instructions"], "criteria": criteria}
+    return _head("side_qid_template", options)
+
+
+def _child_ref_head(roster: list[dict[str, Any]]) -> dict[str, Any]:
+    """Every roster child as a pickable option, plus all-of-them."""
+    template = _SCHEMA["child_ref_template"]
+    options = {
+        child["id"]: template["option_template"].format(
+            id=child["id"],
+            rank=child["rank"],
+            age_label_hi=child["age_label_hi"],
+            sex=child["sex"],
+            name_or_unnamed=child.get("name") or template["unnamed_label"],
+        )
+        for child in roster
+    }
+    return _head("child_ref_template", options | {"all": template["all_description"]})
+
+
+def _roster_rows(roster: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+    """Compact roster context, present only when a child must be disambiguated."""
+    if len(roster) < 2:
+        return None
+    rows = []
+    for child in roster:
+        row = {"id": child["id"], "age": child["age_label_hi"], "rank": child["rank"]}
+        row["sex"] = child["sex"]
+        if child.get("name"):
+            row["name"] = child["name"]
+        rows.append(row)
+    return rows
 
 
 def build_turn_request(
-    state: dict,
+    state: CallState,
     *,
     utterance_text: str = "",
     audio_wav_bytes: bytes | None = None,
     audio_mime_type: str = "audio/wav",
 ) -> dict[str, Any]:
     """Build a single-pass Gemini Decisions API request for one caller turn."""
-    active_qid, step_kind, followup_prompt, needs_detail, has_side, roster = _step_flags(state)
-    active_prompt = call_cursor.active_prompt_hi(state)
-    parent_prompt = (
-        question_hi_for(state, get_spec(active_qid))
-        if step_kind in ("which_child", "followup") and active_qid
-        else ""
-    )
-    _, last_prompt_hi = call_cursor.last_answered_prompt_hi(state)
-    audio_data = bytes(audio_wav_bytes) if audio_wav_bytes else b""
-    clean_utt = " ".join(str(utterance_text or "").split())
-    if not clean_utt and audio_data:
-        clean_utt = "[spoken audio attached]"
-
-    roster_rows: list[dict[str, Any]] | None = None
-    if len(roster) >= 2:
-        roster_rows = [
-            {
-                "id": r["id"],
-                "age": r["age_label_hi"],
-                "sex": r["sex"],
-                "rank": r["rank"],
-                **({"name": r["name"]} if r.get("name") else {}),
-            }
-            for r in roster
-        ]
-
-    ctx_items = (
-        ("active_question", active_prompt),
-        ("parent_question", parent_prompt),
-        ("followup_question", followup_prompt),
-        ("last_answered_question", last_prompt_hi),
-        ("children_roster", roster_rows),
-        ("caller_utterance", clean_utt),
-    )
+    kind, needs_detail, has_side = _step(state)
+    roster = engine.children_roster(state)
+    audio = bytes(audio_wav_bytes) if audio_wav_bytes else b""
+    utterance = " ".join(str(utterance_text or "").split()) or (_AUDIO_ONLY_TEXT if audio else "")
+    roster_rows = _roster_rows(roster)
+    parent = ""
+    if kind in ("which_child", "followup"):
+        parent = copy_hi.question_hi_for(state.profile, get_spec(state.cursor.qid))
     ctx = {
-        k: v
-        for k, v in ctx_items
-        if v is not None and (v != "" or k in ("active_question", "caller_utterance"))
+        "active_question": engine.active_prompt_hi(state),
+        "followup_question": engine.followup_prompt_hi(state),
+        "last_answered_question": engine.last_answered_prompt_hi(state)[1],
+        "children_roster": roster_rows,
+        "caller_utterance": utterance,
     }
+    if parent:
+        ctx["parent_question"] = parent
+    ctx = {k: v for k, v in ctx.items() if v is not None and (v != "" or k in _KEEP_IN_CONTEXT)}
     ctx_json = json.dumps(ctx, ensure_ascii=False)
-    if audio_data:
-        req_input: str | list[dict[str, Any]] = [
+    req_input: str | list[dict[str, Any]] = ctx_json
+    if audio:
+        encoded = base64.b64encode(audio).decode("ascii")
+        req_input = [
             {"type": "text", "text": ctx_json + "\n"},
-            {
-                "type": "audio",
-                "data": base64.b64encode(audio_data).decode("ascii"),
-                "mime_type": audio_mime_type,
-            },
+            {"type": "audio", "data": encoded, "mime_type": audio_mime_type},
         ]
-    else:
-        req_input = ctx_json
-
-    qs = _SCHEMA["questions"]
-    questions: dict[str, dict[str, Any]] = {
-        "danger_now": qs["danger_now"],
-        "caller_stop": qs["caller_stop"],
-        "mentions_profile": qs["mentions_profile"],
-        "current_outcome": qs["current_outcome"],
-    }
+    questions = {key: _SCHEMA["questions"][key] for key in _CORE_QUESTIONS}
     if has_side:
-        questions["mentions_diagnosis"] = qs["mentions_diagnosis"]
-        questions["side_intent"] = qs["side_intent"]
-        questions["side_qid"] = _side_qid_question(state)
-    if len(roster) >= 2:
-        questions["child_ref"] = _child_ref_question(roster)
+        questions |= {key: _SCHEMA["questions"][key] for key in _SIDE_QUESTIONS}
+        questions["side_qid"] = _side_qid_head(state)
+    if roster_rows is not None:
+        questions["child_ref"] = _child_ref_head(roster)
     if needs_detail:
-        questions["detail_present"] = qs["detail_present"]
-
+        questions["detail_present"] = _SCHEMA["questions"]["detail_present"]
     return {"model": DECISIONS_MODEL, "input": req_input, "questions": questions}
 
 
 def _urllib_transport(
-    url: str, body_bytes: bytes, headers: dict[str, str], timeout_sec: float
+    url: str, body: bytes, headers: dict[str, str], timeout_sec: float
 ) -> tuple[int, bytes]:
-    req = urllib.request.Request(url, data=body_bytes, headers=headers, method="POST")
+    request = urllib.request.Request(url, data=body, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
-            return int(getattr(resp, "status", 200)), resp.read()
+        with urllib.request.urlopen(request, timeout=timeout_sec) as response:
+            return int(getattr(response, "status", 200)), response.read()
     except urllib.error.HTTPError as exc:
         return int(exc.code), exc.read() if hasattr(exc, "read") else b""
 
 
-def _parse_json_body(raw_body: bytes) -> dict[str, Any] | None:
+def _json_object(raw_body: Any) -> dict[str, Any] | None:
+    """Decode a body that must be exactly one JSON object, else None."""
     if not isinstance(raw_body, (bytes, bytearray)):
         return None
     text = bytes(raw_body).decode("utf-8", errors="replace").strip()
-    if not text:
-        return None
     try:
-        parsed = json.loads(text)
+        parsed = json.loads(text) if text else None
     except json.JSONDecodeError:
         return None
     return parsed if isinstance(parsed, dict) else None
 
 
-def _extract_usage(payload: dict[str, Any]) -> tuple[bool, int | None]:
-    raw = payload.get("usage")
-    if not isinstance(raw, dict) or not raw:
-        return False, None
-    in_tok = raw.get("total_input_tokens")
-    if isinstance(in_tok, int) and not isinstance(in_tok, bool):
-        return True, in_tok
-    return False, None
+def _verdict(status: int, raw: Any) -> tuple[dict[str, Any] | None, str, bool]:
+    """Judge one HTTP response as (payload, failure reason, worth retrying)."""
+    if 200 <= status <= 299:
+        payload = _json_object(raw)
+        if isinstance((payload or {}).get("answers"), dict) and payload["answers"]:
+            return payload, "", False
+        return None, "empty_answers" if payload else "malformed_response", False
+    error = (_json_object(raw) or {}).get("error")
+    code = str(error.get("code") or "").lower() if isinstance(error, dict) else ""
+    if code in _SAFETY_CODES and status < 500:
+        return None, "safety_block", False
+    return None, f"http_{status}", status in _RETRYABLE or status >= 500
 
 
-def _is_safety_error(payload: dict[str, Any] | None) -> bool:
-    err = payload.get("error") if isinstance(payload, dict) else None
-    code = str(err.get("code") or "").strip().lower() if isinstance(err, dict) else ""
-    return code in _SAFETY_CODES
+async def _try_once(
+    send: TransportFn, url: str, body: bytes, headers: dict[str, str], timeout: float
+) -> tuple[dict[str, Any] | None, str, bool]:
+    """One bounded round trip, normalised so the caller only reads a verdict."""
+    try:
+        status, raw = await asyncio.wait_for(
+            asyncio.to_thread(send, url, body, headers, timeout), timeout=timeout
+        )
+    except asyncio.CancelledError:
+        raise
+    except urllib.error.HTTPError as exc:
+        return _verdict(int(exc.code), exc.read() if hasattr(exc, "read") else b"")
+    except Exception as exc:  # noqa: BLE001 - transport faults are data, never crashes
+        is_timeout = isinstance(exc, (TimeoutError, asyncio.TimeoutError, socket.timeout)) or (
+            isinstance(exc, urllib.error.URLError)
+            and isinstance(exc.reason, (TimeoutError, socket.timeout))
+        )
+        if is_timeout:
+            return None, "timeout", True
+        connected = isinstance(exc, (urllib.error.URLError, ConnectionError, OSError))
+        return None, "connection_error" if connected else "malformed_response", connected
+    return _verdict(status, raw)
 
 
 async def evaluate_turn(
@@ -285,153 +297,84 @@ async def evaluate_turn(
     total_budget_sec: float = 4.0,
     transport: TransportFn | None = None,
 ) -> DecisionCallResult:
-    """Execute one Decisions API request with a bounded retry budget."""
-    qs = request.get("questions") if isinstance(request, dict) else {}
-    q_count = len(qs) if isinstance(qs, dict) else 0
-    side_obj = qs.get("side_qid") if isinstance(qs, dict) else None
-    side_c = side_obj.get("criteria") if isinstance(side_obj, dict) else {}
-    cat_count = len(side_c) if isinstance(side_c, dict) else 0
-    body_bytes = json.dumps(request, ensure_ascii=False).encode("utf-8")
-    req_bytes = len(body_bytes)
+    """Execute one Decisions API request inside a bounded retry budget."""
+    started = time.perf_counter()
+    body = json.dumps(request, ensure_ascii=False).encode("utf-8")
     raw_key = api_key if api_key is not None else os.environ.get("GEMINI_API_KEY")
     key = str(raw_key or "").strip()
-
-    def _res(
-        ok: bool,
-        err: str,
-        att: int,
-        ms: int,
-        u_ok: bool = False,
-        tok: int | None = None,
-        ans: dict[str, Any] | None = None,
-    ) -> DecisionCallResult:
-        return DecisionCallResult(
-            ok, err, att, ms, req_bytes, q_count, cat_count, u_ok, tok, ans or {}
-        )
-
-    if not key and (api_key is not None or transport is None):
-        return _res(False, "missing_api_key", 0, 0)
-
-    headers = {"Content-Type": "application/json; charset=utf-8", "x-goog-api-key": key}
-    fn = transport or _urllib_transport
-    max_tries = max(1, int(max_attempts))
-    per_att = max(0.01, float(attempt_timeout_sec))
-    started = time.perf_counter()
+    limit, per_try = max(1, int(max_attempts)), max(0.01, float(attempt_timeout_sec))
     deadline = started + max(0.01, float(total_budget_sec))
-    attempts, last_err, u_ok, in_tok = 0, "unknown_error", False, None
+    headers = {"Content-Type": "application/json; charset=utf-8", "x-goog-api-key": key}
+    send = transport or _urllib_transport
+    payload: dict[str, Any] | None = None
+    attempts, reason = 0, "missing_api_key"
 
-    for attempt in range(1, max_tries + 1):
-        rem = deadline - time.perf_counter()
-        if rem <= 0:
-            if last_err == "unknown_error":
-                last_err = "timeout"
+    allow_unkeyed_transport = api_key is None and transport is not None
+    can_attempt = bool(key) or allow_unkeyed_transport
+    while can_attempt and attempts < limit:
+        timeout = min(per_try, deadline - time.perf_counter())
+        if timeout <= 0:
+            if attempts == 0:
+                reason = "timeout"
             break
-        attempts = attempt
-        this_timeout = min(per_att, rem)
-        try:
-            status, raw_body = await asyncio.wait_for(
-                asyncio.to_thread(fn, endpoint, body_bytes, headers, this_timeout),
-                timeout=this_timeout,
-            )
-        except urllib.error.HTTPError as exc:
-            status = int(exc.code)
-            raw_body = exc.read() if hasattr(exc, "read") else b""
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            is_to = isinstance(exc, (TimeoutError, asyncio.TimeoutError, socket.timeout)) or (
-                isinstance(exc, urllib.error.URLError)
-                and isinstance(exc.reason, (TimeoutError, socket.timeout))
-            )
-            is_conn = isinstance(
-                exc, (urllib.error.URLError, ConnectionError, OSError, http.client.HTTPException)
-            )
-            if is_to:
-                last_err = "timeout"
-            elif is_conn:
-                last_err = "connection_error"
-            else:
-                last_err = "malformed_response"
-            if (is_to or is_conn) and attempt < max_tries:
-                continue
+        attempts += 1
+        payload, reason, retry = await _try_once(send, endpoint, body, headers, timeout)
+        if payload is not None or not retry:
             break
 
-        if status in _RETRYABLE_HTTP or 500 <= status <= 599:
-            last_err = f"http_{status}"
-            if attempt < max_tries:
-                continue
-            break
-        if 400 <= status <= 499:
-            is_safety = _is_safety_error(_parse_json_body(raw_body))
-            last_err = "safety_block" if is_safety else f"http_{status}"
-            break
-        parsed = _parse_json_body(raw_body) if 200 <= status <= 299 else None
-        if not (200 <= status <= 299):
-            last_err = f"http_{status}"
-            break
-        if parsed is None:
-            last_err = "malformed_response"
-            break
-        u_ok, in_tok = _extract_usage(parsed)
-        answers = parsed.get("answers")
-        if answers is None or (isinstance(answers, dict) and not answers):
-            last_err = "empty_answers"
-        elif not isinstance(answers, dict):
-            last_err = "malformed_response"
-        else:
-            ms = max(0, int(round((time.perf_counter() - started) * 1000)))
-            return _res(True, "", attempts, ms, u_ok, in_tok, answers)
-        break
-
-    ms = max(0, int(round((time.perf_counter() - started) * 1000)))
-    return _res(False, last_err, attempts, ms, u_ok, in_tok)
+    questions = request.get("questions") or {}
+    usage = (payload or {}).get("usage")
+    tokens = usage.get("total_input_tokens") if isinstance(usage, dict) else None
+    usable = isinstance(tokens, int) and not isinstance(tokens, bool)
+    return DecisionCallResult(
+        payload is not None,
+        "" if payload is not None else reason,
+        attempts,
+        max(0, int(round((time.perf_counter() - started) * 1000))),
+        len(body),
+        len(questions),
+        len((questions.get("side_qid") or {}).get("criteria") or {}),
+        usable,
+        tokens if usable else None,
+        (payload or {}).get("answers") or {},
+    )
 
 
 def validate_thresholds(thresholds: DecisionThresholds) -> DecisionThresholds:
-    """Validate DecisionThresholds numeric ranges."""
+    """Reject anything that is not already a validated threshold artifact."""
     if not isinstance(thresholds, DecisionThresholds):
         raise TypeError("thresholds must be a DecisionThresholds instance")
-    bounds = (
-        (_NOUL_FIELDS, 0.01, 0.99, False),
-        (_CONF_FIELDS, 0.0, 1.0, False),
-        (_MARGIN_FIELDS, 0.0, 1.0, True),
-    )
-    for fields, lo, hi, inclusive_lo in bounds:
-        for f in fields:
-            v = float(getattr(thresholds, f))
-            in_range = (lo <= v < hi) if inclusive_lo else (lo < v < hi)
-            if not math.isfinite(v) or not in_range:
-                raise ValueError(f"Threshold {f}={v!r} out of range")
     return thresholds
 
 
-def load_thresholds(path: str | Path) -> DecisionThresholds:
-    """Load and validate a DecisionThresholds JSON artifact."""
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
+def load_thresholds(path: str | Path | None = None) -> DecisionThresholds:
+    """Load, cache by file mtime, and strictly validate a threshold artifact."""
+    configured = str(os.environ.get("DECISION_THRESHOLDS_PATH") or "").strip()
+    resolved = Path(path or configured) if (path or configured) else _THRESHOLDS_PATH
+    cache_key = (str(resolved), resolved.stat().st_mtime_ns)
+    if (cached := _THRESHOLD_CACHE.get(cache_key)) is not None:
+        return cached
+    data = json.loads(resolved.read_text(encoding="utf-8"))
     if isinstance(data, dict) and isinstance(data.get("thresholds"), dict):
         data = data["thresholds"]
-    if not isinstance(data, dict):
-        raise ValueError("Threshold artifact must be a JSON object")
-    missing = [f for f in _ALL_NUMERIC_THRESHOLD_FIELDS if f not in data]
-    if missing:
-        raise ValueError(f"Threshold artifact missing fields: {', '.join(missing)}")
-    unknown = sorted(set(data.keys()) - set(_ALL_NUMERIC_THRESHOLD_FIELDS))
-    if unknown:
-        raise ValueError(f"Threshold artifact has unknown fields: {', '.join(unknown)}")
-    kwargs = {f: float(data[f]) for f in _ALL_NUMERIC_THRESHOLD_FIELDS}
-    return validate_thresholds(DecisionThresholds(**kwargs))
+    return _THRESHOLD_CACHE.setdefault(cache_key, DecisionThresholds.model_validate(data))
 
 
-def _noul_prob(raw_answers: dict[str, Any], key: str) -> float | None:
-    ans = raw_answers.get(key) if isinstance(raw_answers, dict) else None
-    val = ans.get("noul") if isinstance(ans, dict) else None
-    if isinstance(val, (int, float)) and not isinstance(val, bool) and math.isfinite(val):
-        return float(val)
-    return None
+def _prob(raw_answers: Mapping[str, Any], key: str) -> float | None:
+    """One noul head's yes-probability, or None when the model never answered it."""
+    answer = raw_answers.get(key) if isinstance(raw_answers, Mapping) else None
+    value = answer.get("noul") if isinstance(answer, Mapping) else None
+    usable = isinstance(value, (int, float)) and not isinstance(value, bool)
+    return float(value) if usable and math.isfinite(value) else None
+
+
+def _clears(probability: float | None, floor: float) -> bool:
+    """True only when the head was answered and clears its calibrated yes-gate."""
+    return probability is not None and probability >= floor
 
 
 def evaluate_choice(
-    raw_answers: dict[str, Any],
+    raw_answers: Mapping[str, Any],
     key: str,
     *,
     catchall_key: str = "other",
@@ -439,29 +382,23 @@ def evaluate_choice(
     min_margin: float,
     allowed_winners: frozenset[str] | None = None,
 ) -> ChoiceEvaluation:
-    """Accept a choice answer when top probability beats min_confidence and runner-up."""
-    ans = raw_answers.get(key) if isinstance(raw_answers, dict) else None
-    raw_probs = ans.get("probabilities") if isinstance(ans, dict) else None
+    """Accept a choice answer only when the winner clears confidence and margin."""
+    answer = raw_answers.get(key) if isinstance(raw_answers, Mapping) else None
+    raw = answer.get("probabilities") if isinstance(answer, Mapping) else None
     probs: dict[str, float] = {}
-    if isinstance(raw_probs, dict):
-        for opt, prob in raw_probs.items():
-            if (
-                isinstance(prob, (int, float))
-                and not isinstance(prob, bool)
-                and math.isfinite(prob)
-            ):
-                probs[str(opt)] = float(prob)
+    for option, probability in (raw if isinstance(raw, Mapping) else {}).items():
+        usable = isinstance(probability, (int, float)) and not isinstance(probability, bool)
+        if usable and math.isfinite(probability):
+            probs[str(option)] = float(probability)
     if not probs:
         return ChoiceEvaluation(False, "", "", None, "", None, None, "missing_answer")
-
     ranked = sorted(probs.items(), key=lambda item: (-item[1], item[0]))
-    top_opt, top_prob = ranked[0]
-    ru_opt, ru_prob = ranked[1] if len(ranked) > 1 else ("", 0.0)
-    margin = top_prob - ru_prob
-
-    if top_opt == catchall_key:
+    top_option, top_prob = ranked[0]
+    runnerup_option, runnerup_prob = ranked[1] if len(ranked) > 1 else ("", 0.0)
+    margin = top_prob - runnerup_prob
+    if top_option == catchall_key:
         reason = "catchall_top"
-    elif allowed_winners is not None and top_opt not in allowed_winners:
+    elif allowed_winners is not None and top_option not in allowed_winners:
         reason = "disallowed_option"
     elif top_prob + _EPS < min_confidence:
         reason = "below_min_confidence"
@@ -470,157 +407,131 @@ def evaluate_choice(
     else:
         reason = ""
     return ChoiceEvaluation(
-        not reason, "" if reason else top_opt, top_opt, top_prob, ru_opt, ru_prob, margin, reason
+        not reason,
+        "" if reason else top_option,
+        top_option,
+        top_prob,
+        runnerup_option,
+        runnerup_prob,
+        margin,
+        reason,
     )
+
+
+def _gated(
+    answers: Mapping[str, Any], key: str, limits: DecisionThresholds, allowed: frozenset[str]
+) -> ChoiceEvaluation:
+    """Score one choice head against the threshold pair named after its key."""
+    prefix = "outcome" if key == "current_outcome" else key
+    return evaluate_choice(
+        answers,
+        key,
+        min_confidence=getattr(limits, f"{prefix}_min_confidence"),
+        min_margin=getattr(limits, f"{prefix}_min_margin"),
+        allowed_winners=allowed,
+    )
+
+
+def _route_side(
+    state: CallState,
+    intent_eval: ChoiceEvaluation | None,
+    qid_eval: ChoiceEvaluation | None,
+    *,
+    blocked: bool,
+) -> tuple[str, SideAction, dict[str, Any] | None]:
+    """Resolve the accepted side target, its action, and any future-question match."""
+    if blocked or intent_eval is None or qid_eval is None:
+        return "", SideAction.NONE, None
+    if not (intent_eval.accepted and qid_eval.accepted):
+        return "", SideAction.NONE, None
+    action = _SIDE_ACTIONS[intent_eval.winner]
+    if accepted := engine.accepted_side_target(state, qid_eval.winner):
+        return accepted, action, None
+    if qid_eval.winner == state.cursor.qid or engine.is_answered_or_na(state, qid_eval.winner):
+        return "", SideAction.NONE, None
+    act = "clarify_meaning" if action is SideAction.CLARIFY_MEANING else "add_or_correct"
+    match = {"qid": qid_eval.winner, "confidence": qid_eval.top_prob, "act": act}
+    return "", SideAction.NONE, match
+
+
+def _can_retract(state: CallState) -> bool:
+    """A retraction only makes sense on a step she could actually take back."""
+    if state.cursor.substep is not SubStep.MAIN:
+        return True
+    active = state.answers.get(state.cursor.qid)
+    return active is not None and active.state is AnswerStatus.CONCERN
 
 
 def interpret_turn_decision(
-    state: dict,
-    raw_answers: dict[str, Any],
+    state: CallState,
+    raw_answers: Mapping[str, Any],
     *,
     thresholds: DecisionThresholds,
     utterance_text: str = "",
-) -> InterpretationResult:
-    """Translate raw Decisions API probabilities into a cursor payload and telemetry."""
-    validate_thresholds(thresholds)
-    answers = raw_answers if isinstance(raw_answers, dict) else {}
-    clean_utt = " ".join(str(utterance_text or "").split())
-    active_qid, step_kind, _followup_prompt, needs_detail, has_side, roster = _step_flags(state)
+) -> TurnIntent:
+    """Translate one Decisions API response into a typed TurnCommand plus telemetry."""
+    limits = validate_thresholds(thresholds)
+    answers = raw_answers if isinstance(raw_answers, Mapping) else {}
+    kind, needs_detail, has_side = _step(state)
+    roster = engine.children_roster(state)
 
-    danger_p = _noul_prob(answers, "danger_now")
-    stop_p = _noul_prob(answers, "caller_stop")
-    profile_p = _noul_prob(answers, "mentions_profile")
-    diag_p = _noul_prob(answers, "mentions_diagnosis") if has_side else None
-    detail_p = _noul_prob(answers, "detail_present") if needs_detail else None
-
-    emergency = danger_p is not None and danger_p >= thresholds.danger_now_min_yes
-    caller_stop = (not emergency) and (
-        stop_p is not None and stop_p >= thresholds.caller_stop_min_yes
-    )
-    mentions_profile = profile_p is not None and profile_p >= thresholds.mentions_profile_min_yes
-    diagnostic_note = bool(
-        has_side and diag_p is not None and diag_p >= thresholds.mentions_diagnosis_min_yes
-    )
-
-    out_eval = evaluate_choice(
-        answers,
-        "current_outcome",
-        min_confidence=thresholds.outcome_min_confidence,
-        min_margin=thresholds.outcome_min_margin,
-        allowed_winners=VALID_OUTCOMES,
-    )
-    resolved_outcome = out_eval.winner if out_eval.accepted else "not_about_active"
-    needs_profile = bool(
-        mentions_profile or (step_kind == "profile" and resolved_outcome != "clarify")
-    )
-
-    intent_eval = (
-        evaluate_choice(
-            answers,
-            "side_intent",
-            min_confidence=thresholds.side_intent_min_confidence,
-            min_margin=thresholds.side_intent_min_margin,
-            allowed_winners=VALID_SIDE_INTENTS,
-        )
-        if has_side
-        else None
-    )
-    qid_eval = (
-        evaluate_choice(
-            answers,
-            "side_qid",
-            min_confidence=thresholds.side_qid_min_confidence,
-            min_margin=thresholds.side_qid_min_margin,
-            allowed_winners=_ROUTABLE_QID_SET,
-        )
-        if has_side
-        else None
-    )
-    child_eval = (
-        evaluate_choice(
-            answers,
-            "child_ref",
-            min_confidence=thresholds.child_ref_min_confidence,
-            min_margin=thresholds.child_ref_min_margin,
-            allowed_winners=frozenset(r["id"] for r in roster) | {"all"},
-        )
-        if len(roster) >= 2
-        else None
-    )
-    child_ref = child_eval.winner if (child_eval is not None and child_eval.accepted) else ""
-
-    detail_present = (
-        needs_detail and detail_p is not None and detail_p >= thresholds.detail_present_min_yes
-    )
-    followup_answered = bool(detail_present and resolved_outcome == "concern")
-
-    side_qid, side_action, side_outcome = "", "", ""
-    future_match: dict[str, Any] | None = None
-    if (
-        not emergency
-        and not caller_stop
-        and intent_eval is not None
-        and qid_eval is not None
-        and intent_eval.accepted
-        and qid_eval.accepted
-    ):
-        cand_qid, intent = qid_eval.winner, intent_eval.winner
-        if intent == "clarify_other":
-            m_act, m_out = "clarify_meaning", ""
-        else:
-            m_act = "add_or_correct"
-            m_out = "concern" if intent == "add_concern" else "retract"
-        accepted = call_cursor.accepted_target(state, cand_qid)
-        if accepted:
-            side_qid, side_action, side_outcome = accepted, m_act, m_out
-        elif cand_qid != active_qid and not call_cursor.is_answered_or_na(state, cand_qid):
-            future_match = {"qid": cand_qid, "confidence": qid_eval.top_prob, "act": m_act}
-
-    active_ans = (state.get("answers") or {}).get(active_qid) or {}
-    active_can_retract = (
-        state.get("pending_followup_idx") is not None or active_ans.get("state") == "concern"
-    )
-    if side_qid:
-        clarify_conflict = side_action == "clarify_meaning" and resolved_outcome == "clarify"
-        retract_conflict = resolved_outcome == "retract" and not active_can_retract
-        if clarify_conflict or retract_conflict:
-            resolved_outcome = "not_about_active"
-
-    if needs_detail and step_kind in ("main", "close"):
-        outcome_keeps_note = detail_present and resolved_outcome == "concern"
-    else:
-        outcome_keeps_note = resolved_outcome == "concern" or (
-            step_kind == "which_child" and resolved_outcome == "unknown"
-        )
-    active_note = clean_utt if (emergency or outcome_keeps_note) else ""
-    side_note = clean_utt if (side_qid and side_action == "add_or_correct") else ""
-
-    payload: dict[str, Any] = {
-        "emergency": emergency,
-        "caller_stop": caller_stop,
-        "current_outcome": resolved_outcome,
-        "current_note": active_note,
-        "child_ref": child_ref,
-        "followup_answered": followup_answered,
-        "diagnostic_note": diagnostic_note,
-        "side_qid": side_qid,
-        "side_action": side_action,
-        "side_outcome": side_outcome,
-        "side_note": side_note,
+    optional = {"mentions_diagnosis": has_side, "detail_present": needs_detail}
+    heads = {
+        key: _prob(answers, key) if optional.get(key, True) else None for key in _GATES
     }
 
+    emergency = _clears(heads["danger_now"], limits.danger_now_min_yes)
+    caller_stop = not emergency and _clears(heads["caller_stop"], limits.caller_stop_min_yes)
+    mentions_profile = _clears(heads["mentions_profile"], limits.mentions_profile_min_yes)
+    diagnostic = _clears(heads["mentions_diagnosis"], limits.mentions_diagnosis_min_yes)
+    detail_present = _clears(heads["detail_present"], limits.detail_present_min_yes)
+
+    outcome_eval = _gated(answers, "current_outcome", limits, VALID_OUTCOMES)
+    outcome = (
+        TurnOutcome(outcome_eval.winner) if outcome_eval.accepted else TurnOutcome.NOT_ABOUT_ACTIVE
+    )
+    needs_profile = bool(
+        mentions_profile or (kind == "profile" and outcome is not TurnOutcome.CLARIFY)
+    )
+    intent_eval = qid_eval = None
+    if has_side:
+        intent_eval = _gated(answers, "side_intent", limits, VALID_SIDE_INTENTS)
+        qid_eval = _gated(answers, "side_qid", limits, _ROUTABLE_QIDS)
+    side_qid, side_action, future_match = _route_side(
+        state, intent_eval, qid_eval, blocked=emergency or caller_stop
+    )
+    if side_qid and (
+        (side_action is SideAction.CLARIFY_MEANING and outcome is TurnOutcome.CLARIFY)
+        or (outcome is TurnOutcome.RETRACT and not _can_retract(state))
+    ):
+        outcome = TurnOutcome.NOT_ABOUT_ACTIVE
+
+    allowed = frozenset(row["id"] for row in roster) | {"all"}
+    child_eval = _gated(answers, "child_ref", limits, allowed) if len(roster) >= 2 else None
+    command = TurnCommand(
+        emergency=emergency,
+        caller_stop=caller_stop,
+        outcome=outcome,
+        child_ref=child_eval.winner if child_eval is not None and child_eval.accepted else "",
+        followup_answered=bool(detail_present and outcome is TurnOutcome.CONCERN),
+        side_qid=side_qid,
+        side_action=side_action,
+        utterance=" ".join(str(utterance_text or "").split()),
+        diagnostic=diagnostic,
+    )
     diagnostics = {
-        "active_qid": active_qid,
-        "step_kind": step_kind,
-        "danger_now": danger_p,
-        "caller_stop": stop_p,
-        "mentions_profile": profile_p,
-        "mentions_diagnosis": diag_p,
-        "detail_present": detail_p,
-        "current_outcome": out_eval.as_dict(),
-        "side_intent": intent_eval.as_dict() if intent_eval is not None else None,
-        "side_qid": qid_eval.as_dict() if qid_eval is not None else None,
-        "child_ref": child_eval.as_dict() if child_eval is not None else None,
+        "active_qid": state.cursor.qid,
+        "step_kind": kind,
+        **heads,
+        "current_outcome": outcome_eval.as_dict(),
+        "side_intent": None if intent_eval is None else intent_eval.as_dict(),
+        "side_qid": None if qid_eval is None else qid_eval.as_dict(),
+        "child_ref": None if child_eval is None else child_eval.as_dict(),
         "future_qid_match": future_match,
     }
-    return InterpretationResult(payload, needs_profile, future_match, diagnostics)
+    return TurnIntent(
+        command=command,
+        needs_profile_extraction=needs_profile,
+        diagnostics=diagnostics,
+        future_qid_match=future_match,
+    )
