@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import inspect
 import json
 import logging
@@ -316,7 +317,7 @@ class LiveCallSession:
         evt = await self._db_safe(db.append_call_event, event_type, detail, meta)
         if evt is None:
             evt = {"t": round(time.time(), 3), "type": event_type, "detail": detail or "", "meta": meta or {}}
-        snapshot = json.loads(json.dumps(self.telemetry, ensure_ascii=False))
+        snapshot = copy.deepcopy(self.telemetry)
         await self._db_safe(db.update_call_telemetry, snapshot)
         await self._send_json({"type": "telemetry", "telemetry": snapshot, "last_event": evt})
 
@@ -464,87 +465,102 @@ class LiveCallSession:
             await self._report_error("Could not prompt Gemini to speak")
 
     async def _execute_decision_turn(self) -> tuple[dict[str, Any], bool, str]:
-        """One caller turn: classify, extract, reduce once, persist. Nothing else."""
+        """One caller turn: classify, extract, reduce once, persist. Nothing else.
+
+        `begin_evaluation` locks the turn with `speech_allowed` still `False`, and the
+        `finally` re-opens bot audio only once the Decision API and extractor round-trips
+        have returned. A bare un-tooled chunk that streams mid-evaluation is dropped.
+        """
         step_before = self.state.step_token
         hold, utt, pcm, snapshot, _key = self.fsm.begin_evaluation(self.state)
-        self.fsm.speech_allowed = True
         if self.state.phase is not Phase.ASKING:
+            self.fsm.speech_allowed = True
             return tool_body(self.state), False, "closing"
         if hold:
+            self.fsm.speech_allowed = True
             return {**tool_body(self.state), "result": "held", "reason": hold}, False, "held"
         try:
-            resolved = self._resolve_thresholds()
-        except Exception:
-            logger.exception("decision thresholds invalid on call %s", self.call_id)
-            await self._db_safe(db.append_call_event, "decision_turn", "error:invalid_thresholds",
-                                _decision_meta(error_reason="invalid_thresholds"))
-            return await self._close_on_technical_failure()
+            try:
+                resolved = self._resolve_thresholds()
+            except Exception:
+                logger.exception("decision thresholds invalid on call %s", self.call_id)
+                await self._db_safe(db.append_call_event, "decision_turn",
+                                    "error:invalid_thresholds",
+                                    _decision_meta(error_reason="invalid_thresholds"))
+                return await self._close_on_technical_failure()
 
-        audio_wav = audio_recorder.pcm16_to_wav_bytes(pcm, _INPUT_RATE) if (not utt and pcm) else None
-        res = await decisions.evaluate_turn(
-            decisions.build_turn_request(snapshot, utterance_text=utt, audio_wav_bytes=audio_wav)
-        )
-        stale = ({**tool_body(self.state), "result": "held", "reason": "stale_turn"}, False, "held")
-        meta = _decision_meta(res)
-        if self._is_superseded(step_before):
-            await self._db_safe(db.append_call_event, "decision_turn", "superseded", meta)
-            self.fsm.finish_evaluation()
-            return stale
-        if not res.ok:
-            await self._db_safe(db.append_call_event, "decision_turn",
-                                f"error:{res.error_reason}" if res.error_reason else "error", meta)
-            return await self._close_on_technical_failure()
-
-        intent = decisions.interpret_turn_decision(
-            self.state, res.raw_answers, thresholds=resolved, utterance_text=utt
-        )
-        cmd, extraction = intent.command, None
-        meta["diagnostics"] = intent.diagnostics
-        if intent.future_qid_match is not None:
-            meta["future_qid_match"] = intent.future_qid_match
-        if intent.needs_profile_extraction and not cmd.emergency and not cmd.caller_stop:
-            extraction = await profile_extractor.extract_profile_entities(
-                self.state, utterance_text=utt, audio_wav_bytes=audio_wav
+            audio_wav = (
+                audio_recorder.pcm16_to_wav_bytes(pcm, _INPUT_RATE) if (not utt and pcm) else None
             )
-            meta |= {"extractor_ok": extraction.ok, "extractor_ms": extraction.extractor_ms,
-                     "extractor_error": extraction.error_reason}
+            res = await decisions.evaluate_turn(
+                decisions.build_turn_request(snapshot, utterance_text=utt, audio_wav_bytes=audio_wav)
+            )
+            stale = (
+                {**tool_body(self.state), "result": "held", "reason": "stale_turn"}, False, "held"
+            )
+            meta = _decision_meta(res)
             if self._is_superseded(step_before):
                 await self._db_safe(db.append_call_event, "decision_turn", "superseded", meta)
                 self.fsm.finish_evaluation()
                 return stale
-            if extraction.ok:
-                self.fsm.extractor_failures, self.fsm.extractor_failure_step = 0, ""
-                cmd = cmd.model_copy(
-                    update={"profile_patch": extraction.patch, "profile_turn_attempted": True}
-                )
-
-        await self._db_safe(db.append_call_event, "decision_turn",
-                            f"{self.state.cursor.qid}:{cmd.outcome.value or 'ok'}", meta)
-        if extraction is not None and not extraction.ok:
-            if self.fsm.record_extractor_failure(step_before):
+            if not res.ok:
+                await self._db_safe(db.append_call_event, "decision_turn",
+                                    f"error:{res.error_reason}" if res.error_reason else "error",
+                                    meta)
                 return await self._close_on_technical_failure()
-            if engine.step_kind(self.state) == "profile":
-                self.fsm.finish_evaluation()
-                return tool_body(self.state), False, (cmd.outcome.value or "reask")
 
-        new_state = engine.reduce_turn(self.state, cmd)
-        step_changed = new_state.step_token != step_before
-        self.state = new_state
-        await self._persist_after_state_change()
-        clarify = bool(
-            not cmd.emergency and not cmd.caller_stop and (
-                cmd.outcome is TurnOutcome.CLARIFY
-                or (cmd.side_action is SideAction.CLARIFY_MEANING
-                    and self.state.cursor.qid == cmd.side_qid)
+            intent = decisions.interpret_turn_decision(
+                self.state, res.raw_answers, thresholds=resolved, utterance_text=utt
             )
-        )
-        self.fsm.finish_evaluation(step_changed=step_changed)
-        body = tool_body(self.state, clarify=clarify)
-        if cmd.emergency:
-            return body, clarify, "emergency"
-        if cmd.caller_stop:
-            return body, clarify, "caller_stop"
-        return body, clarify, cmd.outcome.value or "ok"
+            cmd, extraction = intent.command, None
+            meta["diagnostics"] = intent.diagnostics
+            if intent.future_qid_match is not None:
+                meta["future_qid_match"] = intent.future_qid_match
+            if intent.needs_profile_extraction and not cmd.emergency and not cmd.caller_stop:
+                extraction = await profile_extractor.extract_profile_entities(
+                    self.state, utterance_text=utt, audio_wav_bytes=audio_wav
+                )
+                meta |= {"extractor_ok": extraction.ok, "extractor_ms": extraction.extractor_ms,
+                         "extractor_error": extraction.error_reason}
+                if self._is_superseded(step_before):
+                    await self._db_safe(db.append_call_event, "decision_turn", "superseded", meta)
+                    self.fsm.finish_evaluation()
+                    return stale
+                if extraction.ok:
+                    self.fsm.extractor_failures, self.fsm.extractor_failure_step = 0, ""
+                    cmd = cmd.model_copy(
+                        update={"profile_patch": extraction.patch, "profile_turn_attempted": True}
+                    )
+
+            await self._db_safe(db.append_call_event, "decision_turn",
+                                f"{self.state.cursor.qid}:{cmd.outcome.value or 'ok'}", meta)
+            if extraction is not None and not extraction.ok:
+                if self.fsm.record_extractor_failure(step_before):
+                    return await self._close_on_technical_failure()
+                if engine.step_kind(self.state) == "profile":
+                    self.fsm.finish_evaluation()
+                    return tool_body(self.state), False, (cmd.outcome.value or "reask")
+
+            new_state = engine.reduce_turn(self.state, cmd)
+            step_changed = new_state.step_token != step_before
+            self.state = new_state
+            await self._persist_after_state_change()
+            clarify = bool(
+                not cmd.emergency and not cmd.caller_stop and (
+                    cmd.outcome is TurnOutcome.CLARIFY
+                    or (cmd.side_action is SideAction.CLARIFY_MEANING
+                        and self.state.cursor.qid == cmd.side_qid)
+                )
+            )
+            self.fsm.finish_evaluation(step_changed=step_changed)
+            body = tool_body(self.state, clarify=clarify)
+            if cmd.emergency:
+                return body, clarify, "emergency"
+            if cmd.caller_stop:
+                return body, clarify, "caller_stop"
+            return body, clarify, cmd.outcome.value or "ok"
+        finally:
+            self.fsm.speech_allowed = True
 
     def _resolve_thresholds(self) -> decisions.DecisionThresholds:
         if self.thresholds is not None:
@@ -953,7 +969,7 @@ class LiveCallSession:
             except Exception:
                 filename, duration = "", 0
         _stamp_dropoff(self.telemetry, self.state)
-        await self._db_safe(db.update_call_telemetry, json.loads(json.dumps(self.telemetry)))
+        await self._db_safe(db.update_call_telemetry, copy.deepcopy(self.telemetry))
         if self.call_id is None:
             return
         await asyncio.to_thread(db.complete_call, self.call_id, int(duration), filename)

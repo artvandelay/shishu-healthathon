@@ -1,6 +1,5 @@
-"""Atomic yes/no catalog for SHISHU v4.
+"""Atomic yes/no catalog for SHISHU v4: the one source of every screening question.
 
-Question text is the Devanagari in docs/requirements-v4.md section 4.
 हाँ on a clinical item is a concern. नहीं is clear. question_multi_hi is the
 2+ child wording; an empty string means the general question_hi is used.
 Downstream modules read kinds and roles off the spec, never a hardcoded QID.
@@ -230,16 +229,3 @@ def routable_specs() -> tuple[QuestionSpec, ...]:
 
 def routable_qids() -> tuple[str, ...]:
     return tuple(spec.id for spec in routable_specs())
-
-
-EVER_PREGNANT_HI = get_spec("ever_pregnant").question_hi
-EVER_PREGNANT_NEED_EN = get_spec("ever_pregnant").need_en
-
-
-def active_specs() -> list[QuestionSpec]:
-    return list(CATALOG)
-
-
-def spine_ids() -> list[str]:
-    """Ask order."""
-    return [spec.id for spec in CATALOG]

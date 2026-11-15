@@ -571,6 +571,58 @@ class TurnTakingAndWatchdogTests(unittest.TestCase):
 
 
 class LiveDecisionFlowTests(unittest.TestCase):
+    def test_bot_audio_stays_muted_while_the_decision_turn_is_in_flight(self):
+        """No un-tooled audio may stream while `fsm.phase` is EVALUATING."""
+        state = clear_until(make_profile_state(children=[make_child(4, "male")]), "birth_nicu")
+
+        async def run():
+            live = _make_live(state=state, thresholds=shipped_thresholds())
+            live.fsm.spoken_step = state.step_token
+            await live._handle_server_message(server_message(user_text="नहीं"))
+            self.assertFalse(live.fsm.speech_allowed)
+
+            eval_started, release_eval = asyncio.Event(), asyncio.Event()
+
+            async def slow_eval(request, **_kwargs):
+                eval_started.set()
+                await release_eval.wait()
+                return decision_result(request, _eval_payload())
+
+            with mock.patch.object(decisions, "evaluate_turn", side_effect=slow_eval):
+                task = asyncio.create_task(live._handle_server_message(
+                    server_message(turn_complete=True, tool_calls=[FakeToolCall(fid="fc-mute")])
+                ))
+                await asyncio.wait_for(eval_started.wait(), timeout=1.0)
+                self.assertIs(live.fsm.phase, gemini_live.TurnPhase.EVALUATING)
+                self.assertFalse(live.fsm.speech_allowed)
+
+                await live._handle_server_message(bot_audio_message())
+                self.assertEqual(live.telemetry["audio_chunks_out"], 0)
+                self.assertEqual([m for m in live.ws.sent if m.get("type") == "audio"], [])
+
+                release_eval.set()
+                await task
+                await drop_fallback(live)
+
+            self.assertTrue(live.fsm.speech_allowed)
+            self.assertEqual(live.state.cursor.qid, "birth_jaundice")
+
+            await live._handle_server_message(bot_audio_message())
+            self.assertEqual(live.telemetry["audio_chunks_out"], 1)
+            self.assertEqual(len([m for m in live.ws.sent if m.get("type") == "audio"]), 1)
+
+            # The `finally` also re-opens speech when a round-trip raises mid-flight
+            boom = _make_live(state=state, thresholds=shipped_thresholds())
+            boom.fsm.spoken_step = state.step_token
+            await boom._handle_server_message(server_message(user_text="नहीं"))
+            with mock.patch.object(decisions, "evaluate_turn", side_effect=RuntimeError("boom")), \
+                    self.assertLogs(gemini_live.logger, level="ERROR"):
+                await boom._answer_function_calls([FakeToolCall(fid="fc-boom")])
+            await drop_fallback(boom)
+            self.assertTrue(boom.fsm.speech_allowed)
+
+        asyncio.run(run())
+
     def test_quick_reply_guards_audio_flush_stale_asr_and_closing_bot_first_audio(self):
         thresholds = shipped_thresholds()
 

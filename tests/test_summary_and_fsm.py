@@ -5,8 +5,8 @@ import unittest
 import tests  # noqa: F401
 
 import copy_hi  # noqa: E402
+import db  # noqa: E402
 import mother_report  # noqa: E402
-import post_call  # noqa: E402
 import summary  # noqa: E402
 from engine import apply_profile_patch, reduce_turn  # noqa: E402
 from live_fsm import (  # noqa: E402
@@ -112,20 +112,11 @@ def _scenarios() -> dict[str, CallState]:
 
 
 class SummaryTests(unittest.TestCase):
-    def test_projection_matches_post_call_and_mother_report_field_for_field(self):
+    def test_projection_matches_the_mother_report_field_for_field(self):
         for label, state in _scenarios().items():
             with self.subTest(label):
                 projected = summary.project_summary(state)
-                built = post_call.build_reports(state)
                 report = mother_report.build_report(_call_row(state))
-
-                self.assertEqual(built["doctor_markdown"], projected.doctor_markdown)
-                self.assertEqual(built["red_flags"], list(projected.red_flags))
-                self.assertEqual(built["mother_questions_hi"], list(projected.mother_questions_hi))
-                self.assertEqual(built["yes_summaries_hi"], list(projected.yes_summaries_hi))
-                self.assertEqual(built["mother_name_hi"], projected.mother_name)
-                self.assertEqual(built["children_label_hi"], projected.children_label_hi)
-                self.assertEqual(built["summary"], projected)
 
                 self.assertEqual(report["questions"], list(projected.mother_questions_hi))
                 self.assertEqual(report["yes"], list(projected.yes_summaries_hi))
@@ -139,9 +130,14 @@ class SummaryTests(unittest.TestCase):
         for label, state in _scenarios().items():
             with self.subTest(label):
                 projected = summary.project_summary(state)
-                built = post_call.build_reports(state)
-                self.assertEqual(post_call.mother_summary_text(projected), projected.mother_summary_text)
-                self.assertEqual(post_call.mother_summary_text(built), projected.mother_summary_text)
+                as_mapping = summary.project_summary(db.call_state_from_row(_call_row(state)))
+                self.assertEqual(as_mapping.mother_summary_text, projected.mother_summary_text)
+                self.assertEqual(
+                    copy_hi.mother_summary_text(
+                        projected.yes_summaries_hi, projected.mother_questions_hi
+                    ),
+                    projected.mother_summary_text,
+                )
 
     def test_diagnostic_firewall_keeps_disease_words_out_of_hindi(self):
         projected = summary.project_summary(_concern_state(diagnostic=True))
@@ -220,7 +216,7 @@ class SummaryTests(unittest.TestCase):
         projected = summary.project_summary(CallState())
         self.assertEqual((projected.close_reason, projected.incomplete), ("incomplete", True))
         self.assertTrue(projected.page2_unasked_groups)
-        self.assertEqual(post_call.build_reports(CallState())["summary"], projected)
+        self.assertEqual(summary.project_summary(CallState()), projected)
 
 
 class LiveTurnMachineTests(unittest.TestCase):

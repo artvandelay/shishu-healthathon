@@ -2,21 +2,27 @@
 
 SHISHU is a Hindi voice app for a pre-consultation call.
 A mother speaks with the app before she meets a doctor or a health worker.
-The live call uses Gemini Live alongside the Gemini Decisions API and a schema-validated profile extractor.
-After the call, the mother gets a 2–3 page Hindi PDF (`mother_report.py`; 2 pages for childless or short calls, 3 pages when all 56 child and family items render), and the doctor gets an English intake note (`post_call.py`).
+The live call uses Gemini Live for voice, the Gemini Decisions API for turn classification, and a schema-validated profile extractor for the four intro facts.
+`summary.project_summary` then projects one frozen `ScreeningSummary` from the finished call: the mother gets a 2–3 page Hindi PDF (`mother_report.py`; 2 pages for childless or short calls, 3 pages when all 56 child and family items render), and the doctor gets a deterministic English intake note (`summary.py`).
 
 ## Architecture (`code/shishu-v2/`)
 
-- `triage_catalog.py` — 56 atomic yes/no clinical questions + 25 follow-up prompts
-- `call_cursor.py` — deterministic FormBharo state engine, demographic skip matrix, multi-child roster, and dual-intent turn composer
+Fifteen modules, in the order a call touches them:
+
+- `models.py` — the one typed vocabulary: `CallState`, `Phase`, `TurnCommand`, `AnswerRecord`, `CallerProfile`, and the `Strict` base every model extends
+- `triage_catalog.py` — 56 atomic yes/no clinical questions, the follow-up sub-questions, and the per-question spec every other module reads instead of a hardcoded QID
+- `copy_hi.py` — every Hindi string: question wording by profile, the Gemini Live system prompt and speak cues, and the one Mother-summary layout
+- `engine.py` — deterministic FormBharo state engine: demographic skip matrix, multi-child roster, and the pure turn reducer
 - `decisions.py`, `decision_schema.json`, `decision_thresholds.json` — single-pass `gemini-decision-1` probability turn classifier and calibrated thresholds
 - `profile_extractor.py` — schema-validated 4-field demographic extractor (`gemini-3.5-flash-lite`)
-- `gemini_live.py`, `live_decision_bridge.py`, `prompts.py` — Gemini Live (`gemini-3.1-flash-live-preview`, `Kore` Hindi voice) WebSocket session, speaker-clock `नहीं`/`हाँ` quick-reply protocol, and silence/reconnect watchdogs
-- `post_call.py`, `mother_report.py`, `report_service.py` — pure deterministic English clinician intake note and 2–3 page Hindi WeasyPrint Mother PDF
+- `live_fsm.py` — pure synchronous turn machine: capture buffers, stale-turn shielding, playback clock, and watchdog timers
+- `gemini_live.py` — Gemini Live (`gemini-3.1-flash-live-preview`, `Kore` Hindi voice) WebSocket session, the single zero-argument `next_question` tool, and silence/reconnect watchdogs
+- `summary.py` — single-pass `ScreeningSummary` projection feeding both post-call artefacts
+- `mother_report.py`, `report_service.py` — 2–3 page Hindi WeasyPrint Mother PDF, plus the save/in-flight/serve path for it
 - `audio_recorder.py` — off-loop 16 kHz stereo wall-clock WAV recorder
 - `app.py`, `db.py`, `seed.py` — FastAPI routes, HMAC cookie auth, UUID `share_token` PDF access, SQLite persistence, and v4 clinical seed calls
 
-The mother PDF stays in Hindi, and the doctor intake note stays in English.
+The mother PDF stays in Hindi, and the doctor intake note stays in English. Both are pure functions of the stored `CallState`, with zero post-call LLM calls.
 
 ## Sample reports
 

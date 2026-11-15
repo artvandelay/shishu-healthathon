@@ -32,11 +32,11 @@ import copy_hi  # noqa: E402
 import db  # noqa: E402
 import engine  # noqa: E402
 import mother_report  # noqa: E402
-import post_call  # noqa: E402
+import summary  # noqa: E402
 import uvicorn  # noqa: E402
 from models import AnswerStatus, CallState, MaritalStatus, Phase, SubStep  # noqa: E402
 from pypdf import PdfReader  # noqa: E402
-from triage_catalog import active_specs, get_spec  # noqa: E402
+from triage_catalog import CATALOG, get_spec  # noqa: E402
 import app as shishu_app  # noqa: E402
 
 HOST = "127.0.0.1"
@@ -178,17 +178,19 @@ def _answer_notes_text(record) -> str:
     return record.verbatim_text if record is not None else ""
 
 
-def _assert_reports_match_cursor(call: dict, problems: list[str]) -> tuple[dict, dict]:
-    expected = post_call.build_reports(call)
-    projected = expected["summary"]
+def _assert_reports_match_cursor(
+    call: dict, problems: list[str]
+) -> tuple[summary.ScreeningSummary, dict]:
+    """One projection feeds the stored note, the Hindi summary, the flags, and the PDF."""
+    projected = summary.project_summary(db.call_state_from_row(call))
     report = mother_report.build_report(call, projected)
-    if str(call.get("summary_doctor") or "").strip() != expected["doctor_markdown"].strip():
-        problems.append("summary_doctor diverges from post_call.build_reports")
+    if str(call.get("summary_doctor") or "").strip() != projected.doctor_markdown.strip():
+        problems.append("summary_doctor diverges from summary.project_summary")
     if str(call.get("summary_mother") or "").strip() != projected.mother_summary_text.strip():
-        problems.append("summary_mother diverges from post_call.build_reports")
-    if (call.get("red_flags") or []) != expected["red_flags"]:
-        problems.append("red_flags diverges from post_call.build_reports")
-    return expected, report
+        problems.append("summary_mother diverges from summary.project_summary")
+    if (call.get("red_flags") or []) != list(projected.red_flags):
+        problems.append("red_flags diverges from summary.project_summary")
+    return projected, report
 
 
 def _check_p1(call: dict, problems: list[str]) -> None:
@@ -241,11 +243,11 @@ def _check_p3(call: dict, problems: list[str]) -> None:
             f"active_qid={cursor.cursor.qid} phase={cursor.phase}"
         )
     expected, report = _assert_reports_match_cursor(call, problems)
-    if "Active emergency" not in expected["doctor_markdown"]:
+    if "Active emergency" not in expected.doctor_markdown:
         problems.append("summary_doctor missing Active emergency")
-    if any(q in expected["mother_questions_hi"] for q in copy_hi.ROUTINE_HI):
+    if any(q in expected.mother_questions_hi for q in copy_hi.ROUTINE_HI):
         problems.append("emergency summary_mother included routine filler")
-    if not all(q in expected["mother_questions_hi"] for q in copy_hi.EMERGENCY_HI):
+    if not all(q in expected.mother_questions_hi for q in copy_hi.EMERGENCY_HI):
         problems.append("emergency summary_mother missing emergency questions")
     if not (report["emergency"] and report["incomplete"]):
         problems.append("mother_report missing emergency/incomplete state")
@@ -276,8 +278,7 @@ def _check_p4(persona: Persona, call: dict, problems: list[str]) -> None:
         problems.append(f"fam_bp_stroke={_state_of(bp)}")
     if _state_of(same) is not AnswerStatus.CLEAR:
         problems.append(f"fam_same_problem={_state_of(same)}")
-    expected, _ = _assert_reports_match_cursor(call, problems)
-    projected = expected["summary"]
+    projected, _ = _assert_reports_match_cursor(call, problems)
     profile = _state(call).profile
     middle = _middle_child(profile)
     if middle is None:
@@ -287,7 +288,7 @@ def _check_p4(persona: Persona, call: dict, problems: list[str]) -> None:
     else:
         expected_en = copy_hi.children_label_en(profile, [middle.id])
         expected_hi = copy_hi.children_label_hi(profile, [middle.id])
-        if expected_en not in expected["doctor_markdown"]:
+        if expected_en not in projected.doctor_markdown:
             problems.append(f"summary_doctor missing middle child attribution ({expected_en})")
         if expected_hi not in projected.mother_summary_text:
             problems.append(f"summary_mother missing middle child attribution ({expected_hi})")
@@ -318,7 +319,7 @@ def _pdf_page(call: dict, index: int) -> str:
 
 
 def _child_specs():
-    return [spec for spec in active_specs() if "no_children" in spec.skip_if]
+    return [spec for spec in CATALOG if "no_children" in spec.skip_if]
 
 
 def _check_p5(persona: Persona, call: dict, problems: list[str]) -> None:

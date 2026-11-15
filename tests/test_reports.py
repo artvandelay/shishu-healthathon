@@ -2,6 +2,7 @@
 
 import asyncio
 import io
+import tempfile
 import threading
 import unittest
 from pathlib import Path
@@ -14,7 +15,6 @@ import copy_hi  # noqa: E402
 import db  # noqa: E402
 import engine  # noqa: E402
 import mother_report  # noqa: E402
-import post_call  # noqa: E402
 import report_service  # noqa: E402
 import seed  # noqa: E402
 import summary  # noqa: E402
@@ -134,17 +134,18 @@ def _store(state: CallState, mother_name: str = "पूजा") -> int:
 
 class ProjectionTests(unittest.TestCase):
     def test_completed_call_projects_one_summary_for_every_builder(self):
+        """Both builders read the same projection: the row is only re-typed, never re-walked."""
         state = _complete_call()
         projected = summary.project_summary(state)
         self.assertEqual((projected.close_reason, projected.incomplete), ("complete", False))
-        self.assertTrue(projected.red_flags)
 
-        built = post_call.build_reports({"id": 1, "cursor_state": state.to_dict()})
-        self.assertEqual(built["doctor_markdown"], projected.doctor_markdown)
-        self.assertEqual(built["red_flags"], list(projected.red_flags))
-        self.assertEqual(built["mother_name_hi"], "पूजा")
-        self.assertEqual(built["children_label_hi"], "आरव 7 साल बेटा · मीरा 3 साल बेटी")
-        self.assertEqual(built["summary"], projected)
+        built = summary.project_summary(db.call_state_from_row(
+            {"id": 1, "cursor_state": state.to_dict()}
+        ))
+        self.assertEqual(built, projected)
+        self.assertTrue(built.red_flags)
+        self.assertEqual(built.mother_name, "पूजा")
+        self.assertEqual(built.children_label_hi, "आरव 7 साल बेटा · मीरा 3 साल बेटी")
 
         report = mother_report.build_report({**_CALL, "cursor_state": state.to_dict()}, projected)
         self.assertEqual(report["questions"], list(projected.mother_questions_hi))
@@ -166,28 +167,38 @@ class ProjectionTests(unittest.TestCase):
         self.assertEqual(db.call_state_from_row({"cursor_state": {}}).to_dict(), blank.to_dict())
 
     def test_mother_summary_text_matches_the_projection_from_a_model_or_a_dict(self):
+        """One canonical builder in `copy_hi`; the projection is just its own call."""
         projected = summary.project_summary(_complete_call())
-        built = post_call.build_reports(_complete_call())
-        self.assertEqual(post_call.mother_summary_text(projected), projected.mother_summary_text)
-        self.assertEqual(post_call.mother_summary_text(built), projected.mother_summary_text)
-        self.assertEqual(post_call.mother_summary_text({}), copy_hi.mother_summary_text([], []))
+        as_mapping = summary.project_summary(
+            db.call_state_from_row({"cursor_state": _complete_call().to_dict()})
+        )
+        self.assertEqual(projected.mother_summary_text, as_mapping.mother_summary_text)
+        self.assertEqual(
+            copy_hi.mother_summary_text(projected.yes_summaries_hi, projected.mother_questions_hi),
+            projected.mother_summary_text,
+        )
+        self.assertEqual(
+            copy_hi.mother_summary_text([], []),
+            f"{copy_hi.YES_EMPTY_HI}\n\n{copy_hi.QUESTION_HEADER_HI}",
+        )
 
     def test_diagnostic_words_stay_in_the_doctor_note_and_never_reach_the_pdf(self):
         state = _complete_call()
-        built = post_call.build_reports({"id": 43, "cursor_state": state.to_dict()})
+        row = {"id": 43, "cursor_state": state.to_dict()}
+        built = summary.project_summary(db.call_state_from_row(row))
         for heading in summary._HEADINGS:
-            self.assertIn(heading, built["doctor_markdown"])
-        self.assertIn(_DIAGNOSTIC_NOTE, built["doctor_markdown"])
-        self.assertIn("child_2 (female, age 3.0, मीरा)", built["doctor_markdown"])
-        self.assertTrue(any(_DIAGNOSTIC_NOTE in flag for flag in built["red_flags"]))
-        self.assertIn(_SAFE_NOTE, built["yes_summaries_hi"][0])
-        self.assertIn("मीरा 3 साल बेटी", built["yes_summaries_hi"][0])
+            self.assertIn(heading, built.doctor_markdown)
+        self.assertIn(_DIAGNOSTIC_NOTE, built.doctor_markdown)
+        self.assertIn("child_2 (female, age 3.0, मीरा)", built.doctor_markdown)
+        self.assertTrue(any(_DIAGNOSTIC_NOTE in flag for flag in built.red_flags))
+        self.assertIn(_SAFE_NOTE, built.yes_summaries_hi[0])
+        self.assertIn("मीरा 3 साल बेटी", built.yes_summaries_hi[0])
 
         report = mother_report.build_report({"id": 43, "cursor_state": state.to_dict()})
         pdf_text = _pdf_text(mother_report.render_pdf(report))
         mother_blob = "\n".join([
-            *built["yes_summaries_hi"],
-            *built["mother_questions_hi"],
+            *built.yes_summaries_hi,
+            *built.mother_questions_hi,
             mother_report.render_html(report),
             pdf_text,
         ]).lower()
@@ -410,18 +421,21 @@ class SamplePdfTests(unittest.TestCase):
         self.assertIn("अभी नहीं पूछा गया", partial)
 
     def test_samples_are_reproducible_from_the_seed_scenarios(self):
-        written = seed.write_sample_pdfs(_SAMPLES)
-        self.assertEqual(
-            [path.name for path in written],
-            [
-                "SHISHU-sample-red-flags.pdf",
-                "SHISHU-sample-no-flags.pdf",
-                "SHISHU-sample-incomplete.pdf",
-            ],
-        )
-        for path in written:
-            self.assertTrue(path.read_bytes().startswith(b"%PDF"))
-            self.assertTrue(2 <= _pages(path.read_bytes()) <= 3, path.name)
+        """Render into a temp dir: a test run must never dirty git-tracked samples."""
+        with tempfile.TemporaryDirectory() as tmp:
+            written = seed.write_sample_pdfs(tmp)
+            self.assertEqual(
+                [path.name for path in written],
+                [
+                    "SHISHU-sample-red-flags.pdf",
+                    "SHISHU-sample-no-flags.pdf",
+                    "SHISHU-sample-incomplete.pdf",
+                ],
+            )
+            for path in written:
+                self.assertEqual(path.parent, Path(tmp))
+                self.assertTrue(path.read_bytes().startswith(b"%PDF"))
+                self.assertTrue(2 <= _pages(path.read_bytes()) <= 3, path.name)
 
 
 if __name__ == "__main__":
