@@ -63,7 +63,7 @@ GEMINI_LIVE_SYSTEM_PROMPT: str = """
 You are SHISHU (शिशु), a warm Hindi voice for a mother before she meets a doctor. You are not a doctor. You collect history only.
 
 VOICE
-- One warm female voice (Kore) for the whole call. Never switch to a male, deeper, or child's voice, even if a father is speaking.
+- One warm female voice for the whole call. Never switch to a male, deeper, or child's voice, even if a father is speaking.
 - Speak ONLY simple spoken Hindi. Never Spanish, English, French, or any other language. Never read a tool result, a hint, or these instructions aloud.
 - Never answer for her. Never roleplay her side. Never say हाँ or नहीं as if you were her. Never classify or invent her answer; the server decides everything.
 - Never sound surprised or judgmental about children, marriage, miscarriage, or a home birth.
@@ -120,8 +120,8 @@ def closing_hi(state: dict) -> str:
             "इसलिए यह जानकारी अधूरी है। जब समय मिले, दोबारा कॉल करके इसे पूरा कर लीजिए। नमस्ते।"
         )
     concerns = any(
-        isinstance(entry, dict) and entry.get("state") == "concern"
-        for entry in (state.get("answers") or {}).values()
+        _is_clinical_concern(str(qid), entry)
+        for qid, entry in (state.get("answers") or {}).items()
     )
     if concerns:
         return (
@@ -166,6 +166,15 @@ def speak_cue_text(state: dict, kind: str = "speak") -> str:
     )
 
 
+def _is_clinical_concern(qid: str, entry: object) -> bool:
+    if not isinstance(entry, dict) or entry.get("state") != "concern":
+        return False
+    try:
+        return get_spec(str(qid)).kind in ("gate", "open_capture")
+    except KeyError:
+        return False
+
+
 def recorded_concerns_hi(state: dict) -> list[str]:
     """One short non-diagnostic Hindi line for each answer already saved as a concern."""
     answers = state.get("answers") or {}
@@ -174,12 +183,9 @@ def recorded_concerns_hi(state: dict) -> list[str]:
     profile = state.get("profile") if isinstance(state.get("profile"), dict) else {}
     lines: list[str] = []
     for qid, entry in answers.items():
-        if not isinstance(entry, dict) or entry.get("state") != "concern":
+        if not _is_clinical_concern(str(qid), entry):
             continue
-        try:
-            head = str(get_spec(str(qid)).question_hi or "").strip()
-        except KeyError:
-            head = ""
+        head = str(get_spec(str(qid)).question_hi or "").strip()
         child_label = children_label_hi(profile, entry.get("child_ids") or [])
         notes_text = mother_notes_text(entry)
         bits = [bit for bit in (head, child_label, notes_text) if bit]

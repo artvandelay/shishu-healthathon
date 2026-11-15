@@ -18,10 +18,10 @@
     },
     "mentions_profile": {
       "type": "noul",
-      "instructions": "Does caller_utterance state or update the caller's own name, marital status (married, about to marry, or unmarried), or her children (count, ages, sex, or names)?",
+      "instructions": "Does caller_utterance state, add, or correct the caller's own demographic profile (her name, marital status as married/about to marry/unmarried, total child count, or adding/correcting her children's ages, sex, or names), rather than merely referring to an already-known child in children_roster while answering a clinical or child-selection question?",
       "criteria": {
-        "true_description": "Caller states or updates her name, marital status, child count, or her children's ages, sex, or names.",
-        "false_description": "Caller only answers a clinical or pregnancy question, asks for clarification, or makes no statement or update about her name, marital status, or children."
+        "true_description": "Caller states, adds, or corrects her own name, marital status, total child count, or a child's age, sex, or name (including giving remaining children's ages or adding another child).",
+        "false_description": "Caller only answers a clinical, pregnancy, or family question, refers to an already-known child from children_roster (such as oldest, middle, youngest, all of them, or by existing name) to answer a symptom question, asks for clarification, or makes no statement or update about her demographic profile."
       }
     },
     "mentions_diagnosis": {
@@ -37,11 +37,11 @@
       "instructions": "How does caller_utterance respond to active_question? (If caller_utterance answers active_question AND also mentions another topic, classify how it answers active_question.)",
       "criteria": {
         "clear": "Denies, answers no, negative, normal, or nothing further for active_question (even if also mentioning a different topic in the same sentence).",
-        "concern": "Affirms, answers yes, agrees to start, identifies a child when active_question asks which child, or provides the answer requested by active_question (even if also mentioning a different topic).",
+        "concern": "Affirms, answers yes, agrees to start, identifies an affected child when active_question asks which child, or provides the answer requested by active_question (even if also mentioning a different topic).",
         "unknown": "States that she does not know, does not remember, or is unsure about active_question.",
         "clarify": "Asks what active_question itself or a term inside active_question means, or says she did not understand active_question.",
         "retract": "Takes back or reverses a yes or affirmative answer just given for active_question (or its parent_question when active_question is a sub-question).",
-        "other": "caller_utterance gives NO answer at all to active_question (for example when it talks ONLY about a different topic without saying yes or no to active_question, only updates demographic profile details, or is unrelated chatter)."
+        "other": "caller_utterance gives NO answer at all to active_question (for example when it talks ONLY about a different topic without saying yes or no to active_question, rules out one child on a which-child question without naming the affected child, only updates demographic profile details, or is unrelated chatter)."
       }
     },
     "side_intent": {
@@ -67,15 +67,14 @@
     "type": "choice",
     "instructions": "Which screening item outside active_question is caller_utterance referring to?",
     "option_template": "{question_hi} ({need_en})",
-    "ever_pregnant_need_en": "whether the caller has ever been pregnant",
     "other_description": "The caller is not referring to any screening item outside active_question, or there is not enough evidence to identify another screening item."
   },
   "child_ref_template": {
     "type": "choice",
-    "instructions": "Which child from children_roster is caller_utterance referring to?",
-    "option_template": "Refers to child {id} (rank={rank}, age={age_label_hi}, sex={sex}, name={name_or_unnamed}).",
+    "instructions": "Which child from children_roster has or experienced the health symptom or event asked about in active_question or parent_question? Choose a child only if caller_utterance affirms or identifies that child as affected; choose other if the symptom is denied or a child is mentioned only to say they were NOT affected.",
+    "option_template": "Child {id} (rank={rank}, age={age_label_hi}, sex={sex}, name={name_or_unnamed}) has or experienced the reported concern.",
     "unnamed_label": "unnamed",
-    "all_description": "Refers to all or every child in children_roster (such as both or all of them).",
-    "other_description": "No specific child from children_roster is mentioned or identifiable in caller_utterance."
+    "all_description": "All or every child in children_roster (such as both or all of them) experienced the reported concern.",
+    "other_description": "No specific child in children_roster is identified as affected, the concern is denied or retracted, or a child is mentioned only to say they were not affected."
   }
 }

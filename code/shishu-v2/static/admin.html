@@ -20,9 +20,11 @@
       --yellow-dark: #cf861b;
       --yellow-soft: #fef6e9;
       --red: #dc2626;
+      --red-dark: #b91c1c;
       --red-bg: #fef2f2;
       --red-line: #fecaca;
       --amber: #b45309;
+      --amber-dark: #92400e;
     }
 
     * { box-sizing: border-box; }
@@ -91,11 +93,15 @@
       text-decoration: none;
     }
 
+    a.ghost.disabled {
+      opacity: 0.5;
+    }
+
     .test {
       margin-left: auto;
       text-decoration: none;
       background: var(--yellow);
-      color: #fff;
+      color: var(--navy);
       border-radius: 999px;
       min-height: 36px;
       padding: 8px 14px;
@@ -181,6 +187,17 @@
       background: var(--navy);
       color: #fff;
       border-color: var(--navy);
+    }
+
+    .review-note-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 8px;
+    }
+
+    .review-note-row .calm {
+      margin: 0;
     }
 
     .side-tabs {
@@ -297,7 +314,7 @@
 
     .pill.hot {
       background: var(--red-bg);
-      color: var(--red);
+      color: var(--red-dark);
     }
 
     .live-dot {
@@ -533,7 +550,7 @@
 
     .pill.warn {
       background: var(--yellow-soft);
-      color: var(--yellow-dark);
+      color: var(--amber-dark);
     }
 
     .trace { margin-top: 12px; }
@@ -577,6 +594,15 @@
       background: #fff;
       border-radius: 8px;
       padding: 8px;
+    }
+
+    .bug-shot-preview {
+      display: block;
+      max-width: 100%;
+      max-height: 200px;
+      margin-top: 8px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
     }
 
     @media (max-width: 980px) {
@@ -664,13 +690,16 @@
             <button id="review-missed" class="ghost" type="button" data-rating="missed_flag">Missed Flag</button>
             <button id="review-false" class="ghost" type="button" data-rating="false_alarm">False Alarm</button>
           </div>
-          <textarea id="review-note" placeholder="Note for the next pilot review"></textarea>
-          <p id="review-status" class="calm" hidden></p>
+          <textarea id="review-note" placeholder="Note for the next pilot review" aria-label="Clinician review note"></textarea>
+          <div class="review-note-row">
+            <button id="save-review-note" class="ghost" type="button">Save note</button>
+            <p id="review-status" class="calm" hidden></p>
+          </div>
         </section>
         <section class="block player">
           <h3>Call Recording Player</h3>
           <div class="player-row">
-            <audio id="player" controls preload="none"></audio>
+            <audio id="player" controls preload="none" aria-label="Call recording playback"></audio>
             <a id="download" class="download" href="/api/audio/0">Download WAV</a>
           </div>
           <p id="audio-note" class="calm" hidden>Recording is not available yet.</p>

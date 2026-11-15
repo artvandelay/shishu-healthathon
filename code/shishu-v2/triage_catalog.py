@@ -20,7 +20,6 @@ class QuestionSpec:
     nrroid_gate: str
     skip_if: tuple[str, ...] = ()
     followups: tuple[str, ...] = ()
-    enabled: bool = True
     question_about_hi: str = ""
     question_unmarried_hi: str = ""
 
@@ -37,7 +36,6 @@ def _q(
     multi: str = "",
     about: str = "",
     unmarried: str = "",
-    enabled: bool = True,
 ) -> QuestionSpec:
     stem = question_hi.strip().removesuffix("?").removesuffix("।").strip()
     stem = stem.removeprefix("क्या ").strip()
@@ -52,7 +50,6 @@ def _q(
         nrroid_gate=nrroid,
         skip_if=skip,
         followups=follow,
-        enabled=enabled,
         question_about_hi=about,
         question_unmarried_hi=unmarried,
     )
@@ -88,7 +85,7 @@ FOLLOWUP_HI: dict[str, str] = {
 
 
 CATALOG: tuple[QuestionSpec, ...] = (
-    _q('intro_name', 'intro', 'profile', 'नमस्ते, मैं शिशु हूँ। आपका नाम बताइएगा प्लीज़?', 'caller name; ask again if only a fragment such as मेरा नाम', skip=(), follow=()),
+    _q('intro_name', 'intro', 'profile', 'नमस्ते, मैं शिशु हूँ। आपका नाम बताइएगा प्लीज़?', 'caller name', skip=(), follow=()),
     _q('intro_married', 'intro', 'profile', 'क्या आपकी शादी हो गई है, होने वाली है, या अभी नहीं हुई?', 'married, about to marry, or unmarried', skip=(), follow=()),
     _q('intro_children', 'intro', 'profile', 'आपके कितने बच्चे हैं, और उनकी उम्र क्या-क्या है?', "how many children and each child's age", skip=('unmarried', 'about_to_marry'), follow=()),
     _q('intro_bridge', 'intro', 'bridge', 'अब मैं एक-एक करके छोटे और आसान सवाल पूछूँगी। आप बोलकर या नीचे हाँ या नहीं का बटन दबाकर जवाब दे सकती हैं, और कुछ समझ न आए तो पूछ सकती हैं। शुरू करें?', 'short yes or no questions; she can speak or tap हाँ or नहीं', skip=(), follow=()),
@@ -128,6 +125,7 @@ CATALOG: tuple[QuestionSpec, ...] = (
     _q('ill_odor', 'illness', "gate", 'क्या बच्चे के पेशाब या पॉटी में कभी अजीब बदबू आती है?', 'urine or stool smells unusual', 'Q01', skip=('no_children',), follow=(), multi='क्या आपके किसी भी बच्चे के पेशाब या पॉटी में कभी अजीब बदबू आती है?'),
     _q('ill_admissions', 'illness', "gate", 'क्या बच्चे को बार-बार अस्पताल में भर्ती करना पड़ा है?', 'admitted to hospital again and again', 'Q03', skip=('no_children',), follow=('admissions_count', 'admissions_reason'), multi='क्या आपके किसी भी बच्चे को बार-बार अस्पताल में भर्ती करना पड़ा है?'),
     _q('ill_iv_antibiotics', 'illness', "gate", 'क्या बार-बार इंफेक्शन के लिए बच्चे को नस में (IV ड्रिप से) दवा लगी है?', 'repeated infections that needed medicine through a vein', 'Q03', skip=('no_children',), follow=(), multi='क्या बार-बार इंफेक्शन के लिए आपके किसी भी बच्चे को नस में (IV ड्रिप से) दवा लगी है?'),
+    _q('ever_pregnant', 'pregnancy', 'routing_gate', 'क्या आप कभी गर्भवती हुई हैं?', 'whether the caller has ever been pregnant', skip=('unmarried', 'about_to_marry', 'has_children')),
     _q('preg_conditions', 'pregnancy', "gate", 'क्या किसी प्रेग्नेंसी में आपको हाई बीपी, शुगर या थायरॉइड रहा था?', 'high BP, sugar, or thyroid in a pregnancy', 'Antenatal', skip=('unmarried', 'about_to_marry', 'ever_pregnant_no'), follow=('preg_cond_detail',), multi=''),
     _q('preg_scan', 'pregnancy', "gate", 'क्या किसी प्रेग्नेंसी के सोनोग्राफी स्कैन में कोई खराबी बताई गई थी?', 'a pregnancy scan showed a problem', 'Antenatal', skip=('unmarried', 'about_to_marry', 'ever_pregnant_no'), follow=('scan_detail',), multi=''),
     _q('preg_transfusion', 'pregnancy', "gate", 'क्या किसी प्रेग्नेंसी के दौरान आपको खून चढ़ाना पड़ा था?', 'blood transfusion during a pregnancy', 'Antenatal', skip=('unmarried', 'about_to_marry', 'ever_pregnant_no'), follow=(), multi=''),
@@ -164,8 +162,9 @@ CATALOG: tuple[QuestionSpec, ...] = (
 
 
 _BY_ID: dict[str, QuestionSpec] = {spec.id: spec for spec in CATALOG}
-_SPINE_KINDS = frozenset({"profile", "bridge", "gate", "open_capture"})
-_CHILD_GROUPS = frozenset({"birth", "body", "illness"})
+_SPINE_KINDS = frozenset({"profile", "bridge", "routing_gate", "gate", "open_capture"})
+CHILD_GROUPS = frozenset({"birth", "body", "illness"})
+PROFILE_QIDS = frozenset(spec.id for spec in CATALOG if spec.kind == "profile")
 
 
 def _validate() -> None:
@@ -189,7 +188,7 @@ def _validate() -> None:
         for fid in spec.followups:
             if fid not in FOLLOWUP_HI:
                 raise RuntimeError(f"{spec.id} followup {fid} has no Hindi")
-        if spec.group in _CHILD_GROUPS and "no_children" in spec.skip_if and not spec.question_multi_hi.strip():
+        if spec.group in CHILD_GROUPS and "no_children" in spec.skip_if and not spec.question_multi_hi.strip():
             raise RuntimeError(f"{spec.id} needs question_multi_hi")
 
 
@@ -203,10 +202,14 @@ def get_spec(qid: str) -> QuestionSpec:
         raise KeyError(qid) from None
 
 
+EVER_PREGNANT_HI = get_spec("ever_pregnant").question_hi
+EVER_PREGNANT_NEED_EN = get_spec("ever_pregnant").need_en
+
+
 def active_specs() -> list[QuestionSpec]:
-    return [spec for spec in CATALOG if spec.enabled]
+    return list(CATALOG)
 
 
 def spine_ids() -> list[str]:
-    """Ask order. ever_pregnant is not a row; the cursor inserts it."""
-    return [spec.id for spec in active_specs() if spec.kind in _SPINE_KINDS]
+    """Ask order."""
+    return [spec.id for spec in CATALOG]

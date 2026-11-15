@@ -29,19 +29,13 @@ logger = logging.getLogger(__name__)
 
 COOKIE_NAME = "shishu_auth"
 _STATIC = Path(__file__).resolve().parent / "static"
-_PUBLIC_PATHS = {"/health", "/login", "/api/login", "/api/logout", "/static/login.html"}
+_PUBLIC_PATHS = {"/health", "/login", "/api/login", "/api/logout"}
 _COOKIE_MAX_AGE = 60 * 60 * 24 * 14
 _STATIC_TYPES = {
-    ".css": "text/css",
     ".html": "text/html",
-    ".jpeg": "image/jpeg",
-    ".jpg": "image/jpeg",
     ".js": "text/javascript",
     ".pdf": "application/pdf",
     ".png": "image/png",
-    ".svg": "image/svg+xml",
-    ".ttf": "font/ttf",
-    ".woff2": "font/woff2",
 }
 _SHARE_EVENTS = frozenset({"share_clicked"})
 _BUG_BYTE_CAP = 512 * 1024
@@ -50,9 +44,12 @@ _LOGIN_FAILS = 15
 _LOGIN_WINDOW_SEC = 60.0
 _PDF_REBUILDS = 5
 _PDF_WINDOW_SEC = 60.0
+_SHARE_EVENT_LIMIT = 20
+_SHARE_EVENT_WINDOW_SEC = 60.0
 _rate_lock = threading.Lock()
 _login_failures: dict[str, list[float]] = {}
 _pdf_rebuilds: dict[str, list[float]] = {}
+_share_events: dict[str, list[float]] = {}
 
 
 def _passcode() -> str:
@@ -60,7 +57,7 @@ def _passcode() -> str:
 
 
 def _admin_passcode() -> str:
-    return os.environ.get("ADMIN_PASSCODE") or ""
+    return (os.environ.get("ADMIN_PASSCODE") or "").strip()
 
 
 def _match(supplied: str, expected: str) -> bool:
@@ -91,7 +88,7 @@ def _session_token(role: str, username: str) -> str:
 
 
 def _read_session(value: str | None) -> tuple[str, str]:
-    if not value or value in {"user", "admin"}:
+    if not value:
         return "", ""
     parts = value.split(".")
     if len(parts) != 5 or parts[0] != "v1":
@@ -154,31 +151,35 @@ def _client_ip(request: Request) -> str:
     return client.host or ""
 
 
-def _prune_hits(stamps: list[float], now: float, window: float) -> list[float]:
-    return [stamp for stamp in stamps if now - stamp < window]
+def _prune_hits(bucket: dict[str, list[float]], now: float, window: float) -> None:
+    for key in list(bucket):
+        kept = [stamp for stamp in bucket[key] if now - stamp < window]
+        if kept:
+            bucket[key] = kept
+        else:
+            del bucket[key]
 
 
 def _rate_limited(bucket: dict[str, list[float]], key: str, limit: int, window: float) -> bool:
     """True when this key already has `limit` hits inside the window."""
     now = time.monotonic()
     with _rate_lock:
-        stamps = _prune_hits(bucket.get(key, []), now, window)
-        bucket[key] = stamps
-        return len(stamps) >= limit
+        _prune_hits(bucket, now, window)
+        return len(bucket.get(key, ())) >= limit
 
 
 def _rate_hit(bucket: dict[str, list[float]], key: str, window: float) -> None:
     now = time.monotonic()
     with _rate_lock:
-        stamps = _prune_hits(bucket.get(key, []), now, window)
-        stamps.append(now)
-        bucket[key] = stamps
+        _prune_hits(bucket, now, window)
+        bucket.setdefault(key, []).append(now)
 
 
 def _reset_rate_limits() -> None:
     with _rate_lock:
         _login_failures.clear()
         _pdf_rebuilds.clear()
+        _share_events.clear()
 
 
 def _owns_call(role: str, call_id: int, share_token: str = "") -> bool:
@@ -204,20 +205,15 @@ def _resolve_audio(audio_path: str) -> Path | None:
     raw = (audio_path or "").strip()
     if not raw:
         return None
+    name = Path(raw).name
+    if not name or name in {".", ".."}:
+        return None
     root = _audio_dir()
-    candidate = Path(raw)
-    if candidate.is_absolute():
-        resolved = candidate.resolve()
-    else:
-        resolved = (root / candidate).resolve()
+    resolved = (root / name).resolve()
     try:
         resolved.relative_to(root)
     except ValueError:
-        resolved = (root / candidate.name).resolve()
-        try:
-            resolved.relative_to(root)
-        except ValueError:
-            return None
+        return None
     if not resolved.is_file():
         return None
     return resolved
@@ -287,6 +283,8 @@ def static_asset(asset: str) -> FileResponse:
         path.relative_to(_STATIC.resolve())
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="Not found") from exc
+    if path.suffix.lower() == ".html" and name != "login.html":
+        raise HTTPException(status_code=404, detail="Not found")
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Not found")
     media = _STATIC_TYPES.get(path.suffix.lower(), "application/octet-stream")
@@ -302,7 +300,11 @@ def call_page() -> FileResponse:
 def admin_page(request: Request):
     role, _username = _identity_from_cookies(request.cookies)
     if role != "admin":
-        return RedirectResponse(url="/login?next=/admin", status_code=302)
+        target = "/admin"
+        if request.url.query:
+            target = f"/admin?{request.url.query}"
+        nxt = quote(target, safe="/")
+        return RedirectResponse(url=f"/login?next={nxt}", status_code=302)
     return _page("admin.html")
 
 
@@ -345,7 +347,7 @@ async def login(request: Request):
         if isinstance(raw_name, str) and raw_name.strip():
             username = raw_name.strip()[:80]
         if isinstance(body.get("passcode"), str):
-            supplied = body["passcode"]
+            supplied = str(body.get("passcode") or "").strip()
     if _match(supplied, _admin_passcode()):
         role = "admin"
     elif _match(supplied, _passcode()):
@@ -489,6 +491,10 @@ async def call_event_by_token(share_token: str, request: Request):
     call = db.get_call_by_token(share_token)
     if call is None:
         raise HTTPException(status_code=404, detail="Call not found")
+    token_key = str(call["share_token"])
+    if _rate_limited(_share_events, token_key, _SHARE_EVENT_LIMIT, _SHARE_EVENT_WINDOW_SEC):
+        raise HTTPException(status_code=429, detail="Too many events")
+    _rate_hit(_share_events, token_key, _SHARE_EVENT_WINDOW_SEC)
     try:
         body = await request.json()
     except Exception:
@@ -525,14 +531,16 @@ async def post_clinician_review(call_id: int, request: Request):
 @app.post("/api/calls/by-token/{share_token}/mother.pdf")
 async def rebuild_mother_pdf_by_token(share_token: str):
     call = _call_for_token(share_token)
-    if _rate_limited(_pdf_rebuilds, share_token, _PDF_REBUILDS, _PDF_WINDOW_SEC):
+    token_key = str(call["share_token"])
+    if _rate_limited(_pdf_rebuilds, token_key, _PDF_REBUILDS, _PDF_WINDOW_SEC):
         raise HTTPException(status_code=429, detail="Too many report rebuilds")
-    _rate_hit(_pdf_rebuilds, share_token, _PDF_WINDOW_SEC)
+    _rate_hit(_pdf_rebuilds, token_key, _PDF_WINDOW_SEC)
     try:
         pdf, name = await report_service.mother_pdf(int(call["id"]))
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="Call not found") from exc
     except Exception as exc:
+        logger.exception("Failed to rebuild mother PDF for call %s", call.get("id"))
         raise HTTPException(status_code=500, detail="Could not build the report") from exc
     return _pdf_response(pdf, name)
 
@@ -545,6 +553,7 @@ async def rebuild_mother_pdf(call_id: int, request: Request):
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="Call not found") from exc
     except Exception as exc:
+        logger.exception("Failed to rebuild mother PDF for call %s", call_id)
         raise HTTPException(status_code=500, detail="Could not build the report") from exc
     return _pdf_response(pdf, name)
 
@@ -571,6 +580,7 @@ async def _prepare_mother_pdf(call_id: int) -> bool:
     try:
         await report_service.mother_pdf(call_id)
     except Exception:
+        logger.exception("Failed to prepare mother PDF for call %s", call_id)
         return False
     return report_service.ready_pdf(call_id) is not None
 

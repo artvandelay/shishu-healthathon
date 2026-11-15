@@ -196,9 +196,15 @@
       const error = document.getElementById("error");
 
       function safeNext() {
-        const next = new URLSearchParams(location.search).get("next") || "/";
-        if (!next.startsWith("/") || next.startsWith("//") || next.startsWith("/\\")) return "/";
-        return next;
+        const raw = new URLSearchParams(location.search).get("next") || "/";
+        if (!raw.startsWith("/")) return "/";
+        try {
+          const parsed = new URL(raw, location.origin);
+          if (parsed.origin !== location.origin) return "/";
+          return parsed.pathname + parsed.search + parsed.hash;
+        } catch (err) {
+          return "/";
+        }
       }
 
       function showError(message) {
@@ -232,6 +238,10 @@
           if (res.status === 401) {
             showError("नाम या पासकोड सही नहीं है। That name or passcode was not accepted.");
             passcodeInput.select();
+            return;
+          }
+          if (res.status === 429) {
+            showError("बहुत बार गलत कोशिश हो गई। एक मिनट रुककर फिर कोशिश करें। Too many attempts. Wait a minute and try again.");
             return;
           }
           if (!res.ok) {

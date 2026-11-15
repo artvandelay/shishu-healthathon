@@ -38,13 +38,13 @@ def pcm16_to_wav_bytes(pcm: bytes, sample_rate: int = TARGET_RATE) -> bytes:
 def resample_int16_mono(pcm_bytes: bytes, src_rate: int, dst_rate: int = TARGET_RATE) -> bytes:
     if not pcm_bytes:
         return b""
-    if src_rate == dst_rate or src_rate <= 0:
-        return pcm_bytes
-
+    pcm_bytes = bytes(pcm_bytes)
     if len(pcm_bytes) % 2 != 0:
         pcm_bytes = pcm_bytes[:-1]
     if not pcm_bytes:
         return b""
+    if src_rate == dst_rate or src_rate <= 0:
+        return pcm_bytes
 
     src_samples = array("h")
     src_samples.frombytes(pcm_bytes)
@@ -147,9 +147,9 @@ def _timeline(chunks: list[tuple[int, array]]) -> array:
 
 
 class CallAudioRecorder:
-    def __init__(self, call_id: int, output_dir: str = os.path.join(db.DATA_DIR, "audio")) -> None:
+    def __init__(self, call_id: int, output_dir: str | None = None) -> None:
         self.call_id = call_id
-        self.output_dir = output_dir
+        self.output_dir = output_dir or os.path.join(db.DATA_DIR, "audio")
         os.makedirs(self.output_dir, exist_ok=True)
         self._user: list[tuple[float, bytes, int]] = []
         self._bot: list[tuple[float, bytes, int]] = []

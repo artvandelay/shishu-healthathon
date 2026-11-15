@@ -81,6 +81,13 @@ def _init_db() -> None:
         )
         cur.execute(
             """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_calls_share_token
+            ON calls(share_token)
+            WHERE share_token != ''
+            """
+        )
+        cur.execute(
+            """
             UPDATE calls
             SET status = 'abandoned', ended_at = CURRENT_TIMESTAMP
             WHERE status = 'active'
@@ -140,7 +147,7 @@ def create_call(
         return int(cur.lastrowid)
 
 def append_transcript(call_id: int, role: str, text: str, qid: str = "") -> None:
-    if not text:
+    if not (text or "").strip():
         return
     with _db_lock:
         cur = conn.cursor()
@@ -179,49 +186,21 @@ def append_transcript(call_id: int, role: str, text: str, qid: str = "") -> None
 def complete_call(
     call_id: int,
     duration_sec: int,
-    audio_filename: str,
-    summary_doctor: str = "",
-    summary_mother: str = "",
-    red_flags: list | None = None,
+    audio_path: str = "",
 ) -> None:
     with _db_lock:
         cur = conn.cursor()
-        if isinstance(red_flags, list):
-            cur.execute(
-                """
-                UPDATE calls
-                SET status = 'completed',
-                    ended_at = CURRENT_TIMESTAMP,
-                    duration_sec = ?,
-                    audio_path = ?,
-                    summary_doctor = ?,
-                    summary_mother = ?,
-                    red_flags_json = ?
-                WHERE id = ?
-                """,
-                (
-                    duration_sec,
-                    audio_filename,
-                    summary_doctor,
-                    summary_mother,
-                    json.dumps(red_flags, ensure_ascii=False),
-                    call_id,
-                ),
-            )
-        else:
-            cur.execute(
-                """
-                UPDATE calls
-                SET status = 'completed',
-                    ended_at = CURRENT_TIMESTAMP,
-                    duration_sec = ?,
-                    audio_path = ?,
-                    summary_doctor = ?,
-                    summary_mother = ?
-                WHERE id = ?
-                """,
-                (duration_sec, audio_filename, summary_doctor, summary_mother, call_id),
-            )
+        cur.execute(
+            """
+            UPDATE calls
+            SET status = 'completed',
+                ended_at = CURRENT_TIMESTAMP,
+                duration_sec = ?,
+                audio_path = ?
+            WHERE id = ?
+            """,
+            (int(duration_sec), audio_path or "", int(call_id)),
+        )
         conn.commit()
 
 def _cursor_labels(state: dict) -> tuple[str, str]:
@@ -234,18 +213,13 @@ def _cursor_labels(state: dict) -> tuple[str, str]:
 
 def save_cursor_state(call_id: int, state: dict) -> None:
     name, child_age = _cursor_labels(state or {})
-    sets = ["cursor_json = ?"]
-    values: list[Any] = [json.dumps(state or {}, ensure_ascii=False)]
-    if name:
-        sets.append("mother_name = ?")
-        values.append(name)
-    if child_age:
-        sets.append("child_age = ?")
-        values.append(child_age)
-    values.append(int(call_id))
+    cursor_raw = json.dumps(state or {}, ensure_ascii=False)
     with _db_lock:
         cur = conn.cursor()
-        cur.execute(f"UPDATE calls SET {', '.join(sets)} WHERE id = ?", values)
+        cur.execute(
+            "UPDATE calls SET cursor_json = ?, mother_name = ?, child_age = ? WHERE id = ?",
+            (cursor_raw, name, child_age, int(call_id)),
+        )
         conn.commit()
 
 def get_call_by_token(share_token: str) -> dict | None:
@@ -293,10 +267,10 @@ def save_report_text(
     if red_flags is not None:
         sets.append("red_flags_json = ?")
         values.append(json.dumps(list(red_flags), ensure_ascii=False))
-    if mother_name:
+    if mother_name is not None:
         sets.append("mother_name = ?")
         values.append(mother_name)
-    if child_age:
+    if child_age is not None:
         sets.append("child_age = ?")
         values.append(child_age)
     if not sets:
@@ -329,7 +303,7 @@ def append_call_event(
         if not isinstance(events, list):
             events = []
         events.append(event)
-        events = events[-250:]
+        events = events[-600:]
         cur.execute(
             "UPDATE calls SET events_json = ? WHERE id = ?",
             (json.dumps(events, ensure_ascii=False), call_id),
@@ -414,8 +388,9 @@ def list_bug_reports(limit: int = 50) -> list[dict]:
     out = []
     for row in rows:
         item = dict(row)
+        raw_snapshot = item.pop("snapshot_json", None)
         try:
-            item["snapshot"] = json.loads(item.get("snapshot_json") or "{}")
+            item["snapshot"] = json.loads(raw_snapshot or "{}")
         except Exception:
             item["snapshot"] = {}
         out.append(item)

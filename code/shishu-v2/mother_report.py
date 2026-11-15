@@ -175,6 +175,31 @@ def _duration(seconds: int) -> str:
     return f"{secs} सेकंड"
 
 
+def _add_page2_row(
+    buckets: dict[str, list[str]],
+    order: list[str],
+    unknown: list[str],
+    missed: dict[str, list[str]],
+    missed_order: list[str],
+    title: str,
+    label: str,
+    status: str,
+    incomplete: bool,
+) -> None:
+    if status == "clear":
+        if title not in buckets:
+            order.append(title)
+            buckets[title] = []
+        buckets[title].append(label)
+    elif status == "unknown":
+        unknown.append(label)
+    elif status == "not_asked" and incomplete:
+        if title not in missed:
+            missed_order.append(title)
+            missed[title] = []
+        missed[title].append(label)
+
+
 def _page2_from_cursor(state: dict, incomplete: bool) -> tuple[list, list, list]:
     """Clear, unknown, and unanswered rows. not_applicable is omitted."""
     answers = state.get("answers") or {}
@@ -184,14 +209,12 @@ def _page2_from_cursor(state: dict, incomplete: bool) -> tuple[list, list, list]
     missed: dict[str, list[str]] = {}
     missed_order: list[str] = []
     for spec in triage_catalog.active_specs():
-        if spec.kind in ("profile", "bridge"):
+        if spec.kind not in ("routing_gate", "gate", "open_capture"):
             continue
         entry = answers.get(spec.id)
-        if isinstance(entry, dict) and entry.get("state") == "not_applicable":
-            continue
         if isinstance(entry, dict):
             status = entry.get("state") or ""
-        elif incomplete and spec.kind in ("gate", "open_capture"):
+        elif incomplete:
             status = "not_asked"
         else:
             continue
@@ -199,18 +222,17 @@ def _page2_from_cursor(state: dict, incomplete: bool) -> tuple[list, list, list]
             continue
         title = _GROUP_HI.get(spec.group, spec.group)
         label = call_cursor.question_hi_for(state, spec)
-        if status == "clear":
-            if title not in buckets:
-                order.append(title)
-                buckets[title] = []
-            buckets[title].append(label)
-        elif status == "unknown":
-            unknown.append(label)
-        elif status == "not_asked" and incomplete:
-            if title not in missed:
-                missed_order.append(title)
-                missed[title] = []
-            missed[title].append(label)
+        _add_page2_row(
+            buckets,
+            order,
+            unknown,
+            missed,
+            missed_order,
+            title,
+            label,
+            status,
+            incomplete,
+        )
     groups = [{"title": title, "items": buckets[title]} for title in order]
     unasked = [{"title": title, "items": missed[title]} for title in missed_order]
     return groups, unknown, unasked
@@ -227,8 +249,6 @@ def build_report(call: dict, synthesis: dict) -> dict:
         date, clock = "", ""
     reason = str(state.get("close_reason") or "")
     incomplete = reason in _INCOMPLETE_REASONS or (reason != "complete" and state.get("phase") != "closing")
-    if reason == "complete":
-        incomplete = False
     groups, unknown, unasked = _page2_from_cursor(state, incomplete)
     name = str(synthesis.get("mother_name_hi") or "").strip() or "माँ"
     children = str(synthesis.get("children_label_hi") or "").strip()
@@ -277,7 +297,7 @@ def render_html(report: dict) -> str:
     )
     if report["yes"]:
         yes = '<ul class="yes">' + "".join(f"<li>{html.escape(line)}</li>" for line in report["yes"]) + "</ul>"
-    elif report.get("unasked") and not report["groups"]:
+    elif report.get("unasked") and not report["groups"] and not report.get("unknown"):
         yes = '<p class="calm">इस कॉल में कोई जवाब दर्ज नहीं हुआ।</p>'
     else:
         yes = '<p class="calm">इस कॉल में कोई बात हाँ में नहीं आई।</p>'
@@ -385,8 +405,6 @@ def _chrome_pdf(document: str) -> bytes:
 def render_pdf(report: dict) -> bytes:
     document = render_html(report)
     try:
-        if sys.platform == "darwin":
-            os.environ.setdefault("DYLD_FALLBACK_LIBRARY_PATH", "/opt/homebrew/lib")
         from weasyprint import HTML
 
         return HTML(string=document, base_url=str(_STATIC)).write_pdf()

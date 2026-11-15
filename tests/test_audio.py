@@ -1,17 +1,19 @@
 """Stereo wall-clock recorder. No network."""
 
-import sys
+import base64
+import io
+import os
+import tempfile
 import time
 import unittest
 import wave
 from pathlib import Path
+from unittest import mock
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-from tests import TEST_DATA_DIR  # noqa: E402
+from tests import TEST_DATA_DIR
 
 import audio_recorder  # noqa: E402
+import db  # noqa: E402
 
 
 class StereoWavTests(unittest.TestCase):
@@ -31,7 +33,6 @@ class StereoWavTests(unittest.TestCase):
             frames = wf.readframes(wf.getnframes())
         self.assertGreater(len(frames), 44)
         self.assertIn(b"\x10\x00", frames)
-        self.assertTrue(frames)
 
     def test_resample_int16_mono_and_pcm16_to_wav_bytes(self):
         pcm = b"\x00\x00\xe8\x03" * 24 + b"\x01"
@@ -40,7 +41,6 @@ class StereoWavTests(unittest.TestCase):
         self.assertGreater(len(resampled), 0)
         wav_bytes = audio_recorder.pcm16_to_wav_bytes(pcm, sample_rate=16000)
         self.assertTrue(wav_bytes.startswith(b"RIFF"))
-        import io
         with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
             self.assertEqual(wf.getnchannels(), 1)
             self.assertEqual(wf.getframerate(), 16000)
@@ -48,7 +48,6 @@ class StereoWavTests(unittest.TestCase):
             self.assertEqual(wf.readframes(wf.getnframes()), pcm[:-1])
 
     def test_audio_pcm_helpers_and_mime_rate(self):
-        import base64
         self.assertEqual(audio_recorder.rate_from_mime("audio/pcm;rate=24000", 16000), 24000)
         self.assertEqual(audio_recorder.rate_from_mime("audio/pcm;rate=bad", 16000), 16000)
         raw = b"\x00\x40" * 4
@@ -57,3 +56,21 @@ class StereoWavTests(unittest.TestCase):
         self.assertIsNone(audio_recorder.pcm_bytes("not-valid-base64!!!"))
         self.assertAlmostEqual(audio_recorder.pcm_rms(raw), 16384.0 / 32768.0, places=4)
         self.assertEqual(audio_recorder.pcm_rms(b""), 0.0)
+
+    def test_recorder_reads_data_dir_dynamically_and_same_rate_resample_trims_odd_bytes(self):
+        self.assertEqual(audio_recorder.resample_int16_mono(b"\x10\x00\x20\x00\xff", 16000, 16000), b"\x10\x00\x20\x00")
+        self.assertEqual(audio_recorder.resample_int16_mono(b"\xff", 16000, 16000), b"")
+        self.assertEqual(audio_recorder.resample_int16_mono(b"\x10\x00\xff", 0, 16000), b"\x10\x00")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(db, "DATA_DIR", tmp):
+                rec = audio_recorder.CallAudioRecorder(99)
+                self.assertEqual(rec.output_dir, os.path.join(tmp, "audio"))
+                self.assertTrue(os.path.isdir(rec.output_dir))
+                rec.add_user_pcm(b"\x10\x00" * 80, 16000)
+                name, _ = rec.save()
+                self.assertTrue(os.path.isfile(os.path.join(tmp, "audio", name)))
+
+
+if __name__ == "__main__":
+    unittest.main()

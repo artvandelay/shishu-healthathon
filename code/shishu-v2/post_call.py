@@ -136,7 +136,7 @@ def _rows(state: dict) -> list[tuple]:
     rows = []
     for spec in active_specs():
         entry = answers.get(spec.id)
-        if spec.kind in ("profile", "bridge") or not isinstance(entry, dict):
+        if spec.kind not in ("gate", "open_capture") or not isinstance(entry, dict):
             continue
         status = entry.get("state") or ""
         if status not in ("", "not_applicable"):
@@ -158,7 +158,7 @@ def build_reports(call: dict) -> dict:
     """Build clinician English note (verbatim) and mother Hindi report (non-diagnostic)."""
     state = call_cursor.cursor_from_call(call)
     profile = state.get("profile") if isinstance(state.get("profile"), dict) else {}
-    name = " ".join(str(profile.get("caller_name") or "").split()) or "माँ"
+    raw_name = " ".join(str(profile.get("caller_name") or "").split())
     reason = state.get("close_reason") or "incomplete"
     emergency = reason == "emergency"
     emergency_note = " ".join(str(state.get("emergency_note") or "").split())
@@ -168,11 +168,17 @@ def build_reports(call: dict) -> dict:
 
     sections: dict[str, list[str]] = {heading: [] for heading in _HEADINGS}
     children_en = call_cursor.children_label_en(profile)
-    chief = concerns[0][0].need_en if concerns else "Screening call with no positive gate."
+    if concerns:
+        chief = concerns[0][0].need_en
+    elif emergency:
+        chief = "Active emergency reported during call."
+    else:
+        chief = "Screening call with no positive gate."
+    ever = profile.get("ever_pregnant")
     sections[_HEADINGS[0]].extend([
-        f"Caller: {name}.",
+        f"Caller: {raw_name or 'not reported'}.",
         f"Marital status: {profile.get('marital_status') or 'not reported'}.",
-        f"Ever pregnant: {profile.get('ever_pregnant')}.",
+        f"Ever pregnant: {ever if ever is not None else 'not reported'}.",
         f"Children: {children_en if children_en else 'none.'}",
         f"Close reason: {reason}.",
         f"Chief complaint: {chief}",
@@ -185,9 +191,9 @@ def build_reports(call: dict) -> dict:
             note = call_cursor.answer_notes_text(entry)
             child_en = _child_scope_en(profile, entry)
             child_tag = f" [{child_en}]" if child_en else ""
-            gate = spec.nrroid_gate or spec.id
+            head = f"{spec.nrroid_gate} {spec.id}" if spec.nrroid_gate else spec.id
             words = f" Mother's words: {note}." if note else ""
-            sections[_HEADINGS[1]].append(f"{gate} {spec.id}: {spec.need_en}{child_tag}.{words}")
+            sections[_HEADINGS[1]].append(f"{head}: {spec.need_en}{child_tag}.{words}")
             detail = f"Concern. {spec.need_en}{child_tag}." + (f" {note}" if note else "")
             sections[_section_for(spec)].append(detail)
         elif status in ("clear", "unknown"):
@@ -219,7 +225,7 @@ def build_reports(call: dict) -> dict:
     )
     yes = _unique(_concern_sentence(spec, entry, profile) for spec, entry in concerns)
     return {
-        "mother_name_hi": name,
+        "mother_name_hi": raw_name,
         "children_label_hi": call_cursor.children_label_hi(profile),
         "mother_questions_hi": fitted,
         "yes_summaries_hi": yes,

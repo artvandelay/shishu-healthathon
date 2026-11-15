@@ -123,14 +123,20 @@ def _side_qid_question(state: dict) -> dict[str, Any]:
     opt = t["option_template"]
     criteria: dict[str, str] = {}
     for qid in routable_qids():
-        if qid == "ever_pregnant":
-            q_hi, need_en = call_cursor.ever_pregnant_prompt_hi(), t["ever_pregnant_need_en"]
-        else:
-            spec = get_spec(qid)
-            q_hi, need_en = question_hi_for(state, spec), spec.need_en
-        criteria[qid] = opt.format(question_hi=q_hi, need_en=need_en)
+        spec = get_spec(qid)
+        criteria[qid] = opt.format(question_hi=question_hi_for(state, spec), need_en=spec.need_en)
     criteria["other"] = t["other_description"]
     return {"type": t["type"], "instructions": t["instructions"], "criteria": criteria}
+
+
+def _step_flags(state: dict) -> tuple[str, str, str, bool, bool, list[dict]]:
+    active_qid = str(state.get("active_qid") or "")
+    step_kind = call_cursor.step_kind(state)
+    followup_prompt = call_cursor.followup_prompt_hi(state)
+    roster = children_roster(state)
+    needs_detail = step_kind in ("main", "close") and bool(followup_prompt)
+    has_side = step_kind not in ("profile", "bridge") or call_cursor.has_answered_gates(state)
+    return active_qid, step_kind, followup_prompt, needs_detail, has_side, roster
 
 
 def _child_ref_question(roster: list[dict[str, Any]]) -> dict[str, Any]:
@@ -158,15 +164,14 @@ def build_turn_request(
     audio_mime_type: str = "audio/wav",
 ) -> dict[str, Any]:
     """Build a single-pass Gemini Decisions API request for one caller turn."""
-    active_qid = str(state.get("active_qid") or "")
-    step_kind = call_cursor.step_kind(state)
+    active_qid, step_kind, followup_prompt, needs_detail, has_side, roster = _step_flags(state)
     active_prompt = call_cursor.active_prompt_hi(state)
-    followup_prompt = call_cursor.followup_prompt_hi(state)
-    parent_prompt = ""
-    if step_kind in ("which_child", "followup") and active_qid and active_qid != "ever_pregnant":
-        parent_prompt = question_hi_for(state, get_spec(active_qid))
+    parent_prompt = (
+        question_hi_for(state, get_spec(active_qid))
+        if step_kind in ("which_child", "followup") and active_qid
+        else ""
+    )
     _, last_prompt_hi = call_cursor.last_answered_prompt_hi(state)
-    roster = children_roster(state)
     audio_data = bytes(audio_wav_bytes) if audio_wav_bytes else b""
     clean_utt = " ".join(str(utterance_text or "").split())
     if not clean_utt and audio_data:
@@ -218,13 +223,13 @@ def build_turn_request(
         "mentions_profile": qs["mentions_profile"],
         "current_outcome": qs["current_outcome"],
     }
-    if step_kind not in ("profile", "bridge") or call_cursor.has_answered_gates(state):
+    if has_side:
         questions["mentions_diagnosis"] = qs["mentions_diagnosis"]
         questions["side_intent"] = qs["side_intent"]
         questions["side_qid"] = _side_qid_question(state)
     if len(roster) >= 2:
         questions["child_ref"] = _child_ref_question(roster)
-    if step_kind in ("main", "close") and bool(followup_prompt):
+    if needs_detail:
         questions["detail_present"] = qs["detail_present"]
 
     return {"model": DECISIONS_MODEL, "input": req_input, "questions": questions}
@@ -333,7 +338,7 @@ async def evaluate_turn(
             raw_body = exc.read() if hasattr(exc, "read") else b""
         except asyncio.CancelledError:
             raise
-        except BaseException as exc:
+        except Exception as exc:
             is_to = isinstance(exc, (TimeoutError, asyncio.TimeoutError, socket.timeout)) or (
                 isinstance(exc, urllib.error.URLError)
                 and isinstance(exc.reason, (TimeoutError, socket.timeout))
@@ -410,6 +415,9 @@ def load_thresholds(path: str | Path) -> DecisionThresholds:
     missing = [f for f in _ALL_NUMERIC_THRESHOLD_FIELDS if f not in data]
     if missing:
         raise ValueError(f"Threshold artifact missing fields: {', '.join(missing)}")
+    unknown = sorted(set(data.keys()) - set(_ALL_NUMERIC_THRESHOLD_FIELDS))
+    if unknown:
+        raise ValueError(f"Threshold artifact has unknown fields: {', '.join(unknown)}")
     kwargs = {f: float(data[f]) for f in _ALL_NUMERIC_THRESHOLD_FIELDS}
     return validate_thresholds(DecisionThresholds(**kwargs))
 
@@ -477,12 +485,7 @@ def interpret_turn_decision(
     validate_thresholds(thresholds)
     answers = raw_answers if isinstance(raw_answers, dict) else {}
     clean_utt = " ".join(str(utterance_text or "").split())
-    active_qid = str(state.get("active_qid") or "")
-    step_kind = call_cursor.step_kind(state)
-    followup_prompt = call_cursor.followup_prompt_hi(state)
-    roster = children_roster(state)
-    needs_detail = step_kind in ("main", "close") and bool(followup_prompt)
-    has_side = step_kind not in ("profile", "bridge") or call_cursor.has_answered_gates(state)
+    active_qid, step_kind, _followup_prompt, needs_detail, has_side, roster = _step_flags(state)
 
     danger_p = _noul_prob(answers, "danger_now")
     stop_p = _noul_prob(answers, "caller_stop")

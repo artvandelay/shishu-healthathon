@@ -6,8 +6,6 @@ import os
 import wave
 
 import db
-import mother_report
-import post_call
 import prompts
 import report_service
 from call_cursor import active_prompt_hi, apply_profile, apply_turn, new_cursor_state
@@ -138,24 +136,10 @@ def _seed_call(
         db.append_transcript(call_id, role, text, qid=qid)
     db.save_cursor_state(call_id, state)
 
-    synthesis = post_call.build_reports({"cursor_state": state})
-    summary_doctor = synthesis.get("doctor_markdown") or ""
-    summary_mother = post_call.mother_summary_text(synthesis)
-    red_flags = list(synthesis.get("red_flags") or [])
-
     audio_file = f"call_{call_id}.wav"
     duration = _write_placeholder_wav(os.path.join(db.DATA_DIR, "audio", audio_file), 3)
-    db.complete_call(
-        call_id,
-        duration,
-        audio_file,
-        summary_doctor,
-        summary_mother,
-        red_flags=red_flags,
-    )
-    call_dict = db.get_call(call_id) or {"id": call_id, "cursor_state": state, "duration_sec": duration}
-    pdf = mother_report.render_pdf(mother_report.build_report(call_dict, synthesis))
-    report_service.write_pdf_bytes(call_id, pdf)
+    db.complete_call(call_id, duration, audio_file)
+    report_service.build_mother_pdf_sync(call_id, emit_events=False)
     return call_id
 
 

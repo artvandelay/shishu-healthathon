@@ -1,0 +1,2 @@
+-r code/shishu-v2/requirements.txt
+pypdf>=5.0.0

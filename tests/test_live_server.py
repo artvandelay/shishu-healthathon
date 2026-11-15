@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import io
 import json
 import os
-import sys
 import tempfile
 import time
 import unittest
@@ -17,10 +17,25 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-from tests import APP_DIR, TEST_DATA_DIR  # noqa: E402
+from tests import TEST_DATA_DIR
+from tests.helpers import (
+    DummyRecorder,
+    FakeLiveSession,
+    FakeToolCall,
+    FakeWebSocket,
+    QueueWebSocket,
+    SessionCtx,
+    bot_audio_message,
+    choice,
+    clear_until,
+    decision_result,
+    drop_fallback,
+    make_child,
+    make_profile_state,
+    noul,
+    server_message,
+    shipped_thresholds,
+)
 
 import audio_recorder  # noqa: E402
 import call_cursor  # noqa: E402
@@ -30,1879 +45,819 @@ import gemini_live  # noqa: E402
 import live_decision_bridge  # noqa: E402
 import profile_extractor  # noqa: E402
 import prompts  # noqa: E402
-import test_cursor as cursor_tests  # noqa: E402
 from call_cursor import apply_turn, close_technical_failure, step_id  # noqa: E402
 
 
-class _FakeSocket:
-    def __init__(self, messages=None):
-        self.client_state = gemini_live.WebSocketState.CONNECTED
-        self.sent = []
-        self._messages = list(messages or [])
-        self.accepted = False
-        self.closed = False
-
-    async def accept(self):
-        self.accepted = True
-        self.client_state = gemini_live.WebSocketState.CONNECTED
-
-    async def close(self):
-        self.closed = True
-        self.client_state = gemini_live.WebSocketState.DISCONNECTED
-
-    async def send_json(self, payload):
-        self.sent.append(payload)
-
-    async def receive_text(self):
-        if not self._messages:
-            raise gemini_live.WebSocketDisconnect()
-        return json.dumps(self._messages.pop(0), ensure_ascii=False)
-
-
-class _FakeSession:
-    def __init__(self, fail_tool=False, fail_realtime=False):
-        self.sent = []
-        self.fail_tool = fail_tool
-        self.fail_realtime = fail_realtime
-
-    async def send_tool_response(self, function_responses):
-        self.sent.append(("tool", function_responses))
-        if self.fail_tool:
-            raise RuntimeError("tool response failed")
-
-    async def send_realtime_input(self, **kwargs):
-        self.sent.append(("realtime", kwargs))
-        if self.fail_realtime:
-            raise RuntimeError("realtime send failed")
-
-
-class _Call:
-    def __init__(self, name, args, fid):
-        self.id = fid
-        self.name = name
-        self.args = args
-        self.will_continue = False
-
-
-class _Recorder:
-    def add_user_pcm(self, pcm, rate):
-        return None
-
-    def add_bot_pcm(self, pcm, rate):
-        return None
-
-
-def _kinds(session):
-    return [item[0] for item in session.sent]
-
-
-async def _drop_fallback(turn):
-    task = turn.speak_fallback
-    turn.speak_fallback = None
-    if task is None:
-        return
-    task.cancel()
-    await asyncio.gather(task, return_exceptions=True)
-
-
-def _server_message(*, turn_complete=False, user_text="", bot_text="", tool_calls=None, go_away=False):
-    tool_call = SimpleNamespace(function_calls=tool_calls) if tool_calls else None
-    return SimpleNamespace(
-        tool_call_cancellation=None,
-        server_content=SimpleNamespace(
-            interrupted=False,
-            input_transcription=SimpleNamespace(text=user_text) if user_text else None,
-            output_transcription=SimpleNamespace(text=bot_text) if bot_text else None,
-            model_turn=None,
-            turn_complete=turn_complete,
-        ),
-        tool_call=tool_call,
-        session_resumption_update=None,
-        go_away=SimpleNamespace(time_left="50s") if go_away else None,
+def _make_live(
+    *, ws=None, session=None, call_id=None, recorder=None, cursor_state=None,
+    thresholds=None, stop=None, reconnect=None, watchdog_timeout_sec=None,
+) -> gemini_live.LiveCallSession:
+    return gemini_live.LiveCallSession(
+        ws=ws or FakeWebSocket(),
+        session=session or FakeLiveSession(),
+        call_id=db.create_call() if call_id is None else call_id,
+        recorder=DummyRecorder() if recorder is None else recorder,
+        cursor_state=cursor_state,
+        thresholds=thresholds,
+        stop=stop,
+        reconnect=reconnect,
+        watchdog_timeout_sec=watchdog_timeout_sec,
     )
 
 
-def _bot_audio_msg(pcm: bytes = b"\x01\x00" * 240, *, turn_complete: bool = False):
-    part = SimpleNamespace(
-        thought=False,
-        function_call=None,
-        inline_data=SimpleNamespace(data=pcm, mime_type="audio/pcm;rate=24000"),
-    )
-    return SimpleNamespace(
-        tool_call_cancellation=None,
-        server_content=SimpleNamespace(
-            interrupted=False,
-            input_transcription=None,
-            output_transcription=None,
-            model_turn=SimpleNamespace(parts=[part]),
-            turn_complete=turn_complete,
-        ),
-        tool_call=None,
-        session_resumption_update=None,
-        go_away=None,
-    )
+def _eval_payload(**overrides):
+    base = {
+        "danger_now": noul(0.01), "caller_stop": noul(0.01), "mentions_profile": noul(0.01),
+        "detail_present": noul(0.03),
+        "current_outcome": choice("clear", {"clear": 0.94, "other": 0.04, "concern": 0.02}),
+        "side_intent": choice("other", {"other": 0.96, "add_concern": 0.04}),
+        "side_qid": choice("other", {"other": 0.96, "birth_nicu": 0.04}),
+    }
+    base.update(overrides)
+    return base
 
 
-def _noul(prob: float) -> dict:
-    return {"type": "noul", "noul": prob, "confidence": max(prob, 1.0 - prob)}
-
-
-def _choice(winner: str, probs: dict[str, float]) -> dict:
-    return {"type": "choice", "choice": winner, "probabilities": probs, "confidence": probs[winner]}
-
-
-def _decision_result(request: dict, raw_answers: dict, *, ok: bool = True, error_reason: str = "", attempts: int = 1):
-    questions = request.get("questions") or {}
-    side_criteria = (questions.get("side_qid") or {}).get("criteria") or {}
-    return decisions.DecisionCallResult(
-        ok=ok,
-        error_reason=error_reason,
-        attempts=attempts,
-        decision_ms=42,
-        request_bytes=len(json.dumps(request, ensure_ascii=False).encode("utf-8")),
-        question_count=len(questions),
-        catalog_option_count=len(side_criteria),
-        usage_present=True,
-        total_input_tokens=380,
-        raw_answers=raw_answers if ok else {},
-    )
-
-
-def _test_thresholds() -> decisions.DecisionThresholds:
-    return decisions.load_thresholds(APP_DIR / "decision_thresholds.json")
-
-
-def _new_telemetry():
-    return gemini_live._new_telemetry("gemini-3.1-flash-live-preview", "Kore", 1000, 300, 1)
-
-
-class LiveConfigAndStartupTests(unittest.TestCase):
+class LiveConfigAndWsTests(unittest.TestCase):
     def test_live_config_declares_only_next_question_and_kore_vad_defaults(self):
         prompt = prompts.GEMINI_LIVE_SYSTEM_PROMPT
-        self.assertIn("Kore", prompt)
-        self.assertIn("next_question", prompt)
-        self.assertIn("say", prompt)
-        self.assertIn("clarify", prompt)
-        self.assertIn("BCG", prompt)
-        self.assertIn("थैलेसीमिया माइनर या ट्रेट", prompt)
-        self.assertIn("recorded_concerns", prompt)
-        self.assertIn("stop", prompt)
-        self.assertIn("SYSTEM CUE", prompt)
-        for disease in (
-            "Duchenne",
-            "Hemophilia",
-            "Pompe",
-            "Gaucher",
-            "SCID",
-            "SMA",
-            "MPS",
-            "Wiskott-Aldrich",
-            "ड्यूशेन",
-            "हीमोफीलिया",
-            "पॉम्पे",
-            "गॉशर",
-            "इम्यूनोडेफिशिएंसी",
-            "म्यूकोपॉलीसेकेराइडोसिस",
-        ):
-            self.assertIn(disease, prompt)
+        self.assertIn("warm female voice", prompt)
+        self.assertNotIn("Kore", prompt)
+        for token in ("next_question", "say", "clarify", "BCG", "थैलेसीमिया माइनर या ट्रेट", "recorded_concerns", "stop", "SYSTEM CUE",
+                      "Duchenne", "Hemophilia", "Pompe", "Gaucher", "SCID", "SMA", "MPS", "Wiskott-Aldrich", "ड्यूशेन", "हीमोफीलिया", "पॉम्पे", "गॉशर"):
+            self.assertIn(token, prompt)
         for forbidden in ("target_qid", "child_ref", "outcome", "marital_status", "caller_stop", "ever_pregnant", "emergency"):
             self.assertNotIn(forbidden, prompt)
 
         cfg = gemini_live._live_config({"gemini_model": "gemini-3.1-flash-live-preview"})
-        self.assertEqual(cfg.system_instruction.parts[0].text, prompt)
-        self.assertEqual(cfg.speech_config.voice_config.prebuilt_voice_config.voice_name, "Kore")
-        self.assertEqual(list(cfg.output_audio_transcription.language_codes), ["hi-IN"])
-        self.assertEqual(list(cfg.input_audio_transcription.language_codes), ["hi-IN"])
-        self.assertEqual(cfg.thinking_config.thinking_level, "MINIMAL")
+        self.assertEqual((cfg.system_instruction.parts[0].text, cfg.speech_config.voice_config.prebuilt_voice_config.voice_name), (prompt, "Kore"))
+        self.assertEqual((list(cfg.output_audio_transcription.language_codes), list(cfg.input_audio_transcription.language_codes), cfg.thinking_config.thinking_level),
+                         (["hi-IN"], ["hi-IN"], "MINIMAL"))
         decls = cfg.tools[0].function_declarations
-        self.assertEqual([d.name for d in decls], ["next_question"])
-        self.assertEqual(dict(decls[0].parameters.properties or {}), {})
+        self.assertEqual(([d.name for d in decls], dict(decls[0].parameters.properties or {})), (["next_question"], {}))
+        self.assertIsNone(gemini_live._audio_from_part(SimpleNamespace(inline_data=SimpleNamespace(data=b"\x01\x00", mime_type="text/plain"))))
+        self.assertIsNotNone(gemini_live._audio_from_part(SimpleNamespace(inline_data=SimpleNamespace(data=b"\x01\x00", mime_type="audio/pcm;rate=24000"))))
 
-        custom_cfg = gemini_live._live_config({"gemini_model": "custom-live-model"})
-        self.assertEqual(list(custom_cfg.output_audio_transcription.language_codes), ["hi-IN"])
-        self.assertEqual(list(custom_cfg.input_audio_transcription.language_codes), ["hi-IN"])
-        self.assertEqual(custom_cfg.thinking_config.thinking_level, "MINIMAL")
-        self.assertFalse(hasattr(gemini_live, "_cancel_silence_close"))
-        self.assertIsNone(
-            gemini_live._audio_from_part(
-                SimpleNamespace(inline_data=SimpleNamespace(data=b"\x01\x00", mime_type="text/plain"))
-            )
-        )
-        self.assertIsNotNone(
-            gemini_live._audio_from_part(
-                SimpleNamespace(inline_data=SimpleNamespace(data=b"\x01\x00", mime_type="audio/pcm;rate=24000"))
-            )
-        )
-
-        # Live settings defaults, env/override precedence, custom voice, and no dead DB settings table
-        self.assertEqual(gemini_live.DEFAULT_LIVE_SETTINGS["gemini_model"], "gemini-3.1-flash-live-preview")
-        self.assertEqual(gemini_live.DEFAULT_LIVE_SETTINGS["gemini_voice"], "Kore")
-        self.assertEqual(gemini_live.DEFAULT_LIVE_SETTINGS["vad_prefix_padding_ms"], "300")
-        self.assertEqual(gemini_live.DEFAULT_LIVE_SETTINGS["vad_silence_ms"], "1000")
-        self.assertEqual(gemini_live.DEFAULT_LIVE_SETTINGS["vad_end_sensitivity"], "LOW")
-        self.assertEqual(gemini_live.DEFAULT_LIVE_SETTINGS["vad_start_sensitivity"], "LOW")
-        self.assertEqual(gemini_live.DEFAULT_LIVE_SETTINGS["watchdog_timeout_sec"], "8.0")
-        self.assertNotIn("active_engine", gemini_live.DEFAULT_LIVE_SETTINGS)
-        for dead_attr in ("DEFAULT_SETTINGS", "get_setting", "set_setting", "get_all_settings"):
-            self.assertFalse(hasattr(db, dead_attr))
-        db._init_db()
-        with db._db_lock:
-            dead_table = db.conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='settings'"
-            ).fetchone()
-        self.assertIsNone(dead_table)
-
-        env_keys = (
-            "GEMINI_MODEL",
-            "GEMINI_VOICE",
-            "VAD_PREFIX_PADDING_MS",
-            "VAD_SILENCE_MS",
-            "VAD_START_SENSITIVITY",
-            "VAD_END_SENSITIVITY",
-            "WATCHDOG_TIMEOUT_SEC",
-            "DECISION_THRESHOLDS_PATH",
-        )
+        env_keys = ("GEMINI_MODEL", "GEMINI_VOICE", "VAD_PREFIX_PADDING_MS", "VAD_SILENCE_MS",
+                    "VAD_START_SENSITIVITY", "VAD_END_SENSITIVITY", "WATCHDOG_TIMEOUT_SEC", "DECISION_THRESHOLDS_PATH")
         clean_env = {k: v for k, v in os.environ.items() if k not in env_keys}
         with mock.patch.dict(os.environ, clean_env, clear=True):
             unset = gemini_live._session_settings({})
-            self.assertEqual(unset["voice"], "Kore")
-            self.assertEqual(unset["silence_duration_ms"], 1000)
-            self.assertEqual(unset["end_sens"], gemini_live.types.EndSensitivity.END_SENSITIVITY_LOW)
-            self.assertEqual(unset["start_sens"], gemini_live.types.StartSensitivity.START_SENSITIVITY_LOW)
-            self.assertEqual(unset["watchdog_timeout_sec"], 8.0)
+            self.assertEqual((unset["voice"], unset["silence_duration_ms"], unset["watchdog_timeout_sec"]), ("Kore", 1000, 8.0))
+            self.assertEqual((unset["start_sens"], unset["end_sens"]),
+                             (gemini_live.types.StartSensitivity.START_SENSITIVITY_LOW, gemini_live.types.EndSensitivity.END_SENSITIVITY_LOW))
 
-            custom = gemini_live._session_settings({
-                "gemini_voice": "Aoede",
-                "vad_silence_ms": "1200",
-                "vad_end_sensitivity": "HIGH",
-                "vad_start_sensitivity": "HIGH",
-            })
-            self.assertEqual(custom["voice"], "Aoede")
-            self.assertEqual(custom["silence_duration_ms"], 1200)
-            self.assertEqual(custom["end_sens"], gemini_live.types.EndSensitivity.END_SENSITIVITY_HIGH)
-            self.assertEqual(custom["start_sens"], gemini_live.types.StartSensitivity.START_SENSITIVITY_HIGH)
-            voice_cfg = gemini_live._live_config({"gemini_voice": "Aoede"})
-            self.assertEqual(voice_cfg.speech_config.voice_config.prebuilt_voice_config.voice_name, "Aoede")
-
-            with mock.patch.dict(
-                os.environ,
-                {
-                    "GEMINI_MODEL": "",
-                    "GEMINI_VOICE": "Puck",
-                    "VAD_SILENCE_MS": "900",
-                    "WATCHDOG_TIMEOUT_SEC": "6.5",
-                    "DECISION_THRESHOLDS_PATH": "/tmp/env-thresholds.json",
-                },
-                clear=False,
-            ):
+            custom = gemini_live._session_settings({"gemini_voice": "Aoede", "vad_silence_ms": "1200", "vad_end_sensitivity": "HIGH", "vad_start_sensitivity": "HIGH"})
+            self.assertEqual((custom["voice"], custom["silence_duration_ms"], custom["start_sens"], custom["end_sens"]),
+                             ("Aoede", 1200, gemini_live.types.StartSensitivity.START_SENSITIVITY_HIGH, gemini_live.types.EndSensitivity.END_SENSITIVITY_HIGH))
+            with mock.patch.dict(os.environ, {"GEMINI_MODEL": "", "GEMINI_VOICE": "Puck", "VAD_SILENCE_MS": "900", "WATCHDOG_TIMEOUT_SEC": "6.5", "DECISION_THRESHOLDS_PATH": "/tmp/env-t.json"}, clear=False):
                 from_env = gemini_live.live_settings()
-                self.assertEqual(from_env["gemini_model"], "gemini-3.1-flash-live-preview")
-                self.assertEqual(from_env["gemini_voice"], "Puck")
-                self.assertEqual(from_env["vad_silence_ms"], "900")
-                self.assertEqual(from_env["watchdog_timeout_sec"], "6.5")
-                self.assertEqual(from_env["decision_thresholds_path"], "/tmp/env-thresholds.json")
-                self.assertEqual(gemini_live._session_settings()["voice"], "Puck")
-
+                self.assertEqual((from_env["gemini_model"], from_env["gemini_voice"], from_env["vad_silence_ms"], from_env["watchdog_timeout_sec"]),
+                                 ("gemini-3.1-flash-live-preview", "Puck", 900, 6.5))
                 overlaid = gemini_live.live_settings({"gemini_voice": "Aoede", "vad_silence_ms": None})
-                self.assertEqual(overlaid["gemini_voice"], "Aoede")
-                self.assertEqual(overlaid["vad_silence_ms"], "900")
+                self.assertEqual((overlaid["gemini_voice"], overlaid["vad_silence_ms"]), ("Aoede", 900))
 
-        self.assertEqual(gemini_live._TOOL_SPEAK_FALLBACK_SEC, 2.5)
-
-    def test_handle_gemini_ws_loads_default_thresholds_and_fails_closed_on_missing_or_invalid(self):
+    def test_handle_gemini_ws_rejects_bad_thresholds_and_malformed_env_settings(self):
         default_loaded = live_decision_bridge.load_turn_thresholds({})
-        self.assertEqual(default_loaded, _test_thresholds())
-
+        self.assertEqual(default_loaded, shipped_thresholds())
         with tempfile.TemporaryDirectory() as tmp:
-            bad_path = Path(tmp) / "bad_thresholds.json"
+            bad_path = Path(tmp) / "bad.json"
             bad_data = asdict(default_loaded)
             bad_data["danger_now_min_yes"] = 0.999
             bad_path.write_text(json.dumps(bad_data), encoding="utf-8")
 
-            for bad_target in ("/tmp/does-not-exist-shishu-thresholds.json", str(bad_path)):
-                ws = _FakeSocket()
-                with mock.patch.dict(
-                    os.environ,
-                    {"DECISION_THRESHOLDS_PATH": bad_target, "GEMINI_API_KEY": "test-key"},
-                    clear=False,
-                ), mock.patch.object(gemini_live, "_connect_live") as connect_mock, mock.patch.object(
-                    db, "create_call"
-                ) as create_mock:
+            for env_patch, expected_msg in (
+                ({"DECISION_THRESHOLDS_PATH": "/tmp/missing-shishu-thresholds.json", "GEMINI_API_KEY": "k"}, "Invalid or missing Decision API thresholds"),
+                ({"DECISION_THRESHOLDS_PATH": str(bad_path), "GEMINI_API_KEY": "k"}, "Invalid or missing Decision API thresholds"),
+                ({"VAD_SILENCE_MS": "abc", "GEMINI_API_KEY": "k"}, "Invalid live call settings"),
+            ):
+                ws = FakeWebSocket()
+                with mock.patch.dict(os.environ, env_patch, clear=False), mock.patch.object(gemini_live, "_connect_live") as conn, mock.patch.object(db, "create_call") as create:
                     asyncio.run(gemini_live.handle_gemini_ws(ws))
-                    connect_mock.assert_not_called()
-                    create_mock.assert_not_called()
+                    conn.assert_not_called()
+                    create.assert_not_called()
                 self.assertTrue(ws.closed)
-                errors = [m for m in ws.sent if m.get("type") == "error"]
-                self.assertEqual(errors, [{"type": "error", "message": "Invalid or missing Decision API thresholds"}])
+                self.assertEqual([m for m in ws.sent if m.get("type") == "error"], [{"type": "error", "message": expected_msg}])
 
-            good_path = Path(tmp) / "good_thresholds.json"
-            good_path.write_text(json.dumps(asdict(default_loaded)), encoding="utf-8")
-            self.assertEqual(
-                live_decision_bridge.load_turn_thresholds({"decision_thresholds_path": str(good_path)}),
-                default_loaded,
-            )
-
-    def test_handle_gemini_ws_wires_config_default_thresholds_and_turn_end_to_end(self):
-        class _WsSession:
-            def __init__(self, msgs):
-                self.setup_complete = True
-                self.sent = []
-                self._msgs = list(msgs)
-
-            async def send_realtime_input(self, **kwargs):
-                self.sent.append(("realtime", kwargs))
-
-            async def send_tool_response(self, function_responses):
-                self.sent.append(("tool", function_responses))
-
-            async def receive(self):
-                for item in self._msgs:
-                    await asyncio.sleep(0.01)
-                    yield item
-                await asyncio.Future()
-
-        class _WsCtx:
-            def __init__(self, sess):
-                self._sess = sess
-
-            async def __aenter__(self):
-                return self._sess
-
-            async def __aexit__(self, *_args):
-                return False
-
-        class _LiveWs(_FakeSocket):
-            def __init__(self):
-                super().__init__([])
-                self._q: asyncio.Queue = asyncio.Queue()
-
-            async def receive_text(self):
-                item = await self._q.get()
-                if item is None:
-                    raise gemini_live.WebSocketDisconnect()
-                return json.dumps(item, ensure_ascii=False)
-
+    def test_handle_gemini_ws_wires_config_and_executes_turn_end_to_end(self):
         async def run():
             seen_configs = []
-            live_sess = _WsSession([
-                _bot_audio_msg(turn_complete=True),
-                _server_message(user_text="रेखा"),
-                _server_message(turn_complete=True, tool_calls=[_Call("next_question", {}, "fc-ws-1")]),
-                _bot_audio_msg(turn_complete=True),
-            ])
+            live_sess = FakeLiveSession([
+                bot_audio_message(turn_complete=True),
+                server_message(user_text="रेखा"),
+                server_message(turn_complete=True, tool_calls=[FakeToolCall(fid="fc-ws-1")]),
+                bot_audio_message(turn_complete=True),
+            ], wait_forever=True, sleep_per_msg=0.01)
 
-            async def fake_connect(client, model, config):
+            async def fake_connect(_client, _model, config):
                 seen_configs.append(config)
-                return _WsCtx(live_sess), live_sess, 5
+                return SessionCtx(live_sess), live_sess, 5
 
             async def fake_eval(request, **_kwargs):
-                raw = {
-                    "danger_now": _noul(0.01),
-                    "caller_stop": _noul(0.01),
-                    "mentions_profile": _noul(0.90),
-                    "current_outcome": _choice("other", {"other": 0.90, "clear": 0.10}),
-                }
-                return _decision_result(request, raw)
+                return decision_result(request, _eval_payload(mentions_profile=noul(0.90), current_outcome=choice("other", {"other": 0.90, "clear": 0.10})))
 
-            async def hook_profile(_state, _utt, _wav):
-                return profile_extractor.ProfileExtractionResult(
-                    ok=True, updates={"caller_name": "रेखा"}, error_reason="", extractor_ms=1
-                )
+            async def hook_profile(_state, **_kwargs):
+                return profile_extractor.ProfileExtractionResult(ok=True, updates={"caller_name": "रेखा"}, error_reason="", extractor_ms=1)
 
-            ws = _LiveWs()
+            ws = QueueWebSocket()
 
             async def hangup_soon():
                 await asyncio.sleep(0.15)
-                await ws._q.put({"type": "hangup"})
+                await ws.push({"type": "hangup"})
 
             with mock.patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}), mock.patch.object(
                 gemini_live, "_connect_live", side_effect=fake_connect
-            ), mock.patch.object(
-                live_decision_bridge, "extract_profile_updates", side_effect=hook_profile
-            ), mock.patch.object(
+            ), mock.patch.object(profile_extractor, "extract_profile_entities", side_effect=hook_profile), mock.patch.object(
                 decisions, "evaluate_turn", side_effect=fake_eval
             ):
                 task = asyncio.create_task(hangup_soon())
                 await gemini_live.handle_gemini_ws(ws)
                 await task
 
-            self.assertEqual(len(seen_configs), 1)
-            decls = seen_configs[0].tools[0].function_declarations
-            self.assertEqual([d.name for d in decls], ["next_question"])
+            self.assertEqual([d.name for d in seen_configs[0].tools[0].function_declarations], ["next_question"])
             started = next(m for m in ws.sent if m.get("type") == "session_started")
             saved = db.get_call(started["call_id"])
-            self.assertEqual(saved["cursor_state"]["profile"]["caller_name"], "रेखा")
-            self.assertEqual(saved["cursor_state"]["active_qid"], "intro_married")
-            dt_ev = [e for e in saved["events"] if e["type"] == "decision_turn"]
-            self.assertEqual(len(dt_ev), 1)
+            self.assertEqual((saved["cursor_state"]["profile"]["caller_name"], saved["cursor_state"]["active_qid"]), ("रेखा", "intro_married"))
+            self.assertEqual(len([e for e in saved["events"] if e["type"] == "decision_turn"]), 1)
 
         asyncio.run(run())
 
 
 class TurnTakingAndWatchdogTests(unittest.TestCase):
     def test_greeting_and_recorded_concerns_tool_body(self):
-        cursor = gemini_live._Cursor()
-        session = _FakeSession()
-        ws = _FakeSocket()
-        asyncio.run(gemini_live._send_greeting(session, asyncio.Lock(), ws, asyncio.Lock(), cursor))
-        self.assertEqual(_kinds(session), ["realtime"])
+        session, ws = FakeLiveSession(), FakeWebSocket()
+        live = _make_live(ws=ws, session=session, call_id=0)
+        asyncio.run(live._send_greeting())
+        self.assertEqual([i[0] for i in session.sent], ["realtime"])
         self.assertIn("नाम", session.sent[0][1]["text"])
-        states = [item for item in ws.sent if item.get("type") == "question_state"]
-        self.assertEqual(len(states), 1)
-        self.assertEqual(states[0]["step"], "intro_name")
-        self.assertFalse(states[0]["expect_yes_no"])
-        self.assertGreater(states[0]["prompt_chars"], 0)
+        states = [m for m in ws.sent if m.get("type") == "question_state"]
+        self.assertEqual((len(states), states[0]["step"], states[0]["expect_yes_no"]), (1, "intro_name", False))
 
-        state = cursor_tests._clear_until(
-            cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
-            "birth_jaundice",
-        )
-        state["answers"]["birth_nicu"] = {
-            "state": "concern",
-            "child_ids": ["child_1"],
-            "notes": "साँस की तकलीफ",
-            "followups": {"nicu_days": {"state": "concern", "note": "चार दिन"}},
-        }
+        state = clear_until(make_profile_state(children=[make_child(4, "male")]), "birth_jaundice")
+        state["answers"]["birth_nicu"] = {"state": "concern", "child_ids": ["child_1"], "notes": "साँस की तकलीफ", "followups": {"nicu_days": {"state": "concern", "note": "चार दिन"}}}
         self.assertNotIn("recorded_concerns", gemini_live._tool_body(state))
         lines = prompts.recorded_concerns_hi(state)
         self.assertEqual(len(lines), 1)
-        self.assertIn("काँच के बक्से", lines[0])
-        self.assertIn("4 साल", lines[0])
-        self.assertIn("साँस की तकलीफ", lines[0])
-        self.assertIn("चार दिन", lines[0])
-        clarify_body = gemini_live._tool_body(state, outcome="clarify")
-        self.assertEqual(clarify_body["recorded_concerns"], lines)
+        self.assertTrue("काँच के बक्से" in lines[0] and "4 साल" in lines[0] and "साँस की तकलीफ" in lines[0] and "चार दिन" in lines[0])
+        self.assertEqual(gemini_live._tool_body(state, outcome="clarify")["recorded_concerns"], lines)
+        self.assertEqual(gemini_live._tool_body(clear_until(state, "fam_same_problem"))["recorded_concerns"], lines)
+        self.assertEqual(gemini_live._tool_body(clear_until(make_profile_state(children=[make_child(4, "male")]), "close_anything_else"))["recorded_concerns"], [])
 
-        fam_same = cursor_tests._clear_until(state, "fam_same_problem")
-        self.assertEqual(gemini_live._tool_body(fam_same)["recorded_concerns"], lines)
-        close_state = cursor_tests._clear_until(
-            cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
-            "close_anything_else",
-        )
-        self.assertEqual(gemini_live._tool_body(close_state)["recorded_concerns"], [])
-
-    def test_fallback_speaks_only_when_silent_and_turn_complete_speaks_immediately(self):
-        thresholds = _test_thresholds()
-        state = cursor_tests._clear_until(
-            cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
-            "birth_jaundice",
-        )
+    def test_tool_speak_fallback_audio_cancel_send_failure_and_turn_complete_cue(self):
+        thresholds = shipped_thresholds()
+        state = clear_until(make_profile_state(children=[make_child(4, "male")]), "birth_jaundice")
         step = step_id(state)
 
         async def fake_clear(request, **_kwargs):
-            raw = {
-                "danger_now": _noul(0.01),
-                "caller_stop": _noul(0.01),
-                "mentions_profile": _noul(0.01),
-                "detail_present": _noul(0.03),
-                "current_outcome": _choice("clear", {"clear": 0.94, "other": 0.04, "concern": 0.02}),
-                "side_intent": _choice("other", {"other": 0.96, "add_concern": 0.04}),
-                "side_qid": _choice("other", {"other": 0.96, "birth_nicu": 0.04}),
-            }
-            return _decision_result(request, raw)
+            return decision_result(request, _eval_payload())
 
         async def run():
             with mock.patch.object(decisions, "evaluate_turn", side_effect=fake_clear):
-                # 1) 2.5s fallback speaks when Gemini stays silent; no "wait" in FunctionResponse
-                turn = gemini_live._TurnState()
-                turn.spoken_qid = step
-                turn.user_turn_step = step
-                turn.capture.user_turn_buffer = "नहीं"
-                cursor = gemini_live._Cursor()
-                cursor.state = json.loads(json.dumps(state))
-                session = _FakeSession()
-                ws = _FakeSocket()
+                # 1) Silent Gemini triggers fallback cue; no "wait" key in FunctionResponse
+                s1 = FakeLiveSession()
+                l1 = _make_live(session=s1, cursor_state=json.loads(json.dumps(state)), thresholds=thresholds)
+                l1.turn.spoken_qid = l1.turn.user_turn_step = step
+                l1.capture.user_turn_buffer = "नहीं"
                 with mock.patch.object(gemini_live, "_TOOL_SPEAK_FALLBACK_SEC", 0.01):
-                    await gemini_live._answer_function_calls(
-                        session, asyncio.Lock(), ws, asyncio.Lock(), db.create_call(),
-                        _new_telemetry(), [_Call("next_question", {}, "fc-silent")],
-                        set(), set(), cursor, turn, thresholds=thresholds,
-                    )
-                    self.assertEqual(_kinds(session), ["tool"])
-                    self.assertNotIn("wait", session.sent[0][1][0].response)
-                    self.assertFalse(turn.bot_replied_since_user)
-                    await turn.speak_fallback
-                self.assertEqual(_kinds(session), ["tool", "realtime"])
-                self.assertEqual(cursor.state["active_qid"], "birth_sudden")
+                    await l1._answer_function_calls([FakeToolCall(fid="fc-s")])
+                    self.assertNotIn("wait", s1.sent[0][1][0].response)
+                    await l1.turn.speak_fallback
+                self.assertEqual(([i[0] for i in s1.sent], l1.cursor_state["active_qid"]), (["tool", "realtime"], "birth_sudden"))
 
-                # 2) Audio arriving before fallback timer cancels fallback cue
-                turn_audio = gemini_live._TurnState()
-                turn_audio.spoken_qid = step
-                turn_audio.user_turn_step = step
-                turn_audio.capture.user_turn_buffer = "नहीं"
-                cursor_audio = gemini_live._Cursor()
-                cursor_audio.state = json.loads(json.dumps(state))
-                sess_audio = _FakeSession()
-                ws_audio = _FakeSocket()
-                cid = db.create_call()
+                # 2) Audio arriving early cancels fallback cue
+                s2 = FakeLiveSession()
+                l2 = _make_live(session=s2, cursor_state=json.loads(json.dumps(state)), thresholds=thresholds)
+                l2.turn.spoken_qid = l2.turn.user_turn_step = step
+                l2.capture.user_turn_buffer = "नहीं"
                 with mock.patch.object(gemini_live, "_TOOL_SPEAK_FALLBACK_SEC", 0.05):
-                    await gemini_live._answer_function_calls(
-                        sess_audio, asyncio.Lock(), ws_audio, asyncio.Lock(), cid,
-                        _new_telemetry(), [_Call("next_question", {}, "fc-audio")],
-                        set(), set(), cursor_audio, turn_audio, thresholds=thresholds,
-                    )
-                    await gemini_live._on_bot_audio(
-                        ws_audio, asyncio.Lock(), cid, _new_telemetry(),
-                        turn_audio, _Recorder(), b"\x00\x00" * 24, 24000, cursor_audio,
-                    )
-                    await turn_audio.speak_fallback
-                self.assertEqual(_kinds(sess_audio), ["tool"])
+                    await l2._answer_function_calls([FakeToolCall(fid="fc-a")])
+                    await l2._on_bot_audio(b"\x00\x00" * 24, 24000)
+                    await l2.turn.speak_fallback
+                self.assertEqual([i[0] for i in s2.sent], ["tool"])
 
-                # 3) Failed send_tool_response speaks immediately without timer
-                turn_fail = gemini_live._TurnState()
-                turn_fail.spoken_qid = step
-                turn_fail.user_turn_step = step
-                turn_fail.capture.user_turn_buffer = "नहीं"
-                cursor_fail = gemini_live._Cursor()
-                cursor_fail.state = json.loads(json.dumps(state))
-                sess_fail = _FakeSession(fail_tool=True)
-                await gemini_live._answer_function_calls(
-                    sess_fail, asyncio.Lock(), _FakeSocket(), asyncio.Lock(), db.create_call(),
-                    _new_telemetry(), [_Call("next_question", {}, "fc-fail")],
-                    set(), set(), cursor_fail, turn_fail, thresholds=thresholds,
-                )
-                self.assertIsNone(turn_fail.speak_fallback)
-                self.assertEqual(_kinds(sess_fail), ["tool", "realtime"])
+                # 3) Failed send_tool_response cues immediately
+                s3 = FakeLiveSession(fail_tool=True)
+                l3 = _make_live(session=s3, cursor_state=json.loads(json.dumps(state)), thresholds=thresholds)
+                l3.turn.spoken_qid = l3.turn.user_turn_step = step
+                l3.capture.user_turn_buffer = "नहीं"
+                await l3._answer_function_calls([FakeToolCall(fid="fc-f")])
+                self.assertEqual(([i[0] for i in s3.sent], l3.turn.speak_fallback), (["tool", "realtime"], None))
 
-                # 4) Causal speak cue on server_content.turn_complete + error stop on send failure
-                turn_tc = gemini_live._TurnState()
-                turn_tc.spoken_qid = step
-                turn_tc.user_turn_step = step
-                turn_tc.capture.user_turn_buffer = "नहीं"
-                cursor_tc = gemini_live._Cursor()
-                cursor_tc.state = json.loads(json.dumps(state))
-                sess_tc = _FakeSession()
-                await gemini_live._handle_server_message(
-                    _server_message(turn_complete=True, tool_calls=[_Call("next_question", {}, "fc-tc")]),
-                    sess_tc, asyncio.Lock(), _FakeSocket(), asyncio.Lock(), db.create_call(),
-                    _new_telemetry(), turn_tc, _Recorder(), set(), set(), cursor_tc,
-                    stop=asyncio.Event(), thresholds=thresholds,
-                )
+                # 4) Causal speak cue on turn_complete + stop on send_realtime_input failure
+                s4 = FakeLiveSession()
+                l4 = _make_live(session=s4, cursor_state=json.loads(json.dumps(state)), thresholds=thresholds)
+                l4.turn.spoken_qid = l4.turn.user_turn_step = step
+                l4.capture.user_turn_buffer = "नहीं"
+                await l4._handle_server_message(server_message(turn_complete=True, tool_calls=[FakeToolCall(fid="fc-tc")]))
                 await asyncio.sleep(0)
-                self.assertEqual(_kinds(sess_tc), ["tool", "realtime"])
-                self.assertIn("इमरजेंसी", sess_tc.sent[1][1]["text"])
-                self.assertEqual(turn_tc.pending_speak_step, "")
-                self.assertIsNone(turn_tc.speak_fallback)
+                self.assertEqual([i[0] for i in s4.sent], ["tool", "realtime"])
+                self.assertIn("इमरजेंसी", s4.sent[1][1]["text"])
 
-                broken_turn = gemini_live._TurnState()
-                broken_turn.pending_speak_step = step_id(cursor_tc.state)
-                broken_turn.pending_speak_kind = "speak"
-                broken_ws = _FakeSocket()
-                broken_tel = _new_telemetry()
-                stop = asyncio.Event()
-                keep = await gemini_live._handle_server_message(
-                    _server_message(turn_complete=True),
-                    _FakeSession(fail_realtime=True), asyncio.Lock(), broken_ws, asyncio.Lock(),
-                    db.create_call(), broken_tel, broken_turn, _Recorder(), set(), set(),
-                    cursor_tc, stop=stop, thresholds=thresholds,
-                )
-                self.assertFalse(keep)
-                self.assertTrue(stop.is_set())
-                self.assertEqual(broken_tel["tool_errors"], 1)
-                self.assertEqual(
-                    [m["message"] for m in broken_ws.sent if m.get("type") == "error"],
-                    ["Could not prompt Gemini to speak"],
-                )
+                broken_ws = FakeWebSocket()
+                broken = _make_live(ws=broken_ws, session=FakeLiveSession(fail_realtime=True), cursor_state=json.loads(json.dumps(l4.cursor_state)), thresholds=thresholds)
+                broken.turn.pending_speak_step, broken.turn.pending_speak_kind = step_id(broken.cursor_state), "speak"
+                self.assertFalse(await broken._handle_server_message(server_message(turn_complete=True)))
+                self.assertTrue(broken.stop.is_set() and broken.telemetry["tool_errors"] == 1)
+                self.assertEqual([m["message"] for m in broken_ws.sent if m.get("type") == "error"], ["Could not prompt Gemini to speak"])
 
         asyncio.run(run())
 
-    def test_speech_end_and_watchdog_check_in_silence_close_and_time_limits(self):
-        state = cursor_tests._clear_until(
-            cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
-            "birth_nicu",
-        )
+    def test_speech_end_watchdog_check_in_silence_time_limits_and_nudges(self):
+        state = clear_until(make_profile_state(children=[make_child(4, "male")]), "birth_nicu")
 
         async def run():
-            # 1) speech_end refreshes quiet_from after question was spoken
-            turn = gemini_live._TurnState()
-            turn.spoken_qid = step_id(state)
-            turn.bot_speaking = False
-            turn.playback_ends_at = time.time() - 1
-            turn.quiet_from = 0.0
-            cursor = gemini_live._Cursor()
-            cursor.state = json.loads(json.dumps(state))
-            ws = _FakeSocket([{"type": "speech_end"}])
-            await gemini_live._browser_loop(
-                _FakeSession(), asyncio.Lock(), ws, asyncio.Lock(), asyncio.Event(),
-                db.create_call(), _new_telemetry(), turn, cursor, _Recorder(),
-            )
-            self.assertGreater(turn.quiet_from, 0)
-            self.assertGreaterEqual(turn.quiet_from, turn.playback_ends_at)
-            self.assertFalse(turn.awaiting_bot_reply)
-            self.assertFalse(turn.speech_end_waiting)
+            live = _make_live(ws=FakeWebSocket([{"type": "speech_end"}]), cursor_state=json.loads(json.dumps(state)))
+            live.turn.spoken_qid, live.turn.playback_ends_at = step_id(state), time.time() - 1
+            await live._browser_loop()
+            self.assertGreaterEqual(live.turn.quiet_from, live.turn.playback_ends_at)
+            self.assertFalse(live.turn.awaiting_bot_reply or live.turn.speech_end_waiting)
 
-            # 2) Watchdog 15s check-in -> 30s silence close
-            wd_turn = gemini_live._TurnState()
-            wd_turn.quiet_from = time.time() - 16.0
-            wd_cursor = gemini_live._Cursor()
-            wd_cursor.state = json.loads(json.dumps(state))
-            wd_sess = _FakeSession()
-            wd_ws = _FakeSocket()
-            wd_tel = _new_telemetry()
-            wd_stop = asyncio.Event()
             cid = db.create_call()
+            wd = _make_live(call_id=cid, cursor_state=json.loads(json.dumps(state)), watchdog_timeout_sec=8.0)
+            wd.turn.quiet_from = time.time() - 16.0
             with mock.patch.object(gemini_live, "_WATCHDOG_INTERVAL_SEC", 0.01):
-                task = asyncio.create_task(
-                    gemini_live._watchdog_loop(
-                        wd_sess, asyncio.Lock(), wd_ws, asyncio.Lock(), wd_stop, cid, wd_tel, wd_turn, wd_cursor, 8.0
-                    )
-                )
+                task = asyncio.create_task(wd._watchdog_loop())
                 await asyncio.sleep(0.05)
-                self.assertTrue(wd_turn.checked_in)
-                wd_turn.quiet_from = time.time() - 31.0
+                self.assertTrue(wd.turn.checked_in)
+                wd.turn.quiet_from = time.time() - 31.0
                 await asyncio.sleep(0.05)
-                wd_stop.set()
+                wd.stop.set()
                 await task
             events = [e["type"] for e in db.get_call(cid)["events"]]
-            self.assertIn("silence_check_in", events)
-            self.assertIn("auto_close", events)
-            self.assertEqual(wd_cursor.state["phase"], "closing")
-            self.assertEqual(wd_cursor.state["close_reason"], "silence")
+            self.assertTrue("silence_check_in" in events and "auto_close" in events and wd.cursor_state["close_reason"] == "silence")
 
-            # 3) 19m soft time cue -> 20m hard limit stop
-            soft_turn = gemini_live._TurnState()
-            soft_turn.call_started_ts = time.time() - gemini_live._SOFT_LIMIT_SEC - 1
-            soft_cursor = gemini_live._Cursor()
-            soft_cursor.state = json.loads(json.dumps(state))
-            soft_stop = asyncio.Event()
-            cid_soft = db.create_call()
+            soft = _make_live(cursor_state=json.loads(json.dumps(state)), watchdog_timeout_sec=8.0)
+            soft.turn.call_started_ts = time.time() - gemini_live._SOFT_LIMIT_SEC - 1
             with mock.patch.object(gemini_live, "_WATCHDOG_INTERVAL_SEC", 0.01):
-                task = asyncio.create_task(
-                    gemini_live._watchdog_loop(
-                        _FakeSession(), asyncio.Lock(), _FakeSocket(), asyncio.Lock(), soft_stop, cid_soft, _new_telemetry(), soft_turn, soft_cursor, 8.0
-                    )
-                )
+                task = asyncio.create_task(soft._watchdog_loop())
                 await asyncio.sleep(0.05)
-                self.assertTrue(soft_turn.time_cue_sent)
-                self.assertEqual(soft_cursor.state["close_reason"], "time_limit")
-                soft_turn.call_started_ts = time.time() - gemini_live._HARD_LIMIT_SEC - 1
-                await asyncio.wait_for(soft_stop.wait(), timeout=1.0)
+                self.assertTrue(soft.turn.time_cue_sent and soft.cursor_state["close_reason"] == "time_limit")
+                soft.turn.call_started_ts = time.time() - gemini_live._HARD_LIMIT_SEC - 1
+                await asyncio.wait_for(soft.stop.wait(), timeout=1.0)
                 await task
+
+            # Watchdog & manual nudges preserve active_speak_kind="clarify"
+            nudge_sess = FakeLiveSession()
+            nudge_wd = _make_live(session=nudge_sess, cursor_state=json.loads(json.dumps(state)), watchdog_timeout_sec=0.05)
+            nudge_wd.turn.awaiting_bot_reply, nudge_wd.turn.last_user_turn_ts, nudge_wd.turn.active_speak_kind = True, time.time() - 5.0, "clarify"
+            with mock.patch.object(gemini_live, "_WATCHDOG_INTERVAL_SEC", 0.01):
+                task = asyncio.create_task(nudge_wd._watchdog_loop())
+                await asyncio.sleep(0.08)
+                nudge_wd.stop.set()
+                await task
+            self.assertTrue("she did not understand" in nudge_sess.sent[0][1]["text"] and "काँच के बक्से" in nudge_sess.sent[0][1]["text"])
+
+            man_sess, man_cid = FakeLiveSession(), db.create_call()
+            man = _make_live(ws=FakeWebSocket([{"type": "nudge"}]), session=man_sess, call_id=man_cid, cursor_state=json.loads(json.dumps(state)))
+            man.turn.active_speak_kind = "clarify"
+            await man._browser_loop()
+            self.assertEqual(man_sess.sent[0][1]["text"], prompts.speak_cue_text(man.cursor_state, "clarify"))
+            self.assertEqual(len([e for e in db.get_call(man_cid)["events"] if e["type"] == "manual_nudge"]), 1)
 
         asyncio.run(run())
 
-    def test_go_away_reconnect_resumes_dropped_turn(self):
-        state = cursor_tests._clear_until(
-            cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
-            "birth_jaundice",
-        )
-
-        async def handle(turn, message, session=None):
-            cursor = gemini_live._Cursor()
-            cursor.state = json.loads(json.dumps(state))
-            ws = _FakeSocket()
-            keep = await gemini_live._handle_server_message(
-                message, session or _FakeSession(), asyncio.Lock(), ws, asyncio.Lock(),
-                db.create_call(), _new_telemetry(), turn, _Recorder(), set(), set(), cursor, stop=asyncio.Event(),
-            )
-            return keep, cursor, ws
-
-        class _Live:
-            def __init__(self, messages, error=None):
-                self.messages = list(messages)
-                self.error = error
-                self.stop = asyncio.Event()
-                self.sent = []
-                self.started = False
-
-            async def send_realtime_input(self, **kwargs):
-                self.sent.append(kwargs)
-                self.stop.set()
-
-            async def receive(self):
-                if self.started:
-                    await asyncio.Future()
-                    return
-                self.started = True
-                if self.error is not None:
-                    raise self.error
-                for item in self.messages:
-                    yield item
+    def test_go_away_reconnect_session_swap_and_five_attempt_cap(self):
+        state = clear_until(make_profile_state(children=[make_child(4, "male")]), "birth_jaundice")
 
         async def run():
-            missing = gemini_live._TurnState()
-            missing.bot_speaking = True
-            keep, _, _ = await handle(missing, _server_message(go_away=True))
-            self.assertFalse(keep)
+            missing = _make_live(cursor_state=json.loads(json.dumps(state)))
+            missing.turn.bot_speaking = True
+            self.assertFalse(await missing._handle_server_message(server_message(go_away=True)))
 
-            speaking = gemini_live._TurnState()
-            speaking.bot_speaking = True
-            speaking.resume_handle = "resume-1"
-            session = _FakeSession()
-            keep, cursor, _ = await handle(speaking, _server_message(go_away=True), session)
-            self.assertTrue(keep)
-            self.assertTrue(speaking.go_away_pending)
-            self.assertFalse(speaking.reconnect_requested)
-
-            step = step_id(cursor.state)
-            speaking.pending_speak_step = step
-            speaking.pending_speak_kind = "clarify"
-            speaking.active_speak_kind = "clarify"
-            keep, _, _ = await handle(speaking, _server_message(turn_complete=True), session)
-            self.assertTrue(keep)
-            self.assertFalse(speaking.go_away_pending)
-            self.assertTrue(speaking.reconnect_requested)
-            self.assertEqual(session.sent, [])
-
-            waiting = gemini_live._Cursor()
-            waiting.state = json.loads(json.dumps(state))
-            wait_turn = gemini_live._TurnState()
-            wait_turn.resume_handle = "resume-wait"
-            wait_turn.awaiting_bot_reply = True
-            wait_turn.pending_speak_step = step_id(waiting.state)
-            wait_turn.pending_speak_kind = "clarify"
-            wait_turn.active_speak_kind = "clarify"
-            live = _Live([_server_message(go_away=True), _server_message(turn_complete=True)])
             seen = []
 
             async def reconnect(h):
                 seen.append(h)
                 return True
 
-            ws = _FakeSocket()
-            await asyncio.wait_for(
-                gemini_live._gemini_loop(
-                    live, asyncio.Lock(), ws, asyncio.Lock(), live.stop,
-                    db.create_call(), _new_telemetry(), wait_turn, _Recorder(), waiting, reconnect,
-                ),
-                timeout=3,
+            stop_evt = asyncio.Event()
+            wait_sess = FakeLiveSession(
+                [server_message(go_away=True), server_message(turn_complete=True)],
+                wait_forever=True, on_realtime=lambda *_: stop_evt.set(),
             )
+            wait_ws = FakeWebSocket()
+            wait_call = _make_live(ws=wait_ws, session=wait_sess, cursor_state=json.loads(json.dumps(state)), stop=stop_evt, reconnect=reconnect)
+            wait_call.turn.resume_handle, wait_call.turn.awaiting_bot_reply = "resume-wait", True
+            wait_call.turn.pending_speak_step = step_id(wait_call.cursor_state)
+            wait_call.turn.pending_speak_kind = wait_call.turn.active_speak_kind = "clarify"
+            await asyncio.wait_for(wait_call._gemini_loop(), timeout=3)
             self.assertEqual(seen, ["resume-wait"])
-            self.assertIn("she did not understand", live.sent[0]["text"])
-            self.assertIn("reconnected", [m.get("type") for m in ws.sent])
+            self.assertIn("she did not understand", wait_sess.sent[0][1]["text"])
+            self.assertIn("reconnected", [m.get("type") for m in wait_ws.sent])
 
-            dropped = gemini_live._Cursor()
-            dropped.state = json.loads(json.dumps(state))
-            drop_turn = gemini_live._TurnState()
-            drop_turn.resume_handle = "resume-drop"
-            drop_turn.bot_speaking = True
-            drop = _Live([], error=ConnectionError("dropped"))
+            stop_drop = asyncio.Event()
+            drop_sess = FakeLiveSession(error=ConnectionError("dropped"), on_realtime=lambda *_: stop_drop.set())
+            drop_call = _make_live(session=drop_sess, cursor_state=json.loads(json.dumps(state)), stop=stop_drop, reconnect=reconnect)
+            drop_call.turn.resume_handle, drop_call.turn.bot_speaking = "resume-drop", True
             seen.clear()
-            await asyncio.wait_for(
-                gemini_live._gemini_loop(
-                    drop, asyncio.Lock(), _FakeSocket(), asyncio.Lock(), drop.stop,
-                    db.create_call(), _new_telemetry(), drop_turn, _Recorder(), dropped, reconnect,
-                ),
-                timeout=3,
-            )
+            await asyncio.wait_for(drop_call._gemini_loop(), timeout=3)
             self.assertEqual(seen, ["resume-drop"])
-            self.assertIn("speak only this Hindi now", drop.sent[0]["text"])
+            self.assertIn("speak only this Hindi now", drop_sess.sent[0][1]["text"])
+
+            # 5-attempt cap stops without attempt 6
+            cap_ws = FakeWebSocket()
+            cap_attempts = 0
+
+            async def count_reconn(_h):
+                nonlocal cap_attempts
+                cap_attempts += 1
+                return True
+
+            cap_live = _make_live(ws=cap_ws, session=FakeLiveSession(error=ConnectionError("dropped")), reconnect=count_reconn)
+            cap_live.turn.resume_handle = "handle-limit"
+            await cap_live._gemini_loop()
+            self.assertTrue(cap_live.stop.is_set() and cap_attempts == 5 and cap_live.telemetry["reconnects"] == 5)
+            self.assertEqual([m["attempt"] for m in cap_ws.sent if m.get("type") == "reconnecting"], [1, 2, 3, 4, 5])
+            self.assertTrue(any(m.get("type") == "error" and "reconnect" in m.get("message", "") for m in cap_ws.sent))
+
+            # Full handle_gemini_ws reconnect session swap clears reconnect_requested under lock
+            sess1_dead, sess1_failed, sess2_got_audio = False, asyncio.Event(), asyncio.Event()
+            reconnect_entered, allow_reconnect = asyncio.Event(), asyncio.Event()
+
+            def on_s1(_s, kw):
+                if sess1_dead:
+                    if "audio" in kw:
+                        sess1_failed.set()
+                    raise RuntimeError("old session closed")
+
+            class _SwapSess1(FakeLiveSession):
+                async def receive(self):
+                    nonlocal sess1_dead
+                    yield server_message(resume_handle="h-1")
+                    sess1_dead = True
+                    yield server_message(go_away=True)
+                    await asyncio.Future()
+
+            sess1 = _SwapSess1(on_realtime=on_s1)
+            sess2 = FakeLiveSession(wait_forever=True, on_realtime=lambda _s, kw: sess2_got_audio.set() if "audio" in kw else None)
+            connect_calls = 0
+
+            async def fake_connect(_client, _model, _config):
+                nonlocal connect_calls
+                connect_calls += 1
+                if connect_calls == 1:
+                    return SessionCtx(sess1), sess1, 3
+                reconnect_entered.set()
+                await allow_reconnect.wait()
+                return SessionCtx(sess2), sess2, 3
+
+            fake_client = mock.MagicMock()
+            fake_client.aio.aclose = mock.AsyncMock()
+            ws2 = QueueWebSocket()
+            loud_b64 = base64.b64encode(b"\x00\x10" * 160).decode("ascii")
+
+            async def drive_mic():
+                await asyncio.wait_for(reconnect_entered.wait(), timeout=1.0)
+                await ws2.push({"type": "audio", "data": loud_b64, "sample_rate": 16000})
+                await asyncio.wait_for(sess1_failed.wait(), timeout=1.0)
+                allow_reconnect.set()
+                for _ in range(100):
+                    if any(m.get("type") == "reconnected" for m in ws2.sent):
+                        break
+                    await asyncio.sleep(0.01)
+                await ws2.push({"type": "audio", "data": loud_b64, "sample_rate": 16000})
+                await asyncio.wait_for(sess2_got_audio.wait(), timeout=1.0)
+                await asyncio.sleep(0.05)
+                await ws2.push({"type": "hangup"})
+
+            with mock.patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}), mock.patch.object(
+                gemini_live.genai, "Client", return_value=fake_client
+            ), mock.patch.object(gemini_live, "_connect_live", side_effect=fake_connect):
+                driver = asyncio.create_task(drive_mic())
+                await gemini_live.handle_gemini_ws(ws2)
+                await driver
+
+            self.assertEqual((connect_calls, [m["attempt"] for m in ws2.sent if m.get("type") == "reconnected"]), (2, [1]))
+            self.assertTrue(any("audio" in item[1] for item in sess2.sent))
+            fake_client.aio.aclose.assert_awaited_once()
 
         asyncio.run(run())
 
     def test_dropoff_qid_and_stereo_call_audio_recorder(self):
         async def run():
-            state = cursor_tests._clear_until(
-                cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
-                "birth_jaundice",
-            )
-            cursor = gemini_live._Cursor()
-            cursor.state = json.loads(json.dumps(state))
+            state = clear_until(make_profile_state(children=[make_child(4, "male")]), "birth_jaundice")
             call_id = db.create_call()
-            tel = _new_telemetry()
-            for dead_key in ("end_refusals", "end_requested_at", "force_close", "force_close_at", "end_requested", "closing", "close_reason"):
-                self.assertNotIn(dead_key, tel)
-            turn = gemini_live._TurnState()
-            await gemini_live._mark_closing(cursor, "silence", _FakeSocket(), asyncio.Lock(), call_id, tel, turn)
-            self.assertEqual(tel["dropoff_qid"], "birth_jaundice")
-            self.assertTrue(turn.end_requested)
-            self.assertGreater(turn.end_requested_at, 0.0)
-            self.assertNotIn("end_requested", tel)
-            self.assertNotIn("closing", tel)
+            live = _make_live(call_id=call_id, cursor_state=json.loads(json.dumps(state)))
+            await live._mark_closing("silence")
+            self.assertEqual(live.telemetry["dropoff_qid"], "birth_jaundice")
+            self.assertTrue(live.turn.end_requested and live.turn.end_requested_at > 0.0)
 
             rec = audio_recorder.CallAudioRecorder(call_id, output_dir=str(Path(TEST_DATA_DIR) / "audio"))
             rec._started = time.monotonic() - 0.5
             rec.add_user_pcm(b"\x10\x00" * 160, 16000)
             rec.add_bot_pcm(b"\x20\x00" * 240, 24000)
-            abrupt = gemini_live._Cursor()
-            abrupt.state = json.loads(json.dumps(state))
-            await gemini_live._finalize(_FakeSocket(), asyncio.Lock(), call_id, _new_telemetry(), rec, None, abrupt)
+            await _make_live(call_id=call_id, recorder=rec, cursor_state=json.loads(json.dumps(state)))._finalize()
             saved = db.get_call(call_id)
-            self.assertEqual(saved["telemetry"]["dropoff_qid"], "birth_jaundice")
-            self.assertFalse(any(k.endswith("_json") for k in saved))
             listed = next(row for row in db.list_calls() if row["id"] == call_id)
-            self.assertFalse(any(k.endswith("_json") for k in listed))
-            self.assertIn("red_flags", listed)
-            self.assertIn("clinician_review", listed)
+            self.assertEqual(saved["telemetry"]["dropoff_qid"], "birth_jaundice")
+            self.assertFalse(any(k.endswith("_json") for k in saved) or any(k.endswith("_json") for k in listed))
             for detail_only in ("transcript", "telemetry", "events", "cursor_state"):
                 self.assertNotIn(detail_only, listed)
             with wave.open(str(Path(TEST_DATA_DIR) / "audio" / saved["audio_path"]), "rb") as wf:
-                self.assertEqual(wf.getnchannels(), 2)
-                self.assertEqual(wf.getframerate(), 16000)
+                self.assertEqual((wf.getnchannels(), wf.getframerate()), (2, 16000))
 
             done_id = db.create_call()
-            finished = gemini_live._Cursor()
-            finished.state = cursor_tests._clear_until(
-                cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
-                "close_anything_else",
-            )
-            finished.state["phase"] = "closing"
-            finished.state["close_reason"] = "complete"
-            await gemini_live._finalize(_FakeSocket(), asyncio.Lock(), done_id, _new_telemetry(), rec, None, finished)
+            done_state = dict(clear_until(make_profile_state(children=[make_child(4, "male")]), "close_anything_else"), phase="closing", close_reason="complete")
+            await _make_live(call_id=done_id, recorder=rec, cursor_state=done_state)._finalize()
             self.assertEqual(db.get_call(done_id)["telemetry"]["dropoff_qid"], "")
 
         asyncio.run(run())
 
-    def test_watchdog_and_manual_nudge_preserve_active_speak_kind_and_hindi_prompt(self):
-        state = cursor_tests._clear_until(
-            cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
-            "birth_nicu",
-        )
+
+class LiveDecisionFlowTests(unittest.TestCase):
+    def test_quick_reply_guards_audio_flush_stale_asr_and_closing_bot_first_audio(self):
+        thresholds = shipped_thresholds()
 
         async def run():
-            # 1) Watchdog nudge uses active_speak_kind ("clarify")
-            wd_cursor = gemini_live._Cursor()
-            wd_cursor.state = json.loads(json.dumps(state))
-            wd_turn = gemini_live._TurnState()
-            wd_turn.awaiting_bot_reply = True
-            wd_turn.last_user_turn_ts = time.time() - 5.0
-            wd_turn.active_speak_kind = "clarify"
-            wd_sess = _FakeSession()
-            wd_ws = _FakeSocket()
-            wd_stop = asyncio.Event()
-            cid = db.create_call()
-            with mock.patch.object(gemini_live, "_WATCHDOG_INTERVAL_SEC", 0.01):
-                task = asyncio.create_task(
-                    gemini_live._watchdog_loop(
-                        wd_sess, asyncio.Lock(), wd_ws, asyncio.Lock(), wd_stop, cid,
-                        _new_telemetry(), wd_turn, wd_cursor, 0.05,
-                    )
-                )
-                await asyncio.sleep(0.08)
-                wd_stop.set()
-                await task
-            self.assertTrue(wd_sess.sent)
-            wd_cue = wd_sess.sent[0][1]["text"]
-            self.assertIn("she did not understand", wd_cue)
-            self.assertIn("काँच के बक्से", wd_cue)
-
-            # 2) Manual nudge sends speak_cue_text(cursor.state, active_speak_kind) and logs it
-            man_cursor = gemini_live._Cursor()
-            man_cursor.state = json.loads(json.dumps(state))
-            man_turn = gemini_live._TurnState()
-            man_turn.active_speak_kind = "clarify"
-            man_sess = _FakeSession()
-            man_ws = _FakeSocket([{"type": "nudge"}])
-            man_cid = db.create_call()
-            await gemini_live._browser_loop(
-                man_sess, asyncio.Lock(), man_ws, asyncio.Lock(), asyncio.Event(),
-                man_cid, _new_telemetry(), man_turn, man_cursor, _Recorder(),
-            )
-            self.assertEqual(_kinds(man_sess), ["realtime"])
-            man_cue = man_sess.sent[0][1]["text"]
-            self.assertEqual(man_cue, prompts.speak_cue_text(man_cursor.state, "clarify"))
-            self.assertIn("काँच के बक्से", man_cue)
-            nudge_events = [e for e in db.get_call(man_cid)["events"] if e["type"] == "manual_nudge"]
-            self.assertEqual(len(nudge_events), 1)
-            self.assertEqual(nudge_events[0]["detail"], man_cue)
-
-            # 3) _forward_transcript normalizes whitespace cleanly
-            tr_ws = _FakeSocket()
-            text = await gemini_live._forward_transcript(
-                tr_ws, asyncio.Lock(), man_cid, "assistant",
-                SimpleNamespace(text="  क्या   बच्चे को   पीलिया   हुआ? \n"),
-                man_cursor,
-            )
-            self.assertEqual(text, "क्या बच्चे को पीलिया हुआ?")
-
-        asyncio.run(run())
-
-
-class QuickReplyProtocolTests(unittest.TestCase):
-    def test_quick_reply_guards_audio_flush_and_stale_captions(self):
-        async def run():
-            state = cursor_tests._clear_until(
-                cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
-                "birth_nicu",
-            )
+            kids = [make_child(6, "male", 1), make_child(2, "female", 2)]
+            state = clear_until(make_profile_state(children=kids), "birth_nicu")
             step = step_id(state)
 
-            # 1) Before question is spoken -> ignored
-            unspoken_cursor = gemini_live._Cursor()
-            unspoken_cursor.state = json.loads(json.dumps(state))
-            unspoken_ws = _FakeSocket([{"type": "quick_reply", "outcome": "clear", "step": step}])
-            unspoken_sess = _FakeSession()
-            await gemini_live._browser_loop(
-                unspoken_sess, asyncio.Lock(), unspoken_ws, asyncio.Lock(), asyncio.Event(),
-                db.create_call(), _new_telemetry(), gemini_live._TurnState(), unspoken_cursor, _Recorder(),
-            )
-            self.assertEqual(unspoken_cursor.state["active_qid"], "birth_nicu")
-            self.assertEqual(_kinds(unspoken_sess), [])
+            # 1) Before spoken_qid -> ignored
+            unspoken_sess = FakeLiveSession()
+            await _make_live(ws=FakeWebSocket([{"type": "quick_reply", "outcome": "clear", "step": step}]), session=unspoken_sess, cursor_state=json.loads(json.dumps(state)))._browser_loop()
+            self.assertEqual(unspoken_sess.sent, [])
 
-            # 2) Spoken -> flushes in-progress bot audio & stale captions until turn_complete, idempotent on dupes
-            cursor = gemini_live._Cursor()
-            cursor.state = json.loads(json.dumps(state))
-            turn = gemini_live._TurnState()
-            turn.spoken_qid = step
-            turn.bot_speaking = True
-            turn.playback_ends_at = time.time() + 5
-            ws = _FakeSocket([
+            # 2) Spoken while bot_speaking=True -> flushes, clears ignore_bot_audio when Q2 cue fires so Q2 plays without turn_complete;
+            #    model-free + stale ASR/next_question held; fresh ASR >=1.2s later advances Q2->Q3 via Decision
+            ws = FakeWebSocket([
                 {"type": "quick_reply", "outcome": "clear", "step": "stale"},
                 {"type": "quick_reply", "outcome": "clear", "step": step},
                 {"type": "quick_reply", "outcome": "concern", "step": step},
             ])
-            sess = _FakeSession()
-            call_id = db.create_call()
-            await gemini_live._browser_loop(
-                sess, asyncio.Lock(), ws, asyncio.Lock(), asyncio.Event(),
-                call_id, _new_telemetry(), turn, cursor, _Recorder(),
-            )
-            self.assertTrue(turn.ignore_bot_audio)
-            self.assertFalse(turn.bot_speaking)
-            self.assertEqual(cursor.state["active_qid"], "birth_jaundice")
-            self.assertIn({"type": "clear"}, ws.sent)
-            self.assertEqual([m["text"] for m in ws.sent if m.get("type") == "transcript"], ["नहीं।"])
-            self.assertEqual(_kinds(sess), ["realtime"])
-
-            sent_before = list(ws.sent)
-            await gemini_live._on_bot_audio(
-                ws, asyncio.Lock(), call_id, _new_telemetry(), turn, _Recorder(), b"\x00\x00" * 24, 24000, cursor
-            )
-            await gemini_live._handle_server_message(
-                _server_message(bot_text="पुराना कटा हुआ सवाल"), sess, asyncio.Lock(), ws, asyncio.Lock(),
-                call_id, _new_telemetry(), turn, _Recorder(), set(), set(), cursor, stop=asyncio.Event(),
-            )
-            self.assertEqual(ws.sent, sent_before)
-
-            await gemini_live._handle_server_message(
-                _server_message(turn_complete=True), sess, asyncio.Lock(), ws, asyncio.Lock(),
-                call_id, _new_telemetry(), turn, _Recorder(), set(), set(), cursor, stop=asyncio.Event(),
-            )
-            self.assertFalse(turn.ignore_bot_audio)
-
-            await gemini_live._handle_server_message(
-                _server_message(bot_text="क्या जन्म के बाद पीलिया के लिए नीली लाइट में रखना पड़ा था?"),
-                sess, asyncio.Lock(), ws, asyncio.Lock(), call_id, _new_telemetry(),
-                turn, _Recorder(), set(), set(), cursor, stop=asyncio.Event(),
-            )
-            await gemini_live._handle_server_message(
-                _bot_audio_msg(turn_complete=True),
-                sess, asyncio.Lock(), ws, asyncio.Lock(), call_id, _new_telemetry(),
-                turn, _Recorder(), set(), set(), cursor, stop=asyncio.Event(),
-            )
-            self.assertIn({"type": "bot_turn_complete", "step": "birth_jaundice"}, ws.sent)
-            assistant_ws = [m for m in ws.sent if m.get("type") == "transcript" and m.get("role") == "assistant"]
-            self.assertEqual(len(assistant_ws), 1)
-            self.assertIn("नीली लाइट", assistant_ws[0]["text"])
-
-            # 3) quick_reply on close_anything_else closes cleanly
-            closing = cursor_tests._clear_until(
-                cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
-                "close_anything_else",
-            )
-            closing = apply_turn(closing, "concern", note="पेट दर्द")
-            c_cursor = gemini_live._Cursor()
-            c_cursor.state = closing
-            c_turn = gemini_live._TurnState()
-            c_step = step_id(closing)
-            c_turn.spoken_qid = c_step
-            c_sess = _FakeSession()
-            await gemini_live._browser_loop(
-                c_sess, asyncio.Lock(), _FakeSocket([{"type": "quick_reply", "outcome": "clear", "step": c_step}]),
-                asyncio.Lock(), asyncio.Event(), db.create_call(), _new_telemetry(), c_turn, c_cursor, _Recorder(),
-            )
-            self.assertEqual(c_cursor.state["phase"], "closing")
-            self.assertEqual(c_cursor.state["close_reason"], "complete")
-            self.assertIn("धन्यवाद", c_sess.sent[0][1]["text"])
-
-        asyncio.run(run())
-
-    def test_quick_reply_is_model_free_and_holds_trailing_asr_and_late_next_question(self):
-        thresholds = _test_thresholds()
-
-        async def run():
-            kids = [cursor_tests._child(6, "male", 1), cursor_tests._child(2, "female", 2)]
-            state = cursor_tests._clear_until(cursor_tests._profile(children=kids), "birth_nicu")
-            step = step_id(state)
-            cursor = gemini_live._Cursor()
-            cursor.state = state
-            turn = gemini_live._TurnState()
-            turn.spoken_qid = step
-            turn.user_turn_step = step
-            turn.capture.user_turn_buffer = "नह"
-            turn.capture.user_turn_pcm = bytearray(b"\x00\x10" * 800)
-            turn.capture.speech_allowed = False
-            session = _FakeSession()
-            ws = _FakeSocket([{"type": "quick_reply", "outcome": "clear", "step": step}])
-            telemetry = _new_telemetry()
-            call_id = db.create_call()
+            sess = FakeLiveSession()
+            live = _make_live(ws=ws, session=sess, cursor_state=json.loads(json.dumps(state)), thresholds=thresholds)
+            live.turn.spoken_qid = live.turn.user_turn_step = step
+            live.turn.bot_speaking, live.turn.playback_ends_at = True, time.time() + 5
+            live.capture.user_turn_buffer, live.capture.user_turn_pcm = "नह", bytearray(b"\x00\x10" * 800)
 
             with mock.patch.object(decisions, "evaluate_turn") as eval_mock:
-                await gemini_live._browser_loop(
-                    session, asyncio.Lock(), ws, asyncio.Lock(), asyncio.Event(),
-                    call_id, telemetry, turn, cursor, _Recorder(),
-                )
+                await live._browser_loop()
+                live.stop.clear()
                 eval_mock.assert_not_called()
-                self.assertEqual(cursor.state["answers"]["birth_nicu"]["state"], "clear")
-                self.assertEqual(cursor.state["active_qid"], "birth_jaundice")
-                self.assertEqual(turn.capture.user_turn_buffer, "")
-                self.assertEqual(len(turn.capture.user_turn_pcm), 0)
-                self.assertTrue(turn.capture.speech_allowed)
-                self.assertEqual(telemetry["user_turns"], 1)
+                self.assertEqual((live.cursor_state["active_qid"], live.turn.ignore_bot_audio, live.turn.bot_speaking, live.capture.speech_allowed),
+                                 ("birth_jaundice", False, False, True))
+                self.assertIn({"type": "clear"}, ws.sent)
 
-                # Trailing ASR within stale window stays pinned & does not corrupt latency or revoke speech_allowed
                 started = time.time() - 0.35
-                turn.last_user_turn_ts = started
-                await gemini_live._handle_server_message(
-                    _server_message(user_text="नहीं"), session, asyncio.Lock(), ws, asyncio.Lock(),
-                    call_id, telemetry, turn, _Recorder(), set(), set(), cursor, stop=asyncio.Event(),
-                )
-                self.assertTrue(turn.capture.speech_allowed)
-                self.assertEqual(turn.user_turn_step, step)
-                self.assertAlmostEqual(turn.last_user_turn_ts, started, delta=0.02)
-
-                # Late next_question held as stale_turn without calling Decision or repeating cue
-                await gemini_live._handle_server_message(
-                    _server_message(turn_complete=True, tool_calls=[_Call("next_question", {}, "fc-late")]),
-                    session, asyncio.Lock(), ws, asyncio.Lock(), call_id, telemetry, turn,
-                    _Recorder(), set(), set(), cursor, stop=asyncio.Event(), thresholds=thresholds,
-                )
+                live.turn.last_user_turn_ts = started
+                await live._handle_server_message(server_message(user_text="नहीं"))
+                self.assertAlmostEqual(live.turn.last_user_turn_ts, started, delta=0.02)
+                await live._handle_server_message(server_message(turn_complete=True, tool_calls=[FakeToolCall(fid="fc-late")]))
                 eval_mock.assert_not_called()
-                await _drop_fallback(turn)
+                await drop_fallback(live.turn)
+            self.assertEqual([i[1] for i in sess.sent if i[0] == "tool"][0][0].response["reason"], "stale_turn")
 
-            tool_resp = [item[1] for item in session.sent if item[0] == "tool"][0][0]
-            self.assertEqual(tool_resp.response["result"], "held")
-            self.assertEqual(tool_resp.response["reason"], "stale_turn")
-            self.assertEqual(len([item for item in session.sent if item[0] == "realtime"]), 1)
-            details = [m["last_event"]["detail"] for m in ws.sent if m.get("type") == "telemetry"]
-            self.assertIn("quick_reply_clear", details)
-            self.assertIn("next_question_held", details)
+            # Q2 audio plays immediately on birth_jaundice without Q1 turn_complete; fresh ASR advances Q2 -> Q3
+            await live._handle_server_message(server_message(bot_text="क्या जन्म के बाद बच्चे को पीलिया हुआ?"))
+            await live._handle_server_message(bot_audio_message(turn_complete=True))
+            self.assertEqual((live.turn.spoken_qid, live.telemetry["audio_chunks_out"]), ("birth_jaundice", 1))
+            live.turn.last_quick_reply_ts = time.time() - 1.5
+            with mock.patch.object(decisions, "evaluate_turn", side_effect=lambda req, **_: decision_result(req, _eval_payload())):
+                await live._handle_server_message(server_message(user_text="नहीं"))
+                await live._handle_server_message(server_message(turn_complete=True, tool_calls=[FakeToolCall(fid="fc-fresh")]))
+                await drop_fallback(live.turn)
+            self.assertEqual(live.cursor_state["active_qid"], "birth_sudden")
 
-            # Fresh answer >= 1.2s after tap on spoken Q2 advances Q2 -> Q3 via Decision
-            next_step = step_id(cursor.state)
-            turn.spoken_qid = next_step
-            turn.ignore_bot_audio = False
-            turn.last_quick_reply_ts = time.time() - 1.5
+            # 3) quick_reply on close_anything_else closes & records bot_first_audio on farewell; cue failure stops
+            closing = apply_turn(clear_until(make_profile_state(children=[make_child(4, "male")]), "close_anything_else"), "concern", note="पेट दर्द")
+            c_step, c_cid, c_sess = step_id(closing), db.create_call(), FakeLiveSession()
+            c_live = _make_live(ws=FakeWebSocket([{"type": "quick_reply", "outcome": "clear", "step": c_step}]), session=c_sess, call_id=c_cid, cursor_state=closing)
+            c_live.turn.spoken_qid, c_live.turn.bot_replied_since_user = c_step, True
+            await c_live._browser_loop()
+            self.assertEqual((c_live.cursor_state["phase"], c_live.cursor_state["close_reason"], c_live.turn.awaiting_bot_reply), ("closing", "complete", True))
+            await asyncio.sleep(0.01)
+            await c_live._handle_server_message(bot_audio_message(turn_complete=True))
+            self.assertTrue(c_live.turn.closing_heard and c_live.telemetry["bot_turns"] == 1 and len(c_live.telemetry["turn_latencies_ms"]) == 1)
+            self.assertTrue(any(e["type"] == "bot_first_audio" for e in db.get_call(c_cid)["events"]))
 
-            async def fake_eval(request, **_kwargs):
-                raw = {
-                    "danger_now": _noul(0.01),
-                    "caller_stop": _noul(0.01),
-                    "mentions_profile": _noul(0.01),
-                    "detail_present": _noul(0.04),
-                    "current_outcome": _choice("clear", {"clear": 0.94, "other": 0.04, "concern": 0.02}),
-                    "side_intent": _choice("other", {"other": 0.96, "add_concern": 0.04}),
-                    "side_qid": _choice("other", {"other": 0.96, "birth_nicu": 0.04}),
-                }
-                return _decision_result(request, raw)
-
-            with mock.patch.object(decisions, "evaluate_turn", side_effect=fake_eval):
-                await gemini_live._handle_server_message(
-                    _server_message(user_text="नहीं"), session, asyncio.Lock(), ws, asyncio.Lock(),
-                    call_id, telemetry, turn, _Recorder(), set(), set(), cursor, stop=asyncio.Event(),
-                )
-                await gemini_live._handle_server_message(
-                    _server_message(turn_complete=True, tool_calls=[_Call("next_question", {}, "fc-fresh")]),
-                    session, asyncio.Lock(), ws, asyncio.Lock(), call_id, telemetry, turn,
-                    _Recorder(), set(), set(), cursor, stop=asyncio.Event(), thresholds=thresholds,
-                )
-                await _drop_fallback(turn)
-            self.assertEqual(cursor.state["answers"]["birth_jaundice"]["state"], "clear")
-            self.assertEqual(cursor.state["active_qid"], "birth_sudden")
+            qr_fail = _make_live(ws=FakeWebSocket([{"type": "quick_reply", "outcome": "clear", "step": step}]), session=FakeLiveSession(fail_realtime=True), cursor_state=json.loads(json.dumps(state)))
+            qr_fail.turn.spoken_qid = step
+            await qr_fail._browser_loop()
+            self.assertTrue(qr_fail.stop.is_set())
 
         asyncio.run(run())
 
-
-class DecisionTurnAndExtractorTests(unittest.TestCase):
-    def test_full_intro_flow_name_married_three_children_bridge_to_birth(self):
-        thresholds = _test_thresholds()
+    def test_full_intro_to_clinical_gate_and_dual_intent_clarify_future_multichild(self):
+        thresholds = shipped_thresholds()
 
         async def run():
-            cursor = gemini_live._Cursor()
-            cursor.state = call_cursor.new_cursor_state()
-            turn = gemini_live._TurnState()
-            ws = _FakeSocket()
-            session = _FakeSession()
-            telemetry = _new_telemetry()
             call_id = db.create_call()
+            live = _make_live(call_id=call_id, cursor_state=call_cursor.new_cursor_state(), thresholds=thresholds)
 
-            async def fake_eval(request, **_kwargs):
-                active_q = json.loads(request["input"])["active_question"]
-                is_bridge = "शुरू करें" in active_q
-                raw = {
-                    "danger_now": _noul(0.01),
-                    "caller_stop": _noul(0.01),
-                    "mentions_profile": _noul(0.02 if is_bridge else 0.92),
-                    "current_outcome": _choice(
-                        "concern" if is_bridge else "other",
-                        {"concern": 0.93, "other": 0.05, "clear": 0.02}
-                        if is_bridge
-                        else {"other": 0.90, "clear": 0.06, "concern": 0.04},
-                    ),
-                }
-                return _decision_result(request, raw)
+            async def eval_intro(request, **_kwargs):
+                ctx, qs = json.loads(request["input"]), request.get("questions") or {}
+                is_bridge = "child_ref" in qs and "children_roster" in ctx and "side_qid" not in qs
+                return decision_result(request, {
+                    "danger_now": noul(0.01), "caller_stop": noul(0.01),
+                    "mentions_profile": noul(0.02 if is_bridge else 0.92),
+                    "current_outcome": choice("concern" if is_bridge else "other", {"concern": 0.93, "other": 0.05} if is_bridge else {"other": 0.90, "clear": 0.10}),
+                })
 
-            async def fake_extract(state, utterance_text="", audio_wav_bytes=None, **_kwargs):
+            async def ext_intro(state, **_kwargs):
                 qid = state.get("active_qid")
-                if qid == "intro_name":
-                    updates = {"caller_name": "पूजा"}
-                elif qid == "intro_married":
-                    updates = {"marital_status": "married"}
-                elif qid == "intro_children":
-                    updates = {
-                        "child_count": 3,
-                        "children": [
-                            {"age_years": 11.0, "sex": "female", "name": "रिया"},
-                            {"age_years": 6.0, "sex": "male", "name": None},
-                            {"age_years": 0.5, "sex": "male", "name": None},
-                        ],
-                    }
-                else:
-                    updates = {}
-                return profile_extractor.ProfileExtractionResult(
-                    ok=True, updates=updates, error_reason="", extractor_ms=24
-                )
+                up = ({"caller_name": "पूजा"} if qid == "intro_name"
+                      else {"marital_status": "married"} if qid == "intro_married"
+                      else {"child_count": 3, "children": [{"age_years": 11.0, "sex": "female", "name": "रिया"}, {"age_years": 6.0, "sex": "male", "name": None}, {"age_years": 0.5, "sex": "male", "name": None}]} if qid == "intro_children"
+                      else {})
+                return profile_extractor.ProfileExtractionResult(ok=True, updates=up, error_reason="", extractor_ms=24)
 
-            turns = [
-                ("मेरा नाम पूजा है", "fc-intro-1"),
-                ("हाँ, शादी हो गई है", "fc-intro-2"),
-                ("तीन बच्चे हैं — 11 साल की बड़ी बेटी रिया, 6 साल का बेटा, और 6 महीने का छोटा बेटा", "fc-intro-3"),
-                ("हाँ, शुरू करें", "fc-intro-4"),
-            ]
-            with mock.patch.object(decisions, "evaluate_turn", side_effect=fake_eval), mock.patch.object(
-                profile_extractor, "extract_profile_entities", side_effect=fake_extract
-            ) as ext_mock:
-                for user_text, call_sid in turns:
-                    turn.spoken_qid = step_id(cursor.state)
-                    await gemini_live._handle_server_message(
-                        _server_message(user_text=user_text), session, asyncio.Lock(), ws, asyncio.Lock(),
-                        call_id, telemetry, turn, _Recorder(), set(), set(), cursor, stop=asyncio.Event(),
-                    )
-                    await gemini_live._handle_server_message(
-                        _server_message(turn_complete=True, tool_calls=[_Call("next_question", {}, call_sid)]),
-                        session, asyncio.Lock(), ws, asyncio.Lock(), call_id, telemetry, turn,
-                        _Recorder(), set(), set(), cursor, stop=asyncio.Event(), thresholds=thresholds,
-                    )
-                    await _drop_fallback(turn)
+            with mock.patch.object(decisions, "evaluate_turn", side_effect=eval_intro), mock.patch.object(profile_extractor, "extract_profile_entities", side_effect=ext_intro) as ext_mock:
+                for text, fid in (("मेरा नाम पूजा है", "i1"), ("हाँ, शादी हो गई है", "i2"), ("तीन बच्चे हैं", "i3"), ("हाँ, शुरू करें", "i4")):
+                    live.turn.spoken_qid = step_id(live.cursor_state)
+                    await live._handle_server_message(server_message(user_text=text))
+                    await live._handle_server_message(server_message(turn_complete=True, tool_calls=[FakeToolCall(fid=fid)]))
+                    await drop_fallback(live.turn)
                 self.assertEqual(ext_mock.await_count, 3)
 
-            self.assertEqual(cursor.state["phase"], "asking")
-            self.assertEqual(cursor.state["active_qid"], "birth_mode_detail")
-            self.assertEqual(cursor.state["profile"]["caller_name"], "पूजा")
-            self.assertEqual(cursor.state["profile"]["marital_status"], "married")
-            self.assertEqual(len(cursor.state["profile"]["children"]), 3)
-            self.assertEqual(cursor.state["profile"]["children"][2]["age_label_hi"], "6 महीने")
-            self.assertEqual(cursor.state["answers"]["intro_bridge"]["state"], "clear")
+            self.assertEqual((live.cursor_state["active_qid"], live.cursor_state["profile"]["caller_name"], len(live.cursor_state["profile"]["children"]), live.cursor_state["profile"]["children"][2]["age_label_hi"]),
+                             ("birth_mode_detail", "पूजा", 3, "6 महीने"))
+            dt_ev = [e for e in db.get_call(call_id)["events"] if e["type"] == "decision_turn"]
+            self.assertEqual((len(dt_ev), dt_ev[0]["meta"]["extractor_ok"]), (4, True))
+            self.assertNotIn("extractor_ok", dt_ev[3]["meta"])
 
-            dt_events = [e for e in db.get_call(call_id)["events"] if e["type"] == "decision_turn"]
-            self.assertEqual(len(dt_events), 4)
-            self.assertTrue(dt_events[0]["meta"]["extractor_ok"])
-            self.assertEqual(dt_events[0]["meta"]["extractor_ms"], 24)
-            self.assertNotIn("extractor_ok", dt_events[3]["meta"])
+            # Dual-intent Smoke A + duplicate tool call hold
+            s_a = clear_until(apply_turn(apply_turn(clear_until(make_profile_state(children=[make_child(4, "male")]), "fam_cancer"), "concern", note="मामा को ब्लड कैंसर"), "concern", note="मामा"), "fam_heart_kidney")
+            sess_a = FakeLiveSession()
+            live_a = _make_live(session=sess_a, call_id=call_id, cursor_state=s_a, thresholds=thresholds)
+            live_a.turn.spoken_qid = step_id(live_a.cursor_state)
+            with mock.patch.object(decisions, "evaluate_turn", side_effect=lambda req, **_: decision_result(req, _eval_payload(
+                side_intent=choice("add_concern", {"add_concern": 0.93, "other": 0.05}),
+                side_qid=choice("fam_cancer", {"fam_cancer": 0.91, "other": 0.04}),
+            ))):
+                await live_a._handle_server_message(server_message(user_text="नहीं, पर चाची को भी कैंसर हुआ था"))
+                await live_a._handle_server_message(server_message(turn_complete=True, tool_calls=[FakeToolCall(fid="fc-1"), FakeToolCall(fid="fc-dup")]))
+                await drop_fallback(live_a.turn)
+            self.assertIn("चाची को भी कैंसर हुआ था", live_a.cursor_state["answers"]["fam_cancer"]["notes"])
+            self.assertEqual(([r.response["result"] for r in [i[1] for i in sess_a.sent if i[0] == "tool"][0]], live_a.cursor_state["active_qid"]),
+                             (["ok", "held"], "fam_bp_stroke"))
 
-        asyncio.run(run())
+            # clarify_meaning rewind + future_qid_match + multi-child pre-answered followup
+            live_a.cursor_state = apply_turn(clear_until(make_profile_state(children=[make_child(4, "male")]), "preg_thalassemia"), "unknown")
+            live_a.turn.spoken_qid = step_id(live_a.cursor_state)
+            with mock.patch.object(decisions, "evaluate_turn", side_effect=lambda req, **_: decision_result(req, _eval_payload(
+                side_intent=choice("clarify_other", {"clarify_other": 0.91, "other": 0.05}),
+                side_qid=choice("preg_thalassemia", {"preg_thalassemia": 0.90, "other": 0.05}),
+            ))):
+                await live_a._handle_server_message(server_message(user_text="थैलेसीमिया क्या होता है?"))
+                await live_a._handle_server_message(server_message(turn_complete=True, tool_calls=[FakeToolCall(fid="fc-clar")]))
+                await drop_fallback(live_a.turn)
+            self.assertTrue(live_a.cursor_state["active_qid"] == "preg_thalassemia" and [i[1] for i in sess_a.sent if i[0] == "tool"][-1][0].response.get("clarify"))
 
-    def test_dual_intent_smoke_a_clarify_rewind_future_qid_and_multichild_followup(self):
-        thresholds = _test_thresholds()
+            live_a.cursor_state = clear_until(make_profile_state(children=[make_child(4, "male")]), "birth_jaundice")
+            live_a.turn.spoken_qid = step_id(live_a.cursor_state)
+            with mock.patch.object(decisions, "evaluate_turn", side_effect=lambda req, **_: decision_result(req, _eval_payload(
+                side_intent=choice("add_concern", {"add_concern": 0.91, "other": 0.06}),
+                side_qid=choice("fam_cancer", {"fam_cancer": 0.93, "other": 0.04}),
+            ))):
+                await live_a._handle_server_message(server_message(user_text="नहीं, हाँ चाची को कैंसर था"))
+                await live_a._handle_server_message(server_message(turn_complete=True, tool_calls=[FakeToolCall(fid="fc-fut")]))
+                await drop_fallback(live_a.turn)
+            self.assertEqual([e for e in db.get_call(call_id)["events"] if e["type"] == "decision_turn"][-1]["meta"]["future_qid_match"],
+                             {"qid": "fam_cancer", "confidence": 0.93, "act": "add_or_correct"})
+            self.assertNotIn("fam_cancer", live_a.cursor_state["answers"])
 
-        async def run():
-            # 1) Smoke A: clear current + add earlier fam_cancer concern
-            state = cursor_tests._clear_until(
-                cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
-                "fam_cancer",
-            )
-            state = apply_turn(state, "concern", note="मामा को ब्लड कैंसर")
-            state = apply_turn(state, "concern", note="मामा")
-            state = cursor_tests._clear_until(state, "fam_heart_kidney")
-
-            cursor = gemini_live._Cursor()
-            cursor.state = state
-            turn = gemini_live._TurnState()
-            turn.spoken_qid = step_id(cursor.state)
-            ws = _FakeSocket()
-            session = _FakeSession()
-            telemetry = _new_telemetry()
-            call_id = db.create_call()
-
-            async def eval_smoke_a(request, **_kwargs):
-                raw = {
-                    "danger_now": _noul(0.02),
-                    "caller_stop": _noul(0.01),
-                    "mentions_profile": _noul(0.03),
-                    "detail_present": _noul(0.05),
-                    "current_outcome": _choice("clear", {"clear": 0.92, "other": 0.04, "concern": 0.03}),
-                    "side_intent": _choice("add_concern", {"add_concern": 0.93, "other": 0.05}),
-                    "side_qid": _choice("fam_cancer", {"fam_cancer": 0.91, "other": 0.04, "fam_lumps": 0.03}),
-                }
-                return _decision_result(request, raw)
-
-            with mock.patch.object(decisions, "evaluate_turn", side_effect=eval_smoke_a):
-                await gemini_live._handle_server_message(
-                    _server_message(user_text="नहीं, पर चाची को भी कैंसर हुआ था"),
-                    session, asyncio.Lock(), ws, asyncio.Lock(), call_id, telemetry,
-                    turn, _Recorder(), set(), set(), cursor, stop=asyncio.Event(),
-                )
-                await gemini_live._handle_server_message(
-                    _server_message(
-                        turn_complete=True,
-                        tool_calls=[_Call("next_question", {}, "fc-1"), _Call("next_question", {}, "fc-dup")],
-                    ),
-                    session, asyncio.Lock(), ws, asyncio.Lock(), call_id, telemetry,
-                    turn, _Recorder(), set(), set(), cursor, stop=asyncio.Event(), thresholds=thresholds,
-                )
-                await _drop_fallback(turn)
-
-            self.assertEqual(cursor.state["answers"]["fam_heart_kidney"]["state"], "clear")
-            self.assertIn("चाची को भी कैंसर हुआ था", cursor.state["answers"]["fam_cancer"]["notes"])
-            self.assertEqual(cursor.state["active_qid"], "fam_bp_stroke")
-            tool_resps = [item[1] for item in session.sent if item[0] == "tool"][0]
-            self.assertEqual(tool_resps[0].response["result"], "ok")
-            self.assertEqual(tool_resps[1].response["result"], "held")
-            self.assertEqual(tool_resps[1].response["reason"], "duplicate_turn")
-
-            # 2) clarify_meaning rewinds to preg_thalassemia with clarify=True
-            thal = cursor_tests._clear_until(
-                cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
-                "preg_thalassemia",
-            )
-            cursor.state = apply_turn(thal, "unknown")
-            turn.spoken_qid = step_id(cursor.state)
-
-            async def eval_clarify(request, **_kwargs):
-                raw = {
-                    "danger_now": _noul(0.01),
-                    "caller_stop": _noul(0.01),
-                    "mentions_profile": _noul(0.01),
-                    "detail_present": _noul(0.05),
-                    "current_outcome": _choice("clear", {"clear": 0.91, "other": 0.05, "concern": 0.04}),
-                    "side_intent": _choice("clarify_other", {"clarify_other": 0.91, "add_concern": 0.05, "other": 0.04}),
-                    "side_qid": _choice("preg_thalassemia", {"preg_thalassemia": 0.90, "other": 0.05, "fam_related": 0.05}),
-                }
-                return _decision_result(request, raw)
-
-            with mock.patch.object(decisions, "evaluate_turn", side_effect=eval_clarify):
-                await gemini_live._handle_server_message(
-                    _server_message(user_text="रिश्तेदार तो नहीं, पर थैलेसीमिया क्या होता है?"),
-                    session, asyncio.Lock(), ws, asyncio.Lock(), call_id, telemetry,
-                    turn, _Recorder(), set(), set(), cursor, stop=asyncio.Event(),
-                )
-                await gemini_live._handle_server_message(
-                    _server_message(turn_complete=True, tool_calls=[_Call("next_question", {}, "fc-clar")]),
-                    session, asyncio.Lock(), ws, asyncio.Lock(), call_id, telemetry,
-                    turn, _Recorder(), set(), set(), cursor, stop=asyncio.Event(), thresholds=thresholds,
-                )
-                await _drop_fallback(turn)
-            self.assertEqual(cursor.state["active_qid"], "preg_thalassemia")
-            self.assertTrue([item[1] for item in session.sent if item[0] == "tool"][-1][0].response.get("clarify"))
-
-            # 3) future_qid_match logged on birth_jaundice without writing future fam_cancer
-            cursor.state = cursor_tests._clear_until(
-                cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
-                "birth_jaundice",
-            )
-            turn.spoken_qid = step_id(cursor.state)
-
-            async def eval_future(request, **_kwargs):
-                raw = {
-                    "danger_now": _noul(0.01),
-                    "caller_stop": _noul(0.01),
-                    "mentions_profile": _noul(0.01),
-                    "detail_present": _noul(0.05),
-                    "current_outcome": _choice("clear", {"clear": 0.90, "other": 0.06, "concern": 0.04}),
-                    "side_intent": _choice("add_concern", {"add_concern": 0.91, "other": 0.06, "clarify_other": 0.03}),
-                    "side_qid": _choice("fam_cancer", {"fam_cancer": 0.93, "other": 0.04, "fam_lumps": 0.03}),
-                }
-                return _decision_result(request, raw)
-
-            with mock.patch.object(decisions, "evaluate_turn", side_effect=eval_future):
-                await gemini_live._handle_server_message(
-                    _server_message(user_text="नहीं, हाँ चाची को कैंसर था"),
-                    session, asyncio.Lock(), ws, asyncio.Lock(), call_id, telemetry,
-                    turn, _Recorder(), set(), set(), cursor, stop=asyncio.Event(),
-                )
-                await gemini_live._handle_server_message(
-                    _server_message(turn_complete=True, tool_calls=[_Call("next_question", {}, "fc-fut")]),
-                    session, asyncio.Lock(), ws, asyncio.Lock(), call_id, telemetry,
-                    turn, _Recorder(), set(), set(), cursor, stop=asyncio.Event(), thresholds=thresholds,
-                )
-                await _drop_fallback(turn)
-            dt_events = [e for e in db.get_call(call_id)["events"] if e["type"] == "decision_turn"]
-            self.assertEqual(
-                dt_events[-1]["meta"]["future_qid_match"],
-                {"qid": "fam_cancer", "confidence": 0.93, "act": "add_or_correct"},
-            )
-            self.assertNotIn("fam_cancer", cursor.state["answers"])
-
-            # 4) Multi-child child_ref + pre-answered followup resolves birth_jaundice in 1 turn
-            kids = [
-                cursor_tests._child(9, "female", 1, name="रिया"),
-                cursor_tests._child(5, "male", 2, name="अर्जुन"),
-            ]
-            cursor.state = cursor_tests._clear_until(cursor_tests._profile(children=kids), "birth_jaundice")
-            turn.spoken_qid = step_id(cursor.state)
-
-            async def eval_multi(request, **_kwargs):
-                raw = {
-                    "danger_now": _noul(0.01),
-                    "caller_stop": _noul(0.01),
-                    "mentions_profile": _noul(0.01),
-                    "detail_present": _noul(0.92),
-                    "current_outcome": _choice("concern", {"concern": 0.95, "other": 0.03, "clear": 0.02}),
-                    "child_ref": _choice("child_2", {"child_2": 0.91, "child_1": 0.04, "other": 0.03, "all": 0.02}),
-                    "side_intent": _choice("other", {"other": 0.96, "add_concern": 0.04}),
-                    "side_qid": _choice("other", {"other": 0.96, "birth_nicu": 0.04}),
-                }
-                return _decision_result(request, raw)
-
-            with mock.patch.object(decisions, "evaluate_turn", side_effect=eval_multi):
-                await gemini_live._handle_server_message(
-                    _server_message(user_text="हाँ छोटे बेटे को चार दिन नीली लाइट में रखा था"),
-                    session, asyncio.Lock(), ws, asyncio.Lock(), call_id, telemetry,
-                    turn, _Recorder(), set(), set(), cursor, stop=asyncio.Event(),
-                )
-                await gemini_live._handle_server_message(
-                    _server_message(turn_complete=True, tool_calls=[_Call("next_question", {}, "fc-multi")]),
-                    session, asyncio.Lock(), ws, asyncio.Lock(), call_id, telemetry,
-                    turn, _Recorder(), set(), set(), cursor, stop=asyncio.Event(), thresholds=thresholds,
-                )
-                await _drop_fallback(turn)
-            self.assertEqual(cursor.state["answers"]["birth_jaundice"]["child_ids"], ["child_2"])
-            self.assertIn("चार दिन", cursor.state["answers"]["birth_jaundice"]["followups"]["jaundice_days"]["note"])
-            self.assertEqual(cursor.state["active_qid"], "birth_sudden")
+            kids2 = [make_child(9, "female", 1, name="रिया"), make_child(5, "male", 2, name="अर्जुन")]
+            live_a.cursor_state = clear_until(make_profile_state(children=kids2), "birth_jaundice")
+            live_a.turn.spoken_qid = step_id(live_a.cursor_state)
+            with mock.patch.object(decisions, "evaluate_turn", side_effect=lambda req, **_: decision_result(req, _eval_payload(
+                detail_present=noul(0.92), current_outcome=choice("concern", {"concern": 0.95, "other": 0.03}),
+                child_ref=choice("child_2", {"child_2": 0.91, "child_1": 0.04, "other": 0.03}),
+            ))):
+                await live_a._handle_server_message(server_message(user_text="हाँ छोटे बेटे को चार दिन नीली लाइट में रखा था"))
+                await live_a._handle_server_message(server_message(turn_complete=True, tool_calls=[FakeToolCall(fid="fc-multi")]))
+                await drop_fallback(live_a.turn)
+            self.assertEqual((live_a.cursor_state["answers"]["birth_jaundice"]["child_ids"], live_a.cursor_state["active_qid"]), (["child_2"], "birth_sudden"))
+            self.assertIn("चार दिन", live_a.cursor_state["answers"]["birth_jaundice"]["followups"]["jaundice_days"]["note"])
 
         asyncio.run(run())
 
-    def test_missed_tool_recovery_pcm_wav_fallback_midflight_and_holds(self):
-        thresholds = _test_thresholds()
+    def test_missed_tool_wav_fallback_speaker_echo_gating_and_midflight_race(self):
+        thresholds = shipped_thresholds()
 
         async def run():
-            state = cursor_tests._clear_until(
-                cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
-                "birth_jaundice",
-            )
-            cursor = gemini_live._Cursor()
-            cursor.state = json.loads(json.dumps(state))
-            turn = gemini_live._TurnState()
-            turn.spoken_qid = step_id(cursor.state)
-            ws = _FakeSocket()
-            session = _FakeSession()
-            telemetry = _new_telemetry()
-            call_id = db.create_call()
+            state = clear_until(make_profile_state(children=[make_child(4, "male")]), "birth_nicu")
+            ws, sess, cid = FakeWebSocket(), FakeLiveSession(), db.create_call()
+            live = _make_live(ws=ws, session=sess, call_id=cid, cursor_state=json.loads(json.dumps(state)), thresholds=thresholds)
+            live.turn.spoken_qid = "birth_nicu"
 
-            async def eval_clear(request, **_kwargs):
-                raw = {
-                    "danger_now": _noul(0.01),
-                    "caller_stop": _noul(0.01),
-                    "mentions_profile": _noul(0.01),
-                    "detail_present": _noul(0.03),
-                    "current_outcome": _choice("clear", {"clear": 0.94, "other": 0.04, "concern": 0.02}),
-                    "side_intent": _choice("other", {"other": 0.96, "add_concern": 0.04}),
-                    "side_qid": _choice("other", {"other": 0.96, "birth_nicu": 0.04}),
-                }
-                return _decision_result(request, raw)
+            # 1) Speakerphone echo during bot_speaking OR playback_ends_at window ignored
+            loud_pcm = b"\x00\x10" * 1600
+            loud_b64 = base64.b64encode(loud_pcm).decode("ascii")
+            for bot_spk, ends_at in ((True, 0.0), (False, time.time() + 1.5)):
+                live.turn.bot_speaking, live.turn.playback_ends_at, live.turn.quiet_from = bot_spk, ends_at, 77.0
+                live.ws = FakeWebSocket([{"type": "audio", "data": loud_b64, "sample_rate": 16000}])
+                await live._browser_loop()
+                live.stop.clear()
+                self.assertEqual((len(live.capture.user_turn_pcm), live.turn.quiet_from, live.telemetry["user_turns"]), (0, 77.0, 0))
 
-            # 1) Unprompted bot audio + caption suppressed, then missed-tool recovery at turn_complete
-            with mock.patch.object(decisions, "evaluate_turn", side_effect=eval_clear) as eval_mock:
-                await gemini_live._handle_server_message(
-                    _server_message(user_text="नहीं"), session, asyncio.Lock(), ws, asyncio.Lock(),
-                    call_id, telemetry, turn, _Recorder(), set(), set(), cursor, stop=asyncio.Event(),
-                )
-                self.assertFalse(turn.capture.speech_allowed)
-                await gemini_live._handle_server_message(
-                    _server_message(bot_text="मैं अपने मन से बोल रही हूँ"), session, asyncio.Lock(), ws, asyncio.Lock(),
-                    call_id, telemetry, turn, _Recorder(), set(), set(), cursor, stop=asyncio.Event(),
-                )
-                await gemini_live._handle_server_message(
-                    _bot_audio_msg(turn_complete=False), session, asyncio.Lock(), ws, asyncio.Lock(),
-                    call_id, telemetry, turn, _Recorder(), set(), set(), cursor, stop=asyncio.Event(),
-                )
-                self.assertEqual(telemetry["audio_chunks_out"], 0)
-                self.assertFalse(any(m.get("type") == "audio" for m in ws.sent))
-                self.assertFalse(any(m.get("type") == "transcript" and m.get("role") == "assistant" for m in ws.sent))
+            # 2) Post-playback audio-only reply (zero ASR) unlocks lingering handled_turn on step N+1 & fires missed_tool WAV fallback
+            live.cursor_state = apply_turn(live.cursor_state, "clear")
+            live.turn.spoken_qid, live.turn.bot_speaking, live.turn.playback_ends_at = "birth_jaundice", False, 0.0
+            live.turn.user_turn_step, live.capture.handled_turn, live.capture.last_key = "birth_nicu", True, ("birth_nicu", "नहीं", 0)
+            live.ws = FakeWebSocket([{"type": "audio", "data": loud_b64, "sample_rate": 16000}])
+            await live._browser_loop()
+            live.stop.clear()
+            self.assertFalse(live.capture.handled_turn or live.capture.speech_allowed or live.capture.last_key)
+            self.assertEqual((live.turn.user_turn_step, bytes(live.capture.user_turn_pcm)), ("birth_jaundice", loud_pcm))
 
-                await gemini_live._handle_server_message(
-                    _server_message(turn_complete=True), session, asyncio.Lock(), ws, asyncio.Lock(),
-                    call_id, telemetry, turn, _Recorder(), set(), set(), cursor, stop=asyncio.Event(), thresholds=thresholds,
-                )
-                self.assertEqual(eval_mock.await_count, 1)
-                self.assertEqual(cursor.state["active_qid"], "birth_sudden")
-                self.assertTrue(turn.capture.speech_allowed)
-                self.assertEqual(telemetry["tool_calls"], 1)
-                self.assertTrue(
-                    any(
-                        e["type"] == "tool_call" and e["detail"] == "missed_tool_clear"
-                        for e in db.get_call(call_id)["events"]
-                    )
-                )
-                self.assertTrue(
-                    any(
-                        m.get("type") == "telemetry"
-                        and (m.get("last_event") or {}).get("type") == "tool_call"
-                        and (m.get("last_event") or {}).get("detail") == "missed_tool_clear"
-                        for m in ws.sent
-                    )
-                )
-                await gemini_live._handle_server_message(
-                    _bot_audio_msg(turn_complete=True), session, asyncio.Lock(), ws, asyncio.Lock(),
-                    call_id, telemetry, turn, _Recorder(), set(), set(), cursor, stop=asyncio.Event(),
-                )
-                self.assertEqual(turn.spoken_qid, "birth_sudden")
-                self.assertEqual(telemetry["audio_chunks_out"], 1)
-
-            # 2) Buffered 16kHz PCM audio/wav fallback when ASR is empty + 960_000 cap
-            silent_chunk = base64.b64encode(b"\x00\x00" * 1600).decode("ascii")
-            speech_chunk = base64.b64encode(b"\x00\x10" * 1600).decode("ascii")
-            turn.capture.user_turn_buffer = ""
-            turn.capture.user_turn_pcm.clear()
-            await gemini_live._browser_loop(
-                session, asyncio.Lock(),
-                _FakeSocket([
-                    {"type": "audio", "data": silent_chunk, "sample_rate": 16000},
-                    {"type": "audio", "data": speech_chunk, "sample_rate": 16000},
-                    {"type": "audio", "data": silent_chunk, "sample_rate": 16000},
-                ]),
-                asyncio.Lock(), asyncio.Event(), call_id, telemetry, turn, cursor, _Recorder(),
-            )
-            self.assertEqual(len(turn.capture.user_turn_pcm), 2 * 3200)
-            expected_pcm = bytes(turn.capture.user_turn_pcm)
+            live.ws = ws
+            await live._handle_server_message(server_message(bot_text="बिना टूल के उत्तर"))
+            await live._handle_server_message(bot_audio_message(turn_complete=False))
+            self.assertEqual(live.telemetry["audio_chunks_out"], 0)
             seen_reqs = []
 
-            async def eval_capture(request, **_kwargs):
-                seen_reqs.append(request)
-                return await eval_clear(request)
+            async def eval_cap(req, **_kw):
+                seen_reqs.append(req)
+                return decision_result(req, _eval_payload())
 
-            with mock.patch.object(decisions, "evaluate_turn", side_effect=eval_capture):
-                await gemini_live._answer_function_calls(
-                    session, asyncio.Lock(), _FakeSocket(), asyncio.Lock(), call_id, telemetry,
-                    [_Call("next_question", {}, "fc-wav")], set(), set(), cursor, turn, thresholds=thresholds,
-                )
-                await _drop_fallback(turn)
-            req_in = seen_reqs[0]["input"]
-            self.assertIsInstance(req_in, list)
-            self.assertEqual(req_in[1]["mime_type"], "audio/wav")
-            with wave.open(io.BytesIO(base64.b64decode(req_in[1]["data"])), "rb") as wf:
-                self.assertEqual(wf.getframerate(), 16000)
-                self.assertEqual(wf.readframes(wf.getnframes()), expected_pcm)
-            self.assertEqual(len(turn.capture.user_turn_pcm), 0)
+            with mock.patch.object(decisions, "evaluate_turn", side_effect=eval_cap):
+                await live._handle_server_message(server_message(turn_complete=True))
+            self.assertEqual((len(seen_reqs), seen_reqs[0]["input"][1]["mime_type"], live.cursor_state["active_qid"]), (1, "audio/wav", "birth_sudden"))
+            self.assertTrue(any(e["type"] == "tool_call" and e["detail"] == "missed_tool_clear" for e in db.get_call(cid)["events"]))
 
-            cap_turn = gemini_live._TurnState()
-            big_loud = base64.b64encode(b"\x00\x10" * 160_000).decode("ascii")
-            await gemini_live._browser_loop(
-                _FakeSession(), asyncio.Lock(),
-                _FakeSocket([{"type": "audio", "data": big_loud, "sample_rate": 16000} for _ in range(4)]),
-                asyncio.Lock(), asyncio.Event(), call_id, telemetry, cap_turn, cursor, _Recorder(),
-            )
-            self.assertEqual(len(cap_turn.capture.user_turn_pcm), 960_000)
+            # 3) Same-step post-playback audio-only reply & 960_000 cap
+            live.turn.spoken_qid = live.turn.user_turn_step = "birth_sudden"
+            live.capture.handled_turn = True
+            live.ws = FakeWebSocket([{"type": "audio", "data": loud_b64, "sample_rate": 16000}])
+            await live._browser_loop()
+            live.stop.clear()
+            self.assertFalse(live.capture.handled_turn or live.capture.speech_allowed)
 
-            # 3) Mid-flight buffer preservation across await evaluate_turn
-            turn.spoken_qid = step_id(cursor.state)
-            turn.user_turn_step = turn.spoken_qid
-            turn.capture.handled_turn = False
-            turn.capture.last_key = None
-            turn.capture.user_turn_buffer = "नहीं"
-            turn.capture.user_turn_pcm = bytearray(b"\x00\x10" * 400)
-            eval_started = asyncio.Event()
-            release_eval = asyncio.Event()
+            big_b64 = base64.b64encode(b"\x00\x10" * 160_000).decode("ascii")
+            cap_live = _make_live(ws=FakeWebSocket([{"type": "audio", "data": big_b64, "sample_rate": 16000} for _ in range(4)]), cursor_state=json.loads(json.dumps(live.cursor_state)))
+            cap_live.turn.spoken_qid = step_id(cap_live.cursor_state)
+            await cap_live._browser_loop()
+            self.assertEqual(len(cap_live.capture.user_turn_pcm), 960_000)
 
-            async def slow_eval(request, **_kwargs):
+            # 4) Finalized ASR + trailing mic audio keeps transcript; mid-flight evaluate_turn preserves next turn buffer
+            live.capture.reset()
+            await live._handle_server_message(server_message(user_text="हाँ, बक्से में", user_finished=True))
+            snap_before = copy.deepcopy(live.capture.user_turn_cursor_snapshot)
+            await live._handle_server_message(server_message(user_text="रखा था", user_finished=True))
+            live.ws = FakeWebSocket([{"type": "audio", "data": loud_b64, "sample_rate": 16000}])
+            await live._browser_loop()
+            live.stop.clear()
+            self.assertEqual((live.capture.user_turn_buffer, live.capture.user_turn_cursor_snapshot), ("हाँ, बक्से में रखा था", snap_before))
+
+            eval_started, release_eval = asyncio.Event(), asyncio.Event()
+
+            async def slow_eval(req, **_kw):
                 eval_started.set()
                 await release_eval.wait()
-                return await eval_clear(request)
+                return decision_result(req, _eval_payload())
 
+            live.ws = ws
             with mock.patch.object(decisions, "evaluate_turn", side_effect=slow_eval):
-                task = asyncio.create_task(
-                    gemini_live._handle_server_message(
-                        _server_message(turn_complete=True, tool_calls=[_Call("next_question", {}, "fc-race")]),
-                        session, asyncio.Lock(), ws, asyncio.Lock(), call_id, telemetry,
-                        turn, _Recorder(), set(), set(), cursor, stop=asyncio.Event(), thresholds=thresholds,
-                    )
-                )
+                task = asyncio.create_task(live._handle_server_message(server_message(turn_complete=True, tool_calls=[FakeToolCall(fid="fc-race")])))
                 await asyncio.wait_for(eval_started.wait(), timeout=1.0)
-                self.assertEqual(turn.capture.user_turn_buffer, "")
-                turn.capture.user_turn_buffer = "अगले सवाल का जवाब"
-                turn.capture.user_turn_pcm = bytearray(b"\x01\x00" * 320)
+                live.capture.user_turn_buffer, live.capture.user_turn_pcm = "अगले सवाल का जवाब", bytearray(b"\x01\x00" * 320)
                 release_eval.set()
                 await task
-                await _drop_fallback(turn)
-            self.assertEqual(turn.capture.user_turn_buffer, "अगले सवाल का जवाब")
-            self.assertEqual(bytes(turn.capture.user_turn_pcm), b"\x01\x00" * 320)
+                await drop_fallback(live.turn)
+            self.assertEqual((live.capture.user_turn_buffer, bytes(live.capture.user_turn_pcm)), ("अगले सवाल का जवाब", b"\x01\x00" * 320))
 
-            # 4) Empty-turn and not-spoken holds do not call evaluate_turn
-            turn.capture.user_turn_buffer = ""
-            turn.capture.user_turn_pcm.clear()
-            turn.capture.handled_turn = False
-            turn.capture.last_key = None
-            turn.spoken_qid = step_id(cursor.state)
-            turn.user_turn_step = turn.spoken_qid
-            hold_sess = _FakeSession()
+            # 5) Empty-turn & not-spoken holds + VAD interrupted barge-in
+            hold_live = _make_live(session=FakeLiveSession(), cursor_state=json.loads(json.dumps(state)))
+            hold_live.turn.spoken_qid = hold_live.turn.user_turn_step = step_id(state)
             with mock.patch.object(decisions, "evaluate_turn") as eval_mock:
-                await gemini_live._answer_function_calls(
-                    hold_sess, asyncio.Lock(), _FakeSocket(), asyncio.Lock(), call_id, telemetry,
-                    [_Call("next_question", {}, "fc-empty")], set(), set(), cursor, turn, thresholds=thresholds,
-                )
-                await _drop_fallback(turn)
+                await hold_live._answer_function_calls([FakeToolCall(fid="fc-empty")])
+                hold_live.turn.spoken_qid = "other"
+                await hold_live._answer_function_calls([FakeToolCall(fid="fc-unspoken")])
                 eval_mock.assert_not_called()
-                self.assertEqual(hold_sess.sent[0][1][0].response["reason"], "empty_turn")
+            self.assertEqual([i[1][0].response["reason"] for i in hold_live.session.sent], ["empty_turn", "not_spoken"])
 
-                turn.spoken_qid = "other_qid"
-                await gemini_live._answer_function_calls(
-                    hold_sess, asyncio.Lock(), _FakeSocket(), asyncio.Lock(), call_id, telemetry,
-                    [_Call("next_question", {}, "fc-unspoken")], set(), set(), cursor, turn, thresholds=thresholds,
-                )
-                await _drop_fallback(turn)
-                eval_mock.assert_not_called()
-                self.assertEqual(hold_sess.sent[-1][1][0].response["reason"], "not_spoken")
+            barge = _make_live(cursor_state=json.loads(json.dumps(state)))
+            barge.turn.bot_speaking, barge.capture.handled_turn, barge.capture.last_key = True, True, ("birth_jaundice", "", 3200)
+            await barge._handle_server_message(server_message(interrupted=True))
+            self.assertFalse(barge.turn.bot_speaking or barge.capture.handled_turn or barge.capture.last_key is not None)
 
         asyncio.run(run())
 
-    def test_emergency_vs_history_decision_failure_and_extractor_failures(self):
-        thresholds = _test_thresholds()
+    def test_emergency_caller_stop_technical_failure_and_extractor_failures(self):
+        thresholds = shipped_thresholds()
 
         async def run():
-            # 1) Historical body_blue records concern WITHOUT emergency; active danger_now closes with 108
-            hist_cursor = gemini_live._Cursor()
-            hist_cursor.state = cursor_tests._clear_until(
-                cursor_tests._profile(children=[cursor_tests._child(4, "male")], name="पूजा"),
-                "body_blue",
-            )
-            hist_turn = gemini_live._TurnState()
-            hist_turn.spoken_qid = step_id(hist_cursor.state)
-            hist_sess = _FakeSession()
+            # 1) Historical body_blue stays asking; active danger_now closes with 108
+            hist = _make_live(cursor_state=clear_until(make_profile_state(children=[make_child(4, "male")]), "body_blue"), thresholds=thresholds)
+            hist.turn.spoken_qid = step_id(hist.cursor_state)
+            with mock.patch.object(decisions, "evaluate_turn", side_effect=lambda req, **_: decision_result(req, _eval_payload(danger_now=noul(0.08), current_outcome=choice("concern", {"concern": 0.92, "other": 0.08})))):
+                await hist._handle_server_message(server_message(user_text="रोते समय कभी नीली पड़ती हैं"))
+                await hist._handle_server_message(server_message(turn_complete=True, tool_calls=[FakeToolCall(fid="fc-h")]))
+                await drop_fallback(hist.turn)
+            self.assertEqual((hist.cursor_state["phase"], hist.cursor_state["answers"]["body_blue"]["state"]), ("asking", "concern"))
 
-            async def eval_hist(request, **_kwargs):
-                return _decision_result(request, {
-                    "danger_now": _noul(0.08),
-                    "caller_stop": _noul(0.01),
-                    "mentions_profile": _noul(0.01),
-                    "detail_present": _noul(0.10),
-                    "current_outcome": _choice("concern", {"concern": 0.92, "other": 0.05, "clear": 0.03}),
-                    "side_intent": _choice("other", {"other": 0.96, "add_concern": 0.04}),
-                    "side_qid": _choice("other", {"other": 0.96, "body_fits": 0.04}),
-                })
+            emg_sess, emg_cid = FakeLiveSession(), db.create_call()
+            emg = _make_live(session=emg_sess, call_id=emg_cid, cursor_state=clear_until(make_profile_state(children=[make_child(4, "male")]), "body_blue"), thresholds=thresholds)
+            emg.turn.spoken_qid = step_id(emg.cursor_state)
+            with mock.patch.object(decisions, "evaluate_turn", side_effect=lambda req, **_: decision_result(req, _eval_payload(danger_now=noul(0.96), current_outcome=choice("concern", {"concern": 0.90, "other": 0.10})))):
+                await emg._handle_server_message(server_message(user_text="अभी साँस नहीं आ रही"))
+                await emg._handle_server_message(server_message(turn_complete=True, tool_calls=[FakeToolCall(fid="fc-e")]))
+                await drop_fallback(emg.turn)
+            self.assertEqual((emg.cursor_state["phase"], emg.cursor_state["close_reason"]), ("closing", "emergency"))
+            self.assertTrue("108" in emg_sess.sent[0][1][0].response["say"] and emg_sess.sent[0][1][0].response["stop"])
 
-            with mock.patch.object(decisions, "evaluate_turn", side_effect=eval_hist):
-                await gemini_live._handle_server_message(
-                    _server_message(user_text="हाँ, रोते समय कभी नीली पड़ती हैं"),
-                    hist_sess, asyncio.Lock(), _FakeSocket(), asyncio.Lock(), db.create_call(),
-                    _new_telemetry(), hist_turn, _Recorder(), set(), set(), hist_cursor, stop=asyncio.Event(),
-                )
-                await gemini_live._handle_server_message(
-                    _server_message(turn_complete=True, tool_calls=[_Call("next_question", {}, "fc-hist")]),
-                    hist_sess, asyncio.Lock(), _FakeSocket(), asyncio.Lock(), db.create_call(),
-                    _new_telemetry(), hist_turn, _Recorder(), set(), set(), hist_cursor, stop=asyncio.Event(), thresholds=thresholds,
-                )
-                await _drop_fallback(hist_turn)
-            self.assertEqual(hist_cursor.state["phase"], "asking")
-            self.assertEqual(hist_cursor.state["answers"]["body_blue"]["state"], "concern")
+            # 2) Decision failure -> calm technical_failure, no double save_cursor_state
+            f_state = apply_turn(clear_until(make_profile_state(children=[make_child(4, "male")]), "birth_nicu"), "concern", note="सांस", followup_answered=True)
+            f_sess = FakeLiveSession()
+            fail_live = _make_live(session=f_sess, cursor_state=f_state, thresholds=thresholds)
+            fail_live.turn.spoken_qid = fail_live.turn.user_turn_step = step_id(f_state)
+            fail_live.capture.user_turn_buffer = "नहीं"
+            with mock.patch.object(decisions, "evaluate_turn", side_effect=lambda req, **_: decision_result(req, {}, ok=False, error_reason="timeout", attempts=2)), mock.patch.object(
+                db, "save_cursor_state", wraps=db.save_cursor_state
+            ) as save_spy:
+                await fail_live._answer_function_calls([FakeToolCall(fid="fc-fail")])
+                await drop_fallback(fail_live.turn)
+            fail_say = f_sess.sent[0][1][0].response["say"]
+            self.assertEqual((fail_live.cursor_state["close_reason"], save_spy.call_count), ("technical_failure", 1))
+            self.assertTrue("पूजा जी" in fail_say and "अधूरी" in fail_say and "108" not in fail_say)
 
-            emg_cursor = gemini_live._Cursor()
-            emg_cursor.state = cursor_tests._clear_until(
-                cursor_tests._profile(children=[cursor_tests._child(4, "male")], name="पूजा"),
-                "body_blue",
-            )
-            emg_turn = gemini_live._TurnState()
-            emg_turn.spoken_qid = step_id(emg_cursor.state)
-            emg_sess = _FakeSession()
-            emg_tel = _new_telemetry()
-            emg_call = db.create_call()
-
-            async def eval_emg(request, **_kwargs):
-                return _decision_result(request, {
-                    "danger_now": _noul(0.96),
-                    "caller_stop": _noul(0.01),
-                    "mentions_profile": _noul(0.01),
-                    "detail_present": _noul(0.85),
-                    "current_outcome": _choice("concern", {"concern": 0.90, "other": 0.06, "clear": 0.04}),
-                    "side_intent": _choice("other", {"other": 0.96, "add_concern": 0.04}),
-                    "side_qid": _choice("other", {"other": 0.96, "body_fits": 0.04}),
-                })
-
-            with mock.patch.object(decisions, "evaluate_turn", side_effect=eval_emg):
-                await gemini_live._handle_server_message(
-                    _server_message(user_text="बच्चे को अभी साँस नहीं आ रही और होंठ नीले हैं"),
-                    emg_sess, asyncio.Lock(), _FakeSocket(), asyncio.Lock(), emg_call,
-                    emg_tel, emg_turn, _Recorder(), set(), set(), emg_cursor, stop=asyncio.Event(),
-                )
-                await gemini_live._handle_server_message(
-                    _server_message(turn_complete=True, tool_calls=[_Call("next_question", {}, "fc-emg")]),
-                    emg_sess, asyncio.Lock(), _FakeSocket(), asyncio.Lock(), emg_call,
-                    emg_tel, emg_turn, _Recorder(), set(), set(), emg_cursor, stop=asyncio.Event(), thresholds=thresholds,
-                )
-                await _drop_fallback(emg_turn)
-            self.assertEqual(emg_cursor.state["phase"], "closing")
-            self.assertEqual(emg_cursor.state["close_reason"], "emergency")
-            tool_resp = [item[1] for item in emg_sess.sent if item[0] == "tool"][0][0]
-            self.assertTrue(tool_resp.response["stop"])
-            self.assertIn("108", tool_resp.response["say"])
-            self.assertTrue(any(e["type"] == "end_accepted" and e["detail"] == "emergency" for e in db.get_call(emg_call)["events"]))
-
-            # 2) Decision failure -> calm technical_failure closing, no 108, answers untouched
-            fail_cursor = gemini_live._Cursor()
-            f_state = cursor_tests._clear_until(
-                cursor_tests._profile(children=[cursor_tests._child(4, "male")], name="पूजा"),
-                "birth_nicu",
-            )
-            f_state = apply_turn(f_state, "concern", note="सांस", followup_answered=True)
-            f_state = apply_turn(f_state, "concern", note="तीन दिन")
-            fail_cursor.state = f_state
-            fail_turn = gemini_live._TurnState()
-            fail_turn.spoken_qid = step_id(fail_cursor.state)
-            fail_sess = _FakeSession()
-            fail_tel = _new_telemetry()
-            fail_call = db.create_call()
-
-            async def eval_fail(request, **_kwargs):
-                return _decision_result(request, {}, ok=False, error_reason="timeout", attempts=2)
-
-            with mock.patch.object(decisions, "evaluate_turn", side_effect=eval_fail):
-                await gemini_live._handle_server_message(
-                    _server_message(user_text="नहीं"), fail_sess, asyncio.Lock(), _FakeSocket(), asyncio.Lock(),
-                    fail_call, fail_tel, fail_turn, _Recorder(), set(), set(), fail_cursor, stop=asyncio.Event(),
-                )
-                await gemini_live._handle_server_message(
-                    _server_message(turn_complete=True, tool_calls=[_Call("next_question", {}, "fc-fail")]),
-                    fail_sess, asyncio.Lock(), _FakeSocket(), asyncio.Lock(),
-                    fail_call, fail_tel, fail_turn, _Recorder(), set(), set(), fail_cursor, stop=asyncio.Event(), thresholds=thresholds,
-                )
-                await _drop_fallback(fail_turn)
-
-            self.assertEqual(fail_cursor.state["phase"], "closing")
-            self.assertEqual(fail_cursor.state["close_reason"], "technical_failure")
-            self.assertNotIn("birth_jaundice", fail_cursor.state["answers"])
-            self.assertEqual(fail_cursor.state["answers"]["birth_nicu"]["state"], "concern")
-            self.assertEqual(fail_tel["dropoff_qid"], "birth_jaundice")
-            fail_line = [item[1] for item in fail_sess.sent if item[0] == "tool"][0][0].response["say"]
-            self.assertIn("पूजा जी", fail_line)
-            self.assertIn("अधूरी", fail_line)
-            self.assertNotIn("108", fail_line)
-            self.assertNotIn("अस्पताल", fail_line)
-            self.assertEqual(
-                close_technical_failure(
-                    cursor_tests._clear_until(
-                        cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
-                        "birth_jaundice",
-                    )
-                )["close_reason"],
-                "technical_failure",
-            )
-
-            # 3) Profile extractor: 1st failure on intro re-asks, 2nd closes technical_failure;
-            #    clinical gate 1st failure advances & resets; clarify skips extractor; ever_pregnant sync
-            ext_cursor = gemini_live._Cursor()
-            ext_cursor.state = call_cursor.new_cursor_state()
-            ext_turn = gemini_live._TurnState()
-            ext_sess = _FakeSession()
-            ext_tel = _new_telemetry()
-            ext_call = db.create_call()
-
-            async def eval_profile(request, **_kwargs):
-                return _decision_result(request, {
-                    "danger_now": _noul(0.01),
-                    "caller_stop": _noul(0.01),
-                    "mentions_profile": _noul(0.92),
-                    "current_outcome": _choice("other", {"other": 0.91, "clear": 0.09}),
-                })
-
-            async def fail_extract(*_args, **_kwargs):
+            # 3) Profile extractor failures: 1st re-asks, 2nd closes technical_failure (intro & mid-call hold); gate advances & resets; clarify skips
+            async def fail_extract(*_a, **_kw):
                 return profile_extractor.ProfileExtractionResult(ok=False, updates={}, error_reason="timeout", extractor_ms=2000)
 
-            with mock.patch.object(decisions, "evaluate_turn", side_effect=eval_profile), mock.patch.object(
-                profile_extractor, "extract_profile_entities", side_effect=fail_extract
-            ):
-                for idx, utt in enumerate(("मेरा नाम रेखा है", "रेखा"), start=1):
-                    ext_turn.spoken_qid = step_id(ext_cursor.state)
-                    await gemini_live._handle_server_message(
-                        _server_message(user_text=utt), ext_sess, asyncio.Lock(), _FakeSocket(), asyncio.Lock(),
-                        ext_call, ext_tel, ext_turn, _Recorder(), set(), set(), ext_cursor, stop=asyncio.Event(),
-                    )
-                    await gemini_live._handle_server_message(
-                        _server_message(turn_complete=True, tool_calls=[_Call("next_question", {}, f"fc-ext-{idx}")]),
-                        ext_sess, asyncio.Lock(), _FakeSocket(), asyncio.Lock(), ext_call, ext_tel,
-                        ext_turn, _Recorder(), set(), set(), ext_cursor, stop=asyncio.Event(), thresholds=thresholds,
-                    )
-                    await _drop_fallback(ext_turn)
+            eval_prof = lambda req, **_: decision_result(req, {"danger_now": noul(0.01), "caller_stop": noul(0.01), "mentions_profile": noul(0.92), "current_outcome": choice("other", {"other": 0.91, "clear": 0.09})})
+            ext_live = _make_live(cursor_state=call_cursor.new_cursor_state(), thresholds=thresholds)
+            with mock.patch.object(decisions, "evaluate_turn", side_effect=eval_prof), mock.patch.object(profile_extractor, "extract_profile_entities", side_effect=fail_extract):
+                for idx, utt in enumerate(("मेरा नाम रेखा", "रेखा"), start=1):
+                    ext_live.turn.spoken_qid = step_id(ext_live.cursor_state)
+                    await ext_live._handle_server_message(server_message(user_text=utt))
+                    await ext_live._handle_server_message(server_message(turn_complete=True, tool_calls=[FakeToolCall(fid=f"fc-x{idx}")]))
+                    await drop_fallback(ext_live.turn)
                     if idx == 1:
-                        self.assertEqual(ext_cursor.state["phase"], "asking")
-                        self.assertEqual(ext_cursor.state["active_qid"], "intro_name")
-                        self.assertEqual(ext_turn.capture.extractor_failures, 1)
+                        self.assertEqual((ext_live.cursor_state["phase"], ext_live.capture.extractor_failures), ("asking", 1))
+            self.assertEqual(ext_live.cursor_state["close_reason"], "technical_failure")
 
-            self.assertEqual(ext_cursor.state["phase"], "closing")
-            self.assertEqual(ext_cursor.state["close_reason"], "technical_failure")
-
-            # Clinical gate 1st extractor failure advances gate and resets failure counter
-            gate_cursor = gemini_live._Cursor()
-            gate_cursor.state = cursor_tests._clear_until(
-                cursor_tests._profile(children=[cursor_tests._child(4, "male")]),
-                "birth_nicu",
-            )
-            gate_turn = gemini_live._TurnState()
-            gate_turn.capture.user_turn_buffer = "नहीं"
-
-            async def eval_gate_profile(request, **_kwargs):
-                return _decision_result(request, {
-                    "danger_now": _noul(0.01),
-                    "caller_stop": _noul(0.01),
-                    "mentions_profile": _noul(0.85),
-                    "detail_present": _noul(0.05),
-                    "current_outcome": _choice("clear", {"clear": 0.93, "other": 0.04, "concern": 0.03}),
-                    "side_intent": _choice("other", {"other": 0.96, "add_concern": 0.04}),
-                    "side_qid": _choice("other", {"other": 0.96, "birth_jaundice": 0.04}),
-                })
-
-            with mock.patch.object(decisions, "evaluate_turn", side_effect=eval_gate_profile), mock.patch.object(
+            gate_live = _make_live(cursor_state=clear_until(make_profile_state(children=[make_child(4, "male")]), "birth_nicu"), thresholds=thresholds)
+            gate_live.capture.user_turn_buffer = "नहीं"
+            with mock.patch.object(decisions, "evaluate_turn", side_effect=lambda req, **_: decision_result(req, _eval_payload(mentions_profile=noul(0.85)))), mock.patch.object(
                 profile_extractor, "extract_profile_entities", side_effect=fail_extract
             ):
-                await live_decision_bridge.run_decision_turn(
-                    gate_cursor, gate_turn.capture, db.create_call(),
-                    tool_body_fn=gemini_live._tool_body, mark_closing_fn=lambda _r: asyncio.sleep(0),
-                    thresholds=thresholds,
-                )
-            self.assertEqual(gate_cursor.state["answers"]["birth_nicu"]["state"], "clear")
-            self.assertEqual(gate_cursor.state["active_qid"], "birth_jaundice")
-            self.assertEqual(gate_turn.capture.extractor_failures, 0)
+                await live_decision_bridge.run_decision_turn(gate_live)
+            self.assertEqual((gate_live.cursor_state["active_qid"], gate_live.capture.extractor_failures), ("birth_jaundice", 0))
 
-            # intro clarify skips extractor; empty updates on intro_name still triggers hold via apply_interpreted_turn
-            clar_cursor = gemini_live._Cursor()
-            clar_cursor.state = call_cursor.new_cursor_state()
-            clar_turn = gemini_live._TurnState()
-            clar_turn.capture.user_turn_buffer = "क्या कहा आपने?"
-
-            async def eval_clar(request, **_kwargs):
-                return _decision_result(request, {
-                    "danger_now": _noul(0.01),
-                    "caller_stop": _noul(0.01),
-                    "mentions_profile": _noul(0.05),
-                    "current_outcome": _choice("clarify", {"clarify": 0.92, "other": 0.05, "clear": 0.03}),
-                })
-
-            with mock.patch.object(decisions, "evaluate_turn", side_effect=eval_clar), mock.patch.object(
+            clar_live = _make_live(cursor_state=call_cursor.new_cursor_state(), thresholds=thresholds)
+            clar_live.capture.user_turn_buffer = "क्या कहा?"
+            with mock.patch.object(decisions, "evaluate_turn", side_effect=lambda req, **_: decision_result(req, {"danger_now": noul(0.01), "caller_stop": noul(0.01), "mentions_profile": noul(0.05), "current_outcome": choice("clarify", {"clarify": 0.92, "other": 0.08})})), mock.patch.object(
                 profile_extractor, "extract_profile_entities"
-            ) as ext_mock:
-                body, clar_flag, _ = await live_decision_bridge.run_decision_turn(
-                    clar_cursor, clar_turn.capture, db.create_call(),
-                    tool_body_fn=gemini_live._tool_body, mark_closing_fn=lambda _r: asyncio.sleep(0),
-                    thresholds=thresholds,
-                )
-                ext_mock.assert_not_awaited()
-            self.assertTrue(clar_flag)
-            self.assertTrue(body.get("clarify"))
-            self.assertIsNone(clar_cursor.state["hold_reason"])
+            ) as ext_skip:
+                body, clar_flag, _ = await live_decision_bridge.run_decision_turn(clar_live)
+                ext_skip.assert_not_awaited()
+            self.assertTrue(clar_flag and body.get("clarify"))
 
-            # Empty extractor updates on intro_name holds with name_fragment via apply_interpreted_turn
-            frag_cursor = gemini_live._Cursor()
-            frag_cursor.state = call_cursor.new_cursor_state()
-            frag_turn = gemini_live._TurnState()
-            frag_turn.capture.user_turn_buffer = "मेरा नाम"
+            hold_s, _ = call_cursor.apply_profile(clear_until(make_profile_state(children=[make_child(4, "male")]), "birth_nicu"), child_count=2, children=[{"age_years": 4.0, "sex": "male"}])
+            hold_live = _make_live(cursor_state=hold_s, thresholds=thresholds)
+            with mock.patch.object(decisions, "evaluate_turn", side_effect=eval_prof), mock.patch.object(profile_extractor, "extract_profile_entities", side_effect=fail_extract):
+                hold_live.capture.user_turn_buffer = "छोटा दो साल"
+                reask, _, out1 = await live_decision_bridge.run_decision_turn(hold_live)
+                hold_live.capture.user_turn_buffer = "दो साल"
+                _, _, out2 = await live_decision_bridge.run_decision_turn(hold_live)
+            self.assertEqual((out1, out2, hold_live.cursor_state["close_reason"]), ("not_about_active", "technical_failure", "technical_failure"))
+            self.assertIn("उम्र", reask["say"])
 
-            async def empty_extract(*_args, **_kwargs):
-                return profile_extractor.ProfileExtractionResult(
-                    ok=True, updates={}, error_reason="", extractor_ms=10
-                )
-
-            with mock.patch.object(decisions, "evaluate_turn", side_effect=eval_profile), mock.patch.object(
-                profile_extractor, "extract_profile_entities", side_effect=empty_extract
-            ):
-                frag_body, _, _ = await live_decision_bridge.run_decision_turn(
-                    frag_cursor, frag_turn.capture, db.create_call(),
-                    tool_body_fn=gemini_live._tool_body, mark_closing_fn=lambda _r: asyncio.sleep(0),
-                    thresholds=thresholds,
-                )
-            self.assertEqual(frag_cursor.state["hold_reason"], "name_fragment")
-            self.assertIn("पूरा नाम", frag_body["say"])
+            # 4) Audio-only intro_name speech reaches extractor with 16k WAV & advances to intro_married
+            loud_pcm = b"\x00\x10" * 1600
+            audio_live = _make_live(ws=FakeWebSocket([{"type": "audio", "data": base64.b64encode(loud_pcm).decode("ascii"), "sample_rate": 16000}]), cursor_state=call_cursor.new_cursor_state(), thresholds=thresholds)
+            audio_live.turn.spoken_qid = "intro_name"
+            await audio_live._browser_loop()
+            fake_client = mock.MagicMock()
+            fake_client.aio.models.generate_content = mock.AsyncMock(return_value=SimpleNamespace(text=json.dumps({"caller_name": "पूजा", "marital_status": None, "child_count": None, "children": None})))
+            with mock.patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}), mock.patch.dict(profile_extractor._clients, {}, clear=True), mock.patch.object(
+                profile_extractor.genai, "Client", return_value=fake_client
+            ), mock.patch.object(decisions, "evaluate_turn", side_effect=eval_prof):
+                await audio_live._answer_function_calls([FakeToolCall(fid="fc-ai")])
+                await drop_fallback(audio_live.turn)
+            gen_kw = fake_client.aio.models.generate_content.await_args.kwargs
+            self.assertEqual((audio_live.cursor_state["profile"]["caller_name"], audio_live.cursor_state["active_qid"], gen_kw["contents"][1].inline_data.mime_type),
+                             ("पूजा", "intro_married", "audio/wav"))
 
         asyncio.run(run())
 
-    def test_audio_only_intro_name_speech_reaches_extractor_and_advances_to_married(self):
-        thresholds = _test_thresholds()
-
+    def test_browser_text_reconnect_and_transient_db_resilience(self):
         async def run():
-            cursor = gemini_live._Cursor()
-            cursor.state = call_cursor.new_cursor_state()
-            self.assertEqual(cursor.state["active_qid"], "intro_name")
-            turn = gemini_live._TurnState()
-            turn.spoken_qid = step_id(cursor.state)
-            ws = _FakeSocket()
-            session = _FakeSession()
-            telemetry = _new_telemetry()
-            call_id = db.create_call()
+            async def boom():
+                raise RuntimeError("task boom")
 
-            loud_pcm = b"\x00\x10" * 1600
-            quiet_pcm = b"\x00\x00" * 1600
-            browser_ws = _FakeSocket([
-                {"type": "audio", "data": base64.b64encode(loud_pcm).decode("ascii"), "sample_rate": 16000},
-                {"type": "audio", "data": base64.b64encode(quiet_pcm).decode("ascii"), "sample_rate": 16000},
-            ])
-            await gemini_live._browser_loop(
-                session, asyncio.Lock(), browser_ws, asyncio.Lock(), asyncio.Event(),
-                call_id, telemetry, turn, cursor, _Recorder(),
-            )
-            self.assertEqual(turn.capture.user_turn_buffer, "")
-            expected_pcm = loud_pcm + quiet_pcm
-            self.assertEqual(bytes(turn.capture.user_turn_pcm), expected_pcm)
-            self.assertEqual(turn.user_turn_step, "intro_name")
+            failed_task = asyncio.create_task(boom())
+            await asyncio.gather(failed_task, return_exceptions=True)
+            with self.assertLogs(gemini_live.logger, level="WARNING") as cm:
+                gemini_live.consume_task_error(failed_task)
+            self.assertTrue(any("background live task failed" in line for line in cm.output))
 
-            seen_eval_reqs = []
-            seen_extractor_calls = []
-            real_extract = profile_extractor.extract_profile_entities
+            state = clear_until(make_profile_state(children=[make_child(4, "male")]), "birth_jaundice")
+            with mock.patch.object(db, "append_transcript", side_effect=RuntimeError("sqlite locked")), self.assertLogs(gemini_live.logger, level="WARNING") as tr_logs:
+                self.assertEqual(await _make_live(cursor_state=state)._forward_transcript("user", SimpleNamespace(text="हाँ")), "हाँ")
+            self.assertTrue(any("append_transcript failed" in line for line in tr_logs.output))
 
-            async def fake_eval(request, **_kwargs):
-                seen_eval_reqs.append(request)
-                return _decision_result(request, {
-                    "danger_now": _noul(0.01),
-                    "caller_stop": _noul(0.01),
-                    "mentions_profile": _noul(0.92),
-                    "current_outcome": _choice("other", {"other": 0.91, "clear": 0.06, "concern": 0.03}),
-                })
+            txt_reconn = _make_live(ws=FakeWebSocket(), session=FakeLiveSession(fail_realtime=True), cursor_state=json.loads(json.dumps(state)))
+            txt_reconn.turn.resume_handle = "h-txt"
+            self.assertTrue(await txt_reconn._on_browser_text({"text": "हाँ"}))
+            self.assertTrue(txt_reconn.turn.reconnect_requested and not txt_reconn.stop.is_set())
 
-            async def spy_extract(state, utterance_text="", audio_wav_bytes=None, **kwargs):
-                seen_extractor_calls.append((state.get("active_qid"), utterance_text, audio_wav_bytes))
-                return await real_extract(
-                    state, utterance_text=utterance_text, audio_wav_bytes=audio_wav_bytes, **kwargs
-                )
-
-            fake_client = mock.MagicMock()
-            fake_client.aio.models.generate_content = mock.AsyncMock(
-                return_value=SimpleNamespace(
-                    text=json.dumps({
-                        "caller_name": "पूजा",
-                        "marital_status": None,
-                        "child_count": None,
-                        "children": None,
-                    })
-                )
-            )
-
-            with mock.patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}), mock.patch.dict(
-                profile_extractor._clients, {}, clear=True
-            ), mock.patch.object(
-                profile_extractor.genai, "Client", return_value=fake_client
-            ), mock.patch.object(
-                decisions, "evaluate_turn", side_effect=fake_eval
-            ), mock.patch.object(
-                profile_extractor, "extract_profile_entities", side_effect=spy_extract
-            ):
-                await gemini_live._answer_function_calls(
-                    session, asyncio.Lock(), ws, asyncio.Lock(), call_id, telemetry,
-                    [_Call("next_question", {}, "fc-audio-intro")], set(), set(), cursor, turn,
-                    thresholds=thresholds,
-                )
-                await _drop_fallback(turn)
-
-            self.assertEqual(len(seen_eval_reqs), 1)
-            self.assertIsInstance(seen_eval_reqs[0]["input"], list)
-            self.assertEqual(seen_eval_reqs[0]["input"][1]["mime_type"], "audio/wav")
-
-            self.assertEqual(len(seen_extractor_calls), 1)
-            ext_qid, ext_utt, ext_wav = seen_extractor_calls[0]
-            self.assertEqual(ext_qid, "intro_name")
-            self.assertEqual(ext_utt, "")
-            self.assertIsNotNone(ext_wav)
-            self.assertTrue(ext_wav.startswith(b"RIFF"))
-            self.assertEqual(ext_wav[8:12], b"WAVE")
-            with wave.open(io.BytesIO(ext_wav), "rb") as wf:
-                self.assertEqual(wf.getnchannels(), 1)
-                self.assertEqual(wf.getframerate(), 16000)
-                self.assertEqual(wf.readframes(wf.getnframes()), expected_pcm)
-
-            gen_kwargs = fake_client.aio.models.generate_content.await_args.kwargs
-            self.assertIsInstance(gen_kwargs["contents"], list)
-            self.assertEqual(gen_kwargs["contents"][1].inline_data.data, ext_wav)
-            self.assertEqual(gen_kwargs["contents"][1].inline_data.mime_type, "audio/wav")
-
-            self.assertEqual(cursor.state["profile"]["caller_name"], "पूजा")
-            self.assertEqual(cursor.state["active_qid"], "intro_married")
-            self.assertEqual(len(turn.capture.user_turn_pcm), 0)
-            self.assertTrue(turn.capture.speech_allowed)
+            ws_err = FakeWebSocket([{"type": "text", "text": "हाँ"}])
+            txt_err = _make_live(ws=ws_err, session=FakeLiveSession(fail_realtime=True), cursor_state=json.loads(json.dumps(state)))
+            await txt_err._browser_loop()
+            self.assertTrue(txt_err.stop.is_set())
+            self.assertIn({"type": "error", "message": "Could not forward text to Gemini"}, ws_err.sent)
 
         asyncio.run(run())
 

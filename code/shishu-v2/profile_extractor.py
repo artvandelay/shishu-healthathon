@@ -33,22 +33,28 @@ _VALID_CHILD_SEX = frozenset({"male", "female", "unknown"})
 
 _SYSTEM_INSTRUCTION = (
     "Extract ONLY demographic profile entities stated or directly answered by the caller's "
-    "utterance given active_qid and active_prompt. Return strictly matching JSON with only the "
-    "four schema fields and leave any unmentioned field as null.\n"
+    "utterance given active_qid, active_prompt, and optional current_profile. Return strictly "
+    "matching JSON with only the four schema fields and leave any unmentioned field as null.\n"
     "- caller_name: the person's given/family name only if stated; null if she only uttered a "
     "lead-in fragment without an actual name or did not mention a name. Never copy medical "
     "diagnoses or disease names into caller_name.\n"
     "- marital_status: 'married', 'about_to_marry', or 'unmarried' when stated or directly "
     "answered (when active_qid is intro_married, a bare negative means 'unmarried' and a bare "
     "affirmative means 'married'); otherwise null.\n"
-    "- child_count and children: when she mentions children, set child_count to total count "
-    "(integer >= 0) and children to one item per child whose age was stated (age_years as float "
-    "years >= 0, converting months to fractional years such as 0.5 for 6 months; sex as "
-    "'male', 'female', or 'unknown'; optional personal name or null, never a disease name). "
-    "When active_qid is intro_children and she gives a bare negative or zero count, set "
-    "child_count=0 and children=[]. If she states count > 0 without all ages, keep child_count "
-    "and list only children with stated ages. Set both child_count and children to null when "
-    "children are not mentioned."
+    "- child_count and children: when she mentions, adds, completes, or updates children, set "
+    "child_count to total count (integer >= 0) and children to one item per child whose age was "
+    "stated (age_years as float years >= 0, converting months to fractional years such as 0.5 for "
+    "6 months; sex as 'male', 'female', or 'unknown'; optional personal name or null, never a "
+    "disease name). When current_profile is present (with children, pending_children, or "
+    "pending_child_count) and the caller adds another child, gives remaining children's ages "
+    "during an ages follow-up, or updates a child's details, output the COMPLETE updated "
+    "child_count and children list preserving previously known children from current_profile "
+    "unless the caller explicitly corrects or replaces them (and preserve pending_child_count "
+    "if she supplies remaining ages without restating the total). When active_qid is "
+    "intro_children and she gives a bare negative or zero count (or explicitly corrects to no "
+    "children), set child_count=0 and children=[]. If she states count > 0 without all ages, "
+    "keep child_count and list all children with stated ages. Set both child_count and children "
+    "to null when children are not mentioned or updated."
 )
 
 _CHILD_SCHEMA = types.Schema(
@@ -169,6 +175,9 @@ def validate_profile_payload(raw: Any) -> dict[str, Any]:
             child_name = _clean_optional_text(item.get("name"), field_name=f"children[{idx}].name")
             validated_children.append({"age_years": age, "sex": raw_sex, "name": child_name})
 
+    if child_count is None and validated_children is not None and len(validated_children) == 0:
+        child_count = 0
+        updates["child_count"] = 0
     if child_count == 0 and validated_children:
         raise ValueError("child_count is 0 with non-empty children")
     if child_count is not None and validated_children is not None and len(validated_children) > child_count:
@@ -179,6 +188,35 @@ def validate_profile_payload(raw: Any) -> dict[str, Any]:
         updates["children"] = validated_children
 
     return updates
+
+
+def _compact_profile(state: dict | None) -> dict[str, Any]:
+    if not isinstance(state, dict):
+        return {}
+    profile = state.get("profile")
+    if not isinstance(profile, dict):
+        return {}
+    known: dict[str, Any] = {}
+    if profile.get("caller_name"):
+        known["caller_name"] = profile["caller_name"]
+    if profile.get("marital_status"):
+        known["marital_status"] = profile["marital_status"]
+    for key in ("children", "pending_children"):
+        raw_list = profile.get(key)
+        if isinstance(raw_list, list) and raw_list:
+            known[key] = [
+                {
+                    "age_years": item.get("age_years"),
+                    "sex": item.get("sex") or "unknown",
+                    "name": item.get("name"),
+                }
+                for item in raw_list
+                if isinstance(item, dict)
+            ]
+    pending_count = profile.get("pending_child_count")
+    if isinstance(pending_count, int) and not isinstance(pending_count, bool) and pending_count > 0:
+        known["pending_child_count"] = pending_count
+    return known
 
 
 def _decode_raw_response(raw_output: Any) -> dict[str, Any]:
@@ -218,7 +256,14 @@ async def extract_profile_entities(
 
     has_audio = bool(not clean_utt and audio_data)
     utt_line = clean_utt or "[spoken reply in attached audio]"
-    context_text = f"active_qid: {active_qid or ''}\nactive_prompt: {active_prompt or ''}\nutterance_text: {utt_line}"
+    ctx_lines = [f"active_qid: {active_qid or ''}", f"active_prompt: {active_prompt or ''}"]
+    current_profile = _compact_profile(state)
+    if current_profile:
+        ctx_lines.append(
+            f"current_profile: {json.dumps(current_profile, ensure_ascii=False, separators=(',', ':'))}"
+        )
+    ctx_lines.append(f"utterance_text: {utt_line}")
+    context_text = "\n".join(ctx_lines)
     contents: Any = (
         [types.Part.from_text(text=context_text), types.Part.from_bytes(data=audio_data, mime_type="audio/wav")]
         if has_audio

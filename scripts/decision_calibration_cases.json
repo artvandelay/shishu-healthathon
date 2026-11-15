@@ -853,5 +853,221 @@
       "child_ref": "",
       "detail_present": null
     }
+  },
+  {
+    "id": "audio_emg_breathing",
+    "category": "audio_real_wav",
+    "audio_wav": "calibration_audio/u5_emergency_16k.wav",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married",
+        "children": [{"id": "child_1", "age_years": 4, "sex": "male"}]
+      },
+      "active_qid": "birth_jaundice",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": ""
+    },
+    "gold": {
+      "danger_now": true,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "not_about_active",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": false
+    }
+  },
+  {
+    "id": "audio_jaundice_detail",
+    "category": "audio_real_wav",
+    "audio_wav": "calibration_audio/u4_jaundice_16k.wav",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married",
+        "children": [{"id": "child_1", "age_years": 4, "sex": "male"}]
+      },
+      "active_qid": "birth_jaundice",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": ""
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "concern",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": true
+    }
+  },
+  {
+    "id": "audio_clear_no",
+    "category": "audio_real_wav",
+    "audio_wav": "calibration_audio/u3_no_16k.wav",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married",
+        "children": [{"id": "child_1", "age_years": 4, "sex": "male"}]
+      },
+      "active_qid": "birth_nicu",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": ""
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "clear",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": false
+    }
+  },
+  {
+    "id": "audio_intro_name",
+    "category": "audio_real_wav",
+    "audio_wav": "calibration_audio/u1_name_16k.wav",
+    "cursor_setup": {
+      "profile": {},
+      "active_qid": "intro_name",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": ""
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": true,
+      "current_outcome": "concern",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": null
+    }
+  },
+  {
+    "id": "multi_denied_named_child",
+    "category": "multichild_and_profile",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married",
+        "children": [
+          {"id": "child_1", "age_years": 7, "sex": "female", "name": "रिया"},
+          {"id": "child_2", "age_years": 2, "sex": "male", "name": "रोहन"}
+        ]
+      },
+      "active_qid": "birth_jaundice",
+      "pending_followup_idx": -1,
+      "prior_answers": [],
+      "utterance_text": "बड़ी बेटी रिया को तो नहीं हुआ"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "not_about_active",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": null
+    }
+  },
+  {
+    "id": "multi_existing_child_not_profile",
+    "category": "multichild_and_profile",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married",
+        "children": [
+          {"id": "child_1", "age_years": 7, "sex": "female", "name": "रिया"},
+          {"id": "child_2", "age_years": 2, "sex": "male", "name": "रोहन"}
+        ]
+      },
+      "active_qid": "birth_jaundice",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": "हाँ, बड़ी बेटी को पीलिया के लिए नीली लाइट में रखा था"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "concern",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "child_1",
+      "detail_present": false
+    }
+  },
+  {
+    "id": "ever_pregnant_yes",
+    "category": "multichild_and_profile",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married",
+        "children": []
+      },
+      "active_qid": "ever_pregnant",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": "हाँ, दो साल पहले एक बार प्रेग्नेंट हुई थी"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": false,
+      "current_outcome": "concern",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": null
+    }
+  },
+  {
+    "id": "profile_midcall_add_child",
+    "category": "multichild_and_profile",
+    "cursor_setup": {
+      "profile": {
+        "caller_name": "पूजा",
+        "marital_status": "married",
+        "children": [
+          {"id": "child_1", "age_years": 5, "sex": "female"}
+        ]
+      },
+      "active_qid": "fam_infant_death",
+      "pending_followup_idx": null,
+      "prior_answers": [],
+      "utterance_text": "नहीं, और आपको बताना भूल गई कि मेरा एक 2 साल का बेटा भी है"
+    },
+    "gold": {
+      "danger_now": false,
+      "caller_stop": false,
+      "mentions_profile": true,
+      "current_outcome": "clear",
+      "side_qid": "",
+      "side_action": "",
+      "side_polarity": "",
+      "child_ref": "",
+      "detail_present": false
+    }
   }
 ]

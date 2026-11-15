@@ -97,11 +97,16 @@ def build_state(setup: dict[str, Any]) -> dict[str, Any]:
 
 async def score_cases(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    base_dir = Path(__file__).resolve().parent
     for idx, case in enumerate(cases, start=1):
         setup = case["cursor_setup"]
+        audio_rel = case.get("audio_wav") or setup.get("audio_wav")
+        audio_bytes = (base_dir / str(audio_rel)).read_bytes() if audio_rel else None
+        utt_text = setup.get("utterance_text", case.get("utterance_text", ""))
         req = decisions.build_turn_request(
             build_state(setup),
-            utterance_text=setup["utterance_text"],
+            utterance_text=utt_text,
+            audio_wav_bytes=audio_bytes,
         )
         res = await decisions.evaluate_turn(
             req,
@@ -115,6 +120,7 @@ async def score_cases(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
             {
                 "id": case["id"],
                 "category": case["category"],
+                "audio_wav": audio_rel or "",
                 "cursor_setup": setup,
                 "gold": case["gold"],
                 "decision_ms": res.decision_ms,
@@ -237,7 +243,7 @@ def _macro_pr(golds: list[str], preds: list[str]) -> tuple[float, float]:
         fn = sum(1 for g, p in zip(golds, preds) if g == lbl and p != lbl)
         ps.append(tp / (tp + fp) if (tp + fp) else 1.0)
         rs.append(tp / (tp + fn) if (tp + fn) else 1.0)
-    return round(sum(ps) / len(ps), 4), round(sum(rs) / len(rs), 4)
+    return round(sum(ps) / max(1, len(ps)), 4), round(sum(rs) / max(1, len(rs)), 4)
 
 
 def _gold_side_intent(r: dict[str, Any]) -> str:
@@ -301,18 +307,27 @@ def calibrate(rows: list[dict[str, Any]]) -> tuple[decisions.DecisionThresholds,
         12.0,
         10.0,
     )
+    states = {r["id"]: build_state(r["cursor_setup"]) for r in rows}
     child_rows = [r for r in non_stop if "child_ref" in r["raw_answers"]]
+    child_allowed = frozenset(
+        {
+            c["id"]
+            for r in child_rows
+            for c in call_cursor.children_roster(states[r["id"]])
+        }
+        | {"all"}
+    )
     ch_c, ch_m = _sweep_choice(
         child_rows,
         "child_ref",
         "other",
-        frozenset({"child_1", "child_2", "child_3", "all"}),
+        child_allowed,
         lambda r: r["gold"]["child_ref"],
         100.0,
         10.0,
     )
     si_c, si_m = _sweep_choice(
-        non_stop,
+        [r for r in non_stop if "side_intent" in r["raw_answers"]],
         "side_intent",
         "other",
         decisions.VALID_SIDE_INTENTS,
@@ -321,17 +336,17 @@ def calibrate(rows: list[dict[str, Any]]) -> tuple[decisions.DecisionThresholds,
         10.0,
     )
 
-    states = {r["id"]: build_state(r["cursor_setup"]) for r in rows}
     routable_qids = frozenset(call_cursor.routable_qids())
+    side_rows = [r for r in non_stop if "side_qid" in r["raw_answers"]]
     q_items = _extract_choice(
-        non_stop,
+        side_rows,
         "side_qid",
         "other",
         routable_qids,
         lambda r: r["gold"]["side_qid"],
     )
     i_items = _extract_choice(
-        non_stop,
+        side_rows,
         "side_intent",
         "other",
         decisions.VALID_SIDE_INTENTS,
@@ -355,7 +370,7 @@ def calibrate(rows: list[dict[str, Any]]) -> tuple[decisions.DecisionThresholds,
         for sm in sq_ms:
             loss = 0.0
             for r, (qopt, qtp, qm, gold_side), (iopt, itp, im, _) in zip(
-                non_stop, q_items, i_items
+                side_rows, q_items, i_items
             ):
                 ok_q = bool(qopt and qtp >= sc and qm >= sm)
                 ok_i = bool(iopt and itp >= si_c and im >= si_m)
@@ -395,7 +410,7 @@ def calibrate(rows: list[dict[str, Any]]) -> tuple[decisions.DecisionThresholds,
         decisions.interpret_turn_decision(
             states[r["id"]],
             r["raw_answers"],
-            utterance_text=r["cursor_setup"]["utterance_text"],
+            utterance_text=r["cursor_setup"].get("utterance_text", ""),
             thresholds=th,
         )
         for r in rows
@@ -417,6 +432,7 @@ def calibrate(rows: list[dict[str, Any]]) -> tuple[decisions.DecisionThresholds,
     ]
     side_tp = sum(1 for g, p in side_preds if g and p == g)
     side_fp = sum(1 for g, p in side_preds if p and p != g)
+    side_pos = sum(1 for g, _ in side_preds if g)
     stop_pos = sum(1 for r in rows if r["gold"]["caller_stop"])
     stop_neg = sum(1 for r in rows if not r["gold"]["caller_stop"])
     fut_pos = sum(1 for r in rows if r["gold"].get("future_qid"))
@@ -428,9 +444,11 @@ def calibrate(rows: list[dict[str, Any]]) -> tuple[decisions.DecisionThresholds,
                 for r, it in zip(rows, interps)
                 if r["gold"]["danger_now"] and it.cursor_payload["emergency"]
             )
-            / len(emg_pos),
+            / max(1, len(emg_pos)),
             4,
-        ),
+        )
+        if emg_pos
+        else 1.0,
         "history_false_emergency_rate": round(
             sum(
                 1
@@ -438,19 +456,30 @@ def calibrate(rows: list[dict[str, Any]]) -> tuple[decisions.DecisionThresholds,
                 if r["category"] == "historical_lookalike_negative"
                 and it.cursor_payload["emergency"]
             )
-            / len(hist_neg),
+            / max(1, len(hist_neg)),
             4,
-        ),
+        )
+        if hist_neg
+        else 0.0,
         "danger_now_separation_gap": [
             round(
                 max(
-                    r["raw_answers"]["danger_now"]["noul"]
-                    for r in rows
-                    if not r["gold"]["danger_now"]
+                    (
+                        r["raw_answers"]["danger_now"]["noul"]
+                        for r in rows
+                        if not r["gold"]["danger_now"]
+                    ),
+                    default=0.0,
                 ),
                 4,
             ),
-            round(min(r["raw_answers"]["danger_now"]["noul"] for r in emg_pos), 4),
+            round(
+                min(
+                    (r["raw_answers"]["danger_now"]["noul"] for r in emg_pos),
+                    default=1.0,
+                ),
+                4,
+            ),
         ],
         "caller_stop_recall": round(
             sum(
@@ -458,33 +487,39 @@ def calibrate(rows: list[dict[str, Any]]) -> tuple[decisions.DecisionThresholds,
                 for r, it in zip(rows, interps)
                 if r["gold"]["caller_stop"] and it.cursor_payload["caller_stop"]
             )
-            / stop_pos,
+            / max(1, stop_pos),
             4,
-        ),
+        )
+        if stop_pos
+        else 1.0,
         "caller_stop_false_positive_rate": round(
             sum(
                 1
                 for r, it in zip(rows, interps)
                 if not r["gold"]["caller_stop"] and it.cursor_payload["caller_stop"]
             )
-            / stop_neg,
+            / max(1, stop_neg),
             4,
-        ),
+        )
+        if stop_neg
+        else 0.0,
         "outcome_exact_accuracy": round(
             sum(
                 1
                 for r, it in ns_pairs
                 if it.cursor_payload["current_outcome"] == r["gold"]["current_outcome"]
             )
-            / len(ns_pairs),
+            / max(1, len(ns_pairs)),
             4,
-        ),
+        )
+        if ns_pairs
+        else 1.0,
         "outcome_macro_precision": out_p,
         "outcome_macro_recall": out_r,
         "side_qid_precision": (
             round(side_tp / (side_tp + side_fp), 4) if (side_tp + side_fp) else 1.0
         ),
-        "side_qid_recall": round(side_tp / sum(1 for g, _ in side_preds if g), 4),
+        "side_qid_recall": round(side_tp / max(1, side_pos), 4) if side_pos else 1.0,
         "side_qid_false_writes": side_fp,
         "future_qid_recall": round(
             sum(
@@ -493,9 +528,11 @@ def calibrate(rows: list[dict[str, Any]]) -> tuple[decisions.DecisionThresholds,
                 if r["gold"].get("future_qid")
                 and (it.future_qid_match or {}).get("qid") == r["gold"]["future_qid"]
             )
-            / fut_pos,
+            / max(1, fut_pos),
             4,
-        ),
+        )
+        if fut_pos
+        else 1.0,
         "child_ref_accuracy": round(
             sum(
                 1
@@ -503,9 +540,11 @@ def calibrate(rows: list[dict[str, Any]]) -> tuple[decisions.DecisionThresholds,
                 if "child_ref" in r["raw_answers"]
                 and it.cursor_payload["child_ref"] == r["gold"]["child_ref"]
             )
-            / len(child_rows),
+            / max(1, len(child_rows)),
             4,
-        ),
+        )
+        if child_rows
+        else 1.0,
         "detail_present_accuracy": round(
             sum(
                 1
@@ -516,9 +555,11 @@ def calibrate(rows: list[dict[str, Any]]) -> tuple[decisions.DecisionThresholds,
                 and (it.diagnostics["detail_present"] >= th.detail_present_min_yes)
                 == r["gold"]["detail_present"]
             )
-            / len(det_rows),
+            / max(1, len(det_rows)),
             4,
-        ),
+        )
+        if det_rows
+        else 1.0,
         "mentions_diagnosis_accuracy": round(
             sum(
                 1
@@ -527,9 +568,11 @@ def calibrate(rows: list[dict[str, Any]]) -> tuple[decisions.DecisionThresholds,
                 and it.cursor_payload["diagnostic_note"]
                 == bool(r["gold"].get("mentions_diagnosis", False))
             )
-            / len(diag_rows),
+            / max(1, len(diag_rows)),
             4,
-        ),
+        )
+        if diag_rows
+        else 1.0,
         "mentions_profile_accuracy": round(
             sum(
                 1
@@ -537,10 +580,14 @@ def calibrate(rows: list[dict[str, Any]]) -> tuple[decisions.DecisionThresholds,
                 if (it.diagnostics["mentions_profile"] >= th.mentions_profile_min_yes)
                 == r["gold"]["mentions_profile"]
             )
-            / len(ns_pairs),
+            / max(1, len(ns_pairs)),
             4,
+        )
+        if ns_pairs
+        else 1.0,
+        "avg_decision_ms": round(
+            sum(r["decision_ms"] for r in rows) / max(1, len(rows)), 1
         ),
-        "avg_decision_ms": round(sum(r["decision_ms"] for r in rows) / len(rows), 1),
     }
     return th, metrics
 

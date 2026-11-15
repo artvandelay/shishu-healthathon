@@ -1,6 +1,5 @@
 """Six live Gemini calls against the v4 cursor. Run inside tmux.
 
-The filename stays `run_eight_personas.py` so existing docs keep working.
 Default suite is the six focused personas. Exits 0 only when every selected
 persona has a stereo WAV, both summaries, the expected red-flag band, and a
 valid Mother PDF, with no tool errors, no watchdog nudges, and no leaks.
@@ -31,6 +30,8 @@ load_dotenv()
 
 import call_cursor  # noqa: E402
 import db  # noqa: E402
+import mother_report  # noqa: E402
+import post_call  # noqa: E402
 import uvicorn  # noqa: E402
 from call_cursor import answer_notes_text, expect_yes_no  # noqa: E402
 from pypdf import PdfReader  # noqa: E402
@@ -106,7 +107,7 @@ class Persona:
         *,
         flags: tuple[int, int],
         close: str,
-        check,
+        check=None,
     ):
         self.pid = pid
         self.name = name
@@ -167,6 +168,18 @@ def _answer(call: dict, qid: str) -> dict:
     return entry if isinstance(entry, dict) else {}
 
 
+def _assert_reports_match_cursor(call: dict, problems: list[str]) -> tuple[dict, dict]:
+    expected = post_call.build_reports(call)
+    report = mother_report.build_report(call, expected)
+    if str(call.get("summary_doctor") or "").strip() != expected["doctor_markdown"].strip():
+        problems.append("summary_doctor diverges from post_call.build_reports")
+    if str(call.get("summary_mother") or "").strip() != post_call.mother_summary_text(expected).strip():
+        problems.append("summary_mother diverges from post_call.build_reports")
+    if (call.get("red_flags") or []) != expected["red_flags"]:
+        problems.append("red_flags diverges from post_call.build_reports")
+    return expected, report
+
+
 def _check_p1(call: dict, problems: list[str]) -> None:
     nicu = _answer(call, "birth_nicu")
     bleed = _answer(call, "body_bleeding_bruise")
@@ -185,6 +198,7 @@ def _check_p1(call: dict, problems: list[str]) -> None:
         problems.append(f"nicu reason missing: {nicu_text}")
     if not _has(nicu_text, "4", "चार"):
         problems.append(f"nicu days missing: {nicu_text}")
+    _assert_reports_match_cursor(call, problems)
     doctor = str(call.get("summary_doctor") or "")
     mother = str(call.get("summary_mother") or "")
     pdf_all = _flat(_pdf_page(call, 0) + " " + _pdf_page(call, 1))
@@ -202,6 +216,7 @@ def _check_p2(call: dict, problems: list[str]) -> None:
     ]
     if concerns:
         problems.append("unexpected concerns: " + ", ".join(concerns))
+    _assert_reports_match_cursor(call, problems)
 
 
 def _check_p3(call: dict, problems: list[str]) -> None:
@@ -215,12 +230,15 @@ def _check_p3(call: dict, problems: list[str]) -> None:
             f"emergency did not stop at birth_jaundice/closing: "
             f"active_qid={cursor.get('active_qid')} phase={cursor.get('phase')}"
         )
-    doctor = str(call.get("summary_doctor") or "")
-    mother = str(call.get("summary_mother") or "")
-    if "Active emergency" not in doctor:
+    expected, report = _assert_reports_match_cursor(call, problems)
+    if "Active emergency" not in expected["doctor_markdown"]:
         problems.append("summary_doctor missing Active emergency")
-    if "टीके के कार्ड" in mother:
-        problems.append("summary_mother has routine vaccine filler")
+    if any(q in expected["mother_questions_hi"] for q in post_call._ROUTINE_HI):
+        problems.append("emergency summary_mother included routine filler")
+    if not all(q in expected["mother_questions_hi"] for q in post_call._EMERGENCY_HI):
+        problems.append("emergency summary_mother missing emergency questions")
+    if not (report["emergency"] and report["incomplete"]):
+        problems.append("mother_report missing emergency/incomplete state")
 
 
 def _middle_child(profile: dict) -> dict | None:
@@ -249,6 +267,7 @@ def _check_p4(persona: Persona, call: dict, problems: list[str]) -> None:
         problems.append(f"fam_bp_stroke={bp.get('state')}")
     if same.get("state") != "clear":
         problems.append(f"fam_same_problem={same.get('state')}")
+    expected, _ = _assert_reports_match_cursor(call, problems)
     profile = (call.get("cursor_state") or {}).get("profile") or {}
     middle = _middle_child(profile)
     if middle is None:
@@ -256,10 +275,13 @@ def _check_p4(persona: Persona, call: dict, problems: list[str]) -> None:
     elif middle.get("id") not in (jaundice.get("child_ids") or []):
         problems.append(f"jaundice child {jaundice.get('child_ids')} middle {middle}")
     else:
-        if str(middle.get("id")) not in str(call.get("summary_doctor") or ""):
-            problems.append("summary_doctor missing middle child_id attribution")
-        if "6 साल" not in str(call.get("summary_mother") or ""):
-            problems.append("summary_mother missing 6 साल child attribution")
+        mid_id = str(middle.get("id") or "")
+        expected_en = call_cursor.children_label_en(profile, [mid_id])
+        expected_hi = call_cursor.children_label_hi(profile, [mid_id])
+        if expected_en not in expected["doctor_markdown"]:
+            problems.append(f"summary_doctor missing middle child attribution ({expected_en})")
+        if expected_hi not in post_call.mother_summary_text(expected):
+            problems.append(f"summary_mother missing middle child attribution ({expected_hi})")
     if not _has(answer_notes_text(jaundice), "3", "तीन"):
         problems.append(f"jaundice days missing: {answer_notes_text(jaundice)}")
     if "मामा" not in answer_notes_text(transfusion):
@@ -273,11 +295,6 @@ def _check_p4(persona: Persona, call: dict, problems: list[str]) -> None:
 
 def _flat(text: str) -> str:
     return " ".join(str(text or "").split())
-
-
-def _pdf_fold(text: str) -> str:
-    # pypdf drops Devanagari matras (ि, ा) from shaped ligatures, e.g. वाले पति -> वले पत.
-    return _flat(text).replace("ि", "").replace("ा", "")
 
 
 def _pdf_page(call: dict, index: int) -> str:
@@ -296,42 +313,55 @@ def _child_specs():
 
 
 def _check_p5(persona: Persona, call: dict, problems: list[str]) -> None:
-    profile = (call.get("cursor_state") or {}).get("profile") or {}
+    cursor = call.get("cursor_state") or {}
+    profile = cursor.get("profile") or {}
+    answers = cursor.get("answers") or {}
     if profile.get("marital_status") != "about_to_marry":
         problems.append(f"marital_status={profile.get('marital_status')}")
     if profile.get("children"):
         problems.append(f"children={profile.get('children')}")
+    if profile.get("ever_pregnant") is not False:
+        problems.append(f"ever_pregnant={profile.get('ever_pregnant')}")
+    child_specs = _child_specs()
+    child_qids = {spec.id for spec in child_specs}
+    non_na = [
+        spec.id
+        for spec in child_specs
+        if (answers.get(spec.id) or {}).get("state") != "not_applicable"
+    ]
+    if non_na:
+        problems.append("child answers not marked not_applicable: " + ", ".join(non_na))
     asked = [
         spec.id
-        for spec in _child_specs()
+        for spec in child_specs
         if any(key == spec.id or key.startswith(spec.id + ":") for key in persona.counts)
     ]
     if asked:
         problems.append("child questions asked: " + ", ".join(asked))
-    assistant = _flat(
-        " ".join(
-            str(turn.get("text") or "")
-            for turn in (call.get("transcript") or [])
-            if isinstance(turn, dict) and turn.get("role") == "assistant"
-        )
+    spoken_qids = sorted({
+        str(turn.get("qid") or "")
+        for turn in (call.get("transcript") or [])
+        if isinstance(turn, dict) and str(turn.get("qid") or "") in child_qids
+    })
+    if spoken_qids:
+        problems.append("transcript recorded child qids: " + ", ".join(spoken_qids))
+    _, report = _assert_reports_match_cursor(call, problems)
+    page2_items = (
+        [item for grp in report["groups"] for item in grp["items"]]
+        + list(report["unknown"])
+        + [item for grp in report["unasked"] for item in grp["items"]]
     )
-    spoken = [
-        spec.id
-        for spec in _child_specs()
-        if spec.question_hi and _flat(spec.question_hi) in assistant
-    ]
-    if spoken:
-        problems.append("spoken child questions: " + ", ".join(spoken))
-    page2 = _pdf_fold(_pdf_page(call, 1))
-    if _pdf_fold("होने वाले पति") not in page2:
-        problems.append("pdf page 2 missing होने वाले पति")
+    for qid in ("preg_thalassemia", "fam_related"):
+        expected_q = call_cursor.question_hi_for(cursor, get_spec(qid))
+        if expected_q not in page2_items:
+            problems.append(f"mother report page2 missing {qid} wording")
     leaked = [
         spec.id
-        for spec in _child_specs()
-        if spec.question_hi and _pdf_fold(spec.question_hi) in page2
+        for spec in child_specs
+        if spec.question_hi in page2_items or (spec.question_multi_hi and spec.question_multi_hi in page2_items)
     ]
     if leaked:
-        problems.append("pdf page 2 child questions: " + ", ".join(leaked))
+        problems.append("mother report page2 child questions: " + ", ".join(leaked))
 
 
 def _check_p6(persona: Persona, call: dict, problems: list[str]) -> None:
@@ -348,6 +378,7 @@ def _check_p6(persona: Persona, call: dict, problems: list[str]) -> None:
         problems.append(f"fam_heart_kidney={heart.get('state')}")
     if persona.counts.get("fam_heart_kidney", 0) != 1:
         problems.append(f"fam_heart_kidney took {persona.counts.get('fam_heart_kidney', 0)} turns")
+    _assert_reports_match_cursor(call, problems)
     mother = str(call.get("summary_mother") or "")
     doctor = str(call.get("summary_doctor") or "")
     flags = call.get("red_flags") or []
@@ -399,7 +430,6 @@ def _personas() -> list[Persona]:
         ),
         flags=(3, 3),
         close="complete",
-        check=_check_p2,
     )
     p4.check = lambda call, problems, persona=p4: _check_p4(persona, call, problems)
     p5 = Persona(
@@ -413,7 +443,6 @@ def _personas() -> list[Persona]:
         }),
         flags=(0, 0),
         close="complete",
-        check=_check_p2,
     )
     p5.check = lambda call, problems, persona=p5: _check_p5(persona, call, problems)
     p6 = Persona(
@@ -430,7 +459,6 @@ def _personas() -> list[Persona]:
         }),
         flags=(2, 2),
         close="complete",
-        check=_check_p2,
     )
     p6.check = lambda call, problems, persona=p6: _check_p6(persona, call, problems)
     return [
@@ -438,11 +466,13 @@ def _personas() -> list[Persona]:
             "p1_red_flags",
             "रेखा",
             _profile("रेखा", "एक बेटा है, 7 साल का।", {
+                "birth_term": _line("नहीं, ऐसा नहीं हुआ।"),
                 "birth_nicu": _line("हाँ।"),
                 "nicu_reason": _line("साँस की तकलीफ।"),
                 "nicu_days": _line("चार दिन।"),
                 "body_bleeding_bruise": _line("हाँ, मामूली चोट पर खून देर तक बहता है।"),
                 "body_joint_swelling": _line("हाँ, गिरने पर घुटने में सूजन आती है।"),
+                "fam_cancer": _line("नहीं, ऐसा नहीं हुआ।"),
                 "fam_maternal_bleeding": _line("हाँ, मेरे सगे मामा के बेटे को डॉक्टर ने हीमोफीलिया बताया था।"),
                 "fam_who": _line("सगे मामा के बेटे को।"),
             }),
@@ -453,7 +483,10 @@ def _personas() -> list[Persona]:
         Persona(
             "p2_no_red_flags",
             "सीमा",
-            _profile("सीमा", "एक बेटी है, 4 साल की।", {}),
+            _profile("सीमा", "एक बेटी है, 4 साल की।", {
+                "birth_term": _line("नहीं, ऐसा नहीं हुआ।"),
+                "fam_cancer": _line("नहीं, ऐसा नहीं हुआ।"),
+            }),
             flags=(0, 0),
             close="complete",
             check=_check_p2,
@@ -546,7 +579,7 @@ def _check(call_id: int, persona: Persona) -> dict:
         if persona.close == "emergency":
             if not bool(telemetry.get("closing_heard")):
                 problems.append("closing audio was not heard")
-            if "108" not in text and "अधूरी" not in text:
+            if "108" not in text or "अधूरी" not in text:
                 problems.append("emergency pdf missing banner")
         elif pages < 2:
             problems.append(f"pdf pages {pages}")
@@ -554,7 +587,8 @@ def _check(call_id: int, persona: Persona) -> dict:
     if cursor.get("close_reason") != persona.close:
         problems.append(f"close_reason={cursor.get('close_reason')} expected {persona.close}")
     try:
-        persona.check(call, problems)
+        if persona.check is not None:
+            persona.check(call, problems)
     except Exception as exc:
         problems.append(f"check {type(exc).__name__}: {exc}")
     return {
