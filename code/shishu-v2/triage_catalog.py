@@ -3,9 +3,17 @@
 Question text is the Devanagari in docs/requirements-v4.md section 4.
 हाँ on a clinical item is a concern. नहीं is clear. question_multi_hi is the
 2+ child wording; an empty string means the general question_hi is used.
+Downstream modules read kinds and roles off the spec, never a hardcoded QID.
 """
 
 from dataclasses import dataclass
+
+CHILD_GROUPS = frozenset({"birth", "body", "illness"})
+_ROUTABLE = frozenset({"routing_gate", "gate", "open_capture"})
+_REWINDABLE = frozenset({"routing_gate", "gate"})
+_REPORTABLE = frozenset({"gate", "open_capture"})
+_YES_NO = frozenset({"bridge", *_ROUTABLE})
+_SPINE_KINDS = _YES_NO | {"profile"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,36 +30,53 @@ class QuestionSpec:
     followups: tuple[str, ...] = ()
     question_about_hi: str = ""
     question_unmarried_hi: str = ""
+    shares_recorded_concerns: bool = False
+    updates_ever_pregnant: bool = False
+
+    @property
+    def is_profile(self) -> bool:
+        return self.kind == "profile"
+    @property
+    def is_bridge(self) -> bool:
+        return self.kind == "bridge"
+    @property
+    def is_routing_gate(self) -> bool:
+        return self.kind == "routing_gate"
+    @property
+    def is_clinical_gate(self) -> bool:
+        return self.kind == "gate"
+    @property
+    def is_open_capture(self) -> bool:
+        return self.kind == "open_capture"
+    @property
+    def is_routable(self) -> bool:
+        return self.kind in _ROUTABLE
+    @property
+    def is_rewindable(self) -> bool:
+        return self.kind in _REWINDABLE
+    @property
+    def is_reportable(self) -> bool:
+        return self.kind in _REPORTABLE
+    @property
+    def is_child_scoped(self) -> bool:
+        return self.group in CHILD_GROUPS and "no_children" in self.skip_if
+    @property
+    def allows_yes_no(self) -> bool:
+        return self.kind in _YES_NO
 
 
 def _q(
-    qid: str,
-    group: str,
-    kind: str,
-    question_hi: str,
-    need_en: str,
-    nrroid: str = "",
-    skip: tuple[str, ...] = (),
-    follow: tuple[str, ...] = (),
-    multi: str = "",
-    about: str = "",
-    unmarried: str = "",
+    qid: str, group: str, kind: str, question_hi: str, need_en: str, nrroid: str = "",
+    skip: tuple[str, ...] = (), follow: tuple[str, ...] = (), multi: str = "",
+    about: str = "", unmarried: str = "", shares_recorded: bool = False,
+    updates_ever_pregnant: bool = False,
 ) -> QuestionSpec:
-    stem = question_hi.strip().removesuffix("?").removesuffix("।").strip()
-    stem = stem.removeprefix("क्या ").strip()
+    stem = question_hi.strip().removesuffix("?").removesuffix("।").strip().removeprefix("क्या ").strip()
     return QuestionSpec(
-        id=qid,
-        group=group,
-        kind=kind,
-        question_hi=question_hi,
-        question_multi_hi=multi,
-        stem_hi=stem,
-        need_en=need_en,
-        nrroid_gate=nrroid,
-        skip_if=skip,
-        followups=follow,
-        question_about_hi=about,
-        question_unmarried_hi=unmarried,
+        id=qid, group=group, kind=kind, question_hi=question_hi, question_multi_hi=multi,
+        stem_hi=stem, need_en=need_en, nrroid_gate=nrroid, skip_if=skip, followups=follow,
+        question_about_hi=about, question_unmarried_hi=unmarried,
+        shares_recorded_concerns=shares_recorded, updates_ever_pregnant=updates_ever_pregnant,
     )
 
 
@@ -125,7 +150,7 @@ CATALOG: tuple[QuestionSpec, ...] = (
     _q('ill_odor', 'illness', "gate", 'क्या बच्चे के पेशाब या पॉटी में कभी अजीब बदबू आती है?', 'urine or stool smells unusual', 'Q01', skip=('no_children',), follow=(), multi='क्या आपके किसी भी बच्चे के पेशाब या पॉटी में कभी अजीब बदबू आती है?'),
     _q('ill_admissions', 'illness', "gate", 'क्या बच्चे को बार-बार अस्पताल में भर्ती करना पड़ा है?', 'admitted to hospital again and again', 'Q03', skip=('no_children',), follow=('admissions_count', 'admissions_reason'), multi='क्या आपके किसी भी बच्चे को बार-बार अस्पताल में भर्ती करना पड़ा है?'),
     _q('ill_iv_antibiotics', 'illness', "gate", 'क्या बार-बार इंफेक्शन के लिए बच्चे को नस में (IV ड्रिप से) दवा लगी है?', 'repeated infections that needed medicine through a vein', 'Q03', skip=('no_children',), follow=(), multi='क्या बार-बार इंफेक्शन के लिए आपके किसी भी बच्चे को नस में (IV ड्रिप से) दवा लगी है?'),
-    _q('ever_pregnant', 'pregnancy', 'routing_gate', 'क्या आप कभी गर्भवती हुई हैं?', 'whether the caller has ever been pregnant', skip=('unmarried', 'about_to_marry', 'has_children')),
+    _q('ever_pregnant', 'pregnancy', 'routing_gate', 'क्या आप कभी गर्भवती हुई हैं?', 'whether the caller has ever been pregnant', skip=('unmarried', 'about_to_marry', 'has_children'), updates_ever_pregnant=True),
     _q('preg_conditions', 'pregnancy', "gate", 'क्या किसी प्रेग्नेंसी में आपको हाई बीपी, शुगर या थायरॉइड रहा था?', 'high BP, sugar, or thyroid in a pregnancy', 'Antenatal', skip=('unmarried', 'about_to_marry', 'ever_pregnant_no'), follow=('preg_cond_detail',), multi=''),
     _q('preg_scan', 'pregnancy', "gate", 'क्या किसी प्रेग्नेंसी के सोनोग्राफी स्कैन में कोई खराबी बताई गई थी?', 'a pregnancy scan showed a problem', 'Antenatal', skip=('unmarried', 'about_to_marry', 'ever_pregnant_no'), follow=('scan_detail',), multi=''),
     _q('preg_transfusion', 'pregnancy', "gate", 'क्या किसी प्रेग्नेंसी के दौरान आपको खून चढ़ाना पड़ा था?', 'blood transfusion during a pregnancy', 'Antenatal', skip=('unmarried', 'about_to_marry', 'ever_pregnant_no'), follow=(), multi=''),
@@ -156,40 +181,32 @@ CATALOG: tuple[QuestionSpec, ...] = (
     _q('fam_maternal_infections', 'family', "gate", 'क्या आपके मायके की तरफ किसी बच्चे या बड़े को बार-बार गंभीर इंफेक्शन की दिक्कत है?', "on her parents' side: repeated serious infections", 'Q11', skip=(), follow=('fam_who',), multi=''),
     _q('fam_maternal_eczema', 'family', "gate", 'क्या आपके मायके की तरफ किसी बच्चे या बड़े को त्वचा पर सूखे खुजली वाले धब्बों की दिक्कत है?', "on her parents' side: dry itchy skin patches", 'Q11', skip=(), follow=('fam_who',), multi=''),
     _q('fam_lumps', 'family', "gate", 'क्या परिवार में किसी बच्चे या बड़े के शरीर पर सूजन या गाँठें हैं?', 'swellings or lumps on someone in the family', 'Q11', skip=(), follow=('fam_who',), multi=''),
-    _q('fam_same_problem', 'family', "gate", 'क्या परिवार में किसी और को भी आपके बच्चे जैसी ही दिक्कत है?', 'someone else in the family has the same problem as her child', 'Q11', skip=('no_children', 'no_family_concern'), follow=('fam_who',), multi=''),
-    _q('close_anything_else', 'close', 'open_capture', 'क्या इसके अलावा डॉक्टर के लिए कुछ और बताना है जो आपके मन में हो?', 'anything else she wants the doctor to know', skip=(), follow=("open_concern_detail",)),
+    _q('fam_same_problem', 'family', "gate", 'क्या परिवार में किसी और को भी आपके बच्चे जैसी ही दिक्कत है?', 'someone else in the family has the same problem as her child', 'Q11', skip=('no_children', 'no_family_concern'), follow=('fam_who',), multi='', shares_recorded=True),
+    _q('close_anything_else', 'close', 'open_capture', 'क्या इसके अलावा डॉक्टर के लिए कुछ और बताना है जो आपके मन में हो?', 'anything else she wants the doctor to know', skip=(), follow=("open_concern_detail",), shares_recorded=True),
 )
 
-
 _BY_ID: dict[str, QuestionSpec] = {spec.id: spec for spec in CATALOG}
-_SPINE_KINDS = frozenset({"profile", "bridge", "routing_gate", "gate", "open_capture"})
-CHILD_GROUPS = frozenset({"birth", "body", "illness"})
-PROFILE_QIDS = frozenset(spec.id for spec in CATALOG if spec.kind == "profile")
+PROFILE_QIDS = frozenset(spec.id for spec in CATALOG if spec.is_profile)
 
 
 def _validate() -> None:
     ids = [spec.id for spec in CATALOG]
-    dupes = sorted({qid for qid in ids if ids.count(qid) > 1})
-    if dupes:
-        raise RuntimeError(f"duplicate catalog ids: {dupes}")
-    orphans = sorted(set(FOLLOWUP_HI) - {fid for s in CATALOG for fid in s.followups})
-    if orphans:
-        raise RuntimeError(f"orphan followups in FOLLOWUP_HI: {orphans}")
-    empty_followups = sorted(
-        fid for fid, text in FOLLOWUP_HI.items() if not isinstance(text, str) or not text.strip()
-    )
-    if empty_followups:
-        raise RuntimeError(f"empty followup Hindi text: {empty_followups}")
+    used = {fid for spec in CATALOG for fid in spec.followups}
+    errors: list[str] = []
+    if len(set(ids)) < len(ids):
+        errors.append(f"duplicate catalog ids: {sorted({q for q in ids if ids.count(q) > 1})}")
+    if orphans := sorted(set(FOLLOWUP_HI) - used):
+        errors.append(f"orphan followups in FOLLOWUP_HI: {orphans}")
+    if empty := sorted(fid for fid, text in FOLLOWUP_HI.items() if not text.strip()):
+        errors.append(f"empty followup Hindi text: {empty}")
     for spec in CATALOG:
-        if spec.kind not in _SPINE_KINDS:
-            raise RuntimeError(f"{spec.id} has kind {spec.kind}")
-        if not spec.stem_hi:
-            raise RuntimeError(f"{spec.id} has empty stem_hi")
-        for fid in spec.followups:
-            if fid not in FOLLOWUP_HI:
-                raise RuntimeError(f"{spec.id} followup {fid} has no Hindi")
-        if spec.group in CHILD_GROUPS and "no_children" in spec.skip_if and not spec.question_multi_hi.strip():
-            raise RuntimeError(f"{spec.id} needs question_multi_hi")
+        if spec.kind not in _SPINE_KINDS or not spec.stem_hi:
+            errors.append(f"{spec.id} bad kind {spec.kind!r} or empty stem_hi")
+        errors += [f"{spec.id} followup {fid} has no Hindi" for fid in spec.followups if fid not in FOLLOWUP_HI]
+        if spec.is_child_scoped and not spec.question_multi_hi.strip():
+            errors.append(f"{spec.id} needs question_multi_hi")
+    if errors:
+        raise RuntimeError("; ".join(errors))
 
 
 _validate()
@@ -200,6 +217,19 @@ def get_spec(qid: str) -> QuestionSpec:
         return _BY_ID[qid]
     except KeyError:
         raise KeyError(qid) from None
+
+
+def spec_or_none(qid: str | None) -> QuestionSpec | None:
+    return _BY_ID.get(qid) if qid else None
+
+
+def routable_specs() -> tuple[QuestionSpec, ...]:
+    """Every screening item the Decision API may route to, in ask order (58 total)."""
+    return tuple(spec for spec in CATALOG if spec.is_routable)
+
+
+def routable_qids() -> tuple[str, ...]:
+    return tuple(spec.id for spec in routable_specs())
 
 
 EVER_PREGNANT_HI = get_spec("ever_pregnant").question_hi
