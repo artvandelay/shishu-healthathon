@@ -28,12 +28,13 @@ from dotenv import load_dotenv
 load_dotenv(ROOT / ".env")
 load_dotenv()
 
-import call_cursor  # noqa: E402
+import copy_hi  # noqa: E402
 import db  # noqa: E402
+import engine  # noqa: E402
 import mother_report  # noqa: E402
 import post_call  # noqa: E402
 import uvicorn  # noqa: E402
-from call_cursor import answer_notes_text, expect_yes_no  # noqa: E402
+from models import AnswerStatus, CallState, MaritalStatus, Phase, SubStep  # noqa: E402
 from pypdf import PdfReader  # noqa: E402
 from triage_catalog import active_specs, get_spec  # noqa: E402
 import app as shishu_app  # noqa: E402
@@ -69,31 +70,29 @@ _BRIDGE = "ठीक है।"
 _RETRACT = "नहीं, गलती से हाँ बोला, कुछ नहीं हुआ था।"
 
 
-def _route(state: dict) -> str:
-    """Cursor step is the routing key. Transcript text is not."""
-    qid = str(state.get("active_qid") or "")
+def _route(state: CallState) -> str:
+    """The typed cursor step is the routing key. Transcript text never is."""
+    if state.phase is not Phase.ASKING:
+        return ""
+    qid, step = state.cursor.qid, state.cursor
     if not qid:
         return ""
-    idx = state.get("pending_followup_idx")
-    if idx == -1:
+    if step.substep is SubStep.WHICH_CHILD:
         return f"{qid}:which_child"
-    if isinstance(idx, int) and idx >= 0:
-        try:
-            followups = get_spec(qid).followups
-        except KeyError:
-            followups = ()
-        if idx < len(followups):
-            return followups[idx]
-        return f"{qid}:{idx}"
+    if step.substep is SubStep.FOLLOWUP:
+        followups = get_spec(qid).followups
+        if step.followup_idx < len(followups):
+            return followups[step.followup_idx]
+        return f"{qid}:{step.followup_idx}"
     return qid
 
 
-def _fallback(state: dict) -> tuple[str, str]:
-    if expect_yes_no(state):
+def _fallback(state: CallState) -> tuple[str, str]:
+    if engine.expect_yes_no(state):
         return ("quick", "clear")
-    if state.get("pending_followup_idx") == -1:
+    if state.cursor.substep is SubStep.WHICH_CHILD:
         return ("text", _RETRACT)
-    if isinstance(state.get("pending_followup_idx"), int):
+    if state.cursor.substep is SubStep.FOLLOWUP:
         return ("text", "पता नहीं।")
     return ("text", "नहीं।")
 
@@ -117,8 +116,8 @@ class Persona:
         self.check = check
         self.counts: dict[str, int] = {}
 
-    def answer(self, text: str, state: dict) -> tuple[str, str] | None:
-        if str(state.get("phase") or "") != "asking":
+    def answer(self, text: str, state: CallState) -> tuple[str, str] | None:
+        if state.phase is not Phase.ASKING:
             return None
         key = _route(state) or "unknown"
         self.counts[key] = self.counts.get(key, 0) + 1
@@ -134,7 +133,7 @@ class Persona:
             mode, payload = replies[min(self.counts[key] - 1, len(replies) - 1)]
         else:
             mode, payload = picked
-        if mode == "quick" and not expect_yes_no(state):
+        if mode == "quick" and not engine.expect_yes_no(state):
             return ("text", "हाँ।" if payload == "concern" else "नहीं।")
         return (mode, payload)
 
@@ -162,10 +161,21 @@ def _has(text: str, *needles: str) -> bool:
     return any(needle in text for needle in needles)
 
 
-def _answer(call: dict, qid: str) -> dict:
-    answers = (call.get("cursor_state") or {}).get("answers") or {}
-    entry = answers.get(qid) or {}
-    return entry if isinstance(entry, dict) else {}
+def _answer(call: dict, qid: str):
+    """One typed answer record from the call's stored `CallState`."""
+    return db.call_state_from_row(call).answers.get(qid)
+
+
+def _state(call: dict) -> CallState:
+    return db.call_state_from_row(call)
+
+
+def _state_of(record) -> AnswerStatus | None:
+    return record.state if record is not None else None
+
+
+def _answer_notes_text(record) -> str:
+    return record.verbatim_text if record is not None else ""
 
 
 def _assert_reports_match_cursor(call: dict, problems: list[str]) -> tuple[dict, dict]:
@@ -185,15 +195,15 @@ def _check_p1(call: dict, problems: list[str]) -> None:
     bleed = _answer(call, "body_bleeding_bruise")
     joint = _answer(call, "body_joint_swelling")
     fam_bleed = _answer(call, "fam_maternal_bleeding")
-    if nicu.get("state") != "concern":
-        problems.append(f"birth_nicu={nicu.get('state')}")
-    if bleed.get("state") != "concern":
-        problems.append(f"body_bleeding_bruise={bleed.get('state')}")
-    if joint.get("state") != "concern":
-        problems.append(f"body_joint_swelling={joint.get('state')}")
-    if fam_bleed.get("state") != "concern":
-        problems.append(f"fam_maternal_bleeding={fam_bleed.get('state')}")
-    nicu_text = answer_notes_text(nicu)
+    if _state_of(nicu) is not AnswerStatus.CONCERN:
+        problems.append(f"birth_nicu={_state_of(nicu)}")
+    if _state_of(bleed) is not AnswerStatus.CONCERN:
+        problems.append(f"body_bleeding_bruise={_state_of(bleed)}")
+    if _state_of(joint) is not AnswerStatus.CONCERN:
+        problems.append(f"body_joint_swelling={_state_of(joint)}")
+    if _state_of(fam_bleed) is not AnswerStatus.CONCERN:
+        problems.append(f"fam_maternal_bleeding={_state_of(fam_bleed)}")
+    nicu_text = _answer_notes_text(nicu)
     if not _has(nicu_text, "तकलीफ", "साँस", "सांस"):
         problems.append(f"nicu reason missing: {nicu_text}")
     if not _has(nicu_text, "4", "चार"):
@@ -209,10 +219,9 @@ def _check_p1(call: dict, problems: list[str]) -> None:
 
 
 def _check_p2(call: dict, problems: list[str]) -> None:
-    answers = (call.get("cursor_state") or {}).get("answers") or {}
     concerns = [
-        qid for qid, entry in answers.items()
-        if isinstance(entry, dict) and entry.get("state") == "concern"
+        qid for qid, record in _state(call).answers.items()
+        if record.state is AnswerStatus.CONCERN
     ]
     if concerns:
         problems.append("unexpected concerns: " + ", ".join(concerns))
@@ -221,14 +230,14 @@ def _check_p2(call: dict, problems: list[str]) -> None:
 
 def _check_p3(call: dict, problems: list[str]) -> None:
     for qid in ("birth_mode_detail", "birth_term", "birth_nicu"):
-        state = _answer(call, qid).get("state")
-        if state != "clear":
-            problems.append(f"{qid}={state}")
-    cursor = call.get("cursor_state") or {}
-    if cursor.get("active_qid") != "birth_jaundice" or cursor.get("phase") != "closing":
+        status = _state_of(_answer(call, qid))
+        if status is not AnswerStatus.CLEAR:
+            problems.append(f"{qid}={status}")
+    cursor = _state(call)
+    if cursor.cursor.qid != "birth_jaundice" or cursor.phase is not Phase.CLOSING:
         problems.append(
             f"emergency did not stop at birth_jaundice/closing: "
-            f"active_qid={cursor.get('active_qid')} phase={cursor.get('phase')}"
+            f"active_qid={cursor.cursor.qid} phase={cursor.phase}"
         )
     expected, report = _assert_reports_match_cursor(call, problems)
     if "Active emergency" not in expected["doctor_markdown"]:
@@ -241,12 +250,11 @@ def _check_p3(call: dict, problems: list[str]) -> None:
         problems.append("mother_report missing emergency/incomplete state")
 
 
-def _middle_child(profile: dict) -> dict | None:
-    children = list(profile.get("children") or [])
+def _middle_child(profile) -> object | None:
+    children = list(profile.children)
     if len(children) != 3:
         return None
-    ordered = sorted(children, key=lambda child: float(child.get("age_years") or 0), reverse=True)
-    return ordered[1]
+    return sorted(children, key=lambda child: child.age_years, reverse=True)[1]
 
 
 def _check_p4(persona: Persona, call: dict, problems: list[str]) -> None:
@@ -255,38 +263,37 @@ def _check_p4(persona: Persona, call: dict, problems: list[str]) -> None:
     transfusion = _answer(call, "fam_transfusion")
     bp = _answer(call, "fam_bp_stroke")
     same = _answer(call, "fam_same_problem")
-    if jaundice.get("state") != "concern":
-        problems.append(f"birth_jaundice={jaundice.get('state')}")
-    if bcg.get("state") != "clear":
-        problems.append(f"birth_bcg={bcg.get('state')}")
+    if _state_of(jaundice) is not AnswerStatus.CONCERN:
+        problems.append(f"birth_jaundice={_state_of(jaundice)}")
+    if _state_of(bcg) is not AnswerStatus.CLEAR:
+        problems.append(f"birth_bcg={_state_of(bcg)}")
     if persona.counts.get("birth_bcg:which_child", 0) != 1:
         problems.append(f"birth_bcg loop count={persona.counts.get('birth_bcg:which_child', 0)}")
-    if transfusion.get("state") != "concern":
-        problems.append(f"fam_transfusion={transfusion.get('state')}")
-    if bp.get("state") != "concern":
-        problems.append(f"fam_bp_stroke={bp.get('state')}")
-    if same.get("state") != "clear":
-        problems.append(f"fam_same_problem={same.get('state')}")
+    if _state_of(transfusion) is not AnswerStatus.CONCERN:
+        problems.append(f"fam_transfusion={_state_of(transfusion)}")
+    if _state_of(bp) is not AnswerStatus.CONCERN:
+        problems.append(f"fam_bp_stroke={_state_of(bp)}")
+    if _state_of(same) is not AnswerStatus.CLEAR:
+        problems.append(f"fam_same_problem={_state_of(same)}")
     expected, _ = _assert_reports_match_cursor(call, problems)
-    profile = (call.get("cursor_state") or {}).get("profile") or {}
+    profile = _state(call).profile
     middle = _middle_child(profile)
     if middle is None:
-        problems.append(f"children={profile.get('children')}")
-    elif middle.get("id") not in (jaundice.get("child_ids") or []):
-        problems.append(f"jaundice child {jaundice.get('child_ids')} middle {middle}")
+        problems.append(f"children={profile.children}")
+    elif middle.id not in (jaundice.child_ids if jaundice else []):
+        problems.append(f"jaundice child {jaundice.child_ids if jaundice else []} middle {middle}")
     else:
-        mid_id = str(middle.get("id") or "")
-        expected_en = call_cursor.children_label_en(profile, [mid_id])
-        expected_hi = call_cursor.children_label_hi(profile, [mid_id])
+        expected_en = copy_hi.children_label_en(profile, [middle.id])
+        expected_hi = copy_hi.children_label_hi(profile, [middle.id])
         if expected_en not in expected["doctor_markdown"]:
             problems.append(f"summary_doctor missing middle child attribution ({expected_en})")
         if expected_hi not in post_call.mother_summary_text(expected):
             problems.append(f"summary_mother missing middle child attribution ({expected_hi})")
-    if not _has(answer_notes_text(jaundice), "3", "तीन"):
-        problems.append(f"jaundice days missing: {answer_notes_text(jaundice)}")
-    if "मामा" not in answer_notes_text(transfusion):
-        problems.append(f"fam_who missing: {answer_notes_text(transfusion)}")
-    bp_text = answer_notes_text(bp)
+    if not _has(_answer_notes_text(jaundice), "3", "तीन"):
+        problems.append(f"jaundice days missing: {_answer_notes_text(jaundice)}")
+    if "मामा" not in _answer_notes_text(transfusion):
+        problems.append(f"fam_who missing: {_answer_notes_text(transfusion)}")
+    bp_text = _answer_notes_text(bp)
     if "पिता" not in bp_text:
         problems.append(f"bp_who missing: {bp_text}")
     if not _has(bp_text, "42", "बयालीस"):
@@ -313,21 +320,19 @@ def _child_specs():
 
 
 def _check_p5(persona: Persona, call: dict, problems: list[str]) -> None:
-    cursor = call.get("cursor_state") or {}
-    profile = cursor.get("profile") or {}
-    answers = cursor.get("answers") or {}
-    if profile.get("marital_status") != "about_to_marry":
-        problems.append(f"marital_status={profile.get('marital_status')}")
-    if profile.get("children"):
-        problems.append(f"children={profile.get('children')}")
-    if profile.get("ever_pregnant") is not False:
-        problems.append(f"ever_pregnant={profile.get('ever_pregnant')}")
+    cursor = _state(call)
+    profile, answers = cursor.profile, cursor.answers
+    if profile.marital_status is not MaritalStatus.ABOUT_TO_MARRY:
+        problems.append(f"marital_status={profile.marital_status}")
+    if profile.children:
+        problems.append(f"children={profile.children}")
+    if profile.ever_pregnant is not False:
+        problems.append(f"ever_pregnant={profile.ever_pregnant}")
     child_specs = _child_specs()
     child_qids = {spec.id for spec in child_specs}
     non_na = [
-        spec.id
-        for spec in child_specs
-        if (answers.get(spec.id) or {}).get("state") != "not_applicable"
+        spec.id for spec in child_specs
+        if _state_of(answers.get(spec.id)) is not AnswerStatus.NOT_APPLICABLE
     ]
     if non_na:
         problems.append("child answers not marked not_applicable: " + ", ".join(non_na))
@@ -352,7 +357,7 @@ def _check_p5(persona: Persona, call: dict, problems: list[str]) -> None:
         + [item for grp in report["unasked"] for item in grp["items"]]
     )
     for qid in ("preg_thalassemia", "fam_related"):
-        expected_q = call_cursor.question_hi_for(cursor, get_spec(qid))
+        expected_q = copy_hi.question_hi_for(profile, get_spec(qid))
         if expected_q not in page2_items:
             problems.append(f"mother report page2 missing {qid} wording")
     leaked = [
@@ -368,14 +373,14 @@ def _check_p6(persona: Persona, call: dict, problems: list[str]) -> None:
     close = _answer(call, "close_anything_else")
     cancer = _answer(call, "fam_cancer")
     heart = _answer(call, "fam_heart_kidney")
-    if close.get("state") != "concern":
-        problems.append(f"close_anything_else={close.get('state')}")
-    if cancer.get("state") != "concern":
-        problems.append(f"fam_cancer={cancer.get('state')}")
-    if "चाची" not in answer_notes_text(cancer):
-        problems.append(f"fam_cancer missing चाची side addition: {answer_notes_text(cancer)}")
-    if heart.get("state") != "clear":
-        problems.append(f"fam_heart_kidney={heart.get('state')}")
+    if _state_of(close) is not AnswerStatus.CONCERN:
+        problems.append(f"close_anything_else={_state_of(close)}")
+    if _state_of(cancer) is not AnswerStatus.CONCERN:
+        problems.append(f"fam_cancer={_state_of(cancer)}")
+    if "चाची" not in _answer_notes_text(cancer):
+        problems.append(f"fam_cancer missing चाची side addition: {_answer_notes_text(cancer)}")
+    if _state_of(heart) is not AnswerStatus.CLEAR:
+        problems.append(f"fam_heart_kidney={_state_of(heart)}")
     if persona.counts.get("fam_heart_kidney", 0) != 1:
         problems.append(f"fam_heart_kidney took {persona.counts.get('fam_heart_kidney', 0)} turns")
     _assert_reports_match_cursor(call, problems)
@@ -400,10 +405,9 @@ def _check_p6(persona: Persona, call: dict, problems: list[str]) -> None:
         problems.append(f"duplicate or missing close_anything_else flags: {close_flags}")
 
 
-def _p6_close(state: dict) -> tuple[str, str]:
-    entry = (state.get("answers") or {}).get("close_anything_else") or {}
-    notes = str(entry.get("notes") or "").strip() if isinstance(entry, dict) else ""
-    if isinstance(entry, dict) and entry.get("state") == "concern" and notes:
+def _p6_close(state: CallState) -> tuple[str, str]:
+    record = state.answers.get("close_anything_else")
+    if record is not None and record.state is AnswerStatus.CONCERN and record.verbatim_text:
         return ("quick", "clear")
     return ("quick", "concern")
 
@@ -583,9 +587,9 @@ def _check(call_id: int, persona: Persona) -> dict:
                 problems.append("emergency pdf missing banner")
         elif pages < 2:
             problems.append(f"pdf pages {pages}")
-    cursor = call.get("cursor_state") or {}
-    if cursor.get("close_reason") != persona.close:
-        problems.append(f"close_reason={cursor.get('close_reason')} expected {persona.close}")
+    cursor = _state(call)
+    if cursor.close_reason != persona.close:
+        problems.append(f"close_reason={cursor.close_reason} expected {persona.close}")
     try:
         if persona.check is not None:
             persona.check(call, problems)
@@ -596,8 +600,8 @@ def _check(call_id: int, persona: Persona) -> dict:
         "call_id": call_id,
         "ok": not problems,
         "problems": problems,
-        "close_reason": cursor.get("close_reason"),
-        "phase": cursor.get("phase"),
+        "close_reason": cursor.close_reason.value if cursor.close_reason else None,
+        "phase": cursor.phase.value,
         "flags": count,
         "mother_name": call.get("mother_name"),
         "child_age": call.get("child_age"),
@@ -646,7 +650,7 @@ async def _one(persona: Persona, cookie: str) -> dict:
                         heard_audio = True
                     elif event == "turn_complete" and heard_audio and call_id:
                         heard_audio = False
-                        state = (db.get_call(call_id) or {}).get("cursor_state") or {}
+                        state = db.call_state_from_row(db.get_call(call_id))
                         reply = persona.answer(buf, state)
                         heard = buf[:80].replace("\n", " ")
                         buf = ""
@@ -654,7 +658,7 @@ async def _one(persona: Persona, cookie: str) -> dict:
                             print(f"  closing heard: {heard}", flush=True)
                             continue
                         mode, payload = reply
-                        step = call_cursor.step_id(state)
+                        step = state.step_token
                         print(f"  [{_route(state) or step}] {mode} {payload[:70]}", flush=True)
                         if mode == "quick":
                             tap_step = step or str(question.get("step") or "")

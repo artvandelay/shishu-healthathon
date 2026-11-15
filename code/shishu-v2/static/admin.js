@@ -275,19 +275,23 @@
     return html || "<p>The report is not ready yet.</p>";
   }
 
+  function noteText(val) {
+    if (typeof val === "string") return val.trim();
+    const obj = asObject(val);
+    return String(obj.verbatim || obj.note || obj.notes || "").trim();
+  }
+
   function cursorDetail(item) {
     const bits = [];
     const ids = asList(item && item.child_ids).map(function (id) { return String(id || "").trim(); }).filter(Boolean);
     if (ids.length) bits.push(ids.join(", "));
-    const notes = String((item && item.notes) || "").trim();
-    if (notes) bits.push(notes);
+    const mainNote = noteText(item && (item.note || item.notes));
+    if (mainNote) bits.push(mainNote);
     const followups = asObject(item && item.followups);
     Object.keys(followups).sort().forEach(function (fid) {
       const row = followups[fid];
-      const note = typeof row === "string"
-        ? row.trim()
-        : String((asObject(row).note || asObject(row).notes || "")).trim();
-      if (note && note !== notes) bits.push(fid + ": " + note);
+      const fNote = typeof row === "string" ? row.trim() : noteText(asObject(row).note || row);
+      if (fNote && fNote !== mainNote) bits.push(fid + ": " + fNote);
     });
     return bits.join(" · ");
   }

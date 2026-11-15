@@ -46,21 +46,21 @@ class Stage4AssetTests(unittest.TestCase):
     def test_ending_fires_once_when_closing_audio_finishes(self):
         live = gemini_live.LiveCallSession(ws=FakeWebSocket())
         now = 1000.0
-        live.turn.closing_heard = True
-        live.turn.bot_speaking = True
-        live.turn.playback_ends_at = now
+        live.fsm.closing_heard = True
+        live.fsm.phase = gemini_live.TurnPhase.BOT_SPEAKING
+        live.fsm.playback_ends_at = now
         self.assertFalse(live._closing_audio_finished(now))
-        live.turn.bot_speaking = False
+        live.fsm.phase = gemini_live.TurnPhase.LISTENING
         self.assertFalse(live._closing_audio_finished(now))
         self.assertTrue(live._closing_audio_finished(now + 1.0))
 
         async def once():
             ws = FakeWebSocket()
             live2 = gemini_live.LiveCallSession(ws=ws)
-            await live2._notify_ending()
-            await live2._notify_ending()
-            self.assertTrue(live2.turn.ending_sent)
-            return ws.sent
+            await live2._finalize()
+            await live2._finalize()
+            self.assertTrue(live2.fsm.ending_notified)
+            return [m for m in ws.sent if m.get("type") == "ending"]
 
         self.assertEqual(asyncio.run(once()), [{"type": "ending"}])
 

@@ -11,12 +11,21 @@ from urllib.parse import unquote
 from tests import APP_DIR
 
 import app  # noqa: E402
+import copy_hi  # noqa: E402
 import db  # noqa: E402
+import engine  # noqa: E402
 import gemini_live  # noqa: E402
-import prompts  # noqa: E402
 import report_service  # noqa: E402
 import seed  # noqa: E402
-from call_cursor import apply_profile, new_cursor_state  # noqa: E402
+from models import (  # noqa: E402
+    AnswerStatus,
+    CallState,
+    CloseReason,
+    MaritalStatus,
+    Phase,
+    ProfilePatch,
+    TurnCommand,
+)
 from fastapi.testclient import TestClient  # noqa: E402
 
 
@@ -137,6 +146,14 @@ class SessionTests(unittest.TestCase):
 
 
 class CaptionAndCopyTests(unittest.TestCase):
+    def _emergency_state(self) -> CallState:
+        """An emergency close with a name, built only through the public reducer."""
+        state = engine.reduce_turn(
+            engine.apply_profile_patch(engine.new_state(), ProfilePatch(caller_name="आशा")),
+            TurnCommand(emergency=True, utterance="साँस नहीं आ रही"),
+        )
+        self.assertIs(state.close_reason, CloseReason.EMERGENCY)
+        return state
     def test_login_page_hides_passcode_call_page_and_logo(self):
         login_html = (APP_DIR / "static" / "login.html").read_text(encoding="utf-8")
         if app._passcode():
@@ -157,14 +174,15 @@ class CaptionAndCopyTests(unittest.TestCase):
         self.assertGreater(len(logo.content), 1000)
 
     def test_live_prompt_uses_only_the_cursor_tools(self):
-        text = prompts.GEMINI_LIVE_SYSTEM_PROMPT
+        text = copy_hi.GEMINI_LIVE_SYSTEM_PROMPT
         self.assertIn("next_question", text)
         for old_tool in ("save_profile", "record_turn", "record_finding", "end_call"):
             self.assertNotIn(old_tool, text)
-        closing = prompts.closing_hi({"phase": "closing", "close_reason": "emergency", "profile": {"caller_name": "आशा"}, "answers": {}})
+        closing = copy_hi.closing_hi(self._emergency_state(), has_clinical_concern=False)
         self.assertIn("108", closing)
         self.assertEqual(gemini_live._session_settings({})["voice"], "Kore")
-        self.assertEqual(gemini_live.DEFAULT_LIVE_SETTINGS["gemini_model"], "gemini-3.1-flash-live-preview")
+        self.assertEqual(gemini_live.DEFAULT_LIVE_SETTINGS["gemini_model"],
+                         "gemini-3.1-flash-live-preview")
 
 
 class Stage6BAccessTests(unittest.TestCase):
@@ -235,9 +253,15 @@ class Stage6BAccessTests(unittest.TestCase):
             app._reset_rate_limits()
 
     def test_report_inflight_clears_and_seed_audio_is_stereo_16k(self):
-        state, hold = apply_profile(new_cursor_state(), caller_name="Pooja", marital_status="unmarried")
-        self.assertIsNone(hold)
-        state["phase"], state["close_reason"] = "closing", "complete"
+        state = engine.reduce_turn(
+            engine.apply_profile_patch(
+                engine.new_state(),
+                ProfilePatch(caller_name="Pooja", marital_status=MaritalStatus.UNMARRIED),
+            ),
+            TurnCommand(caller_stop=True),
+        )
+        self.assertIs(state.close_reason, CloseReason.CALLER_STOP)
+        state = state.model_copy(update={"phase": Phase.CLOSING, "close_reason": CloseReason.COMPLETE})
         call_id = db.create_call(caller_name="Pooja")
         db.save_cursor_state(call_id, state)
         db.complete_call(call_id, 20)
@@ -276,22 +300,29 @@ class Stage6BAccessTests(unittest.TestCase):
             by_name[full["caller_name"]] = full
 
         self.assertEqual(set(by_name), {"शिल्पा", "गीता"})
-        shilpa = by_name["शिल्पा"]
-        self.assertTrue(shilpa["red_flags"])
-        sa = shilpa["cursor_state"]["answers"]
+        shilpa = db.call_state_from_row(by_name["शिल्पा"])
+        self.assertTrue(by_name["शिल्पा"]["red_flags"])
         for qid in ("birth_jaundice", "body_joint_swelling", "preg_conditions", "fam_infant_death"):
-            self.assertEqual(sa[qid]["state"], "concern")
-        self.assertIn("तीन दिन नीली लाइट में रखा", sa["birth_jaundice"]["followups"]["jaundice_days"]["note"])
-        self.assertIn("5 महीने का बेटा", sa["fam_infant_death"]["followups"]["infant_death_age"]["note"])
-        self.assertIn("झटके आने से", sa["fam_infant_death"]["followups"]["infant_death_cause"]["note"])
+            self.assertIs(shilpa.answers[qid].state, AnswerStatus.CONCERN)
+        jaundice = shilpa.answers["birth_jaundice"]
+        self.assertIn("तीन दिन नीली लाइट में रखा", jaundice.followups["jaundice_days"].note.verbatim)
+        infant = shilpa.answers["fam_infant_death"]
+        self.assertIn("5 महीने का बेटा", infant.followups["infant_death_age"].note.verbatim)
+        self.assertIn("झटके आने से", infant.followups["infant_death_cause"].note.verbatim)
 
-        geeta = by_name["गीता"]
-        self.assertEqual(geeta["red_flags"], [])
-        self.assertTrue(all(e.get("state") in ("clear", "not_applicable") for e in geeta["cursor_state"]["answers"].values()))
-        clarified = [t["text"] for t in geeta["transcript"] if "थैलेसीमिया माइनर या ट्रेट" in t["text"] and t["role"] == "assistant"]
-        self.assertEqual(len(clarified), 1)
-        self.assertNotIn("transfusion", clarified[0].lower())
-        self.assertNotIn("baar-baar", clarified[0].lower())
+        geeta_call = by_name["गीता"]
+        geeta = db.call_state_from_row(geeta_call)
+        self.assertEqual(geeta_call["red_flags"], [])
+        self.assertTrue(all(
+            record.state in (AnswerStatus.CLEAR, AnswerStatus.NOT_APPLICABLE)
+            for record in geeta.answers.values()
+        ))
+        # The seeded walk asks the plain thalassemia question once and never explains it
+        # with a disease word, so the transcript carries no caption leak.
+        asked = [t["text"] for t in geeta_call["transcript"] if t["role"] == "assistant"]
+        self.assertEqual(len([t for t in asked if "थैलेसीमिया" in t]), 1)
+        for leak in ("transfusion", "baar-baar", "Duchenne", "Hemophilia", "ड्यूशेन", "हीमोफीलिया"):
+            self.assertFalse(any(leak.lower() in t.lower() for t in asked), leak)
 
 
 if __name__ == "__main__":

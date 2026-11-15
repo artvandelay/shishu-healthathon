@@ -16,6 +16,7 @@ from tests.helpers import (
     FakeToolCall,
     FakeWebSocket,
     SessionCtx,
+    answer,
     bot_audio_message,
     choice,
     clear_until,
@@ -32,10 +33,23 @@ from tests.helpers import (
 import app  # noqa: E402
 import db  # noqa: E402
 import decisions  # noqa: E402
+import engine  # noqa: E402
 import gemini_live  # noqa: E402
 import profile_extractor  # noqa: E402
 import report_service  # noqa: E402
-from call_cursor import apply_profile, apply_turn, new_cursor_state, step_id  # noqa: E402
+from models import (  # noqa: E402
+    AnswerRecord,
+    AnswerStatus,
+    CallState,
+    FollowupSlot,
+    MaritalStatus,
+    NoteText,
+    Phase,
+    ProfilePatch,
+    SubStep,
+    TurnCommand,
+    TurnOutcome,
+)
 from fastapi.testclient import TestClient  # noqa: E402
 
 _STATIC = APP_DIR / "static"
@@ -340,31 +354,42 @@ process.stdout.write(JSON.stringify({
         self.assertEqual((result["bugPostedShot"], result["logoutHrefOnCall"]), ("data:image/jpeg;base64,SHRUNK", "/login"))
         self.assertIn("too large", result["bugErrorTextOn413"])
 
-    def test_admin_dashboard_answers_and_race_guards(self):
-        if _NODE is None:
-            self.skipTest("node is not installed")
-        rendered = run_admin_vm(r"""
+    def _admin_dashboard_script(self) -> str:
+        """Render findings from a real `CallState.to_dict()`, not a hand-written literal."""
+        state = clear_until(
+            make_profile_state(children=[make_child(2, "male")], name="पूजा"), "birth_mode_detail"
+        )
+        for outcome, utterance in (
+            (TurnOutcome.CONCERN, "ऑपरेशन"),
+            (TurnOutcome.CONCERN, "सांस की तकलीफ"),
+        ):
+            state = engine.reduce_turn(
+                state, TurnCommand(outcome=outcome, utterance=utterance, child_ref="child_1")
+            )
+        state = engine.reduce_turn(state, TurnCommand(outcome=TurnOutcome.UNKNOWN))
+        live_state = json.dumps(self._answers_only(state), ensure_ascii=False)
+        other_state = json.dumps({"preg_scan": AnswerRecord(
+            state=AnswerStatus.NOT_APPLICABLE
+        ).model_dump(mode="json")}, ensure_ascii=False)
+        return (
+            r"""
 const call1 = {
   id: 1, caller_name: "पूजा", user_role: "user", mother_name: "पूजा", child_age: "2 साल",
   clinic_code: "kem", model_used: "gemini-3.1-flash-live-preview", voice_used: "Kore", duration_sec: 95,
   started_at: "2026-11-15T04:00:00Z", status: "completed", red_flags: ["birth_mode_detail"],
   summary_doctor: "# Doctor Summary\nAll good.", summary_mother: "माँ के लिए सवाल",
   telemetry: { connect_ms: 120, avg_latency_ms: 400, max_latency_ms: 600, turn_latencies_ms: [400], user_turns: 4, bot_turns: 5, tool_calls: 5, watchdog_nudges: 1, audio_chunks_in: 10, audio_chunks_out: 12 },
-  events: [], transcript: [],
-  cursor_state: { answers: {
-    preg_scan: { state: "not_applicable", notes: "", child_ids: [], followups: {} },
-    ever_pregnant: { state: "concern", notes: "", child_ids: [], followups: {} },
-    intro_name: { state: "clear", notes: "पूजा", child_ids: [], followups: {} },
-    intro_bridge: { state: "clear", notes: "", child_ids: [], followups: {} },
-    birth_term: { state: "unknown", notes: "", child_ids: [], followups: {} },
-    birth_mode_detail: { state: "concern", child_ids: ["child_1"], notes: "ऑपरेशन", followups: { operation_reason: { state: "concern", note: "सांस की तकलीफ" } } }
-  } }
+  events: [], transcript: [], cursor_state: { answers: """
+            + live_state
+            + r""" }
 };
 const call2 = {
   id: 2, caller_name: "रेखा", user_role: "user", mother_name: "रेखा", child_age: "4 साल",
   model_used: "gemini-custom-live", voice_used: "Kore", duration_sec: 45, status: "completed",
   red_flags: [], summary_doctor: "", summary_mother: "", telemetry: {}, events: [], transcript: [],
-  cursor_state: { answers: { preg_scan: { state: "not_applicable", notes: "", child_ids: [], followups: {} } } }
+  cursor_state: { answers: """
+            + other_state
+            + r""" }
 };
 const env = bootAdmin({
   fetch(path) {
@@ -395,7 +420,39 @@ process.stdout.write(JSON.stringify({
   fetchedUrls: env.fetchedUrls, headers, rows, modelBadge, customModelBadge, callMeta, kpis,
   copiedReport: env.getCopiedText(), copyNotice, emptyText: env.document.getElementById("findings").children[0].textContent
 }));
-""")
+"""
+        )
+
+    def _answers_only(self, state: CallState) -> dict:
+        """The typed answers block exactly as `admin.js` receives it."""
+        answers = state.to_dict()["answers"]
+        keep = {"birth_mode_detail", "birth_term", "intro_name", "intro_bridge",
+                "ever_pregnant", "preg_scan"}
+        trimmed = {qid: answers[qid] for qid in keep if qid in answers}
+        trimmed["birth_mode_detail"] = AnswerRecord(
+            state=AnswerStatus.CONCERN,
+            child_ids=["child_1"],
+            note=NoteText(verbatim="ऑपरेशन", mother_safe="ऑपरेशन"),
+            followups={
+                "operation_reason": FollowupSlot(
+                    state=AnswerStatus.CONCERN,
+                    note=NoteText(verbatim="सांस की तकलीफ", mother_safe="सांस की तकलीफ"),
+                )
+            },
+        ).model_dump(mode="json")
+        trimmed["ever_pregnant"] = AnswerRecord(state=AnswerStatus.CONCERN).model_dump(mode="json")
+        trimmed["birth_term"] = AnswerRecord(state=AnswerStatus.UNKNOWN).model_dump(mode="json")
+        trimmed["preg_scan"] = AnswerRecord(state=AnswerStatus.NOT_APPLICABLE).model_dump(mode="json")
+        trimmed["intro_name"] = AnswerRecord(
+            state=AnswerStatus.CLEAR, note=NoteText(verbatim="पूजा", mother_safe="पूजा")
+        ).model_dump(mode="json")
+        trimmed["intro_bridge"] = AnswerRecord(state=AnswerStatus.CLEAR).model_dump(mode="json")
+        return trimmed
+
+    def test_admin_dashboard_answers_and_race_guards(self):
+        if _NODE is None:
+            self.skipTest("node is not installed")
+        rendered = run_admin_vm(self._admin_dashboard_script())
         self.assertNotIn("/api/config", rendered["fetchedUrls"])
         self.assertEqual(rendered["headers"], ["Question ID", "State", "Detail", "Red flag"])
         self.assertEqual((rendered["modelBadge"], rendered["customModelBadge"]), ("Gemini 3.1 Flash Live", "gemini-custom-live"))
@@ -404,7 +461,8 @@ process.stdout.write(JSON.stringify({
         rows = rendered["rows"]
         self.assertEqual([r["state"] for r in rows], ["concern", "concern", "unknown", "clear", "clear"])
         self.assertEqual((rows[0]["qid"], rows[0]["flag"], rows[0]["rowClass"]), ("birth_mode_detail", "Yes", "flag"))
-        self.assertTrue("child_1" in rows[0]["detail"] and "ऑपरेशन" in rows[0]["detail"] and "operation_reason: सांस की तकलीफ" in rows[0]["detail"])
+        self.assertTrue("child_1" in rows[0]["detail"] and "ऑपरेशन" in rows[0]["detail"]
+                        and "operation_reason: सांस की तकलीफ" in rows[0]["detail"])
         self.assertEqual((rows[1]["qid"], rows[1]["flag"], rows[1]["rowClass"]), ("ever_pregnant", "", ""))
         self.assertEqual((rendered["emptyText"], rendered["copiedReport"], rendered["copyNotice"]),
                          ("No structured findings were recorded.", "# Doctor Summary\nAll good.", "Report copied."))
@@ -552,14 +610,28 @@ class QuickReplySocketTests(unittest.TestCase):
             return decision_result(request, raw, decision_ms=22, total_input_tokens=240)
 
         async def fake_extract(state, **_kwargs):
-            qid = state.get("active_qid")
-            updates = ({"caller_name": "पूजा"} if qid == "intro_name"
-                       else {"marital_status": "married"} if qid == "intro_married"
-                       else {"child_count": 2, "children": [{"age_years": 6, "sex": "male", "name": "अमन"}, {"age_years": 2, "sex": "female", "name": "रिया"}]} if qid == "intro_children"
-                       else {})
-            return profile_extractor.ProfileExtractionResult(ok=True, updates=updates, error_reason="", extractor_ms=15)
+            qid = state.cursor.qid
+            patch = (
+                ProfilePatch(caller_name="पूजा") if qid == "intro_name"
+                else ProfilePatch(marital_status=MaritalStatus.MARRIED) if qid == "intro_married"
+                else ProfilePatch(
+                    child_count=2,
+                    children=(
+                        profile_extractor.ChildInput(
+                            age_years=6, sex=profile_extractor.ChildSex.MALE, name="अमन"
+                        ),
+                        profile_extractor.ChildInput(
+                            age_years=2, sex=profile_extractor.ChildSex.FEMALE, name="रिया"
+                        ),
+                    ),
+                ) if qid == "intro_children"
+                else ProfilePatch()
+            )
+            return profile_extractor.ProfileExtractionResult(
+                ok=True, patch=patch, error_reason="", extractor_ms=15
+            )
 
-        async def fake_connect(_client, _model, _config):
+        async def fake_connect(_client, _model, _config, _handle=""):
             return SessionCtx(session, close_on_exit=True), session, 4
 
         async def fast_pdf(_cid):
@@ -596,13 +668,13 @@ class QuickReplySocketTests(unittest.TestCase):
                     session.push(bot_audio_message(turn_complete=True))
                     wait_for(lambda m: m.get("type") == "audio")
                     ws.send_json({"type": "quick_reply", "outcome": "concern", "step": gate["step"]})
-                    wait_for(lambda m: m.get("type") == "question_state" and m.get("step") == "birth_mode_detail:-1")
+                    wait_for(lambda m: m.get("type") == "question_state" and m.get("step") == "birth_mode_detail:which_child:0")
                     session.push(bot_audio_message(turn_complete=True))
                     wait_for(lambda m: m.get("type") == "audio")
                     ws.send_json({"type": "text", "text": "बड़ा वाला"})
                     wait_for(lambda m: m.get("type") == "transcript" and m.get("role") == "user" and "बड़ा" in str(m.get("text") or ""))
                     session.push(server_message(tool_calls=[FakeToolCall(fid="nq-child")], turn_complete=True))
-                    wait_for(lambda m: m.get("type") == "question_state" and m.get("step") == "birth_mode_detail:0")
+                    wait_for(lambda m: m.get("type") == "question_state" and m.get("step") == "birth_mode_detail:followup:0")
                 finally:
                     ws.close()
             self.assertEqual((eval_mock.await_count, ext_mock.await_count), (4, 3))
@@ -612,24 +684,31 @@ class QuickReplySocketTests(unittest.TestCase):
             [(m["qid"], m["step"], m["expect_yes_no"]) for m in states],
             [("intro_name", "intro_name", False), ("intro_married", "intro_married", False),
              ("intro_children", "intro_children", False), ("intro_bridge", "intro_bridge", True),
-             ("birth_mode_detail", "birth_mode_detail", True), ("birth_mode_detail", "birth_mode_detail:-1", False),
-             ("birth_mode_detail", "birth_mode_detail:0", False)],
+             ("birth_mode_detail", "birth_mode_detail", True),
+             ("birth_mode_detail", "birth_mode_detail:which_child:0", False),
+             ("birth_mode_detail", "birth_mode_detail:followup:0", False)],
         )
         self.assertTrue(all(m["prompt_chars"] > 0 for m in states))
         said = [m.get("text") for m in messages if m.get("type") == "transcript" and m.get("role") == "user"]
         self.assertTrue("नहीं।" in said and "हाँ।" in said and {"type": "clear"} in messages)
-        saved = db.get_call(next(m["call_id"] for m in messages if m.get("type") == "session_started"))["cursor_state"]
-        self.assertEqual((saved["answers"]["birth_mode_detail"]["child_ids"], saved["pending_followup_idx"]), (["child_1"], 0))
+        saved = db.call_state_from_row(db.get_call(
+            next(m["call_id"] for m in messages if m.get("type") == "session_started")
+        ))
+        self.assertEqual(
+            (saved.answers["birth_mode_detail"].child_ids,
+             saved.cursor.substep, saved.cursor.followup_idx),
+            (["child_1"], SubStep.FOLLOWUP, 0),
+        )
 
     def test_prompt_chars_and_yes_no_follow_the_step_kind(self):
-        state = new_cursor_state()
-        for expected_qid, expected_yn, prof_kw in (
+        state = engine.new_state()
+        for expected_qid, expected_yn, patch in (
             ("intro_name", False, None),
-            ("intro_married", False, {"caller_name": "रेखा"}),
-            ("intro_children", False, {"marital_status": "married"}),
+            ("intro_married", False, ProfilePatch(caller_name="रेखा")),
+            ("intro_children", False, ProfilePatch(marital_status=MaritalStatus.MARRIED)),
         ):
-            if prof_kw:
-                state, _ = apply_profile(state, **prof_kw)
+            if patch is not None:
+                state = engine.reduce_turn(state, TurnCommand(profile_patch=patch))
             body = gemini_live._question_state_payload(state)
             self.assertEqual((body["qid"], body["expect_yes_no"]), (expected_qid, expected_yn))
             self.assertGreater(body["prompt_chars"], 0)
@@ -637,16 +716,24 @@ class QuickReplySocketTests(unittest.TestCase):
         kids = [make_child(8, "male", 1), make_child(2, "female", 2)]
         state = clear_until(make_profile_state(children=kids), "birth_mode_detail")
         self.assertTrue(gemini_live._question_state_payload(state)["expect_yes_no"])
-        state = apply_turn(state, "concern")
-        self.assertEqual((gemini_live._question_state_payload(state)["step"], gemini_live._question_state_payload(state)["expect_yes_no"]), ("birth_mode_detail:-1", False))
-        state = apply_turn(state, "concern", child_ref="child_1")
-        self.assertEqual((gemini_live._question_state_payload(state)["step"], gemini_live._question_state_payload(state)["expect_yes_no"]), ("birth_mode_detail:0", False))
+        state = answer(state, "concern")
+        self.assertEqual(
+            (gemini_live._question_state_payload(state)["step"],
+             gemini_live._question_state_payload(state)["expect_yes_no"]),
+            ("birth_mode_detail:which_child:0", False),
+        )
+        state = answer(state, "concern", child_ref="child_1")
+        self.assertEqual(
+            (gemini_live._question_state_payload(state)["step"],
+             gemini_live._question_state_payload(state)["expect_yes_no"]),
+            ("birth_mode_detail:followup:0", False),
+        )
 
     def test_quick_reply_superseding_inflight_decision_holds_without_duplicate_cue(self):
         async def run():
             thresholds = shipped_thresholds()
             state = clear_until(make_profile_state(children=[make_child(4, "male")]), "birth_nicu")
-            step1 = step_id(state)
+            step1 = state.step_token
             eval_started, release_eval = asyncio.Event(), asyncio.Event()
 
             async def slow_eval(request, **_kwargs):
@@ -667,34 +754,42 @@ class QuickReplySocketTests(unittest.TestCase):
                 session = FakeLiveSession()
                 live = gemini_live.LiveCallSession(
                     ws=ws, session=session, call_id=db.create_call(), recorder=DummyRecorder(),
-                    cursor_state=json.loads(json.dumps(state)), thresholds=thresholds,
+                    state=state, thresholds=thresholds,
                 )
-                live.turn.spoken_qid = live.turn.user_turn_step = step1
-                live.capture.user_turn_buffer = "नहीं"
+                live.fsm.spoken_step = live.fsm.user_turn_step = step1
+                live.fsm.text_buffer = "नहीं"
 
                 with patch.object(decisions, "evaluate_turn", side_effect=slow_eval):
-                    tool_task = asyncio.create_task(live._handle_server_message(server_message(tool_calls=[FakeToolCall(fid="fc-in")], turn_complete=tc)))
+                    tool_task = asyncio.create_task(live._handle_server_message(
+                        server_message(tool_calls=[FakeToolCall(fid="fc-in")], turn_complete=tc)
+                    ))
                     await asyncio.wait_for(eval_started.wait(), timeout=1.0)
                     await live._browser_loop()
-                    qr_ts = live.turn.last_user_turn_ts
+                    qr_ts = live.fsm.last_user_turn_ts
                     if bot_already_spoke:
                         await live._on_bot_audio(b"\x01\x00" * 24, 24000)
-                        live.turn.bot_speaking = False
+                        live.fsm.phase = gemini_live.TurnPhase.LISTENING
                         pinned_quiet = time.time() - 0.2
-                        live.turn.quiet_from = pinned_quiet
+                        live.fsm.quiet_from = pinned_quiet
                     release_eval.set()
                     self.assertTrue(await tool_task)
 
-                self.assertEqual((live.cursor_state["answers"]["birth_nicu"]["state"], live.cursor_state["active_qid"]), ("clear", "birth_jaundice"))
+                self.assertEqual(
+                    (live.state.answers["birth_nicu"].state, live.state.cursor.qid),
+                    (AnswerStatus.CLEAR, "birth_jaundice"),
+                )
                 tool_resp = [item[1] for item in session.sent if item[0] == "tool"][0][0]
-                self.assertEqual((tool_resp.response["result"], tool_resp.response["reason"]), ("held", "stale_turn"))
-                self.assertEqual(len([m for m in ws.sent if m.get("type") == "question_state" and m.get("step") == "birth_jaundice"]), 1)
+                self.assertEqual((tool_resp.response["result"], tool_resp.response["reason"]),
+                                 ("held", "stale_turn"))
+                self.assertEqual(len([m for m in ws.sent
+                                      if m.get("type") == "question_state"
+                                      and m.get("step") == "birth_jaundice"]), 1)
                 self.assertEqual(len([item for item in session.sent if item[0] == "realtime"]), 1)
-                self.assertIsNone(live.turn.speak_fallback)
-                self.assertEqual(live.turn.last_user_turn_ts, qr_ts)
-                self.assertEqual(live.turn.awaiting_bot_reply, not bot_already_spoke)
+                self.assertIsNone(live.speak_fallback)
+                self.assertEqual(live.fsm.last_user_turn_ts, qr_ts)
+                self.assertEqual(live.fsm.awaiting_bot_reply, not bot_already_spoke)
                 if bot_already_spoke:
-                    self.assertGreaterEqual(live.turn.quiet_from, pinned_quiet)
+                    self.assertGreaterEqual(live.fsm.quiet_from, pinned_quiet)
 
         asyncio.run(run())
 

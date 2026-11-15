@@ -13,23 +13,31 @@ from types import SimpleNamespace
 
 from tests import APP_DIR
 
-import call_cursor
+import copy_hi
 import decisions
+import engine
 import gemini_live
-from call_cursor import apply_profile, apply_turn, new_cursor_state
+import live_fsm  # noqa: F401 - re-exported for tests that drive the machine
+from models import (
+    AnswerStatus,
+    CallState,
+    ChildInput,
+    ChildSex,
+    MaritalStatus,
+    Phase,
+    ProfilePatch,
+    SubStep,
+    TurnCommand,
+    TurnOutcome,
+)
 
 _STATIC = APP_DIR / "static"
 _NODE = shutil.which("node")
 
 
-def make_child(age: float, sex: str = "unknown", n: int = 1, name: str | None = None) -> dict:
-    return {
-        "id": f"child_{n}",
-        "age_years": age,
-        "age_label_hi": f"{int(round(age * 12))} महीने" if age < 1 else f"{age:g} साल",
-        "sex": sex,
-        "name": name,
-    }
+def make_child(age: float, sex: str = "unknown", n: int = 1, name: str | None = None) -> ChildInput:
+    """One child as the extractor would report it, so `engine` can number it."""
+    return ChildInput(age_years=age, sex=ChildSex(sex), name=name)
 
 
 def make_profile_state(
@@ -37,34 +45,58 @@ def make_profile_state(
     children: list | None = None,
     ever_pregnant: bool | None = None,
     name: str = "पूजा",
-) -> dict:
-    state, hold = apply_profile(new_cursor_state(), caller_name=name)
-    assert hold is None, hold
-    state, hold = apply_profile(state, marital_status=marital)
-    assert hold is None, hold
+) -> CallState:
+    """A call that has already walked the intro, built only through typed patches."""
+    patches = [ProfilePatch(caller_name=name), ProfilePatch(marital_status=MaritalStatus(marital))]
     if marital == "married" or children:
-        state, hold = apply_profile(state, children=list(children or []))
-        assert hold is None, hold
-    if ever_pregnant is not None and state["profile"]["ever_pregnant"] is not True:
-        state, hold = apply_profile(state, ever_pregnant=ever_pregnant)
-        assert hold is None, hold
+        patches.append(ProfilePatch(children=tuple(children or ())))
+    state = engine.new_state()
+    for patch in patches:
+        state = engine.reduce_turn(state, TurnCommand(profile_patch=patch))
+    if ever_pregnant is not None and state.profile.ever_pregnant is not True:
+        state = engine.reduce_turn(
+            state, TurnCommand(profile_patch=ProfilePatch(ever_pregnant=ever_pregnant))
+        )
     return state
 
 
-def clear_until(state: dict, qid: str, limit: int = 90) -> dict:
+def clear_until(state: CallState, qid: str, limit: int = 90) -> CallState:
+    """Answer everything `clear` until `qid` is the active main question."""
     for _ in range(limit):
-        if state["phase"] != "asking":
+        if state.phase is not Phase.ASKING:
             return state
-        if state["active_qid"] == qid and state["pending_followup_idx"] is None:
+        if (state.cursor.qid, state.cursor.substep) == (qid, SubStep.MAIN) and state.cursor.hold is None:
             return state
-        if state["active_qid"] == "ever_pregnant":
-            state = apply_turn(state, "clear")
-            continue
-        prev = (state["active_qid"], state["pending_followup_idx"])
-        state = apply_turn(state, "clear")
-        if (state["active_qid"], state["pending_followup_idx"]) == prev and state["phase"] == "asking":
-            raise AssertionError(f"cursor stuck at {prev}")
-    raise AssertionError(f"never reached {qid}; still at {state['active_qid']}")
+        before = state.step_token
+        state = engine.reduce_turn(state, TurnCommand(outcome=TurnOutcome.CLEAR))
+        if state.step_token == before and state.phase is Phase.ASKING:
+            raise AssertionError(f"cursor stuck at {before} while seeking {qid}")
+    raise AssertionError(f"never reached {qid}; still at {state.cursor.qid}")
+
+
+def answer(state: CallState, outcome: str, **kwargs) -> CallState:
+    """Reduce one typed turn, the same way the live session does."""
+    return engine.reduce_turn(state, TurnCommand(outcome=TurnOutcome(outcome), **kwargs))
+
+
+def question_hi(state: CallState) -> str:
+    """The exact Hindi she is hearing right now."""
+    return engine.say_hindi(state)
+
+
+def answer_text(record) -> str:
+    """Every verbatim word saved on one answer, for assertions."""
+    return record.verbatim_text
+
+
+def mother_text(record) -> str:
+    """The Mother-facing copy for one answer, with diagnostics stripped."""
+    return record.mother_safe_text
+
+
+def answer_status(state: CallState, qid: str) -> AnswerStatus | None:
+    record = state.answers.get(qid)
+    return record.state if record is not None else None
 
 
 def noul(prob: float) -> dict:
@@ -272,9 +304,10 @@ class DummyRecorder:
         return None
 
 
-async def drop_fallback(turn) -> None:
-    task = turn.speak_fallback
-    turn.speak_fallback = None
+async def drop_fallback(live) -> None:
+    """Cancel and await the pending tool speak fallback, if any."""
+    task = live.speak_fallback
+    live.speak_fallback = None
     if task is None:
         return
     task.cancel()
