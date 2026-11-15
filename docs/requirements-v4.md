@@ -71,7 +71,7 @@ Profile fields in `state["profile"]`:
 | `no_daughter_11_plus` | `no_children` OR no child has `sex == "female" and age_years >= 11` |
 | `no_family_concern` | No `fam_*` item (excluding `fam_same_problem`) has `state == "concern"` |
 
-### Dynamic Marital Wording Overrides in `call_cursor._question_hi`:
+### Dynamic Marital Wording Overrides (`triage_catalog.py` -> `call_cursor.question_hi_for`):
 - **`preg_thalassemia`**:
   - `married`: `"क्या आपकी या आपके पति की थैलेसीमिया खून जाँच में कभी माइनर या ट्रेट जैसी कोई दिक्कत बताई गई?"`
   - `about_to_marry`: `"क्या आपकी या आपके होने वाले पति की थैलेसीमिया खून जाँच में कभी माइनर या ट्रेट जैसी कोई दिक्कत बताई गई?"`
@@ -86,7 +86,7 @@ Profile fields in `state["profile"]`:
 ## 4. Complete Atomic Triage Catalog (`code/shishu-v2/triage_catalog.py`)
 
 `QuestionSpec` dataclass fields:
-`id`, `group`, `kind` (`"profile" | "bridge" | "gate" | "open_capture"` — keep `"gate"` for all clinical spine items so `mother_report.py` marks unasked items `"पूछा नहीं गया"` on incomplete calls), `question_hi` (1-child / general), `question_multi_hi` (explicit 2+ children phrasing; `""` if non-child item), `stem_hi` (clean Hindi stem without leading `"क्या "` or trailing punctuation, used for deterministic reports/notes), `need_en`, `nrroid_gate`, `skip_if` (default `()`), `followups` (default `()`), `enabled` (`True`).
+`id`, `group`, `kind` (`"profile" | "bridge" | "gate" | "open_capture"` — keep `"gate"` for all clinical spine items so `mother_report.py` marks unasked items `"पूछा नहीं गया"` on incomplete calls), `question_hi` (1-child / general), `question_multi_hi` (explicit 2+ children phrasing; `""` if non-child item), `stem_hi` (clean Hindi stem without leading `"क्या "` or trailing punctuation, used for deterministic reports/notes), `need_en`, `nrroid_gate`, `skip_if` (default `()`), `followups` (default `()`), `enabled` (`True`), `question_about_hi` (`about_to_marry` phrasing; default `""`), `question_unmarried_hi` (`unmarried` phrasing; default `""`).
 
 ### 4.1 Follow-Up Prompts (`FOLLOWUP_HI`)
 | Follow-up ID | Hindi Prompt (`expect_yes_no = False`) |
@@ -216,11 +216,10 @@ Profile fields in `state["profile"]`:
    - Works at **any** point in the call (not restricted to `intro_*`).
    - If `marital_status in ("unmarried", "about_to_marry")`: if `children is None` and `child_count is None`, clears `state["profile"]["children"] = []`; if `ever_pregnant is None` and not `True`, sets `state["profile"]["ever_pregnant"] = False`.
    - Re-runs `_recompute(state)`. If `state["active_qid"]` is now skipped (e.g. caller was on `intro_children` and said *"मेरी शादी नहीं हुई है"*), immediately calls `_advance(state)`!
-   - When a profile step is incomplete (`hold` in `{"name_fragment", "marital_status", "children_ages", "ever_pregnant"}`), stores `state["hold_reason"] = hold` so `active_prompt_hi(state)` speaks a **specific, natural Hindi prompt** instead of repeating the full intro question:
+   - When a profile step is incomplete (`hold` in `{"name_fragment", "marital_status", "children_ages"}`), stores `state["hold_reason"] = hold` so `active_prompt_hi(state)` speaks a **specific, natural Hindi prompt** instead of repeating the full intro question:
      - `"name_fragment"` -> `"जी, आराम से बताइए — आपका पूरा नाम क्या है?"`
      - `"marital_status"` -> `"जी, क्या आपकी शादी हो गई है, होने वाली है, या अभी नहीं हुई?"`
      - `"children_ages"` -> `"जी, उन सभी बच्चों की उम्र क्या-क्या है?"`
-     - `"ever_pregnant"` -> `"क्या आप कभी गर्भवती हुई हैं?"`
 2. **`apply_turn(state, outcome, *, child_ref="", note="", followup_answered=False, diagnostic=False) -> dict`**:
    - Allowed `outcome`: `"clear" | "concern" | "unknown" | "clarify" | "retract" | "emergency" | "caller_stop"`.
    - **`intro_bridge` (`spec.kind == "bridge"`)**:
@@ -329,7 +328,6 @@ Profile fields in `state["profile"]`:
      - `tests/test_live_server.py` — `gemini_live.py` + `live_decision_bridge.py` `next_question` turn execution, speak-on-`turn_complete`, silence check-in, reconnect, and technical failure fallback
      - `tests/test_quick_reply_ui.py` — end-to-end WebSocket `TestClient` `question_state` / `quick_reply` / stale-turn tests + UI flanking button invariants
      - `tests/test_reports.py` — deterministic `post_call.py` clinician notes, `mother_report.py` 2-page WeasyPrint PDF generation, diagnostic redaction, and `report_service.py`
-     - `tests/test_end_to_end_flows.py` — multi-turn end-to-end flows across demographic profiles, retractions, emergencies, and post-call synthesis
      - `tests/test_clinic_and_reviews.py` — clinic codes, clinician review ratings, and admin API routes
      - `tests/test_security_and_captions.py` — HMAC cookie auth, UUID `share_token` PDF access, rate limits, and prompt/HTML safety invariants
      - `tests/test_audio.py` — `audio_recorder.py` off-loop 16 kHz stereo WAV recording and `pcm16_to_wav_bytes`

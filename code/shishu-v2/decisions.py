@@ -261,9 +261,6 @@ def _extract_usage(payload: dict[str, Any]) -> tuple[bool, int | None]:
     in_tok = raw.get("total_input_tokens")
     if isinstance(in_tok, int) and not isinstance(in_tok, bool):
         return True, in_tok
-    tot_tok = raw.get("total_tokens")
-    if isinstance(tot_tok, int) and not isinstance(tot_tok, bool):
-        return True, None
     return False, None
 
 
@@ -334,6 +331,8 @@ async def evaluate_turn(
         except urllib.error.HTTPError as exc:
             status = int(exc.code)
             raw_body = exc.read() if hasattr(exc, "read") else b""
+        except asyncio.CancelledError:
+            raise
         except BaseException as exc:
             is_to = isinstance(exc, (TimeoutError, asyncio.TimeoutError, socket.timeout)) or (
                 isinstance(exc, urllib.error.URLError)

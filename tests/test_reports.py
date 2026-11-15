@@ -3,9 +3,7 @@
 import asyncio
 import io
 import json
-import os
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -13,11 +11,6 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 import tests  # noqa: E402, F401
-
-_TMP = tempfile.mkdtemp(prefix="shishu-v3-reports-")
-os.environ["DATA_DIR"] = _TMP
-os.environ.setdefault("APP_PASSCODE", "user-test")
-os.environ.setdefault("ADMIN_PASSCODE", "admin-test")
 
 import app as shishu_app  # noqa: E402
 import call_cursor  # noqa: E402
@@ -308,7 +301,7 @@ class CursorReportTests(unittest.TestCase):
         self.assertNotIn("fracture_count_or_bowing", synthesis["doctor_markdown"])
         self.assertNotIn("nicu_reason", synthesis["doctor_markdown"])
 
-    def test_v3_build_saves_flags_and_admin_labels(self):
+    def test_report_build_saves_flags_and_admin_labels(self):
         bleed_id = _store(_bleed_cursor(), "Pooja")
         calm_id = _store(_childless_cursor(), "Pooja")
         asyncio.run(report_service.mother_pdf(bleed_id))

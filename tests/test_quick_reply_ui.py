@@ -6,7 +6,6 @@ import os
 import queue
 import shutil
 import sys
-import tempfile
 import threading
 import unittest
 from pathlib import Path
@@ -18,10 +17,6 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 from tests import APP_DIR  # noqa: E402
 
-_TMP = tempfile.mkdtemp(prefix="shishu-v4-ui-")
-os.environ["DATA_DIR"] = _TMP
-os.environ.setdefault("APP_PASSCODE", "user-test")
-os.environ.setdefault("ADMIN_PASSCODE", "admin-test")
 os.environ.setdefault("GEMINI_API_KEY", "test-key")
 
 import app  # noqa: E402
@@ -238,6 +233,7 @@ class QuickReplyScreenTests(unittest.TestCase):
         self.assertNotIn("/api/config", rendered["fetchedUrls"])
         self.assertEqual(rendered["headers"], ["Question ID", "State", "Detail", "Red flag"])
         self.assertEqual(rendered["modelBadge"], "Gemini 3.1 Flash Live")
+        self.assertEqual(rendered["customModelBadge"], "gemini-custom-live")
         self.assertIn("पूजा · 2 साल", rendered["callMeta"])
         self.assertNotIn("अमन", rendered["callMeta"])
         self.assertNotIn("female", rendered["callMeta"])
@@ -246,7 +242,7 @@ class QuickReplyScreenTests(unittest.TestCase):
         rows = rendered["rows"]
         self.assertEqual(
             [row["state"] for row in rows],
-            ["concern", "concern", "unknown", "clear"],
+            ["concern", "unknown", "clear", "clear"],
         )
         concern = rows[0]
         self.assertEqual(concern["qid"], "birth_mode_detail")
@@ -257,7 +253,7 @@ class QuickReplyScreenTests(unittest.TestCase):
         self.assertIn("operation_reason: सांस की तकलीफ", concern["detail"])
 
         bridge = next(row for row in rows if row["qid"] == "intro_bridge")
-        self.assertEqual(bridge["state"], "concern")
+        self.assertEqual(bridge["state"], "clear")
         self.assertEqual(bridge["flag"], "")
         self.assertEqual(bridge["rowClass"], "")
         self.assertNotIn("preg_scan", [row["qid"] for row in rows])
@@ -719,9 +715,7 @@ const call1 = {
   caller_name: "पूजा",
   user_role: "user",
   mother_name: "पूजा",
-  child_name: "अमन",
   child_age: "2 साल",
-  child_gender: "female",
   clinic_code: "kem",
   model_used: "gemini-3.1-flash-live-preview",
   voice_used: "Kore",
@@ -749,7 +743,7 @@ const call1 = {
     answers: {
       preg_scan: { state: "not_applicable", notes: "", child_ids: [], followups: {} },
       intro_name: { state: "clear", notes: "पूजा", child_ids: [], followups: {} },
-      intro_bridge: { state: "concern", notes: "", child_ids: [], followups: {} },
+      intro_bridge: { state: "clear", notes: "", child_ids: [], followups: {} },
       birth_term: { state: "unknown", notes: "", child_ids: [], followups: {} },
       birth_mode_detail: {
         state: "concern",
@@ -767,7 +761,7 @@ const call2 = {
   user_role: "user",
   mother_name: "रेखा",
   child_age: "4 साल",
-  model_used: "gemini-3.1-flash-live-preview",
+  model_used: "gemini-custom-live",
   voice_used: "Kore",
   duration_sec: 45,
   status: "completed",
@@ -845,6 +839,8 @@ async function flushMicrotasks() {
 
   const firstListItem = document.getElementById("call-list").children[0];
   const modelBadge = firstListItem.children[3].children[0].textContent;
+  const secondListItem = document.getElementById("call-list").children[1];
+  const customModelBadge = secondListItem.children[3].children[0].textContent;
   const callMeta = document.getElementById("call-meta").textContent;
   const kpis = document.getElementById("telemetry-grid").children
     .map((box) => box.children.map((n) => n.textContent).join(": "))
@@ -864,6 +860,7 @@ async function flushMicrotasks() {
     headers,
     rows,
     modelBadge,
+    customModelBadge,
     callMeta,
     kpis,
     copiedReport,

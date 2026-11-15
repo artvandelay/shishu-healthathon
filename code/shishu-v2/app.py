@@ -19,7 +19,6 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(_REPO_ROOT / ".env")
-load_dotenv()
 
 import db
 import gemini_live

@@ -96,7 +96,7 @@
       function modelBadge(call) {
         const model = String((call && call.model_used) || "").trim();
         if (!model) return "—";
-        if (model.toLowerCase().indexOf("gemini") !== -1) return "Gemini 3.1 Flash Live";
+        if (model.toLowerCase() === "gemini-3.1-flash-live-preview") return "Gemini 3.1 Flash Live";
         return model;
       }
 
@@ -328,7 +328,7 @@
         keys.forEach(function (qid) {
           const item = asObject(answers[qid]);
           const state = String(item.state || "");
-          const flagged = state === "concern" && qid !== "intro_bridge";
+          const flagged = state === "concern";
           const row = el("tr", flagged ? "flag" : "");
           row.appendChild(el("td", "", qid));
           row.appendChild(el("td", "", state));
@@ -465,7 +465,7 @@
       function eventBadgeClass(type) {
         if (type === "error" || type === "bug_reported") return "pill hot";
         if (type === "watchdog_nudge" || type === "manual_nudge") return "pill warn";
-        if (type === "session_started" || type === "tool_call" || type === "bot_first_audio") return "badge";
+        if (type === "session_started" || type === "tool_call" || type === "bot_first_audio" || type === "decision_turn") return "badge";
         if (type === "user_transcript") return "badge";
         return "pill";
       }

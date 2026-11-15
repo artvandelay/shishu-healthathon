@@ -20,9 +20,9 @@
     ],
     "caller_stop_recall": 1.0,
     "caller_stop_false_positive_rate": 0.0,
-    "outcome_exact_accuracy": 0.96,
-    "outcome_macro_precision": 0.9722,
-    "outcome_macro_recall": 0.9444,
+    "outcome_exact_accuracy": 1.0,
+    "outcome_macro_precision": 1.0,
+    "outcome_macro_recall": 1.0,
     "side_qid_precision": 1.0,
     "side_qid_recall": 1.0,
     "side_qid_false_writes": 0,
@@ -31,7 +31,7 @@
     "detail_present_accuracy": 1.0,
     "mentions_diagnosis_accuracy": 1.0,
     "mentions_profile_accuracy": 1.0,
-    "avg_decision_ms": 460.9
+    "avg_decision_ms": 957.2
   },
   "thresholds": {
     "danger_now_min_yes": 0.6043,
@@ -40,7 +40,7 @@
     "mentions_diagnosis_min_yes": 0.5606,
     "detail_present_min_yes": 0.4847,
     "outcome_min_confidence": 0.45,
-    "outcome_min_margin": 0.05,
+    "outcome_min_margin": 0.1,
     "side_intent_min_confidence": 0.7979,
     "side_intent_min_margin": 0.05,
     "side_qid_min_confidence": 0.5539,

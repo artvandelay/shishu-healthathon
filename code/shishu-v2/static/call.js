@@ -102,6 +102,8 @@
       let frozenDuration = "00:00";
       let callId = null;
       let shareToken = "";
+      let reportPending = false;
+      let hangupArmed = false;
       let wakeLock = null;
       const CLINIC_KEY = "shishu_clinic";
       let captionRole = "";
@@ -120,6 +122,7 @@
       let nudgeWatch = 0;
       let micSmooth = 0;
       let bugCategory = "";
+      let bugShotData = "";
       let hudNoteTimer = 0;
       let thinkingTimer = 0;
 
@@ -769,9 +772,6 @@
         }
       }
 
-      let reportPending = false;
-      let hangupArmed = false;
-
       function onSocketClose() {
         if (phase === "done") return;
         if (phase === "preparing") {
@@ -887,6 +887,8 @@
         captionRole = "";
         captionText = "";
         captionEl.textContent = "";
+        hangupArmed = false;
+        reportPending = false;
         callId = null;
         shareToken = "";
         modelName = "";
@@ -1038,7 +1040,10 @@
         if (shareToken) {
           return "/api/calls/by-token/" + encodeURIComponent(shareToken) + "/mother.pdf";
         }
-        return "/api/calls/" + encodeURIComponent(callId) + "/mother.pdf";
+        if (userRole === "admin" && callId != null) {
+          return "/api/calls/" + encodeURIComponent(callId) + "/mother.pdf";
+        }
+        return "";
       }
 
       function pdfName(res) {
@@ -1048,7 +1053,9 @@
       }
 
       function fetchMotherPdf() {
-        return fetch(motherPdfUrl(), { credentials: "same-origin" })
+        const url = motherPdfUrl();
+        if (!url) return Promise.reject(new Error("pdf"));
+        return fetch(url, { credentials: "same-origin" })
           .then(function (res) {
             if (!res.ok) throw new Error("pdf");
             const name = pdfName(res);
@@ -1081,7 +1088,9 @@
       }
 
       function requestReport() {
-        return fetch(motherPdfUrl(), {
+        const url = motherPdfUrl();
+        if (!url) return Promise.reject(new Error("pdf"));
+        return fetch(url, {
           method: "POST",
           credentials: "same-origin"
         }).then(function (res) {
@@ -1215,7 +1224,7 @@
         bugNote.value = "";
         bugCategory = "";
         if (bugShot) bugShot.value = "";
-        window.__bugShot = "";
+        bugShotData = "";
         bugCats.querySelectorAll(".chip").forEach(function (btn) {
           btn.classList.remove("on");
           btn.setAttribute("aria-pressed", "false");
@@ -1271,7 +1280,7 @@
             captionText: captionText,
             lastTelemetry: lastTelemetry,
             recentEvents: recentEvents.slice(),
-            screenshot: window.__bugShot || ""
+            screenshot: bugShotData || ""
           }
         };
         const snapshot = JSON.stringify(payload, null, 2);
@@ -1370,10 +1379,10 @@
         bugShot.addEventListener("change", function () {
           const file = bugShot.files && bugShot.files[0];
           if (!file) {
-            window.__bugShot = "";
+            bugShotData = "";
             return;
           }
-          shrinkShot(file).then(function (data) { window.__bugShot = data; });
+          shrinkShot(file).then(function (data) { bugShotData = data; });
         });
       }
 

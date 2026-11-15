@@ -44,6 +44,27 @@ from prompts import (
 _ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 load_dotenv(_ENV_PATH)
 
+DEFAULT_LIVE_SETTINGS: dict[str, str] = {
+    "gemini_model": "gemini-3.1-flash-live-preview",
+    "gemini_voice": "Kore",
+    "vad_prefix_padding_ms": "300",
+    "vad_silence_ms": "1000",
+    "vad_start_sensitivity": "LOW",
+    "vad_end_sensitivity": "LOW",
+    "watchdog_timeout_sec": "8.0",
+}
+
+_LIVE_SETTING_ENV_KEYS: tuple[tuple[str, str], ...] = (
+    ("GEMINI_MODEL", "gemini_model"),
+    ("GEMINI_VOICE", "gemini_voice"),
+    ("VAD_PREFIX_PADDING_MS", "vad_prefix_padding_ms"),
+    ("VAD_SILENCE_MS", "vad_silence_ms"),
+    ("VAD_START_SENSITIVITY", "vad_start_sensitivity"),
+    ("VAD_END_SENSITIVITY", "vad_end_sensitivity"),
+    ("WATCHDOG_TIMEOUT_SEC", "watchdog_timeout_sec"),
+    ("DECISION_THRESHOLDS_PATH", "decision_thresholds_path"),
+)
+
 _INPUT_RATE = 16000
 _OUTPUT_RATE = 24000
 _WATCHDOG_INTERVAL_SEC = 0.5
@@ -128,21 +149,35 @@ class _SessionProxy:
         return getattr(self.current, name)
 
 
-def _session_settings(settings: dict) -> dict:
-    start_raw = settings.get("vad_start_sensitivity")
+def live_settings(overrides: dict | None = None) -> dict[str, str]:
+    merged = dict(DEFAULT_LIVE_SETTINGS)
+    for env_key, setting_key in _LIVE_SETTING_ENV_KEYS:
+        raw = os.environ.get(env_key)
+        if raw is not None and raw.strip():
+            merged[setting_key] = raw.strip()
+    if overrides:
+        for key, value in overrides.items():
+            if value is not None:
+                merged[str(key)] = str(value)
+    return merged
+
+
+def _session_settings(settings: dict | None = None) -> dict:
+    merged = live_settings(settings)
+    start_raw = merged.get("vad_start_sensitivity")
     if start_raw in (None, ""):
         start_raw = "LOW"
-    end_raw = settings.get("vad_end_sensitivity")
+    end_raw = merged.get("vad_end_sensitivity")
     if end_raw in (None, ""):
         end_raw = "LOW"
-    start_low = start_raw == "LOW"
-    end_low = end_raw == "LOW"
-    silence_raw = settings.get("vad_silence_ms")
+    start_low = str(start_raw).strip().upper() == "LOW"
+    end_low = str(end_raw).strip().upper() == "LOW"
+    silence_raw = merged.get("vad_silence_ms")
     silence_ms = 1000 if silence_raw in (None, "") else int(float(silence_raw))
     return {
-        "model": settings.get("gemini_model") or "gemini-3.1-flash-live-preview",
-        "voice": "Kore",
-        "prefix_padding_ms": int(float(settings.get("vad_prefix_padding_ms") or 300)),
+        "model": merged.get("gemini_model") or "gemini-3.1-flash-live-preview",
+        "voice": str(merged.get("gemini_voice") or "Kore").strip() or "Kore",
+        "prefix_padding_ms": int(float(merged.get("vad_prefix_padding_ms") or 300)),
         "silence_duration_ms": silence_ms,
         "start_sens": (
             types.StartSensitivity.START_SENSITIVITY_LOW
@@ -154,12 +189,12 @@ def _session_settings(settings: dict) -> dict:
             if end_low
             else types.EndSensitivity.END_SENSITIVITY_HIGH
         ),
-        "watchdog_timeout_sec": float(settings.get("watchdog_timeout_sec") or 8.0),
+        "watchdog_timeout_sec": float(merged.get("watchdog_timeout_sec") or 8.0),
     }
 
 
 def _live_config(
-    settings: dict,
+    settings: dict | None = None,
     resume_handle: str | None = None,
 ) -> types.LiveConnectConfig:
     chosen = _session_settings(settings)
@@ -229,7 +264,6 @@ def _new_telemetry(
         "max_latency_ms": 0,
         "last_interaction_status": "",
         "dropoff_qid": "",
-        "close_reason": "",
         "reconnects": 0,
         "errors": [],
     }
@@ -510,6 +544,45 @@ def _cancel_speak_fallback(turn: _TurnState) -> None:
     task.add_done_callback(consume_task_error)
 
 
+async def _send_speak_cue(
+    session,
+    send_lock: asyncio.Lock,
+    ws: WebSocket,
+    ws_lock: asyncio.Lock,
+    call_id: int,
+    telemetry: dict,
+    cursor: _Cursor,
+    turn: _TurnState,
+    stop: asyncio.Event | None,
+    *,
+    kind: str,
+    text: str | None = None,
+    error_msg: str = "Could not prompt Gemini to speak",
+    record_tool_error: bool = True,
+) -> bool:
+    step_now = step_id(cursor.state)
+    cue_text = text if text is not None else prompts.speak_cue_text(cursor.state, kind)
+    turn.active_speak_kind = kind
+    turn.pending_speak_step = ""
+    turn.capture.speech_allowed = True
+    try:
+        ok = await _send_realtime_safe(
+            session, send_lock, turn, stop or asyncio.Event(), text=cue_text
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        ok = False
+    if ok:
+        if not turn.reconnect_requested:
+            turn.speak_cue_step = step_now
+        return True
+    if record_tool_error:
+        telemetry["tool_errors"] = int(telemetry.get("tool_errors") or 0) + 1
+    await _report_error(ws, ws_lock, call_id, telemetry, error_msg)
+    return False
+
+
 async def _fallback_speak_after_tool(
     session,
     send_lock: asyncio.Lock,
@@ -542,21 +615,18 @@ async def _fallback_speak_after_tool(
             return
         if step_id(cursor.state) != step_after_tool:
             return
-        text = prompts.speak_cue_text(cursor.state, kind)
-        turn.active_speak_kind = kind
-        turn.pending_speak_step = ""
-        turn.capture.speech_allowed = True
-        if stop is None:
-            async with send_lock:
-                await session.send_realtime_input(text=text)
-            turn.speak_cue_step = step_after_tool
-            return
-        ok = await _send_realtime_safe(session, send_lock, turn, stop, text=text)
-        if ok and not turn.reconnect_requested:
-            turn.speak_cue_step = step_after_tool
-        if not ok:
-            telemetry["tool_errors"] = int(telemetry.get("tool_errors") or 0) + 1
-            await _report_error(ws, ws_lock, call_id, telemetry, "Could not prompt Gemini to speak")
+        await _send_speak_cue(
+            session,
+            send_lock,
+            ws,
+            ws_lock,
+            call_id,
+            telemetry,
+            cursor,
+            turn,
+            stop,
+            kind=kind,
+        )
     except asyncio.CancelledError:
         raise
     except Exception:
@@ -705,7 +775,6 @@ async def _answer_function_calls(
             handled = True
         if cursor.state.get("phase") == "closing":
             body["stop"] = True
-            body.pop("wait", None)
             body["say"] = prompts.closing_hi(cursor.state)
         if not fc_id:
             continue
@@ -746,7 +815,6 @@ async def _answer_function_calls(
         elif clarify_applied:
             kind = "clarify"
         delay = 0.0 if send_failed else _TOOL_SPEAK_FALLBACK_SEC
-        step_after_tool = step_id(cursor.state)
         turn.pending_speak_step = step_after_tool
         turn.pending_speak_kind = kind
         turn.active_speak_kind = kind
@@ -985,37 +1053,30 @@ async def _handle_server_message(
                     input_rate=_INPUT_RATE,
                 )
                 decision_ran_in_msg = True
+                telemetry["tool_calls"] = int(telemetry.get("tool_calls") or 0) + 1
+                await _emit(ws, ws_lock, call_id, telemetry, "tool_call", f"missed_tool_{_kind}")
                 await _send_json(ws, ws_lock, _question_state_payload(cursor.state))
                 missed_kind = "speak"
                 if cursor.state.get("phase") != "asking":
                     missed_kind = "close"
                 elif clarify_applied:
                     missed_kind = "clarify"
-                state.pending_speak_step = ""
-                state.active_speak_kind = missed_kind
                 _cancel_speak_fallback(state)
-                cap.speech_allowed = True
                 if not state.end_requested:
                     _arm_waiting_reply(state, speech_end_waiting=False)
                     state.quiet_from = 0.0
-                ok = await _send_realtime_safe(
+                if not await _send_speak_cue(
                     session,
                     send_lock,
+                    ws,
+                    ws_lock,
+                    call_id,
+                    telemetry,
+                    cursor,
                     state,
-                    stop if stop is not None else asyncio.Event(),
-                    text=prompts.speak_cue_text(cursor.state, missed_kind),
-                )
-                if ok and not state.reconnect_requested:
-                    state.speak_cue_step = step_id(cursor.state)
-                if not ok:
-                    telemetry["tool_errors"] = int(telemetry.get("tool_errors") or 0) + 1
-                    await _report_error(
-                        ws,
-                        ws_lock,
-                        call_id,
-                        telemetry,
-                        "Could not prompt Gemini to speak",
-                    )
+                    stop,
+                    kind=missed_kind,
+                ):
                     if stop is not None:
                         stop.set()
                     return False
@@ -1042,28 +1103,19 @@ async def _handle_server_message(
             and not stop_is_set
             and not state.reconnect_requested
         ):
-            state.pending_speak_step = ""
-            state.active_speak_kind = speak_kind
             _cancel_speak_fallback(state)
-            cap.speech_allowed = True
-            ok = await _send_realtime_safe(
+            if not await _send_speak_cue(
                 session,
                 send_lock,
+                ws,
+                ws_lock,
+                call_id,
+                telemetry,
+                cursor,
                 state,
-                stop if stop is not None else asyncio.Event(),
-                text=prompts.speak_cue_text(cursor.state, speak_kind),
-            )
-            if ok and not state.reconnect_requested:
-                state.speak_cue_step = speak_step
-            if not ok:
-                telemetry["tool_errors"] = int(telemetry.get("tool_errors") or 0) + 1
-                await _report_error(
-                    ws,
-                    ws_lock,
-                    call_id,
-                    telemetry,
-                    "Could not prompt Gemini to speak",
-                )
+                stop,
+                kind=speak_kind,
+            ):
                 if stop is not None:
                     stop.set()
                 return False
@@ -1185,19 +1237,23 @@ async def _gemini_loop(
             and cursor.state.get("phase") == "asking"
             and not state.end_requested
         ):
-            state.pending_speak_step = ""
-            state.capture.speech_allowed = True
             _arm_waiting_reply(state, speech_end_waiting=False)
             await _send_json(ws, ws_lock, _question_state_payload(cursor.state))
-            sent = await _send_realtime_safe(
+            if not await _send_speak_cue(
                 session,
                 send_lock,
+                ws,
+                ws_lock,
+                call_id,
+                telemetry,
+                cursor,
                 state,
                 stop,
-                text=prompts.speak_cue_text(cursor.state, state.active_speak_kind),
-            )
-            if sent and not state.reconnect_requested:
-                state.speak_cue_step = step_id(cursor.state)
+                kind=state.active_speak_kind,
+                record_tool_error=False,
+            ):
+                stop.set()
+                return
 
 
 async def _watchdog_loop(
@@ -1295,18 +1351,21 @@ async def _watchdog_loop(
             telemetry["watchdog_nudges"] += 1
             state.last_user_turn_ts = time.time()
             nudge = prompts.speak_cue_text(cursor.state, state.active_speak_kind)
-            state.capture.speech_allowed = True
-            ok = await _send_realtime_safe(
-                session, send_lock, state, stop, text=nudge
-            )
-            if not ok:
-                await _report_error(
-                    ws,
-                    ws_lock,
-                    call_id,
-                    telemetry,
-                    "Watchdog nudge failed",
-                )
+            if not await _send_speak_cue(
+                session,
+                send_lock,
+                ws,
+                ws_lock,
+                call_id,
+                telemetry,
+                cursor,
+                state,
+                stop,
+                kind=state.active_speak_kind,
+                text=nudge,
+                error_msg="Watchdog nudge failed",
+                record_tool_error=False,
+            ):
                 stop.set()
                 return
             if state.reconnect_requested:
@@ -1430,20 +1489,23 @@ async def _browser_loop(
             elif kind == "nudge":
                 if state.awaiting_bot_reply:
                     state.last_user_turn_ts = time.time()
-                state.capture.speech_allowed = True
                 nudge = prompts.speak_cue_text(cursor.state, state.active_speak_kind)
-                ok = await _send_realtime_safe(
-                    session, send_lock, state, stop, text=nudge
-                )
-                if not ok:
+                if not await _send_speak_cue(
+                    session,
+                    send_lock,
+                    ws,
+                    ws_lock,
+                    call_id,
+                    telemetry,
+                    cursor,
+                    state,
+                    stop,
+                    kind=state.active_speak_kind,
+                    text=nudge,
+                    error_msg="Could not nudge Gemini",
+                    record_tool_error=False,
+                ):
                     stop.set()
-                    await _report_error(
-                        ws,
-                        ws_lock,
-                        call_id,
-                        telemetry,
-                        "Could not nudge Gemini",
-                    )
                     return
                 if state.reconnect_requested:
                     continue
@@ -1542,26 +1604,21 @@ async def _browser_loop(
                 else:
                     _arm_user_turn(state, telemetry)
                     cue_kind = "speak"
-                state.active_speak_kind = cue_kind
                 _cancel_speak_fallback(state)
-                state.capture.speech_allowed = True
-                ok = await _send_realtime_safe(
+                await _send_speak_cue(
                     session,
                     send_lock,
+                    ws,
+                    ws_lock,
+                    call_id,
+                    telemetry,
+                    cursor,
                     state,
                     stop,
-                    text=prompts.speak_cue_text(cursor.state, cue_kind),
+                    kind=cue_kind,
+                    error_msg="Could not speak the next question",
+                    record_tool_error=False,
                 )
-                if not ok:
-                    await _report_error(
-                        ws,
-                        ws_lock,
-                        call_id,
-                        telemetry,
-                        "Could not speak the next question",
-                    )
-                elif not state.reconnect_requested:
-                    state.speak_cue_step = step_id(cursor.state)
             elif kind == "hangup":
                 stop.set()
                 return
@@ -1675,7 +1732,6 @@ async def handle_gemini_ws(
     clinic_code: str = "",
     thresholds: decisions.DecisionThresholds | None = None,
 ) -> None:
-    load_dotenv(_ENV_PATH)
     if ws.client_state == WebSocketState.CONNECTING:
         await ws.accept()
 
@@ -1696,7 +1752,7 @@ async def handle_gemini_ws(
     finalized = False
 
     try:
-        settings = db.get_all_settings()
+        settings = live_settings()
         try:
             state.capture.thresholds = load_turn_thresholds(
                 settings,

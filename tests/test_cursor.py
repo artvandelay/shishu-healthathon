@@ -27,6 +27,20 @@ from call_cursor import (  # noqa: E402
 from triage_catalog import FOLLOWUP_HI, active_specs, get_spec  # noqa: E402
 
 _DOC = REPO_ROOT / "docs" / "requirements-v4.md"
+_BACHCHA_LATER = re.compile(r"बच्चा(?!े|ों)")
+
+
+def _collision(text: str) -> bool:
+    start = 0
+    while True:
+        at = text.find("बच्चे", start)
+        if at < 0:
+            return False
+        if _BACHCHA_LATER.search(text[at + len("बच्चे"):]):
+            return True
+        start = at + len("बच्चे")
+
+
 _PREG_HISTORY = (
     "preg_conditions",
     "preg_scan",
@@ -190,6 +204,30 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(call_cursor.question_hi_for(alone, nicu), nicu.question_hi)
         self.assertNotIn("किसी भी", nicu.question_hi)
 
+    def test_every_child_question_is_grammatical_for_all_children(self):
+        kids = [_child(6, "male", 1), _child(2, "female", 2)]
+        state = _profile(children=kids)
+        seen = 0
+        for spec in active_specs():
+            if not spec.question_multi_hi:
+                continue
+            seen += 1
+            text = call_cursor.question_hi_for(state, spec)
+            self.assertEqual(text, spec.question_multi_hi, spec.id)
+            self.assertNotIn("—", text, spec.id)
+            self.assertFalse(text.startswith("आपके किसी भी बच्चे —"), spec.id)
+            self.assertFalse(_collision(text), f"{spec.id}: {text}")
+        self.assertEqual(seen, 36)
+        term = call_cursor.question_hi_for(state, get_spec("birth_term"))
+        sudden = call_cursor.question_hi_for(state, get_spec("birth_sudden"))
+        bleed = call_cursor.question_hi_for(state, get_spec("body_bleeding_bruise"))
+        self.assertIn("आपके किसी भी बच्चे का जन्म", term)
+        self.assertIn("आपका कोई भी बच्चा", sudden)
+        self.assertIn("आपके किसी भी बच्चे को मामूली चोट", bleed)
+        fasting = call_cursor.question_hi_for(state, get_spec("ill_fasting"))
+        self.assertIn("आपका कोई भी बच्चा", fasting)
+        self.assertIn("सुस्त", fasting)
+
 
 class ProfileTests(unittest.TestCase):
     def test_fragment_and_missing_ages_ask_for_the_missing_piece(self):
@@ -288,11 +326,16 @@ class SkipMatrixTests(unittest.TestCase):
         self.assertEqual(call_cursor.question_hi_for({}, thal), thal.question_hi)
         self.assertEqual(call_cursor.question_hi_for({"profile": {}}, thal), thal.question_hi)
         unmarried = call_cursor.question_hi_for({"profile": {"marital_status": "unmarried"}}, thal)
-        self.assertEqual(unmarried, call_cursor._THAL_UNMARRIED)
+        self.assertEqual(unmarried, triage_catalog.get_spec("preg_thalassemia").question_unmarried_hi)
         self.assertNotIn("पति", unmarried)
-        self.assertIn(
-            "होने वाले पति",
+        self.assertEqual(
             call_cursor.question_hi_for({"profile": {"marital_status": "about_to_marry"}}, thal),
+            triage_catalog.get_spec("preg_thalassemia").question_about_hi,
+        )
+        related = get_spec("fam_related")
+        self.assertEqual(
+            call_cursor.question_hi_for({"profile": {"marital_status": "about_to_marry"}}, related),
+            related.question_about_hi,
         )
         self.assertEqual(
             call_cursor.question_hi_for({"profile": {"children": "nope"}}, nicu),
@@ -416,28 +459,6 @@ class ChildResolutionTests(unittest.TestCase):
             else:
                 continue
             self.assertFalse(any(name == "re" or name.startswith("re.") for name in names))
-        for name in (
-            "_NUMBER_WORDS",
-            "_AGE_RE",
-            "_age_from_ref",
-            "_digits_for_number_words",
-            "_ref_tokens",
-            "_hit",
-            "_pool_for_sex",
-            "_ordinal_id",
-            "_BARE_NAMES",
-            "_ALL_CHILDREN",
-            "_OLDEST",
-            "_MIDDLE",
-            "_SECOND",
-            "_THIRD",
-            "_YOUNGEST",
-            "_MALE",
-            "_FEMALE",
-            "_accepted_target",
-            "_question_hi",
-        ):
-            self.assertFalse(hasattr(call_cursor, name), name)
         state = _profile(children=self._three())
         roster = call_cursor.children_roster(state)
         self.assertEqual([row["id"] for row in roster], ["child_2", "child_3", "child_1"])
@@ -1283,6 +1304,89 @@ class DecisionApiPhase1Tests(unittest.TestCase):
             "child_2 (female, age 8.0, रिया)",
         )
         self.assertEqual(call_cursor.children_label_en(prof, []), "")
+
+    def test_ever_pregnant_name_update_does_not_trap_in_hold(self):
+        childless = apply_turn(_profile(children=[]), "clear")
+        self.assertEqual(childless["active_qid"], "ever_pregnant")
+        self.assertTrue(expect_yes_no(childless))
+        self.assertEqual(set(call_cursor._HOLD_HI), call_cursor._HARD_HOLDS)
+
+        updated = apply_interpreted_turn(childless, {
+            "current_outcome": "not_about_active",
+            "profile_updates": {"caller_name": "कविता"},
+        })
+        self.assertEqual(updated["profile"]["caller_name"], "कविता")
+        self.assertIsNone(updated["hold_reason"])
+        self.assertEqual(updated["active_qid"], "ever_pregnant")
+        self.assertTrue(expect_yes_no(updated))
+
+        also_answered = apply_interpreted_turn(childless, {
+            "current_outcome": "clear",
+            "profile_updates": {"caller_name": "कविता"},
+        })
+        self.assertEqual(also_answered["profile"]["caller_name"], "कविता")
+        self.assertFalse(also_answered["profile"]["ever_pregnant"])
+        self.assertIsNone(also_answered["hold_reason"])
+        self.assertEqual(also_answered["active_qid"], "preg_thalassemia")
+
+    def test_skipped_active_qid_does_not_stamp_last_answered_qid(self):
+        state = _clear_until(
+            _profile(children=[_child(4, "male"), _child(2, "female", 2)]),
+            "birth_nicu",
+        )
+        self.assertEqual(state["answers"]["birth_term"]["state"], "clear")
+        self.assertEqual(state["last_answered_qid"], "birth_term")
+        updated, hold = apply_profile(state, marital_status="unmarried")
+        self.assertIsNone(hold)
+        self.assertEqual(updated["active_qid"], "preg_thalassemia")
+        self.assertEqual(updated["last_answered_qid"], "birth_term")
+
+        # _revise_target skipping fam_same_problem via retraction also keeps last_answered_qid
+        fam_state = _clear_until(_profile(children=[_child(4, "male")]), "fam_cancer")
+        fam_state = apply_turn(fam_state, "concern", note="मामा को कैंसर")
+        fam_state = apply_turn(fam_state, "concern", note="मामा")
+        fam_state = _clear_until(fam_state, "fam_same_problem")
+        self.assertEqual(fam_state["last_answered_qid"], "fam_lumps")
+        retracted = apply_interpreted_turn(fam_state, {
+            "current_outcome": "not_about_active",
+            "side_qid": "fam_cancer",
+            "side_action": "add_or_correct",
+            "side_outcome": "retract",
+        })
+        self.assertEqual(retracted["answers"]["fam_same_problem"]["state"], "not_applicable")
+        self.assertEqual(retracted["active_qid"], "close_anything_else")
+        self.assertEqual(retracted["last_answered_qid"], "fam_lumps")
+
+    def test_merge_slot_preserves_safe_followup_text_when_diagnostic_side_note_merged(self):
+        state = _clear_until(_profile(children=[_child(4, "male")]), "birth_nicu")
+        state = apply_turn(state, "concern", note="सांस", followup_answered=True)
+        state = apply_turn(state, "concern", note="तीन दिन")
+        self.assertNotEqual(state["active_qid"], "birth_nicu")
+
+        updated = apply_interpreted_turn(state, {
+            "current_outcome": "not_about_active",
+            "diagnostic_note": True,
+            "side_qid": "birth_nicu",
+            "side_action": "add_or_correct",
+            "side_outcome": "concern",
+            "side_note": "डॉक्टर ने Pompe बताया",
+        })
+        entry = updated["answers"]["birth_nicu"]
+        self.assertEqual(entry["followups"]["nicu_days"]["note"], "तीन दिन; डॉक्टर ने Pompe बताया")
+        self.assertEqual(entry["followups"]["nicu_days"]["mother_note"], "तीन दिन")
+        all_notes = call_cursor.answer_notes_text(entry)
+        mother_notes = call_cursor.mother_notes_text(entry)
+        self.assertIn("तीन दिन", all_notes)
+        self.assertIn("डॉक्टर ने Pompe बताया", all_notes)
+        self.assertIn("तीन दिन", mother_notes)
+        self.assertNotIn("डॉक्टर ने Pompe बताया", mother_notes)
+
+        # Reverse order: diagnostic slot merged with a later safe side note keeps safe text for mother
+        diag_first = call_cursor._make_slot("concern", "Pompe", diagnostic=True)
+        merged_safe = call_cursor._merge_slot(diag_first, "चार दिन", diagnostic=False)
+        self.assertEqual(merged_safe["note"], "Pompe; चार दिन")
+        self.assertEqual(merged_safe["mother_note"], "चार दिन")
+        self.assertEqual(call_cursor.mother_notes_text({"notes": "", "followups": {"nicu_days": merged_safe}}), "चार दिन")
 
 
 if __name__ == "__main__":

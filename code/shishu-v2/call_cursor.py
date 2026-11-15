@@ -37,14 +37,10 @@ _HARD_HOLDS = frozenset({"name_fragment", "marital_status", "children_ages"})
 
 _EVER_PREGNANT_HI = "क्या आप कभी गर्भवती हुई हैं?"
 _CLOSE_MORE_HI = "मैंने यह बात नोट कर ली। इसके अलावा कुछ और बताना चाहेंगी?"
-_THAL_ABOUT = "क्या आपकी या आपके होने वाले पति की थैलेसीमिया खून जाँच में कभी माइनर या ट्रेट जैसी कोई दिक्कत बताई गई?"
-_THAL_UNMARRIED = "क्या आपकी थैलेसीमिया खून जाँच में कभी माइनर या ट्रेट जैसी कोई दिक्कत बताई गई?"
-_RELATED_ABOUT = "क्या आप और आपके होने वाले पति पहले से आपस में रिश्तेदार हैं, जैसे कज़िन या एक ही खानदान से?"
 _HOLD_HI = {
     "name_fragment": "जी, आराम से बताइए — आपका पूरा नाम क्या है?",
     "marital_status": "जी, क्या आपकी शादी हो गई है, होने वाली है, या अभी नहीं हुई?",
     "children_ages": "जी, उन सभी बच्चों की उम्र क्या-क्या है?",
-    "ever_pregnant": _EVER_PREGNANT_HI,
 }
 
 
@@ -123,7 +119,7 @@ def apply_profile(
 
     _recompute(state)
     if _active_is_skipped(state):
-        _advance(state)
+        _advance(state, record_answered=False)
         _recompute(state)
     hold = _profile_hold(state, children_given)
     if hold:
@@ -263,7 +259,7 @@ def _revise_target(
         )
     _recompute(state)
     if _active_is_skipped(state):
-        _advance(state)
+        _advance(state, record_answered=False)
     return state
 
 
@@ -295,7 +291,7 @@ def apply_turn(
         return _resolve_ever(state, outcome)
     if state["active_qid"] == "close_anything_else":
         if state.get("pending_followup_idx") is None:
-            return _resolve_close(state, outcome, note, followup_answered, diagnostic=diagnostic)
+            return _resolve_close(state, outcome, note, diagnostic=diagnostic)
         return _resolve_close_detail(state, outcome, note, diagnostic=diagnostic)
     if state.get("pending_followup_idx") == -1:
         return _resolve_which_child(state, child_ref, note, outcome, diagnostic=diagnostic)
@@ -416,10 +412,7 @@ def apply_interpreted_turn(state: dict, interpreted: dict) -> dict:
         state, profile_hold = apply_profile(state, **profile_kwargs)
         profile_applied = True
         active_changed = state.get("active_qid") != prev_active_qid
-        hold_set_other = (
-            profile_hold is not None
-            and not (state.get("active_qid") == "ever_pregnant" and profile_hold == "ever_pregnant")
-        )
+        hold_set_other = profile_hold is not None
         hold_cleared = prev_hold is not None and state.get("hold_reason") is None
         skip_active_from_profile = (
             active_changed
@@ -487,10 +480,6 @@ def apply_interpreted_turn(state: dict, interpreted: dict) -> dict:
         if state.get("pending_followup_idx") is not None:
             return apply_turn(state, "concern", child_ref="", note="")
         return state
-
-    if state.get("active_qid") == "ever_pregnant" and state.get("hold_reason") == "ever_pregnant":
-        if current_outcome in ("clear", "concern", "unknown", "retract"):
-            state["hold_reason"] = None
 
     pending_idx = state.get("pending_followup_idx")
     is_pending_followup = isinstance(pending_idx, int) and pending_idx >= 0
@@ -710,7 +699,9 @@ def mother_notes_text(entry: dict) -> str:
     if isinstance(followups, dict):
         for val in followups.values():
             if isinstance(val, dict):
-                if not val.get("diagnostic"):
+                if "mother_note" in val:
+                    raw_parts.append(val["mother_note"])
+                elif not val.get("diagnostic"):
                     raw_parts.append(val.get("note"))
             elif isinstance(val, str):
                 raw_parts.append(val)
@@ -742,14 +733,10 @@ def question_hi_for(state: dict, spec) -> str:
     children = profile.get("children")
     if not isinstance(children, list):
         children = []
-    if spec.id == "preg_thalassemia":
-        if marital == "about_to_marry":
-            return _THAL_ABOUT
-        if marital == "unmarried":
-            return _THAL_UNMARRIED
-        return spec.question_hi
-    if spec.id == "fam_related" and marital == "about_to_marry":
-        return _RELATED_ABOUT
+    if marital == "about_to_marry" and spec.question_about_hi:
+        return spec.question_about_hi
+    if marital == "unmarried" and spec.question_unmarried_hi:
+        return spec.question_unmarried_hi
     multi = spec.question_multi_hi
     if len(children) > 1 and multi:
         return multi
@@ -836,12 +823,10 @@ def _resolve_close(
     state: dict,
     outcome: str,
     note: str,
-    followup_answered: bool = False,
     *,
     diagnostic: bool = False,
 ) -> dict:
-    has_detail = bool(note.strip()) and (followup_answered or bool(note.strip()))
-    if outcome == "concern" and not has_detail:
+    if outcome == "concern" and not note.strip():
         state["pending_followup_idx"] = 0
         state["step_attempts"] = 0
         return state
@@ -998,8 +983,9 @@ def _resolve_followup(
     return state
 
 
-def _advance(state: dict) -> None:
-    state["last_answered_qid"] = state.get("active_qid")
+def _advance(state: dict, *, record_answered: bool = True) -> None:
+    if record_answered:
+        state["last_answered_qid"] = state.get("active_qid")
     state["pending_followup_idx"] = None
     state["step_attempts"] = 0
     nxt = _next_qid(state, state.get("active_qid") or "")
@@ -1066,8 +1052,6 @@ def _profile_hold(state: dict, children_given: bool) -> str | None:
         return "marital_status"
     if qid == "intro_children" and not profile["children"] and not children_given:
         return "children_ages"
-    if qid == "ever_pregnant" and profile["ever_pregnant"] is None:
-        return "ever_pregnant"
     return None
 
 
@@ -1231,21 +1215,35 @@ def _prior_mother_notes(entry: dict) -> str:
     return str(entry.get("notes") or "")
 
 
-def _make_slot(status: str, note: str, *, diagnostic: bool = False) -> dict:
+def _make_slot(
+    status: str, note: str, *, diagnostic: bool = False, mother_note: str | None = None
+) -> dict:
+    if mother_note is None:
+        mother_note = "" if diagnostic else note
     slot: dict = {"state": status, "note": note}
-    if diagnostic and note:
-        slot["diagnostic"] = True
+    if mother_note != note:
+        if mother_note:
+            slot["mother_note"] = mother_note
+        else:
+            slot["diagnostic"] = True
     return slot
 
 
 def _merge_slot(prior_slot: object, extra_note: str, *, diagnostic: bool = False) -> dict:
-    prev_note = prior_slot.get("note", "") if isinstance(prior_slot, dict) else ""
-    prev_diag = bool(prior_slot.get("diagnostic")) if isinstance(prior_slot, dict) else False
-    return _make_slot(
-        "concern",
-        _join_notes(str(prev_note or ""), extra_note),
-        diagnostic=prev_diag or diagnostic,
-    )
+    if isinstance(prior_slot, dict):
+        prev_note = str(prior_slot.get("note") or "")
+        if "mother_note" in prior_slot:
+            prev_mother = str(prior_slot.get("mother_note") or "")
+        elif prior_slot.get("diagnostic"):
+            prev_mother = ""
+        else:
+            prev_mother = prev_note
+    else:
+        prev_note = ""
+        prev_mother = ""
+    merged_note = _join_notes(prev_note, extra_note)
+    merged_mother = prev_mother if diagnostic else _join_notes(prev_mother, extra_note)
+    return _make_slot("concern", merged_note, mother_note=merged_mother)
 
 
 def _blank(

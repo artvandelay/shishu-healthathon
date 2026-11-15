@@ -11,6 +11,7 @@ import post_call
 import prompts
 import report_service
 from call_cursor import active_prompt_hi, apply_profile, apply_turn, new_cursor_state
+from gemini_live import DEFAULT_LIVE_SETTINGS
 
 _SHILPA_CONCERNS: dict[tuple[str, int | None], tuple[str, dict]] = {
     ("birth_jaundice", None): (
@@ -130,8 +131,8 @@ def _seed_call(
     call_id = db.create_call(
         caller_name=caller_name,
         user_role="user",
-        model_used=db.DEFAULT_SETTINGS["gemini_model"],
-        voice_used=db.DEFAULT_SETTINGS["gemini_voice"],
+        model_used=DEFAULT_LIVE_SETTINGS["gemini_model"],
+        voice_used=DEFAULT_LIVE_SETTINGS["gemini_voice"],
     )
     for role, text, qid in turns:
         db.append_transcript(call_id, role, text, qid=qid)

@@ -3,20 +3,15 @@
 import asyncio
 import os
 import sys
-import tempfile
 import unittest
 import wave
 from pathlib import Path
+from urllib.parse import unquote
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 from tests import APP_DIR  # noqa: E402
-
-_TMP = tempfile.mkdtemp(prefix="shishu-v3-security-")
-os.environ["DATA_DIR"] = _TMP
-os.environ.setdefault("APP_PASSCODE", "user-test")
-os.environ.setdefault("ADMIN_PASSCODE", "admin-test")
 
 import app  # noqa: E402
 import db  # noqa: E402
@@ -113,6 +108,7 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(listed.status_code, 200)
         match = next(item for item in listed.json() if item["call_id"] == owner)
         self.assertEqual(match["snapshot"]["last_transcript"], [])
+        self.assertNotIn("settings", match["snapshot"])
 
         forged = TestClient(app.app)
         denied = forged.get("/api/calls", headers={"Cookie": "shishu_auth=admin"})
@@ -130,6 +126,15 @@ class SessionTests(unittest.TestCase):
         )
         self.assertEqual(admin_login.status_code, 200)
         self.assertEqual(admin.get("/api/calls").status_code, 200)
+
+    def test_login_redirect_keeps_the_query(self):
+        client = TestClient(app.app)
+        home = client.get("/?clinic=kem", follow_redirects=False)
+        self.assertEqual(home.status_code, 302)
+        self.assertEqual(unquote(home.headers["location"]), "/login?next=/?clinic=kem")
+        admin = client.get("/admin?clinic=kem", follow_redirects=False)
+        self.assertEqual(admin.status_code, 302)
+        self.assertEqual(unquote(admin.headers["location"]), "/login?next=/admin?clinic=kem")
 
 
 class CaptionAndCopyTests(unittest.TestCase):
@@ -170,7 +175,8 @@ class CaptionAndCopyTests(unittest.TestCase):
         })
         self.assertIn("108", closing)
         self.assertEqual(gemini_live._session_settings({})["voice"], "Kore")
-        self.assertEqual(db.DEFAULT_SETTINGS["gemini_model"], "gemini-3.1-flash-live-preview")
+        self.assertEqual(gemini_live.DEFAULT_LIVE_SETTINGS["gemini_model"], "gemini-3.1-flash-live-preview")
+        self.assertFalse(hasattr(db, "DEFAULT_SETTINGS"))
 
 
 class Stage6BAccessTests(unittest.TestCase):

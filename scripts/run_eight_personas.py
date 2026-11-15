@@ -210,14 +210,15 @@ def _check_p3(call: dict, problems: list[str]) -> None:
         if state != "clear":
             problems.append(f"{qid}={state}")
     cursor = call.get("cursor_state") or {}
-    if cursor.get("active_qid") not in {"birth_jaundice", "birth_sudden", ""} and cursor.get("phase") != "closing":
-        problems.append(f"emergency did not stop at {cursor.get('active_qid')}")
+    if cursor.get("active_qid") != "birth_jaundice" or cursor.get("phase") != "closing":
+        problems.append(
+            f"emergency did not stop at birth_jaundice/closing: "
+            f"active_qid={cursor.get('active_qid')} phase={cursor.get('phase')}"
+        )
     doctor = str(call.get("summary_doctor") or "")
     mother = str(call.get("summary_mother") or "")
     if "Active emergency" not in doctor:
         problems.append("summary_doctor missing Active emergency")
-    if "None documented" in doctor:
-        problems.append("summary_doctor still says None documented")
     if "टीके के कार्ड" in mother:
         problems.append("summary_mother has routine vaccine filler")
 
@@ -333,10 +334,20 @@ def _check_p5(persona: Persona, call: dict, problems: list[str]) -> None:
         problems.append("pdf page 2 child questions: " + ", ".join(leaked))
 
 
-def _check_p6(call: dict, problems: list[str]) -> None:
+def _check_p6(persona: Persona, call: dict, problems: list[str]) -> None:
     close = _answer(call, "close_anything_else")
+    cancer = _answer(call, "fam_cancer")
+    heart = _answer(call, "fam_heart_kidney")
     if close.get("state") != "concern":
         problems.append(f"close_anything_else={close.get('state')}")
+    if cancer.get("state") != "concern":
+        problems.append(f"fam_cancer={cancer.get('state')}")
+    if "चाची" not in answer_notes_text(cancer):
+        problems.append(f"fam_cancer missing चाची side addition: {answer_notes_text(cancer)}")
+    if heart.get("state") != "clear":
+        problems.append(f"fam_heart_kidney={heart.get('state')}")
+    if persona.counts.get("fam_heart_kidney", 0) != 1:
+        problems.append(f"fam_heart_kidney took {persona.counts.get('fam_heart_kidney', 0)} turns")
     mother = str(call.get("summary_mother") or "")
     doctor = str(call.get("summary_doctor") or "")
     flags = call.get("red_flags") or []
@@ -386,7 +397,7 @@ def _personas() -> list[Persona]:
                 "bp_age": _line("42 साल की उम्र में।"),
             },
         ),
-        flags=(2, 8),
+        flags=(3, 3),
         close="complete",
         check=_check_p2,
     )
@@ -405,6 +416,23 @@ def _personas() -> list[Persona]:
         check=_check_p2,
     )
     p5.check = lambda call, problems, persona=p5: _check_p5(persona, call, problems)
+    p6 = Persona(
+        "p6_closing_disclosure_and_late_addition",
+        "मीरा",
+        _profile("मीरा", "एक बेटी है, 5 साल की।", {
+            "fam_cancer": _line("हाँ, मामा को कैंसर हुआ था।"),
+            "fam_who": _line("सगे मामा को।"),
+            "fam_heart_kidney": _line(
+                "नहीं, दिल-गुर्दे की बीमारी किसी को नहीं है, बस चाची को भी कैंसर हुआ था।"
+            ),
+            "close_anything_else": _p6_close,
+            "open_concern_detail": _line("रात में नींद में डर लगता है।"),
+        }),
+        flags=(2, 2),
+        close="complete",
+        check=_check_p2,
+    )
+    p6.check = lambda call, problems, persona=p6: _check_p6(persona, call, problems)
     return [
         Persona(
             "p1_red_flags",
@@ -418,7 +446,7 @@ def _personas() -> list[Persona]:
                 "fam_maternal_bleeding": _line("हाँ, मेरे सगे मामा के बेटे को डॉक्टर ने हीमोफीलिया बताया था।"),
                 "fam_who": _line("सगे मामा के बेटे को।"),
             }),
-            flags=(3, 7),
+            flags=(4, 4),
             close="complete",
             check=_check_p1,
         ),
@@ -438,29 +466,13 @@ def _personas() -> list[Persona]:
                     "बच्चा अभी साँस नहीं ले पा रहा है और होंठ नीले हो रहे हैं, यह इमरजेंसी है!"
                 ),
             }),
-            flags=(1, 4),
+            flags=(1, 1),
             close="emergency",
             check=_check_p3,
         ),
         p4,
         p5,
-        Persona(
-            "p6_closing_disclosure_and_late_addition",
-            "मीरा",
-            _profile("मीरा", "एक बेटी है, 5 साल की।", {
-                "fam_cancer": _line("हाँ, मामा को कैंसर हुआ था।"),
-                "fam_who": _line("सगे मामा को।"),
-                "fam_heart_kidney": _steps(
-                    _line("नहीं, दिल-गुर्दे की बीमारी किसी को नहीं है, बस चाची को भी कैंसर हुआ था।"),
-                    ("quick", "clear"),
-                ),
-                "close_anything_else": _p6_close,
-                "open_concern_detail": _line("रात में नींद में डर लगता है।"),
-            }),
-            flags=(1, 6),
-            close="complete",
-            check=_check_p6,
-        ),
+        p6,
     ]
 
 

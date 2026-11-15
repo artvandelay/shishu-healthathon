@@ -20,12 +20,7 @@ from unittest import mock
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
-from tests import APP_DIR  # noqa: E402
-
-_TMP = tempfile.mkdtemp(prefix="shishu-v4-live-")
-os.environ["DATA_DIR"] = _TMP
-os.environ.setdefault("APP_PASSCODE", "user-test")
-os.environ.setdefault("ADMIN_PASSCODE", "admin-test")
+from tests import APP_DIR, TEST_DATA_DIR  # noqa: E402
 
 import audio_recorder  # noqa: E402
 import call_cursor  # noqa: E402
@@ -227,10 +222,6 @@ class LiveConfigAndStartupTests(unittest.TestCase):
         self.assertEqual(list(custom_cfg.output_audio_transcription.language_codes), ["hi-IN"])
         self.assertEqual(list(custom_cfg.input_audio_transcription.language_codes), ["hi-IN"])
         self.assertEqual(custom_cfg.thinking_config.thinking_level, "MINIMAL")
-        self.assertFalse(hasattr(prompts, "WATCHDOG_NUDGE"))
-        self.assertFalse(hasattr(prompts, "clean_assistant_caption"))
-        self.assertFalse(hasattr(prompts, "clean_user_caption"))
-        self.assertFalse(hasattr(prompts, "leaked_caption"))
         self.assertFalse(hasattr(gemini_live, "_cancel_silence_close"))
         self.assertIsNone(
             gemini_live._audio_from_part(
@@ -243,24 +234,79 @@ class LiveConfigAndStartupTests(unittest.TestCase):
             )
         )
 
-        # VAD defaults and DB settings persistence
-        self.assertEqual(db.DEFAULT_SETTINGS["vad_silence_ms"], "1000")
-        self.assertEqual(db.DEFAULT_SETTINGS["vad_end_sensitivity"], "LOW")
-        self.assertEqual(db.DEFAULT_SETTINGS["vad_start_sensitivity"], "LOW")
-        self.assertNotIn("active_engine", db.DEFAULT_SETTINGS)
-        unset = gemini_live._session_settings({})
-        self.assertEqual(unset["voice"], "Kore")
-        self.assertEqual(unset["silence_duration_ms"], 1000)
-        self.assertEqual(unset["end_sens"], gemini_live.types.EndSensitivity.END_SENSITIVITY_LOW)
-        self.assertEqual(unset["start_sens"], gemini_live.types.StartSensitivity.START_SENSITIVITY_LOW)
-        custom = gemini_live._session_settings({"vad_silence_ms": "1200", "vad_end_sensitivity": "HIGH", "vad_start_sensitivity": "HIGH"})
-        self.assertEqual(custom["silence_duration_ms"], 1200)
-        self.assertEqual(custom["end_sens"], gemini_live.types.EndSensitivity.END_SENSITIVITY_HIGH)
-        self.assertEqual(custom["start_sens"], gemini_live.types.StartSensitivity.START_SENSITIVITY_HIGH)
-
-        db.set_setting("vad_silence_ms", "900")
+        # Live settings defaults, env/override precedence, custom voice, and no dead DB settings table
+        self.assertEqual(gemini_live.DEFAULT_LIVE_SETTINGS["gemini_model"], "gemini-3.1-flash-live-preview")
+        self.assertEqual(gemini_live.DEFAULT_LIVE_SETTINGS["gemini_voice"], "Kore")
+        self.assertEqual(gemini_live.DEFAULT_LIVE_SETTINGS["vad_prefix_padding_ms"], "300")
+        self.assertEqual(gemini_live.DEFAULT_LIVE_SETTINGS["vad_silence_ms"], "1000")
+        self.assertEqual(gemini_live.DEFAULT_LIVE_SETTINGS["vad_end_sensitivity"], "LOW")
+        self.assertEqual(gemini_live.DEFAULT_LIVE_SETTINGS["vad_start_sensitivity"], "LOW")
+        self.assertEqual(gemini_live.DEFAULT_LIVE_SETTINGS["watchdog_timeout_sec"], "8.0")
+        self.assertNotIn("active_engine", gemini_live.DEFAULT_LIVE_SETTINGS)
+        for dead_attr in ("DEFAULT_SETTINGS", "get_setting", "set_setting", "get_all_settings"):
+            self.assertFalse(hasattr(db, dead_attr))
         db._init_db()
-        self.assertEqual(db.get_all_settings()["vad_silence_ms"], "900")
+        with db._db_lock:
+            dead_table = db.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='settings'"
+            ).fetchone()
+        self.assertIsNone(dead_table)
+
+        env_keys = (
+            "GEMINI_MODEL",
+            "GEMINI_VOICE",
+            "VAD_PREFIX_PADDING_MS",
+            "VAD_SILENCE_MS",
+            "VAD_START_SENSITIVITY",
+            "VAD_END_SENSITIVITY",
+            "WATCHDOG_TIMEOUT_SEC",
+            "DECISION_THRESHOLDS_PATH",
+        )
+        clean_env = {k: v for k, v in os.environ.items() if k not in env_keys}
+        with mock.patch.dict(os.environ, clean_env, clear=True):
+            unset = gemini_live._session_settings({})
+            self.assertEqual(unset["voice"], "Kore")
+            self.assertEqual(unset["silence_duration_ms"], 1000)
+            self.assertEqual(unset["end_sens"], gemini_live.types.EndSensitivity.END_SENSITIVITY_LOW)
+            self.assertEqual(unset["start_sens"], gemini_live.types.StartSensitivity.START_SENSITIVITY_LOW)
+            self.assertEqual(unset["watchdog_timeout_sec"], 8.0)
+
+            custom = gemini_live._session_settings({
+                "gemini_voice": "Aoede",
+                "vad_silence_ms": "1200",
+                "vad_end_sensitivity": "HIGH",
+                "vad_start_sensitivity": "HIGH",
+            })
+            self.assertEqual(custom["voice"], "Aoede")
+            self.assertEqual(custom["silence_duration_ms"], 1200)
+            self.assertEqual(custom["end_sens"], gemini_live.types.EndSensitivity.END_SENSITIVITY_HIGH)
+            self.assertEqual(custom["start_sens"], gemini_live.types.StartSensitivity.START_SENSITIVITY_HIGH)
+            voice_cfg = gemini_live._live_config({"gemini_voice": "Aoede"})
+            self.assertEqual(voice_cfg.speech_config.voice_config.prebuilt_voice_config.voice_name, "Aoede")
+
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "GEMINI_MODEL": "",
+                    "GEMINI_VOICE": "Puck",
+                    "VAD_SILENCE_MS": "900",
+                    "WATCHDOG_TIMEOUT_SEC": "6.5",
+                    "DECISION_THRESHOLDS_PATH": "/tmp/env-thresholds.json",
+                },
+                clear=False,
+            ):
+                from_env = gemini_live.live_settings()
+                self.assertEqual(from_env["gemini_model"], "gemini-3.1-flash-live-preview")
+                self.assertEqual(from_env["gemini_voice"], "Puck")
+                self.assertEqual(from_env["vad_silence_ms"], "900")
+                self.assertEqual(from_env["watchdog_timeout_sec"], "6.5")
+                self.assertEqual(from_env["decision_thresholds_path"], "/tmp/env-thresholds.json")
+                self.assertEqual(gemini_live._session_settings()["voice"], "Puck")
+
+                overlaid = gemini_live.live_settings({"gemini_voice": "Aoede", "vad_silence_ms": None})
+                self.assertEqual(overlaid["gemini_voice"], "Aoede")
+                self.assertEqual(overlaid["vad_silence_ms"], "900")
+
         self.assertEqual(gemini_live._TOOL_SPEAK_FALLBACK_SEC, 2.5)
 
     def test_handle_gemini_ws_loads_default_thresholds_and_fails_closed_on_missing_or_invalid(self):
@@ -754,7 +800,7 @@ class TurnTakingAndWatchdogTests(unittest.TestCase):
             cursor.state = json.loads(json.dumps(state))
             call_id = db.create_call()
             tel = _new_telemetry()
-            for dead_key in ("end_refusals", "end_requested_at", "force_close", "force_close_at", "end_requested", "closing"):
+            for dead_key in ("end_refusals", "end_requested_at", "force_close", "force_close_at", "end_requested", "closing", "close_reason"):
                 self.assertNotIn(dead_key, tel)
             turn = gemini_live._TurnState()
             await gemini_live._mark_closing(cursor, "silence", _FakeSocket(), asyncio.Lock(), call_id, tel, turn)
@@ -764,7 +810,7 @@ class TurnTakingAndWatchdogTests(unittest.TestCase):
             self.assertNotIn("end_requested", tel)
             self.assertNotIn("closing", tel)
 
-            rec = audio_recorder.CallAudioRecorder(call_id, output_dir=str(Path(_TMP) / "audio"))
+            rec = audio_recorder.CallAudioRecorder(call_id, output_dir=str(Path(TEST_DATA_DIR) / "audio"))
             rec._started = time.monotonic() - 0.5
             rec.add_user_pcm(b"\x10\x00" * 160, 16000)
             rec.add_bot_pcm(b"\x20\x00" * 240, 24000)
@@ -773,7 +819,14 @@ class TurnTakingAndWatchdogTests(unittest.TestCase):
             await gemini_live._finalize(_FakeSocket(), asyncio.Lock(), call_id, _new_telemetry(), rec, None, abrupt)
             saved = db.get_call(call_id)
             self.assertEqual(saved["telemetry"]["dropoff_qid"], "birth_jaundice")
-            with wave.open(str(Path(_TMP) / "audio" / saved["audio_path"]), "rb") as wf:
+            self.assertFalse(any(k.endswith("_json") for k in saved))
+            listed = next(row for row in db.list_calls() if row["id"] == call_id)
+            self.assertFalse(any(k.endswith("_json") for k in listed))
+            self.assertIn("red_flags", listed)
+            self.assertIn("clinician_review", listed)
+            for detail_only in ("transcript", "telemetry", "events", "cursor_state"):
+                self.assertNotIn(detail_only, listed)
+            with wave.open(str(Path(TEST_DATA_DIR) / "audio" / saved["audio_path"]), "rb") as wf:
                 self.assertEqual(wf.getnchannels(), 2)
                 self.assertEqual(wf.getframerate(), 16000)
 
@@ -1364,6 +1417,21 @@ class DecisionTurnAndExtractorTests(unittest.TestCase):
                 self.assertEqual(eval_mock.await_count, 1)
                 self.assertEqual(cursor.state["active_qid"], "birth_sudden")
                 self.assertTrue(turn.capture.speech_allowed)
+                self.assertEqual(telemetry["tool_calls"], 1)
+                self.assertTrue(
+                    any(
+                        e["type"] == "tool_call" and e["detail"] == "missed_tool_clear"
+                        for e in db.get_call(call_id)["events"]
+                    )
+                )
+                self.assertTrue(
+                    any(
+                        m.get("type") == "telemetry"
+                        and (m.get("last_event") or {}).get("type") == "tool_call"
+                        and (m.get("last_event") or {}).get("detail") == "missed_tool_clear"
+                        for m in ws.sent
+                    )
+                )
                 await gemini_live._handle_server_message(
                     _bot_audio_msg(turn_complete=True), session, asyncio.Lock(), ws, asyncio.Lock(),
                     call_id, telemetry, turn, _Recorder(), set(), set(), cursor, stop=asyncio.Event(),
@@ -1731,6 +1799,110 @@ class DecisionTurnAndExtractorTests(unittest.TestCase):
                 )
             self.assertEqual(frag_cursor.state["hold_reason"], "name_fragment")
             self.assertIn("पूरा नाम", frag_body["say"])
+
+        asyncio.run(run())
+
+    def test_audio_only_intro_name_speech_reaches_extractor_and_advances_to_married(self):
+        thresholds = _test_thresholds()
+
+        async def run():
+            cursor = gemini_live._Cursor()
+            cursor.state = call_cursor.new_cursor_state()
+            self.assertEqual(cursor.state["active_qid"], "intro_name")
+            turn = gemini_live._TurnState()
+            turn.spoken_qid = step_id(cursor.state)
+            ws = _FakeSocket()
+            session = _FakeSession()
+            telemetry = _new_telemetry()
+            call_id = db.create_call()
+
+            loud_pcm = b"\x00\x10" * 1600
+            quiet_pcm = b"\x00\x00" * 1600
+            browser_ws = _FakeSocket([
+                {"type": "audio", "data": base64.b64encode(loud_pcm).decode("ascii"), "sample_rate": 16000},
+                {"type": "audio", "data": base64.b64encode(quiet_pcm).decode("ascii"), "sample_rate": 16000},
+            ])
+            await gemini_live._browser_loop(
+                session, asyncio.Lock(), browser_ws, asyncio.Lock(), asyncio.Event(),
+                call_id, telemetry, turn, cursor, _Recorder(),
+            )
+            self.assertEqual(turn.capture.user_turn_buffer, "")
+            expected_pcm = loud_pcm + quiet_pcm
+            self.assertEqual(bytes(turn.capture.user_turn_pcm), expected_pcm)
+            self.assertEqual(turn.user_turn_step, "intro_name")
+
+            seen_eval_reqs = []
+            seen_extractor_calls = []
+            real_extract = profile_extractor.extract_profile_entities
+
+            async def fake_eval(request, **_kwargs):
+                seen_eval_reqs.append(request)
+                return _decision_result(request, {
+                    "danger_now": _noul(0.01),
+                    "caller_stop": _noul(0.01),
+                    "mentions_profile": _noul(0.92),
+                    "current_outcome": _choice("other", {"other": 0.91, "clear": 0.06, "concern": 0.03}),
+                })
+
+            async def spy_extract(state, utterance_text="", audio_wav_bytes=None, **kwargs):
+                seen_extractor_calls.append((state.get("active_qid"), utterance_text, audio_wav_bytes))
+                return await real_extract(
+                    state, utterance_text=utterance_text, audio_wav_bytes=audio_wav_bytes, **kwargs
+                )
+
+            fake_client = mock.MagicMock()
+            fake_client.aio.models.generate_content = mock.AsyncMock(
+                return_value=SimpleNamespace(
+                    text=json.dumps({
+                        "caller_name": "पूजा",
+                        "marital_status": None,
+                        "child_count": None,
+                        "children": None,
+                    })
+                )
+            )
+
+            with mock.patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}), mock.patch.dict(
+                profile_extractor._clients, {}, clear=True
+            ), mock.patch.object(
+                profile_extractor.genai, "Client", return_value=fake_client
+            ), mock.patch.object(
+                decisions, "evaluate_turn", side_effect=fake_eval
+            ), mock.patch.object(
+                profile_extractor, "extract_profile_entities", side_effect=spy_extract
+            ):
+                await gemini_live._answer_function_calls(
+                    session, asyncio.Lock(), ws, asyncio.Lock(), call_id, telemetry,
+                    [_Call("next_question", {}, "fc-audio-intro")], set(), set(), cursor, turn,
+                    thresholds=thresholds,
+                )
+                await _drop_fallback(turn)
+
+            self.assertEqual(len(seen_eval_reqs), 1)
+            self.assertIsInstance(seen_eval_reqs[0]["input"], list)
+            self.assertEqual(seen_eval_reqs[0]["input"][1]["mime_type"], "audio/wav")
+
+            self.assertEqual(len(seen_extractor_calls), 1)
+            ext_qid, ext_utt, ext_wav = seen_extractor_calls[0]
+            self.assertEqual(ext_qid, "intro_name")
+            self.assertEqual(ext_utt, "")
+            self.assertIsNotNone(ext_wav)
+            self.assertTrue(ext_wav.startswith(b"RIFF"))
+            self.assertEqual(ext_wav[8:12], b"WAVE")
+            with wave.open(io.BytesIO(ext_wav), "rb") as wf:
+                self.assertEqual(wf.getnchannels(), 1)
+                self.assertEqual(wf.getframerate(), 16000)
+                self.assertEqual(wf.readframes(wf.getnframes()), expected_pcm)
+
+            gen_kwargs = fake_client.aio.models.generate_content.await_args.kwargs
+            self.assertIsInstance(gen_kwargs["contents"], list)
+            self.assertEqual(gen_kwargs["contents"][1].inline_data.data, ext_wav)
+            self.assertEqual(gen_kwargs["contents"][1].inline_data.mime_type, "audio/wav")
+
+            self.assertEqual(cursor.state["profile"]["caller_name"], "पूजा")
+            self.assertEqual(cursor.state["active_qid"], "intro_married")
+            self.assertEqual(len(turn.capture.user_turn_pcm), 0)
+            self.assertTrue(turn.capture.speech_allowed)
 
         asyncio.run(run())
 

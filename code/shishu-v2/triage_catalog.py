@@ -21,6 +21,8 @@ class QuestionSpec:
     skip_if: tuple[str, ...] = ()
     followups: tuple[str, ...] = ()
     enabled: bool = True
+    question_about_hi: str = ""
+    question_unmarried_hi: str = ""
 
 
 def _q(
@@ -33,6 +35,8 @@ def _q(
     skip: tuple[str, ...] = (),
     follow: tuple[str, ...] = (),
     multi: str = "",
+    about: str = "",
+    unmarried: str = "",
     enabled: bool = True,
 ) -> QuestionSpec:
     stem = question_hi.strip().removesuffix("?").removesuffix("।").strip()
@@ -49,6 +53,8 @@ def _q(
         skip_if=skip,
         followups=follow,
         enabled=enabled,
+        question_about_hi=about,
+        question_unmarried_hi=unmarried,
     )
 
 
@@ -126,8 +132,19 @@ CATALOG: tuple[QuestionSpec, ...] = (
     _q('preg_scan', 'pregnancy', "gate", 'क्या किसी प्रेग्नेंसी के सोनोग्राफी स्कैन में कोई खराबी बताई गई थी?', 'a pregnancy scan showed a problem', 'Antenatal', skip=('unmarried', 'about_to_marry', 'ever_pregnant_no'), follow=('scan_detail',), multi=''),
     _q('preg_transfusion', 'pregnancy', "gate", 'क्या किसी प्रेग्नेंसी के दौरान आपको खून चढ़ाना पड़ा था?', 'blood transfusion during a pregnancy', 'Antenatal', skip=('unmarried', 'about_to_marry', 'ever_pregnant_no'), follow=(), multi=''),
     _q('preg_delivery', 'pregnancy', "gate", 'क्या किसी डिलीवरी के समय कोई बड़ी दिक्कत आई थी?', 'major trouble at a delivery', 'Antenatal', skip=('unmarried', 'about_to_marry', 'ever_pregnant_no'), follow=('delivery_detail',), multi=''),
-    _q('preg_thalassemia', 'pregnancy', "gate", 'क्या आपकी या आपके पति की थैलेसीमिया खून जाँच में कभी माइनर या ट्रेट जैसी कोई दिक्कत बताई गई?', 'thalassemia minor or trait on a blood test', 'Antenatal', skip=(), follow=(), multi=''),
-    _q('fam_related', 'family', "gate", 'क्या आप और आपके पति शादी से पहले आपस में रिश्तेदार थे, जैसे कज़िन या एक ही खानदान से?', 'she and her husband are related, such as cousins', 'Q11', skip=('unmarried',), follow=('related_how',), multi=''),
+    _q(
+        'preg_thalassemia', 'pregnancy', "gate",
+        'क्या आपकी या आपके पति की थैलेसीमिया खून जाँच में कभी माइनर या ट्रेट जैसी कोई दिक्कत बताई गई?',
+        'thalassemia minor or trait on a blood test', 'Antenatal', skip=(), follow=(), multi='',
+        about='क्या आपकी या आपके होने वाले पति की थैलेसीमिया खून जाँच में कभी माइनर या ट्रेट जैसी कोई दिक्कत बताई गई?',
+        unmarried='क्या आपकी थैलेसीमिया खून जाँच में कभी माइनर या ट्रेट जैसी कोई दिक्कत बताई गई?',
+    ),
+    _q(
+        'fam_related', 'family', "gate",
+        'क्या आप और आपके पति शादी से पहले आपस में रिश्तेदार थे, जैसे कज़िन या एक ही खानदान से?',
+        'she and her husband are related, such as cousins', 'Q11', skip=('unmarried',), follow=('related_how',), multi='',
+        about='क्या आप और आपके होने वाले पति पहले से आपस में रिश्तेदार हैं, जैसे कज़िन या एक ही खानदान से?',
+    ),
     _q('fam_miscarriage', 'family', "gate", 'क्या आपका कभी गर्भ गिरा है (मिसकैरेज), या गिरवाना पड़ा था?', 'miscarriage or an ended pregnancy', 'Q12', skip=('unmarried', 'about_to_marry', 'ever_pregnant_no'), follow=('miscarriage_count', 'miscarriage_month'), multi=''),
     _q('fam_infant_death', 'family', "gate", 'क्या परिवार में किसी छोटे बच्चे की 1 साल से कम उम्र में मौत हुई है?', 'a baby in the family died before 1 year', 'Q12', skip=(), follow=('infant_death_age', 'infant_death_cause'), multi=''),
     _q('fam_fits_delay', 'family', "gate", 'क्या परिवार में किसी बच्चे या बड़े को झटके (फ़िट्स), देर से सीखने, या सीखी बात भूलने की समस्या है?', 'fits, late learning, or lost skills in the family', 'Q11', skip=(), follow=('fam_who',), multi=''),
@@ -156,8 +173,14 @@ def _validate() -> None:
     dupes = sorted({qid for qid in ids if ids.count(qid) > 1})
     if dupes:
         raise RuntimeError(f"duplicate catalog ids: {dupes}")
-    if len(FOLLOWUP_HI) != 25:
-        raise RuntimeError(f"expected 25 follow-ups, found {len(FOLLOWUP_HI)}")
+    orphans = sorted(set(FOLLOWUP_HI) - {fid for s in CATALOG for fid in s.followups})
+    if orphans:
+        raise RuntimeError(f"orphan followups in FOLLOWUP_HI: {orphans}")
+    empty_followups = sorted(
+        fid for fid, text in FOLLOWUP_HI.items() if not isinstance(text, str) or not text.strip()
+    )
+    if empty_followups:
+        raise RuntimeError(f"empty followup Hindi text: {empty_followups}")
     for spec in CATALOG:
         if spec.kind not in _SPINE_KINDS:
             raise RuntimeError(f"{spec.id} has kind {spec.kind}")

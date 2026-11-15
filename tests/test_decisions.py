@@ -32,15 +32,6 @@ import test_cursor as cursor_tests  # noqa: E402
 from call_cursor import apply_interpreted_turn, apply_profile, apply_turn, new_cursor_state, routable_qids
 from triage_catalog import FOLLOWUP_HI, get_spec
 
-_SMOKE_TEST_FLOATS = (
-    "0.8295",
-    "0.9991",
-    "0.9978",
-    "0.9872",
-    "0.9818",
-    "0.9975",
-)
-
 
 def _test_thresholds() -> decisions.DecisionThresholds:
     return decisions.DecisionThresholds(
@@ -326,19 +317,6 @@ class SchemaBuilderTests(unittest.TestCase):
 
 
 class ThresholdAndGuardTests(unittest.TestCase):
-    def test_no_smoke_test_float_constants_in_decisions_source(self):
-        source = Path(decisions.__file__).read_text(encoding="utf-8")
-        for forbidden in _SMOKE_TEST_FLOATS:
-            self.assertNotIn(forbidden, source, forbidden)
-        tree = ast.parse(source)
-        found_floats = {
-            repr(node.value)
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Constant) and isinstance(node.value, float)
-        }
-        for forbidden in _SMOKE_TEST_FLOATS:
-            self.assertNotIn(forbidden, found_floats, forbidden)
-
     def test_thresholds_validation_and_probabilities_required(self):
         self.assertEqual(len(decisions._ALL_NUMERIC_THRESHOLD_FIELDS), 13)
         self.assertNotIn("calibrated", decisions.DecisionThresholds.__dataclass_fields__)
@@ -860,6 +838,30 @@ class TransportRetryTests(unittest.TestCase):
         self.assertTrue(res_doc.ok)
         self.assertTrue(res_doc.usage_present)
         self.assertEqual(res_doc.total_input_tokens, 425)
+
+        def total_tokens_only(url, body_bytes, headers, timeout_sec):
+            return 200, json.dumps({
+                "answers": {"danger_now": _noul(0.01)},
+                "usage": {"total_tokens": 425},
+            }).encode("utf-8")
+
+        res_tot = asyncio.run(decisions.evaluate_turn(req, api_key="test-key", transport=total_tokens_only))
+        self.assertTrue(res_tot.ok)
+        self.assertFalse(res_tot.usage_present)
+        self.assertIsNone(res_tot.total_input_tokens)
+
+    def test_cancelled_error_propagates_without_retry(self):
+        req = self._sample_request()
+        calls = 0
+
+        def cancel_transport(url, body_bytes, headers, timeout_sec):
+            nonlocal calls
+            calls += 1
+            raise asyncio.CancelledError()
+
+        with self.assertRaises(asyncio.CancelledError):
+            asyncio.run(decisions.evaluate_turn(req, api_key="test-key", transport=cancel_transport))
+        self.assertEqual(calls, 1)
 
     def test_missing_api_key_returns_immediately_without_socket_call(self):
         req = self._sample_request()

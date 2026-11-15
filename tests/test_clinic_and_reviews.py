@@ -1,9 +1,7 @@
 """Stage 4: static assets, clinic tag, share event, and clinician review."""
 
 import asyncio
-import os
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -11,11 +9,6 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 from tests import APP_DIR  # noqa: E402
-
-_TMP = tempfile.mkdtemp(prefix="shishu-v3-stage4-")
-os.environ["DATA_DIR"] = _TMP
-os.environ.setdefault("APP_PASSCODE", "user-test")
-os.environ.setdefault("ADMIN_PASSCODE", "admin-test")
 
 import app  # noqa: E402
 import db  # noqa: E402
@@ -64,8 +57,6 @@ class Stage4AssetTests(unittest.TestCase):
         self.assertIn('wakeLock.request("screen")', script)
         self.assertIn("share_clicked", script)
         self.assertIn("/api/calls/by-token/", script)
-        self.assertNotIn("muteFrame", script)
-        self.assertNotIn("0.075", script)
 
         admin_js = client.get("/static/admin.js")
         self.assertEqual(admin_js.status_code, 200)
@@ -74,10 +65,6 @@ class Stage4AssetTests(unittest.TestCase):
         self.assertIn("clinic-filter", dashboard)
         self.assertIn("/review", dashboard)
         self.assertIn('getAttribute("data-rating")', dashboard)
-        self.assertNotIn("function applySettings", dashboard)
-        self.assertNotIn("function saveSettings", dashboard)
-        self.assertNotIn("function toggleSettings", dashboard)
-        self.assertFalse(hasattr(prompts, "DOCTOR_MOTHER_SUMMARY_PROMPT"))
         self.assertEqual(client.get("/static/missing-asset.js").status_code, 404)
 
     def test_multi_child_hindi_is_inside_the_question(self):

@@ -1,8 +1,6 @@
 """Stereo wall-clock recorder. No network."""
 
-import os
 import sys
-import tempfile
 import time
 import unittest
 import wave
@@ -11,17 +9,14 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
-import tests  # noqa: E402, F401
-
-_TMP = tempfile.mkdtemp(prefix="shishu-v3-audio-")
-os.environ["DATA_DIR"] = _TMP
+from tests import TEST_DATA_DIR  # noqa: E402
 
 import audio_recorder  # noqa: E402
 
 
 class StereoWavTests(unittest.TestCase):
     def test_two_channels_are_16k_and_wall_clock(self):
-        folder = Path(_TMP) / "audio"
+        folder = Path(TEST_DATA_DIR) / "audio"
         rec = audio_recorder.CallAudioRecorder(3, output_dir=str(folder))
         rec._started = time.monotonic() - 2.2
         rec.add_user_pcm(b"\x10\x00" * 160, 16000)

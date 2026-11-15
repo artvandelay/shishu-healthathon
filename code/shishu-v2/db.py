@@ -15,16 +15,6 @@ os.makedirs(os.path.join(DATA_DIR, "audio"), exist_ok=True)
 DB_PATH = os.path.join(DATA_DIR, "shishu.db")
 _db_lock = threading.Lock()
 
-DEFAULT_SETTINGS: dict[str, str] = {
-    "gemini_model": "gemini-3.1-flash-live-preview",
-    "gemini_voice": "Kore",
-    "vad_prefix_padding_ms": "300",
-    "vad_silence_ms": "1000",
-    "vad_start_sensitivity": "LOW",
-    "vad_end_sensitivity": "LOW",
-    "watchdog_timeout_sec": "8.0",
-}
-
 _CLINICIAN_RATINGS = frozenset({"useful", "missed_flag", "false_alarm"})
 
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -39,19 +29,6 @@ except Exception:
 def _init_db() -> None:
     with _db_lock:
         cur = conn.cursor()
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            )
-            """
-        )
-        for key, value in DEFAULT_SETTINGS.items():
-            cur.execute(
-                "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
-                (key, value),
-            )
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS calls (
@@ -130,31 +107,6 @@ def get_session_secret() -> str:
         conn.commit()
         return value
 
-def get_setting(key: str, default: str = "") -> str:
-    with _db_lock:
-        cur = conn.cursor()
-        cur.execute("SELECT value FROM settings WHERE key = ?", (key,))
-        row = cur.fetchone()
-        return row["value"] if row else default
-
-def set_setting(key: str, value: str) -> None:
-    with _db_lock:
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (key, value),
-        )
-        conn.commit()
-
-def get_all_settings() -> dict[str, str]:
-    merged = dict(DEFAULT_SETTINGS)
-    with _db_lock:
-        cur = conn.cursor()
-        cur.execute("SELECT key, value FROM settings")
-        for row in cur.fetchall():
-            merged[row["key"]] = row["value"] if row["value"] is not None else ""
-    return merged
-
 
 def create_call(
     caller_name: str = "",
@@ -163,7 +115,6 @@ def create_call(
     voice_used: str = "",
     clinic_code: str = "",
 ) -> int:
-    mother = ""
     share_token = secrets.token_urlsafe(18)
     with _db_lock:
         cur = conn.cursor()
@@ -180,7 +131,7 @@ def create_call(
                 user_role or "user",
                 model_used or "",
                 voice_used or "",
-                mother,
+                "",
                 share_token,
                 clinic_code or "",
             ),
@@ -421,7 +372,6 @@ def create_bug_report(
     call = get_call(call_id) if include_call_body and call_id and call_id > 0 else None
     transcript = (call or {}).get("transcript") or []
     snapshot = {
-        "settings": get_all_settings(),
         "last_transcript": transcript[-8:] if isinstance(transcript, list) else [],
         "telemetry": (call or {}).get("telemetry") or {},
         "recent_events": ((call or {}).get("events") or [])[-20:],
@@ -471,33 +421,26 @@ def list_bug_reports(limit: int = 50) -> list[dict]:
         out.append(item)
     return out
 
+_JSON_CALL_COLUMNS: tuple[tuple[str, str, type], ...] = (
+    ("red_flags_json", "red_flags", list),
+    ("clinician_review_json", "clinician_review", dict),
+    ("transcript_json", "transcript", list),
+    ("telemetry_json", "telemetry", dict),
+    ("events_json", "events", list),
+    ("cursor_json", "cursor_state", dict),
+)
+
+
 def _row_to_call_dict(row: sqlite3.Row) -> dict[str, Any]:
     d = dict(row)
-    try:
-        d["transcript"] = json.loads(d.get("transcript_json") or "[]")
-    except Exception:
-        d["transcript"] = []
-    try:
-        d["red_flags"] = json.loads(d.get("red_flags_json") or "[]")
-    except Exception:
-        d["red_flags"] = []
-    try:
-        d["telemetry"] = json.loads(d.get("telemetry_json") or "{}")
-    except Exception:
-        d["telemetry"] = {}
-    try:
-        d["events"] = json.loads(d.get("events_json") or "[]")
-    except Exception:
-        d["events"] = []
-    try:
-        raw_cursor = d.get("cursor_json") or ""
-        d["cursor_state"] = json.loads(raw_cursor) if str(raw_cursor).strip() else {}
-    except Exception:
-        d["cursor_state"] = {}
-    try:
-        d["clinician_review"] = json.loads(d.get("clinician_review_json") or "{}")
-    except Exception:
-        d["clinician_review"] = {}
+    for raw_key, out_key, default_cls in _JSON_CALL_COLUMNS:
+        if raw_key not in d:
+            continue
+        raw = d.pop(raw_key)
+        try:
+            d[out_key] = json.loads(raw) if raw and str(raw).strip() else default_cls()
+        except Exception:
+            d[out_key] = default_cls()
     return d
 
 def get_call(call_id: int) -> dict | None:

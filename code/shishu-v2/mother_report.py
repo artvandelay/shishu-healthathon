@@ -225,7 +225,7 @@ def build_report(call: dict, synthesis: dict) -> dict:
         clock = _clock(when)
     else:
         date, clock = "", ""
-    reason = str(state.get("close_reason") or (call.get("telemetry") or {}).get("close_reason") or "")
+    reason = str(state.get("close_reason") or "")
     incomplete = reason in _INCOMPLETE_REASONS or (reason != "complete" and state.get("phase") != "closing")
     if reason == "complete":
         incomplete = False

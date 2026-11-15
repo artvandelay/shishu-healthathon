@@ -34,14 +34,14 @@
     },
     "current_outcome": {
       "type": "choice",
-      "instructions": "How does caller_utterance respond to active_question?",
+      "instructions": "How does caller_utterance respond to active_question? (If caller_utterance answers active_question AND also mentions another topic, classify how it answers active_question.)",
       "criteria": {
-        "clear": "Denies, answers no, negative, normal, or nothing further regarding active_question.",
-        "concern": "Affirms, answers yes, agrees to start, identifies a child when active_question asks which child, or provides the answer requested by active_question.",
+        "clear": "Denies, answers no, negative, normal, or nothing further for active_question (even if also mentioning a different topic in the same sentence).",
+        "concern": "Affirms, answers yes, agrees to start, identifies a child when active_question asks which child, or provides the answer requested by active_question (even if also mentioning a different topic).",
         "unknown": "States that she does not know, does not remember, or is unsure about active_question.",
         "clarify": "Asks what active_question itself or a term inside active_question means, or says she did not understand active_question.",
         "retract": "Takes back or reverses a yes or affirmative answer just given for active_question (or its parent_question when active_question is a sub-question).",
-        "other": "caller_utterance does not answer active_question, for example when it only addresses a different topic or question, only updates demographic profile details, or is unrelated chatter."
+        "other": "caller_utterance gives NO answer at all to active_question (for example when it talks ONLY about a different topic without saying yes or no to active_question, only updates demographic profile details, or is unrelated chatter)."
       }
     },
     "side_intent": {
