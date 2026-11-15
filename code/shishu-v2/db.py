@@ -13,6 +13,8 @@ import time
 from collections.abc import Mapping
 from typing import Any
 
+from pydantic import ValidationError
+
 import copy_hi
 import engine
 from models import CallState
@@ -208,7 +210,12 @@ def call_state_from_row(call: Mapping[str, Any] | None) -> CallState:
     if isinstance(raw, CallState):
         return raw
     if isinstance(raw, Mapping) and raw:
-        return CallState.from_dict(raw)
+        try:
+            return CallState.from_dict(raw)
+        except ValidationError:
+            # Pre-v3 rows (e.g. `active_qid`, `pending_followup_idx`) are read-only history:
+            # their summaries/PDFs are already saved, so a fresh state is enough.
+            return CallState()
     return CallState()
 
 

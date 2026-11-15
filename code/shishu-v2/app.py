@@ -263,6 +263,11 @@ def _clinic_slug(value: str) -> str:
     return slug
 
 
+def _resolve_clinic_code(value: str | None) -> str:
+    """Explicit `?clinic=` wins; otherwise tag with `DEFAULT_CLINIC_CODE` (the branch)."""
+    return _clinic_slug(value or "") or _clinic_slug(os.environ.get("DEFAULT_CLINIC_CODE") or "")
+
+
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
@@ -596,7 +601,7 @@ async def ws_gemini(ws: WebSocket) -> None:
         await _reject_ws(ws)
         return
     role, username = _ws_identity(ws)
-    clinic = _clinic_slug(ws.query_params.get("clinic") or "")
+    clinic = _resolve_clinic_code(ws.query_params.get("clinic"))
     await gemini_live.handle_gemini_ws(
         ws,
         caller_name=username,

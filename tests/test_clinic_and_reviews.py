@@ -1,7 +1,9 @@
 """Stage 4: static assets, clinic tag, share event, and clinician review."""
 
 import asyncio
+import os
 import unittest
+from unittest import mock
 
 from tests import APP_DIR
 from tests.helpers import FakeWebSocket
@@ -11,6 +13,7 @@ import db  # noqa: E402
 import gemini_live  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from live_fsm import CLOSING_AUDIO_GRACE_SEC, TurnPhase, WatchdogAction  # noqa: E402
+from models import CallState  # noqa: E402
 
 _STATIC = APP_DIR / "static"
 
@@ -82,6 +85,26 @@ class Stage4LoopTests(unittest.TestCase):
         row = next(item for item in db.list_calls() if item["id"] == call_id)
         self.assertEqual(row["clinic_code"], "kem")
         self.assertEqual(row["clinician_review"], {})
+
+    def test_default_clinic_code_tags_untagged_calls_and_keeps_explicit(self):
+        with mock.patch.dict(os.environ, {"DEFAULT_CLINIC_CODE": "next_v3_decision_api"}):
+            self.assertEqual(app._resolve_clinic_code(None), "next_v3_decision_api")
+            self.assertEqual(app._resolve_clinic_code(""), "next_v3_decision_api")
+            self.assertEqual(app._resolve_clinic_code("   "), "next_v3_decision_api")
+            self.assertEqual(app._resolve_clinic_code("kem"), "kem")
+            self.assertEqual(app._resolve_clinic_code("KEM"), "kem")
+            # An unusable explicit value still falls back to the branch tag.
+            self.assertEqual(app._resolve_clinic_code("../kem"), "next_v3_decision_api")
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("DEFAULT_CLINIC_CODE", None)
+            self.assertEqual(app._resolve_clinic_code(None), "")
+            self.assertEqual(app._resolve_clinic_code("kem"), "kem")
+
+    def test_historical_cursor_state_never_raises(self):
+        legacy = {"cursor_state": {"active_qid": "intro_name", "pending_followup_idx": -1}}
+        self.assertEqual(db.call_state_from_row(legacy), CallState())
+        self.assertEqual(db.call_state_from_row({"cursor_state": {}}), CallState())
+        self.assertEqual(db.call_state_from_row(None), CallState())
 
     def test_share_clicked_is_logged_by_token(self):
         call_id = db.create_call(caller_name="पूजा", clinic_code="kem")
