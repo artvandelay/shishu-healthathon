@@ -40,9 +40,6 @@ _NOTHING_REPORTED = "None reported in this call."
 _NO_ALERTS = "No positive gate alerts."
 _NO_NEGATIVES = "No confirmed negatives were recorded."
 _PARTIAL_CALL = "Call ended before every applicable question was asked."
-_YES_HEADER_HI = "जो बातें हाँ में दर्ज हुईं:"
-_YES_EMPTY_HI = "इस बातचीत में कोई हाँ वाला बिंदु दर्ज नहीं हुआ।"
-_QUESTION_HEADER_HI = "डॉक्टर से पूछने के सवाल:"
 
 
 class Page2Group(Strict, frozen=True):
@@ -162,11 +159,7 @@ def _mother_lines(concerns: list[tuple], profile: CallerProfile, emergency: bool
          for (spec, record), hi in zip(concerns, scopes)],
         emergency=emergency, has_children=bool(profile.children),
     ))
-    body = _YES_EMPTY_HI
-    if yes:
-        body = "\n".join([_YES_HEADER_HI, *(f"- {line}" for line in yes)])
-    numbered = [f"{index}. {q}" for index, q in enumerate(asked, 1)]
-    return yes, asked, "\n".join([body, "", _QUESTION_HEADER_HI, *numbered])
+    return yes, asked, copy_hi.mother_summary_text(yes, asked)
 
 
 def project_summary(

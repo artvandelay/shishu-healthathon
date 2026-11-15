@@ -170,9 +170,7 @@ class ProjectionTests(unittest.TestCase):
         built = post_call.build_reports(_complete_call())
         self.assertEqual(post_call.mother_summary_text(projected), projected.mother_summary_text)
         self.assertEqual(post_call.mother_summary_text(built), projected.mother_summary_text)
-        self.assertEqual(post_call.mother_summary_text({}), "\n".join([
-            summary._YES_EMPTY_HI, "", summary._QUESTION_HEADER_HI,
-        ]))
+        self.assertEqual(post_call.mother_summary_text({}), copy_hi.mother_summary_text([], []))
 
     def test_diagnostic_words_stay_in_the_doctor_note_and_never_reach_the_pdf(self):
         state = _complete_call()

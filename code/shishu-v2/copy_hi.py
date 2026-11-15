@@ -88,6 +88,9 @@ EMERGENCY_HI: tuple[str, ...] = (
     "अभी साँस और हालत को स्थिर करने के लिए डॉक्टर कौन सी जाँच तुरंत करेंगे?",
     "अस्पताल पहुँचकर डॉक्टर को कौन सी चेतावनी की बातों और पहले की बीमारी बतानी चाहिए?",
 )
+YES_HEADER_HI: str = "जो बातें हाँ में दर्ज हुईं:"
+YES_EMPTY_HI: str = "इस बातचीत में कोई हाँ वाला बिंदु दर्ज नहीं हुआ।"
+QUESTION_HEADER_HI: str = "डॉक्टर से पूछने के सवाल:"
 _SEX_HI: dict[ChildSex, str] = {ChildSex.MALE: "बेटा", ChildSex.FEMALE: "बेटी"}
 _INCOMPLETE_HI = "अभी कुछ सवाल बाकी हैं, इसलिए यह जानकारी अधूरी है।"
 _RESUME_HI = "जब समय मिले, दोबारा कॉल करके इसे पूरा कर लीजिए। नमस्ते।"
@@ -256,6 +259,18 @@ def fit_mother_questions_hi(
             seen.add(filler)
             kept.append(filler)
     return kept[:6]
+
+
+def mother_summary_text(
+    yes_summaries_hi: Sequence[str], mother_questions_hi: Sequence[str]
+) -> str:
+    """The one Hindi Mother summary layout: the yes list, then the numbered doctor questions."""
+    yes = [str(line).strip() for line in yes_summaries_hi]
+    yes = [line for line in yes if line]
+    body = "\n".join([YES_HEADER_HI, *(f"- {line}" for line in yes)]) if yes else YES_EMPTY_HI
+    asked = [str(question).strip() for question in mother_questions_hi]
+    numbered = [f"{index}. {q}" for index, q in enumerate((q for q in asked if q), 1)]
+    return "\n".join([body, "", QUESTION_HEADER_HI, *numbered])
 
 
 def recorded_concerns_hi(state: CallState) -> list[str]:

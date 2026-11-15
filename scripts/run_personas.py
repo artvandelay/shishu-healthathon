@@ -180,10 +180,11 @@ def _answer_notes_text(record) -> str:
 
 def _assert_reports_match_cursor(call: dict, problems: list[str]) -> tuple[dict, dict]:
     expected = post_call.build_reports(call)
-    report = mother_report.build_report(call, expected)
+    projected = expected["summary"]
+    report = mother_report.build_report(call, projected)
     if str(call.get("summary_doctor") or "").strip() != expected["doctor_markdown"].strip():
         problems.append("summary_doctor diverges from post_call.build_reports")
-    if str(call.get("summary_mother") or "").strip() != post_call.mother_summary_text(expected).strip():
+    if str(call.get("summary_mother") or "").strip() != projected.mother_summary_text.strip():
         problems.append("summary_mother diverges from post_call.build_reports")
     if (call.get("red_flags") or []) != expected["red_flags"]:
         problems.append("red_flags diverges from post_call.build_reports")
@@ -242,9 +243,9 @@ def _check_p3(call: dict, problems: list[str]) -> None:
     expected, report = _assert_reports_match_cursor(call, problems)
     if "Active emergency" not in expected["doctor_markdown"]:
         problems.append("summary_doctor missing Active emergency")
-    if any(q in expected["mother_questions_hi"] for q in post_call._ROUTINE_HI):
+    if any(q in expected["mother_questions_hi"] for q in copy_hi.ROUTINE_HI):
         problems.append("emergency summary_mother included routine filler")
-    if not all(q in expected["mother_questions_hi"] for q in post_call._EMERGENCY_HI):
+    if not all(q in expected["mother_questions_hi"] for q in copy_hi.EMERGENCY_HI):
         problems.append("emergency summary_mother missing emergency questions")
     if not (report["emergency"] and report["incomplete"]):
         problems.append("mother_report missing emergency/incomplete state")
@@ -276,6 +277,7 @@ def _check_p4(persona: Persona, call: dict, problems: list[str]) -> None:
     if _state_of(same) is not AnswerStatus.CLEAR:
         problems.append(f"fam_same_problem={_state_of(same)}")
     expected, _ = _assert_reports_match_cursor(call, problems)
+    projected = expected["summary"]
     profile = _state(call).profile
     middle = _middle_child(profile)
     if middle is None:
@@ -287,7 +289,7 @@ def _check_p4(persona: Persona, call: dict, problems: list[str]) -> None:
         expected_hi = copy_hi.children_label_hi(profile, [middle.id])
         if expected_en not in expected["doctor_markdown"]:
             problems.append(f"summary_doctor missing middle child attribution ({expected_en})")
-        if expected_hi not in post_call.mother_summary_text(expected):
+        if expected_hi not in projected.mother_summary_text:
             problems.append(f"summary_mother missing middle child attribution ({expected_hi})")
     if not _has(_answer_notes_text(jaundice), "3", "तीन"):
         problems.append(f"jaundice days missing: {_answer_notes_text(jaundice)}")

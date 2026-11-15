@@ -54,7 +54,7 @@ _LIVE_SETTING_ENV_KEYS = (
 )
 _INPUT_RATE, _OUTPUT_RATE = 16000, 24000
 _WATCHDOG_INTERVAL_SEC, _TOOL_SPEAK_FALLBACK_SEC = 0.5, 2.5
-_CLOSING_AUDIO_GRACE_SEC, _MAX_RECONNECTS = 0.8, 5
+_MAX_RECONNECTS = 5
 _NEXT_QUESTION_DECL = {
     "name": "next_question",
     "description": (
@@ -354,14 +354,6 @@ class LiveCallSession:
         self.fsm.awaiting_bot_reply, self.fsm.bot_replied_since_user = True, False
         self.fsm.last_user_turn_ts, self.fsm.nudges_for_turn = time.time(), 0
         self.fsm.quiet_from = 0.0
-
-    def _closing_audio_finished(self, now: float) -> bool:
-        """True once the farewell finished playing inside the closing grace window."""
-        fsm = self.fsm
-        return bool(
-            fsm.closing_heard and fsm.phase is not TurnPhase.BOT_SPEAKING
-            and fsm.playback_ends_at > 0 and now >= fsm.playback_ends_at + _CLOSING_AUDIO_GRACE_SEC
-        )
 
     async def _mark_closing(self, reason: CloseReason | str) -> None:
         reason = CloseReason(reason)

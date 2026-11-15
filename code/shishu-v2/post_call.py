@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+import copy_hi
 import db
 import summary
 from models import CallState
@@ -27,13 +28,13 @@ def build_reports(call: Mapping[str, Any] | CallState) -> dict[str, Any]:
 
 
 def mother_summary_text(synthesis: Mapping[str, Any] | ScreeningSummary) -> str:
-    """The Hindi Mother summary text, laid out exactly as `summary` lays it out."""
+    """The Hindi Mother summary text, laid out by the one canonical builder in `copy_hi`."""
     if isinstance(synthesis, ScreeningSummary):
         return synthesis.mother_summary_text
-    yes = [str(line).strip() for line in (synthesis.get("yes_summaries_hi") or [])]
-    questions = [str(question).strip() for question in (synthesis.get("mother_questions_hi") or [])]
-    body = summary._YES_EMPTY_HI
-    if any(yes):
-        body = "\n".join([summary._YES_HEADER_HI, *(f"- {line}" for line in yes if line)])
-    numbered = [f"{index}. {q}" for index, q in enumerate((q for q in questions if q), 1)]
-    return "\n".join([body, "", summary._QUESTION_HEADER_HI, *numbered])
+    projected = synthesis.get("summary")
+    if isinstance(projected, ScreeningSummary):
+        return projected.mother_summary_text
+    return copy_hi.mother_summary_text(
+        synthesis.get("yes_summaries_hi") or [],
+        synthesis.get("mother_questions_hi") or [],
+    )

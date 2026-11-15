@@ -10,6 +10,7 @@ import app  # noqa: E402
 import db  # noqa: E402
 import gemini_live  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
+from live_fsm import CLOSING_AUDIO_GRACE_SEC, TurnPhase, WatchdogAction  # noqa: E402
 
 _STATIC = APP_DIR / "static"
 
@@ -46,18 +47,24 @@ class Stage4AssetTests(unittest.TestCase):
     def test_ending_fires_once_when_closing_audio_finishes(self):
         live = gemini_live.LiveCallSession(ws=FakeWebSocket())
         now = 1000.0
+        live.fsm.mark_closing(now)
         live.fsm.closing_heard = True
-        live.fsm.phase = gemini_live.TurnPhase.BOT_SPEAKING
         live.fsm.playback_ends_at = now
-        self.assertFalse(live._closing_audio_finished(now))
-        live.fsm.phase = gemini_live.TurnPhase.LISTENING
-        self.assertFalse(live._closing_audio_finished(now))
-        self.assertTrue(live._closing_audio_finished(now + 1.0))
+        live.fsm.phase = TurnPhase.BOT_SPEAKING
+        poll, act = live.fsm.poll_watchdog, WatchdogAction
+        self.assertIs(poll(live.state, now, 8.0), act.NONE)
+        self.assertIs(poll(live.state, now + 1.0, 8.0), act.NONE)
+        live.fsm.phase = TurnPhase.CLOSING
+        grace = now + CLOSING_AUDIO_GRACE_SEC
+        self.assertIs(poll(live.state, grace - 0.05, 8.0), act.NONE)
+        done = poll(live.state, grace, 8.0)
+        self.assertIs(done, act.CLOSING_COMPLETE)
 
         async def once():
             ws = FakeWebSocket()
             live2 = gemini_live.LiveCallSession(ws=ws)
-            await live2._finalize()
+            self.assertFalse(await live2._watchdog_step(done))
+            self.assertFalse(await live2._watchdog_step(done))
             await live2._finalize()
             self.assertTrue(live2.fsm.ending_notified)
             return [m for m in ws.sent if m.get("type") == "ending"]
