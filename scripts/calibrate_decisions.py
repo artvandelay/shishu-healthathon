@@ -11,7 +11,6 @@ import asyncio
 import json
 import sys
 from collections.abc import Callable
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -452,7 +451,7 @@ def main() -> None:
 
     limits, metrics = report(rows)
     print("\nTHRESHOLDS")
-    print(json.dumps(asdict(limits), indent=2))
+    print(json.dumps(limits.model_dump(), indent=2))
     if args.write:
         counts: dict[str, int] = {}
         for row in rows:
@@ -463,7 +462,7 @@ def main() -> None:
             "n_cases": len(rows),
             "class_counts": counts,
             "metrics": metrics,
-            "thresholds": asdict(limits),
+            "thresholds": limits.model_dump(),
         }
         OUT_PATH.write_text(json.dumps(artifact, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         decisions.load_thresholds(OUT_PATH)

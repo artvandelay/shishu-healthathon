@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import http.client
 import io
 import json
@@ -21,8 +22,10 @@ from tests import APP_DIR
 
 import audio_recorder
 import copy_hi
+import db
 import decisions
 import engine
+import mother_report
 from models import (
     AnswerRecord,
     AnswerStatus,
@@ -667,6 +670,281 @@ class CalibrationCaseTests(unittest.TestCase):
         self.assertEqual(len(dev), 40)
         for case in cases:
             self.assertIn(case["split"], {"dev", "holdout"})
+
+
+def _head(winner: str, *, confidence: float = 0.9) -> dict:
+    """One choice head with `other` as its runner-up."""
+    return choice(winner, {winner: confidence, "other": round(max(0.0, 1.0 - confidence), 4)})
+
+
+def _scored_row(
+    case_id: str,
+    split: str,
+    setup: dict,
+    raw_answers: dict,
+    gold: dict,
+) -> dict:
+    """One synthetic `calibrate_decisions` row, shaped exactly like a scored case."""
+    return {
+        "id": case_id,
+        "split": split,
+        "category": "offline_smoke",
+        "audio_wav": "",
+        "cursor_setup": setup,
+        "gold": gold,
+        "decision_ms": 1,
+        "attempts": 1,
+        "request_bytes": 1,
+        "question_count": 1,
+        "catalog_option_count": 1,
+        "usage_present": False,
+        "total_input_tokens": None,
+        "raw_answers": raw_answers,
+    }
+
+
+def _setup(
+    active_qid: str,
+    *,
+    marital: str = "married",
+    children: tuple[tuple[float, str, str | None], ...] = ((2.0, "male", None),),
+    prior: tuple[dict, ...] = (),
+) -> dict:
+    """A `cursor_setup` block the real calibrator would consume."""
+    return {
+        "profile": {
+            "caller_name": "पूजा",
+            "marital_status": marital,
+            "children": [
+                {"age_years": age, "sex": sex, "name": name} for age, sex, name in children
+            ],
+        },
+        "active_qid": active_qid,
+        "pending_followup_idx": None,
+        "prior_answers": list(prior),
+        "utterance_text": "हाँ",
+    }
+
+
+def _gold(
+    outcome: str,
+    *,
+    danger: bool = False,
+    stop: bool = False,
+    profile: bool = False,
+    diagnosis: bool | None = None,
+    detail: bool | None = False,
+    side_qid: str = "",
+    side_action: str = "",
+    side_polarity: str = "",
+    child_ref: str = "",
+    future_qid: str | None = None,
+) -> dict:
+    gold = {
+        "danger_now": danger,
+        "caller_stop": stop,
+        "mentions_profile": profile,
+        "current_outcome": outcome,
+        "side_qid": side_qid,
+        "side_action": side_action,
+        "side_polarity": side_polarity,
+        "child_ref": child_ref,
+        "detail_present": detail,
+    }
+    if diagnosis is not None:
+        gold["mentions_diagnosis"] = diagnosis
+    if future_qid is not None:
+        gold["future_qid"] = future_qid
+    return gold
+
+
+def _raw(
+    outcome: str = "clear",
+    *,
+    danger: float = 0.05,
+    stop: float = 0.05,
+    profile: float = 0.05,
+    diagnosis: float | None = None,
+    detail: float | None = 0.06,
+    side_intent: str = "other",
+    side_qid: str = "other",
+    child_ref: str = "other",
+    outcome_confidence: float = 0.9,
+) -> dict:
+    """One raw Decisions API answer map, with the optional heads left out when n/a."""
+    raw = {
+        "danger_now": noul(danger),
+        "caller_stop": noul(stop),
+        "mentions_profile": noul(profile),
+        "current_outcome": _head(outcome, confidence=outcome_confidence),
+        "side_intent": _head(side_intent),
+        "side_qid": _head(side_qid),
+        "child_ref": _head(child_ref),
+    }
+    if detail is not None:
+        raw["detail_present"] = noul(detail)
+    if diagnosis is not None:
+        raw["mentions_diagnosis"] = noul(diagnosis)
+    return raw
+
+
+def synthetic_scored_rows() -> list[dict]:
+    """Both splits, every head exercised, no network: the shape `report` consumes."""
+    single = _setup("birth_jaundice")
+    multi = _setup("birth_jaundice", children=((9.0, "female", None), (5.0, "male", None), (2.0, "female", None)))
+    side = _setup(
+        "fam_heart_kidney",
+        prior=({"qid": "fam_cancer", "outcome": "concern", "note": "मामा को कैंसर हुआ था।"},),
+    )
+    rows: list[dict] = []
+    for split, count in (("dev", 8), ("holdout", 3)):
+        for index in range(count):
+            kind = index % 6
+            if kind == 0:
+                rows.append(_scored_row(
+                    f"{split}_emergency_{index}", split, single,
+                    _raw("not_about_active", danger=0.97, profile=0.05, detail=None),
+                    _gold("not_about_active", danger=True, detail=None),
+                ))
+            elif kind == 1:
+                rows.append(_scored_row(
+                    f"{split}_caller_stop_{index}", split, single,
+                    _raw("not_about_active", stop=0.93, detail=None),
+                    _gold("not_about_active", stop=True, detail=None),
+                ))
+            elif kind == 2:
+                rows.append(_scored_row(
+                    f"{split}_clear_{index}", split, single,
+                    _raw("clear", profile=0.08),
+                    _gold("clear", detail=False),
+                ))
+            elif kind == 3:
+                rows.append(_scored_row(
+                    f"{split}_concern_multi_{index}", split, multi,
+                    _raw("concern", detail=0.93, child_ref="child_2", diagnosis=0.12),
+                    _gold("concern", detail=True, child_ref="child_2", diagnosis=False),
+                ))
+            elif kind == 4:
+                rows.append(_scored_row(
+                    f"{split}_concern_named_{index}", split, multi,
+                    _raw("concern", detail=0.91, child_ref="child_2", diagnosis=0.94, profile=0.88),
+                    _gold("concern", detail=True, child_ref="child_2", diagnosis=True, profile=True),
+                ))
+            else:
+                rows.append(_scored_row(
+                    f"{split}_side_{index}", split, side,
+                    _raw("clear", side_intent="add_concern", side_qid="fam_cancer", detail=None),
+                    _gold("clear", side_qid="fam_cancer", side_action="add_or_correct", detail=None),
+                ))
+            rows.append(_scored_row(
+                f"{split}_unknown_{index}", split, single,
+                _raw("unknown", detail=None),
+                _gold("unknown", detail=None),
+            ))
+    return rows
+
+
+class ScriptSmokeTests(unittest.TestCase):
+    """Offline guards: `scripts/` must keep compiling against the live `code/shishu-v2` API."""
+
+    def test_calibrate_report_fits_both_splits_and_round_trips_offline(self):
+        rows = synthetic_scored_rows()
+        self.assertEqual({row["split"] for row in rows}, {"dev", "holdout"})
+        with contextlib.redirect_stdout(io.StringIO()):
+            limits, metrics = calibrate_decisions.report(rows)
+
+        self.assertIsInstance(limits, decisions.DecisionThresholds)
+        self.assertEqual(set(metrics), {"dev", "holdout"})
+        self.assertEqual(metrics["dev"]["n"], sum(1 for r in rows if r["split"] == "dev"))
+        self.assertEqual(metrics["holdout"]["n"], sum(1 for r in rows if r["split"] == "holdout"))
+        for split in ("dev", "holdout"):
+            for name, value in metrics[split].items():
+                if name == "side_qid_false_writes":
+                    self.assertEqual(value, 0, split)
+                else:
+                    self.assertGreaterEqual(value, 0.0, f"{split}:{name}")
+
+        dumped = limits.model_dump()
+        self.assertEqual(len(dumped), 13)
+        self.assertEqual(decisions.DecisionThresholds.model_validate(dumped), limits)
+
+    def test_calibrate_main_from_raw_writes_a_loadable_artifact(self):
+        """`--from-raw --write` is the whole post-scoring path; it must never call asdict()."""
+        rows = synthetic_scored_rows()
+        with tempfile.TemporaryDirectory() as tmp:
+            raw_path = Path(tmp) / "calibration_raw_results.json"
+            raw_path.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+            out_path = Path(tmp) / "decision_thresholds.json"
+            with (
+                mock.patch.object(calibrate_decisions, "RAW_PATH", raw_path),
+                mock.patch.object(calibrate_decisions, "OUT_PATH", out_path),
+                mock.patch.object(sys, "argv", ["calibrate_decisions.py", "--from-raw", "--write"]),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                calibrate_decisions.main()
+
+            artifact = json.loads(out_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            set(artifact),
+            {"provisional", "note", "n_cases", "class_counts", "metrics", "thresholds"},
+        )
+        self.assertEqual(artifact["n_cases"], len(rows))
+        self.assertEqual(artifact["class_counts"], {"offline_smoke": len(rows)})
+        self.assertIsInstance(artifact["thresholds"], dict)
+        self.assertEqual(len(artifact["thresholds"]), 13)
+        self.assertEqual(
+            decisions.DecisionThresholds.model_validate(artifact["thresholds"]).model_dump(),
+            artifact["thresholds"],
+        )
+
+    def test_run_personas_reads_the_real_report_and_call_keys(self):
+        """A synthetic stored call must satisfy p5 with zero problems, not a KeyError."""
+        import run_personas
+
+        state = engine.new_state()
+        for patch in (
+            ProfilePatch(caller_name="नीलिमा"),
+            ProfilePatch(marital_status=MaritalStatus.ABOUT_TO_MARRY),
+        ):
+            state = engine.reduce_turn(state, TurnCommand(profile_patch=patch))
+        state = clear_to(state, "close_anything_else")
+        self.assertIs(state.profile.marital_status, MaritalStatus.ABOUT_TO_MARRY)
+        self.assertEqual(state.profile.children, [])
+        self.assertIs(state.profile.ever_pregnant, False)
+
+        projected = run_personas.summary.project_summary(state)
+        call_id = db.create_call(caller_name="नीलिमा")
+        db.save_cursor_state(call_id, state)
+        db.save_report_text(
+            call_id,
+            projected.doctor_markdown,
+            projected.mother_summary_text,
+            list(projected.red_flags),
+            projected.mother_name,
+            projected.children_label_hi,
+        )
+        call = db.get_call(call_id) or {}
+        self.assertIsInstance(call.get("cursor_state"), dict)
+        self.assertEqual(call.get("red_flags"), list(projected.red_flags))
+
+        persona = run_personas.Persona("p5_smoke", "नीलिमा", {}, flags=(0, 0), close="complete")
+        problems: list[str] = []
+        expected, report = run_personas._assert_reports_match_cursor(call, problems)
+        self.assertEqual(problems, [])
+        self.assertEqual(expected.doctor_markdown, projected.doctor_markdown)
+
+        run_personas._check_p5(persona, call, problems)
+        self.assertEqual(problems, [], "p5 must read mother_report.build_report's own keys")
+
+        page2_items = (
+            [item for group in report["page2_groups"] for item in group["items"]]
+            + list(report["page2_unknown"])
+            + [item for group in report["page2_unasked"] for item in group["items"]]
+        )
+        for qid in ("preg_thalassemia", "fam_related"):
+            self.assertIn(copy_hi.question_hi_for(state.profile, get_spec(qid)), page2_items)
+        rendered = mother_report.render_html(report)
+        self.assertIn(copy_hi.question_hi_for(state.profile, get_spec("preg_thalassemia")), rendered)
 
 
 if __name__ == "__main__":

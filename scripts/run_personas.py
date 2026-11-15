@@ -355,9 +355,9 @@ def _check_p5(persona: Persona, call: dict, problems: list[str]) -> None:
         problems.append("transcript recorded child qids: " + ", ".join(spoken_qids))
     _, report = _assert_reports_match_cursor(call, problems)
     page2_items = (
-        [item for grp in report["groups"] for item in grp["items"]]
-        + list(report["unknown"])
-        + [item for grp in report["unasked"] for item in grp["items"]]
+        [item for grp in report["page2_groups"] for item in grp["items"]]
+        + list(report["page2_unknown"])
+        + [item for grp in report["page2_unasked"] for item in grp["items"]]
     )
     for qid in ("preg_thalassemia", "fam_related"):
         expected_q = copy_hi.question_hi_for(profile, get_spec(qid))
