@@ -1,71 +1,115 @@
-"""Stage 2 reports: deterministic cursor PDF, disease-name scrub, and token privacy."""
+"""Stage 4: one typed projection, one WeasyPrint PDF, and no diagnosis in Hindi."""
 
 import asyncio
 import io
-import json
 import threading
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import tests  # noqa: F401
-from tests.helpers import clear_until, make_child, make_profile_state
 
 import app as shishu_app  # noqa: E402
-import call_cursor  # noqa: E402
+import copy_hi  # noqa: E402
 import db  # noqa: E402
+import engine  # noqa: E402
 import mother_report  # noqa: E402
 import post_call  # noqa: E402
-import prompts  # noqa: E402
 import report_service  # noqa: E402
-from call_cursor import apply_interpreted_turn, apply_profile, apply_turn, close_technical_failure  # noqa: E402
+import seed  # noqa: E402
+import summary  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
+from models import (  # noqa: E402
+    CallState,
+    ChildInput,
+    ChildSex,
+    MaritalStatus,
+    Phase,
+    ProfilePatch,
+    TurnCommand,
+    TurnOutcome,
+)
 from pypdf import PdfReader  # noqa: E402
-from triage_catalog import EVER_PREGNANT_HI, active_specs, get_spec  # noqa: E402
+from triage_catalog import CATALOG, get_spec  # noqa: E402
 
-_CHILD_QUESTIONS = tuple(spec.question_hi for spec in active_specs() if "no_children" in spec.skip_if)
-_FORBIDDEN = ("Duchenne", "Hemophilia", "Haemophilia", "Pompe", "Gaucher", "SCID", "Wiskott", "ड्यूशेन", "हीमोफीलिया")
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_SAMPLES = _REPO_ROOT / "docs" / "samples"
+_CALL = {"id": 1, "started_at": "2026-11-12 04:00:00", "duration_sec": 180}
+_CHILD_QUESTIONS = tuple(spec.question_hi for spec in CATALOG if "no_children" in spec.skip_if)
+_FORBIDDEN = (
+    "Duchenne", "Hemophilia", "Haemophilia", "Pompe", "Gaucher", "SCID",
+    "Wiskott", "SMA", "MPS", "ड्यूशेन", "हीमोफीलिया", "पॉम्पे", "गॉशर",
+)
+_DIAGNOSTIC_NOTE = "डॉक्टर ने Hemophilia और ड्यूशेन और Pompe बताया"
+_SAFE_NOTE = "चोट पर खून देर तक बहता है"
 
 
-def _childless_cursor():
-    state = apply_turn(make_profile_state(name="पूजा", children=[]), "clear")
-    state, hold = apply_profile(state, ever_pregnant=False)
-    assert hold is None, hold
-    guard = 0
-    while state["phase"] == "asking" and guard < 90:
-        state = apply_turn(state, "clear")
-        guard += 1
+def _kids(*specs):
+    return tuple(
+        ChildInput(age_years=age, sex=ChildSex(sex), name=name) for age, sex, name in specs
+    )
+
+
+def _state(children=(), *, name="पूजा", marital=MaritalStatus.MARRIED):
+    return engine.apply_profile_patch(
+        CallState(),
+        ProfilePatch(caller_name=name, marital_status=marital, children=tuple(children)),
+    )
+
+
+def _to_end(state, limit: int = 200):
+    for _ in range(limit):
+        if state.phase is not Phase.ASKING:
+            break
+        state = engine.reduce_turn(state, TurnCommand(outcome=TurnOutcome.CLEAR))
     return state
 
 
-def _bleed_cursor():
-    kids = [make_child(7, "male", 1), make_child(2, "female", 2)]
-    state = make_profile_state(name="रेखा", children=kids)
-    concerns = {
-        "body_bleeding_bruise": "बड़े वाले को चोट पर खून देर तक बहता है",
-        "body_joint_swelling": "गिरने पर घुटना सूजता है और कुछ दिनों में ठीक हो जाता है",
-        "fam_infant_death": "मामा का बेटा छह महीने में गुजर गया",
-    }
-    guard = 0
-    while state["phase"] == "asking" and guard < 90:
-        guard += 1
-        qid = state["active_qid"]
-        if state["pending_followup_idx"] == -1:
-            state = apply_turn(state, "concern", child_ref="child_1")
-        elif isinstance(state["pending_followup_idx"], int) and state["pending_followup_idx"] >= 0:
-            state = apply_turn(state, "clear")
-        elif qid in concerns:
-            state = apply_turn(state, "concern", note=concerns[qid], child_ref="child_1")
-        else:
-            state = apply_turn(state, "clear")
+def _clear_until(state, qid, limit: int = 90):
+    for _ in range(limit):
+        if state.phase is not Phase.ASKING or state.cursor.qid == qid:
+            break
+        state = engine.reduce_turn(state, TurnCommand(outcome=TurnOutcome.CLEAR))
     return state
 
 
-def _call_for(state, call_id):
-    turns = []
-    for spec, entry, status in post_call._rows(state):
-        turns.append({"role": "assistant", "qid": spec.id, "text": spec.question_hi})
-        turns.append({"role": "user", "qid": spec.id, "text": f"हाँ। {entry.get('notes') or 'हाँ'}" if status == "concern" else ("पता नहीं" if status == "unknown" else "नहीं")})
-    return {"id": call_id, "started_at": "2026-11-12 04:00:00", "duration_sec": 180, "cursor_state": state, "transcript": turns}
+def _complete_call():
+    state = _state(_kids((7.0, "male", "आरव"), (3.0, "female", "मीरा")))
+    state = _clear_until(state, "body_bleeding_bruise")
+    state = engine.reduce_turn(
+        state,
+        TurnCommand(outcome=TurnOutcome.CONCERN, utterance=_SAFE_NOTE, child_ref="child_2"),
+    )
+    state = _clear_until(state, "preg_thalassemia")
+    state = engine.reduce_turn(
+        state, TurnCommand(outcome=TurnOutcome.CONCERN, utterance="थैलेसीमिया जाँच में माइनर बताया")
+    )
+    state = _clear_until(state, "close_anything_else")
+    state = engine.reduce_turn(
+        state,
+        TurnCommand(outcome=TurnOutcome.CONCERN, utterance=_DIAGNOSTIC_NOTE, diagnostic=True),
+    )
+    return _to_end(state)
+
+
+def _childless_call():
+    state = _state((), name="गीता")
+    return _to_end(state)
+
+
+def _emergency_call():
+    state = _state(_kids((3.0, "female", "मीरा")))
+    state = _clear_until(state, "body_bleeding_bruise")
+    state = engine.reduce_turn(
+        state, TurnCommand(outcome=TurnOutcome.CONCERN, utterance=_SAFE_NOTE, child_ref="child_1")
+    )
+    return engine.reduce_turn(state, TurnCommand(emergency=True, utterance="अभी बेहोश है"))
+
+
+def _stopped_call():
+    state = _state(_kids((4.0, "female", None)), name="सुनीता")
+    state = _clear_until(state, "ill_fasting")
+    return engine.reduce_turn(state, TurnCommand(caller_stop=True))
 
 
 def _pages(pdf: bytes) -> int:
@@ -76,263 +120,241 @@ def _pdf_text(pdf: bytes) -> str:
     return "\n".join(page.extract_text() or "" for page in PdfReader(io.BytesIO(pdf)).pages)
 
 
-def _page2(call: dict) -> str:
-    return mother_report.render_html(mother_report.build_report(call, post_call.build_reports(call))).split('class="page2"', 1)[1]
+def _page2(state: CallState) -> str:
+    call = {**_CALL, "cursor_state": state.to_dict()}
+    return mother_report.render_html(mother_report.build_report(call)).split('class="page2"', 1)[1]
 
 
-def _store(state, mother_name: str) -> int:
+def _store(state: CallState, mother_name: str = "पूजा") -> int:
     call_id = db.create_call(caller_name=mother_name)
     db.save_cursor_state(call_id, state)
-    with db._db_lock:
-        db.conn.execute("UPDATE calls SET mother_name = ? WHERE id = ?", (mother_name, call_id))
-        db.conn.commit()
     db.complete_call(call_id, 180)
     return call_id
 
 
-class CursorReportTests(unittest.TestCase):
-    def test_childless_cursor_omits_child_questions_and_renders_two_pages(self):
-        state = _childless_cursor()
-        self.assertEqual(state["close_reason"], "complete")
-        call = _call_for(state, 7)
-        synthesis = post_call.build_reports(call)
-        for heading in post_call._HEADINGS:
-            self.assertIn(heading, synthesis["doctor_markdown"])
-        self.assertTrue(3 <= len(synthesis["mother_questions_hi"]) <= 6)
-        self.assertEqual((synthesis["yes_summaries_hi"], synthesis["children_label_hi"]), ([], ""))
-        self.assertNotIn("मेरे बच्चे", " ".join(synthesis["mother_questions_hi"]))
-        report = mother_report.build_report(call, synthesis)
-        document = mother_report.render_html(report)
-        page1, page2 = document.split('class="page2"', 1)
+class ProjectionTests(unittest.TestCase):
+    def test_completed_call_projects_one_summary_for_every_builder(self):
+        state = _complete_call()
+        projected = summary.project_summary(state)
+        self.assertEqual((projected.close_reason, projected.incomplete), ("complete", False))
+        self.assertTrue(projected.red_flags)
+
+        built = post_call.build_reports({"id": 1, "cursor_state": state.to_dict()})
+        self.assertEqual(built["doctor_markdown"], projected.doctor_markdown)
+        self.assertEqual(built["red_flags"], list(projected.red_flags))
+        self.assertEqual(built["mother_name_hi"], "पूजा")
+        self.assertEqual(built["children_label_hi"], "आरव 7 साल बेटा · मीरा 3 साल बेटी")
+        self.assertEqual(built["summary"], projected)
+
+        report = mother_report.build_report({**_CALL, "cursor_state": state.to_dict()}, projected)
+        self.assertEqual(report["questions"], list(projected.mother_questions_hi))
+        self.assertEqual(report["page2_groups"], [
+            {"title": group.title, "items": list(group.items)}
+            for group in projected.page2_clear_groups
+        ])
+        self.assertEqual(report["page2_unasked"], [])
+        self.assertEqual(report["date_hi"], "12 नवम्बर 2026")
+
+    def test_typed_state_and_raw_mapping_rows_resolve_identically(self):
+        state = _complete_call()
+        as_model = db.call_state_from_row({"cursor_state": state})
+        as_mapping = db.call_state_from_row({"cursor_state": state.to_dict()})
+        self.assertIs(as_model, state)
+        self.assertEqual(as_mapping.to_dict(), state.to_dict())
+        blank = db.call_state_from_row(None)
+        self.assertEqual((blank.phase, blank.cursor.qid), (Phase.ASKING, "intro_name"))
+        self.assertEqual(db.call_state_from_row({"cursor_state": {}}).to_dict(), blank.to_dict())
+
+    def test_mother_summary_text_matches_the_projection_from_a_model_or_a_dict(self):
+        projected = summary.project_summary(_complete_call())
+        built = post_call.build_reports(_complete_call())
+        self.assertEqual(post_call.mother_summary_text(projected), projected.mother_summary_text)
+        self.assertEqual(post_call.mother_summary_text(built), projected.mother_summary_text)
+        self.assertEqual(post_call.mother_summary_text({}), "\n".join([
+            summary._YES_EMPTY_HI, "", summary._QUESTION_HEADER_HI,
+        ]))
+
+    def test_diagnostic_words_stay_in_the_doctor_note_and_never_reach_the_pdf(self):
+        state = _complete_call()
+        built = post_call.build_reports({"id": 43, "cursor_state": state.to_dict()})
+        for heading in summary._HEADINGS:
+            self.assertIn(heading, built["doctor_markdown"])
+        self.assertIn(_DIAGNOSTIC_NOTE, built["doctor_markdown"])
+        self.assertIn("child_2 (female, age 3.0, मीरा)", built["doctor_markdown"])
+        self.assertTrue(any(_DIAGNOSTIC_NOTE in flag for flag in built["red_flags"]))
+        self.assertIn(_SAFE_NOTE, built["yes_summaries_hi"][0])
+        self.assertIn("मीरा 3 साल बेटी", built["yes_summaries_hi"][0])
+
+        report = mother_report.build_report({"id": 43, "cursor_state": state.to_dict()})
+        pdf_text = _pdf_text(mother_report.render_pdf(report))
+        mother_blob = "\n".join([
+            *built["yes_summaries_hi"],
+            *built["mother_questions_hi"],
+            mother_report.render_html(report),
+            pdf_text,
+        ]).lower()
+        for name in _FORBIDDEN:
+            self.assertNotIn(name.lower(), mother_blob, name)
+        for latin in ("Hemophilia", "Pompe"):
+            self.assertNotIn(latin.lower(), pdf_text.lower(), latin)
+
+    def test_childless_pdf_omits_every_child_question_and_stays_two_to_three_pages(self):
+        state = _childless_call()
+        projected = summary.project_summary(state)
+        self.assertEqual((projected.children_label_hi, projected.yes_summaries_hi), ("", ()))
+        self.assertNotIn("मेरे बच्चे", " ".join(projected.mother_questions_hi))
+
+        report = mother_report.build_report({**_CALL, "cursor_state": state.to_dict()})
+        page2 = _page2(state)
         for question in _CHILD_QUESTIONS:
             self.assertNotIn(question, page2, question[:24])
         self.assertIn(get_spec("fam_related").question_hi, page2)
-        self.assertIn(mother_report.THALASSEMIA_LINE, page1)
-        self.assertIn("यह कोई बीमारी की पुष्टि (डायग्नोसिस) नहीं है।", document)
+
+        self.assertIn("यह कोई बीमारी की पुष्टि (डायग्नोसिस) नहीं है।", mother_report.render_html(report))
         pdf = mother_report.render_pdf(report)
-        self.assertTrue(pdf.startswith(b"%PDF") and _pages(pdf) >= 2)
-        extracted = _pdf_text(pdf)
-        self.assertTrue("SHISHU-7" in extracted and "काँच के बक्से" not in extracted)
+        self.assertTrue(pdf.startswith(b"%PDF"))
+        self.assertTrue(2 <= _pages(pdf) <= 3)
+        self.assertIn("SHISHU-1", _pdf_text(pdf))
 
-    def test_diagnostic_turns_stay_in_doctor_note_and_are_omitted_from_mother_pdf(self):
-        kids = [make_child(7, "male", 1, name="आरव"), make_child(3, "female", 2, name="मीरा")]
-        state = clear_until(make_profile_state(children=kids, name="रेखा"), "body_bleeding_bruise")
-        state = apply_turn(state, "concern", child_ref="child_2", note="चोट पर खून देर तक बहता है", diagnostic=False)
-        state = apply_interpreted_turn(state, {
-            "current_outcome": "not_about_active", "diagnostic_note": True,
-            "side_qid": "body_bleeding_bruise", "side_action": "add_or_correct", "side_outcome": "concern",
-            "side_note": "डॉक्टर ने Hemophilia और ड्यूशेन और Pompe बताया",
-        })
-        state = clear_until(state, "preg_thalassemia")
-        state = apply_turn(state, "concern", note="थैलेसीमिया जाँच में माइनर बताया", diagnostic=False)
-        state = clear_until(state, "close_anything_else")
-        state = apply_turn(state, "concern", note="डॉक्टर ने Duchenne और Sickle Cell का नाम लिया", diagnostic=True)
-        state = apply_turn(state, "clear")
+    def test_multi_child_pdf_names_the_child_and_carries_the_concern(self):
+        report = mother_report.build_report({**_CALL, "cursor_state": _complete_call().to_dict()})
+        document = mother_report.render_html(report)
+        self.assertIn("मीरा 3 साल बेटी", document)
+        self.assertIn(_SAFE_NOTE, document)
+        self.assertIn("पूर्ण कॉल", document)
+        self.assertTrue(2 <= _pages(mother_report.render_pdf(report)) <= 3)
 
-        call = _call_for(state, 43)
-        result = post_call.build_reports(call)
-        for heading in post_call._HEADINGS:
-            self.assertIn(heading, result["doctor_markdown"])
-        for term in ("Hemophilia", "ड्यूशेन", "Pompe", "Duchenne", "Sickle Cell", "child_2 (female, age 3.0, मीरा)"):
-            self.assertIn(term, result["doctor_markdown"])
-            self.assertTrue(any(term in flag for flag in result["red_flags"]), term)
+    def test_emergency_pdf_keeps_the_danger_banner_and_drops_routine_filler(self):
+        state = _emergency_call()
+        projected = summary.project_summary(state)
+        emergency_flag = "emergency: active danger sign now; hospital or 108"
+        self.assertEqual(projected.red_flags[0], f"{emergency_flag}. अभी बेहोश है")
+        self.assertEqual(list(projected.mother_questions_hi[1:]), list(copy_hi.EMERGENCY_HI[:2]))
+        self.assertTrue(all(q not in projected.mother_questions_hi for q in copy_hi.ROUTINE_HI))
 
-        report = mother_report.build_report(call, result)
-        html_doc = mother_report.render_html(report)
-        pdf_text = _pdf_text(mother_report.render_pdf(report))
-        mother_blob = "\n".join([*result["yes_summaries_hi"], *result["mother_questions_hi"], html_doc, pdf_text])
-        for name in _FORBIDDEN:
-            self.assertNotIn(name.lower(), mother_blob.lower())
-        self.assertIn("चोट पर खून देर तक बहता है", result["yes_summaries_hi"][0])
-        self.assertIn("मीरा 3 साल बेटी", result["yes_summaries_hi"][0])
-        self.assertIn("मीरा 3 साल बेटी के लिए:", result["mother_questions_hi"][0])
-        self.assertIn("थैलेसीमिया जाँच में माइनर बताया", mother_blob)
-        self.assertTrue(all(q.endswith("?") for q in result["mother_questions_hi"]) and 3 <= len(result["mother_questions_hi"]) <= 6)
+        report = mother_report.build_report({**_CALL, "cursor_state": state.to_dict()})
+        document = mother_report.render_html(report)
+        self.assertTrue("108" in document and "नज़दीकी अस्पताल" in document)
+        self.assertNotIn("यह कॉल अधूरी रही।", document)
+        self.assertIn("108", _pdf_text(mother_report.render_pdf(report)))
 
-    def test_concerns_unknowns_negatives_and_closing_disclosure_reach_every_report(self):
-        note = "पति को गुप्त रोग; बच्चे पति के नहीं हैं"
-        notes = {
-            "birth_nicu": "तीन दिन काँच का बक्सा", "body_bleeding_bruise": "चोट पर खून देर तक बहता है",
-            "body_transfusion": "दो बार खून चढ़ा", "fam_fits_delay": "भाभी के बेटे को दौरे",
-            "fam_cancer": "मामा को कैंसर", "fam_heart_kidney": "दादा को दिल की बीमारी",
-        }
-        state = make_profile_state(name="मीना", children=[make_child(4, "male")])
-        for qid, text in notes.items():
-            state["answers"][qid] = {"state": "concern", "child_ids": [] if qid.startswith("fam_") else ["child_1"], "notes": text, "followups": {}}
-        state["answers"]["birth_jaundice"] = {"state": "clear", "child_ids": [], "notes": "", "followups": {}}
-        state["answers"]["ill_fasting"] = {"state": "unknown", "child_ids": [], "notes": "", "followups": {}}
-        state["answers"]["close_anything_else"] = {"state": "concern", "child_ids": [], "notes": note, "followups": {"open_concern_detail": {"state": "concern", "note": note}}}
-        state["phase"], state["close_reason"] = "closing", "complete"
+    def test_incomplete_pdf_shows_the_unasked_section(self):
+        state = _stopped_call()
+        projected = summary.project_summary(state)
+        self.assertEqual((projected.close_reason, projected.incomplete), ("caller_stop", True))
+        self.assertTrue(projected.page2_unasked_groups)
 
-        call = _call_for(state, 9)
-        synthesis = post_call.build_reports(call)
-        self.assertEqual(list(synthesis.keys()), ["mother_name_hi", "children_label_hi", "mother_questions_hi", "yes_summaries_hi", "doctor_markdown", "red_flags"])
-        self.assertEqual((len(synthesis["yes_summaries_hi"]), len(synthesis["mother_questions_hi"])), (7, 6))
-        for qid, text in notes.items():
-            self.assertTrue(any(text in line for line in synthesis["yes_summaries_hi"]), qid)
-            self.assertIn(qid, synthesis["doctor_markdown"])
-            self.assertTrue(any(qid in flag for flag in synthesis["red_flags"]), qid)
-        self.assertIn(note, synthesis["yes_summaries_hi"][-1])
-        self.assertIn(note, synthesis["doctor_markdown"].split("### Positive", 1)[0])
-        self.assertIn("Unknown. " + get_spec("ill_fasting").need_en, synthesis["doctor_markdown"])
-        self.assertIn("Clear: " + get_spec("birth_jaundice").need_en, synthesis["doctor_markdown"].split("### Pertinent Negatives", 1)[1])
-        self.assertTrue(any("close_anything_else" in flag for flag in synthesis["red_flags"]))
+        report = mother_report.build_report({**_CALL, "cursor_state": state.to_dict()})
+        document = mother_report.render_html(report)
+        self.assertIn("यह कॉल अधूरी रही।", document)
+        self.assertIn("अभी नहीं पूछा गया", document)
+        self.assertIn("पूछा नहीं गया", document)
+        self.assertNotIn("108", document)
+        self.assertTrue(2 <= _pages(mother_report.render_pdf(report)) <= 3)
 
-        page1, page2 = mother_report.render_html(mother_report.build_report(call, synthesis)).split('class="page2"', 1)
-        self.assertIn(note, page1)
-        self.assertTrue("पता नहीं" in page2 and get_spec("ill_fasting").question_hi in page2 and get_spec("birth_jaundice").question_hi in page2)
 
-    def test_followups_multichild_labels_and_db_saving(self):
-        state = _bleed_cursor()
-        state["answers"]["gate_bones_fractures"] = {"state": "concern", "child_ids": ["child_2"], "notes": "गिरने पर हड्डी टूटी", "followups": {"fracture_count_or_bowing": {"state": "concern", "note": "दो बार"}}}
-        state["answers"]["birth_nicu"] = {"state": "concern", "child_ids": ["child_1"], "notes": "NICU", "followups": {"nicu_reason": {"state": "concern", "note": "सांस"}, "nicu_days": {"state": "concern", "note": "तीन दिन"}}}
-        synthesis = post_call.build_reports(_call_for(state, 19))
-        for expected in ("दो बार", "सांस", "तीन दिन"):
-            self.assertIn(expected, "\n".join(synthesis["yes_summaries_hi"]))
-            self.assertIn(expected, synthesis["doctor_markdown"])
-            self.assertIn(expected, "\n".join(synthesis["red_flags"]))
-        self.assertIn("child_2 (female, age 2", synthesis["doctor_markdown"])
-        self.assertTrue(any("2 साल बेटी" in line for line in synthesis["yes_summaries_hi"]))
-        self.assertTrue(any("2 साल बेटी के लिए:" in q for q in synthesis["mother_questions_hi"]))
-        self.assertNotIn("fracture_count_or_bowing", synthesis["doctor_markdown"])
-        self.assertNotIn("nicu_reason", synthesis["doctor_markdown"])
+class PersistenceTests(unittest.TestCase):
+    def test_report_service_saves_every_text_field_and_stores_one_pdf(self):
+        bleed, calm = _store(_complete_call(), "Pooja"), _store(_childless_call(), "Pooja")
+        for call_id in (bleed, calm):
+            pdf, name = asyncio.run(report_service.mother_pdf(call_id))
+            self.assertTrue(pdf.startswith(b"%PDF") and name.endswith(".pdf"))
+            self.assertEqual(report_service._inflight, {})
 
-        bleed_id, calm_id = _store(_bleed_cursor(), "Pooja"), _store(_childless_cursor(), "Pooja")
-        asyncio.run(report_service.mother_pdf(bleed_id))
-        asyncio.run(report_service.mother_pdf(calm_id))
-        bleed, calm = db.get_call(bleed_id), db.get_call(calm_id)
-        self.assertTrue(bleed["red_flags"] and bleed["summary_doctor"].strip() and bleed["summary_mother"].strip() and "साल" in bleed["child_age"])
-        self.assertEqual(calm["red_flags"], [])
-        self.assertTrue(calm["mother_name"] and calm["mother_name"] != "Mother not named")
+        stored = db.get_call(bleed)
+        self.assertTrue(stored["summary_doctor"].strip() and stored["summary_mother"].strip())
+        self.assertTrue(stored["red_flags"])
+        self.assertEqual(stored["mother_name"], "पूजा")
+        self.assertIn("साल", stored["child_age"])
+        self.assertEqual(db.get_call(calm)["red_flags"], [])
+        stored_pdf, _name = report_service.ready_pdf(bleed)
+        self.assertTrue(stored_pdf.startswith(b"%PDF"))
+        self.assertEqual(_pages(stored_pdf), 3)
 
-    def test_emergency_keeps_the_danger_and_drops_routine_filler(self):
-        state = apply_turn(clear_until(make_profile_state(children=[make_child(3, "female")]), "body_bleeding_bruise"), "concern", note="चोट पर खून देर तक बहता है")
-        state = apply_turn(state, "emergency", note="  अभी   बेहोश है  ")
-        call = _call_for(state, 21)
-        synthesis = post_call.build_reports(call)
-        flags = "\n".join(synthesis["red_flags"])
-        self.assertEqual(flags.count("emergency: active danger sign now"), 1)
-        self.assertIn("अभी बेहोश है", flags)
-        positive = synthesis["doctor_markdown"].split(post_call._POSITIVE_HEADING, 1)[1].split("\n### ", 1)[0]
-        self.assertIn("- Active emergency. Caller was told to go to the nearest hospital or call 108. Mother's words: अभी बेहोश है.", positive)
-        self.assertEqual(synthesis["mother_questions_hi"][1:], list(post_call._EMERGENCY_HI[:2]))
-        doc = mother_report.render_html(mother_report.build_report(call, synthesis))
-        self.assertTrue("108" in doc and "नज़दीकी अस्पताल" in doc)
-
-        calm = apply_turn(clear_until(make_profile_state(children=[make_child(3, "female")]), "ill_fasting"), "emergency", note="सांस रुक रही है")
-        calm_out = post_call.build_reports(_call_for(calm, 22))
-        self.assertEqual(calm_out["mother_questions_hi"], list(post_call._EMERGENCY_HI))
-        self.assertEqual(calm_out["yes_summaries_hi"], [])
-
-    def test_two_step_followup_notes_page2_wording_and_technical_failure(self):
-        state = make_profile_state(name="मीना", children=[make_child(4, "male")])
-        state["answers"]["birth_nicu"] = {"state": "concern", "child_ids": ["child_1"], "notes": "", "followups": {"nicu_reason": {"state": "concern", "note": "साँस की तकलीफ"}, "nicu_days": {"state": "concern", "note": "चार दिन"}}}
-        state["answers"]["close_anything_else"] = {"state": "concern", "child_ids": [], "notes": "", "followups": {"open_concern_detail": {"state": "concern", "note": "रात को जागना"}}}
-        state["phase"], state["close_reason"] = "closing", "complete"
-        synthesis = post_call.build_reports(_call_for(state, 23))
-        self.assertEqual(synthesis, post_call.build_reports(_call_for(state, 23)))
-        doc_html = mother_report.render_html(mother_report.build_report(_call_for(state, 23), synthesis))
-        page1 = doc_html.split('class="page2"', 1)[0]
-        for surface in (page1, synthesis["doctor_markdown"], "\n".join(synthesis["red_flags"])):
-            self.assertTrue("साँस की तकलीफ" in surface and "चार दिन" in surface and "nicu_reason" not in surface and "open_concern_detail" not in surface)
-        self.assertIn("रात को जागना", synthesis["yes_summaries_hi"][1])
-
-        unmarried = apply_turn(apply_turn(make_profile_state(marital="unmarried", name="पूजा"), "clear"), "clear")
-        unmarried_p2 = _page2(_call_for(unmarried, 31))
-        self.assertTrue("पति" not in unmarried_p2 and get_spec("preg_thalassemia").question_hi not in unmarried_p2)
-        about = apply_turn(apply_turn(make_profile_state(marital="about_to_marry", name="पूजा"), "clear"), "clear")
-        self.assertIn("होने वाले पति", _page2(_call_for(about, 32)))
-        two = clear_until(make_profile_state(children=[make_child(6, "male", 1), make_child(2, "female", 2)], name="पूजा"), "birth_jaundice")
-        self.assertIn(get_spec("birth_nicu").question_multi_hi, _page2(_call_for(two, 33)))
-
-        tf = close_technical_failure(clear_until(make_profile_state(children=[make_child(4, "male")], name="पूजा"), "birth_jaundice"))
-        tf_synth = post_call.build_reports(_call_for(tf, 99))
-        self.assertIn("Close reason: technical_failure.", tf_synth["doctor_markdown"])
-        tf_rep = mother_report.build_report(_call_for(tf, 99), tf_synth)
-        self.assertEqual((tf_rep["incomplete"], tf_rep["emergency"], tf_rep["status"]), (True, False, "अधूरी कॉल"))
-        tf_html = mother_report.render_html(tf_rep)
-        self.assertTrue("यह कॉल अधूरी रही।" in tf_html and "108" not in tf_html)
-
-    def test_ever_pregnant_appears_on_page2_and_not_clinical_concern(self):
-        clear_s = apply_turn(apply_turn(make_profile_state(name="पूजा", children=[]), "clear"), "clear")
-        while clear_s["phase"] == "asking":
-            clear_s = apply_turn(clear_s, "clear")
-        self.assertIn(EVER_PREGNANT_HI, _page2(_call_for(clear_s, 51)))
-
-        unk_s = apply_turn(apply_turn(make_profile_state(name="पूजा", children=[]), "clear"), "unknown")
-        while unk_s["phase"] == "asking":
-            unk_s = apply_turn(unk_s, "clear")
-        unk_rep = mother_report.build_report(_call_for(unk_s, 52), post_call.build_reports(_call_for(unk_s, 52)))
-        self.assertIn(EVER_PREGNANT_HI, unk_rep["unknown"])
-
-        inc_s = close_technical_failure(apply_turn(make_profile_state(name="पूजा", children=[]), "clear"))
-        inc_rep = mother_report.build_report(_call_for(inc_s, 53), post_call.build_reports(_call_for(inc_s, 53)))
-        unasked_preg = next(g for g in inc_rep["unasked"] if g["title"] == mother_report._GROUP_HI["pregnancy"])
-        self.assertIn(EVER_PREGNANT_HI, unasked_preg["items"])
-
-        conc_s = apply_turn(apply_turn(make_profile_state(name="पूजा", children=[]), "clear"), "concern")
-        while conc_s["phase"] == "asking":
-            conc_s = apply_turn(conc_s, "clear")
-        self.assertEqual(prompts.recorded_concerns_hi(conc_s), [])
-        self.assertIn("अगर आगे इनमें से कुछ भी दिखे", prompts.closing_hi(conc_s))
-        conc_synth = post_call.build_reports(_call_for(conc_s, 54))
-        self.assertEqual((conc_synth["red_flags"], conc_synth["yes_summaries_hi"]), ([], []))
-        self.assertIn("Ever pregnant: True.", conc_synth["doctor_markdown"])
-        self.assertNotIn("ever_pregnant", conc_synth["doctor_markdown"].split("### Positive", 1)[1])
-
-        prof_clear = make_profile_state(name="पूजा", children=[], ever_pregnant=False)
-        while prof_clear["phase"] == "asking":
-            prof_clear = apply_turn(prof_clear, "clear")
-        prof_rep = mother_report.build_report(_call_for(prof_clear, 55), post_call.build_reports(_call_for(prof_clear, 55)))
-        self.assertIn(EVER_PREGNANT_HI, next(g for g in prof_rep["groups"] if g["title"] == mother_report._GROUP_HI["pregnancy"])["items"])
-
-    def test_post_call_edge_cases_and_incomplete_unknown_copy(self):
-        state = call_cursor.new_cursor_state()
-        state["answers"]["close_anything_else"] = {"state": "concern", "child_ids": [], "notes": "रात को रोना", "followups": {"open_concern_detail": {"state": "concern", "note": "रात को रोना"}}}
-        state["phase"], state["close_reason"], state["emergency_note"] = "closing", "emergency", "सांस लेने में तकलीफ"
-        synth = post_call.build_reports(_call_for(state, 61))
-        self.assertEqual(synth["mother_name_hi"], "")
-        self.assertTrue("- Caller: not reported." in synth["doctor_markdown"] and "Ever pregnant: not reported." in synth["doctor_markdown"] and "close_anything_else close_anything_else:" not in synth["doctor_markdown"])
-        self.assertEqual(mother_report.build_report(_call_for(state, 61), synth)["who"], "माँ")
-
-        calm_emg = dict(call_cursor.new_cursor_state(), phase="closing", close_reason="emergency", emergency_note="दौरा पड़ रहा है")
-        self.assertIn("- Chief complaint: Active emergency reported during call.", post_call.build_reports(_call_for(calm_emg, 62))["doctor_markdown"])
-
-        unk_only = clear_until(make_profile_state(children=[make_child(4, "male")], name="पूजा"), "birth_jaundice")
-        unk_only["answers"] = {"birth_jaundice": {"state": "unknown", "child_ids": [], "notes": "", "followups": {}}}
-        unk_only = close_technical_failure(unk_only)
-        rep = mother_report.build_report(_call_for(unk_only, 63), post_call.build_reports(_call_for(unk_only, 63)))
-        html_doc = mother_report.render_html(rep)
-        self.assertNotIn("इस कॉल में कोई जवाब दर्ज नहीं हुआ।", html_doc)
-        self.assertIn("इस कॉल में कोई बात हाँ में नहीं आई।", html_doc)
-
-    def test_db_label_reset_event_retention_and_inflight_cancel_shield(self):
+    def test_save_cursor_state_accepts_a_model_or_a_mapping_and_clears_labels(self):
         call_id = db.create_call(caller_name="पूजा")
-        state = make_profile_state(name="पूजा", children=[make_child(5, "male")])
-        db.save_cursor_state(call_id, state)
-        self.assertEqual((db.get_call(call_id)["mother_name"], db.get_call(call_id)["child_age"]), ("पूजा", "5 साल बेटा"))
-        db.save_cursor_state(call_id, {"profile": {"caller_name": "", "children": []}, "answers": {}})
+        db.save_cursor_state(call_id, _state(_kids((5.0, "male", None))))
+        self.assertEqual(db.get_call(call_id)["mother_name"], "पूजा")
+        self.assertEqual(db.get_call(call_id)["child_age"], "5 साल बेटा")
+
+        blank = {"profile": {"caller_name": "", "children": []}, "answers": {}}
+        db.save_cursor_state(call_id, blank)
         self.assertEqual((db.get_call(call_id)["mother_name"], db.get_call(call_id)["child_age"]), ("", ""))
-        db.save_cursor_state(call_id, state)
-        db.save_report_text(call_id, "doc", "mom", [], "", "")
-        self.assertEqual((db.get_call(call_id)["mother_name"], db.get_call(call_id)["child_age"]), ("", ""))
+
+        db.save_cursor_state(call_id, None)
+        self.assertEqual(db.get_call(call_id)["cursor_state"]["profile"]["children"], [])
+
+    def test_append_transcript_merges_a_chunked_turn_and_skips_blank_text(self):
+        call_id = db.create_call(caller_name="पूजा")
         db.append_transcript(call_id, "user", "   \n\t  ")
         self.assertEqual(db.get_call(call_id)["transcript"], [])
-        for i in range(300):
-            db.append_call_event(call_id, f"evt_{i}")
+        db.append_transcript(call_id, "user", "चोट पर खून", qid="body_bleeding_bruise")
+        db.append_transcript(call_id, "user", "देर तक बहता है", qid="body_bleeding_bruise")
+        transcript = db.get_call(call_id)["transcript"]
+        self.assertEqual(len(transcript), 1)
+        self.assertIn("चोट पर खून", transcript[0]["text"])
+        self.assertIn("देर तक बहता है", transcript[0]["text"])
+
+    def test_events_are_capped_and_timing_meta_is_filtered(self):
+        call_id = db.create_call(caller_name="पूजा")
+        for index in range(300):
+            db.append_call_event(call_id, f"evt_{index}")
         self.assertEqual(len(db.get_call(call_id)["events"]), 300)
 
-        bug = db.create_bug_report(call_id, "Tester", "Other", "shot", 5, extra_snapshot={"screenshot": "data:image/png;base64,AAAA"}, include_call_body=False)
+        report_service._event(call_id, "render_end", {"ms": 42, "bytes": 1024, "model": "old"})
+        self.assertEqual(db.get_call(call_id)["events"][-1]["meta"], {"ms": 42, "bytes": 1024})
+
+    def test_bug_report_snapshot_round_trips_without_the_raw_column(self):
+        call_id = _store(_childless_call(), "पूजा")
+        bug = db.create_bug_report(
+            call_id, "Tester", "Other", "shot", 5,
+            extra_snapshot={"screenshot": "data:image/png;base64,AAAA"},
+        )
         listed = next(item for item in db.list_bug_reports() if item["id"] == bug["id"])
         self.assertNotIn("snapshot_json", listed)
         self.assertEqual(listed["snapshot"]["client"]["screenshot"], "data:image/png;base64,AAAA")
 
-        cid2 = _store(_childless_cursor(), "पूजा")
-        entered, release, calls_seen = threading.Event(), threading.Event(), []
+
+class EndpointTests(unittest.TestCase):
+    def test_token_endpoint_and_admin_endpoint_serve_the_same_saved_pdf(self):
+        calm_id, bleed_id = _store(_childless_call(), "Pooja"), _store(_complete_call(), "Pooja")
+        calm, bleed = db.get_call(calm_id), db.get_call(bleed_id)
+        self.assertNotEqual(calm["share_token"], bleed["share_token"])
+
+        with TestClient(shishu_app.app) as client:
+            anonymous = client.get(f"/api/calls/by-token/{calm['share_token']}/mother.pdf")
+            self.assertEqual(anonymous.status_code, 409)
+
+            calm_pdf = client.post(f"/api/calls/by-token/{calm['share_token']}/mother.pdf")
+            bleed_pdf = client.post(f"/api/calls/by-token/{bleed['share_token']}/mother.pdf")
+            self.assertEqual((calm_pdf.status_code, bleed_pdf.status_code), (200, 200))
+            self.assertTrue(calm_pdf.content.startswith(b"%PDF"))
+            self.assertTrue(bleed_pdf.content.startswith(b"%PDF"))
+            self.assertNotEqual(calm_pdf.content, bleed_pdf.content)
+            self.assertTrue(all(
+                2 <= _pages(rendered.content) <= 3 for rendered in (calm_pdf, bleed_pdf)
+            ))
+
+            fetched = client.get(f"/api/calls/by-token/{calm['share_token']}/mother.pdf")
+            self.assertEqual(fetched.content, calm_pdf.content)
+            self.assertEqual(client.get("/api/calls/by-token/not-a-real-token/mother.pdf").status_code, 404)
+
+            self.assertEqual(client.get(f"/api/calls/{calm_id}/mother.pdf").status_code, 401)
+            client.post("/api/login", json={"username": "admin", "passcode": "admin-test"})
+            admin_pdf = client.get(f"/api/calls/{calm_id}/mother.pdf")
+            self.assertEqual(admin_pdf.status_code, 200)
+            self.assertEqual(admin_pdf.content, calm_pdf.content)
+
+        self.assertIn("खून", db.get_call(bleed_id)["summary_mother"])
+        self.assertNotIn("खून", db.get_call(calm_id)["summary_mother"])
+
+    def test_overlapping_builds_share_one_render_and_survive_cancellation(self):
+        call_id = _store(_childless_call(), "पूजा")
+        entered, release, seen = threading.Event(), threading.Event(), []
         real_render = mother_report.render_pdf
 
         def slow_render(report):
-            calls_seen.append(1)
+            seen.append(report["call_id"])
             entered.set()
             if not release.wait(timeout=5):
                 raise RuntimeError("timeout")
@@ -340,64 +362,68 @@ class CursorReportTests(unittest.TestCase):
 
         async def run():
             with patch.object(mother_report, "render_pdf", side_effect=slow_render):
-                t1 = asyncio.create_task(report_service.mother_pdf(cid2))
-                t2 = asyncio.create_task(report_service.mother_pdf(cid2))
+                first = asyncio.create_task(report_service.mother_pdf(call_id))
+                second = asyncio.create_task(report_service.mother_pdf(call_id))
                 while not entered.is_set():
                     await asyncio.sleep(0.01)
-                t1.cancel()
+                first.cancel()
                 with self.assertRaises(asyncio.CancelledError):
-                    await t1
+                    await first
                 release.set()
-                return await t2
+                return await second
 
         pdf, name = asyncio.run(run())
-        self.assertTrue(pdf.startswith(b"%PDF") and name.endswith(".pdf") and len(calls_seen) == 1)
+        self.assertTrue(pdf.startswith(b"%PDF") and name.endswith(".pdf"))
+        self.assertEqual(seen, [call_id])
         self.assertEqual(report_service._inflight, {})
 
-        ev_cid = db.create_call(caller_name="पूजा")
-        report_service._event(ev_cid, "render_end", {"ms": 42, "bytes": 1024, "model": "old", "error_class": "Err", "reason": "legacy"})
-        self.assertEqual(db.get_call(ev_cid)["events"][-1]["meta"], {"ms": 42, "bytes": 1024})
 
+class SamplePdfTests(unittest.TestCase):
+    def test_all_three_sample_pdfs_are_valid_devnagari_documents(self):
+        for name, report in seed.sample_reports().items():
+            with self.subTest(name):
+                path = _SAMPLES / name
+                self.assertTrue(path.is_file(), name)
+                pdf = path.read_bytes()
+                self.assertTrue(pdf.startswith(b"%PDF"))
+                self.assertTrue(2 <= _pages(pdf) <= 3, name)
+                self.assertIn("SHISHU", _pdf_text(pdf))
 
-class TokenPrivacyTests(unittest.TestCase):
-    def test_share_token_qid_and_review_round_trip(self):
-        call_id = db.create_call(caller_name="पूजा", clinic_code="kem")
-        token = db.get_call(call_id)["share_token"]
-        self.assertTrue(len(token) >= 8 and db.get_call(call_id)["clinic_code"] == "kem")
-        with db._db_lock:
-            db.conn.execute("UPDATE calls SET share_token = '' WHERE id = ?", (call_id,))
-            db.conn.commit()
-        refilled = db.get_call(call_id)
-        self.assertEqual(db.get_call_by_token(refilled["share_token"])["id"], call_id)
-        self.assertIsNone(db.get_call_by_token("not-a-real-token"))
-        db.append_transcript(call_id, "user", "हाँ खून बहता है", qid="body_bleeding_bruise")
-        db.append_transcript(call_id, "user", "और सूजन", qid="body_joint_swelling")
-        self.assertEqual([t.get("qid") for t in db.get_call(call_id)["transcript"]], ["body_bleeding_bruise", "body_joint_swelling"])
-        self.assertEqual(db.save_clinician_review(call_id, "missed_flag", "joint swelling")["rating"], "missed_flag")
-        with self.assertRaises(ValueError):
-            db.save_clinician_review(call_id, "great")
+                document = mother_report.render_html(report).lower()
+                self.assertIn("यह कोई बीमारी की पुष्टि (डायग्नोसिस) नहीं है।", document)
+                for banned in _FORBIDDEN:
+                    self.assertNotIn(banned.lower(), document, f"{banned} in {name}")
+                    self.assertNotIn(banned.lower(), _pdf_text(pdf).lower(), f"{banned} in {name}")
 
-    def test_token_pdf_separates_two_poojas_and_saves_summary(self):
-        calm_id, bleed_id = _store(_childless_cursor(), "Pooja"), _store(_bleed_cursor(), "Pooja")
-        calm, bleed = db.get_call(calm_id), db.get_call(bleed_id)
-        self.assertNotEqual(calm["share_token"], bleed["share_token"])
+    def test_sample_bodies_match_their_intent(self):
+        reports = seed.sample_reports()
+        red, calm, partial = (
+            mother_report.render_html(reports[name])
+            for name in (
+                "SHISHU-sample-red-flags.pdf",
+                "SHISHU-sample-no-flags.pdf",
+                "SHISHU-sample-incomplete.pdf",
+            )
+        )
+        self.assertNotIn("108", red)
+        self.assertIn("इस कॉल में कोई बात हाँ में नहीं आई।", calm)
+        self.assertNotIn("अभी नहीं पूछा गया", calm)
+        self.assertIn("यह कॉल अधूरी रही।", partial)
+        self.assertIn("अभी नहीं पूछा गया", partial)
 
-        with TestClient(shishu_app.app) as client:
-            calm_pdf = client.post(f"/api/calls/by-token/{calm['share_token']}/mother.pdf")
-            bleed_pdf = client.post(f"/api/calls/by-token/{bleed['share_token']}/mother.pdf")
-            self.assertEqual((calm_pdf.status_code, bleed_pdf.status_code), (200, 200))
-            self.assertTrue(calm_pdf.content.startswith(b"%PDF") and bleed_pdf.content.startswith(b"%PDF"))
-            self.assertNotEqual(calm_pdf.content, bleed_pdf.content)
-            self.assertTrue(_pages(calm_pdf.content) >= 2 and _pages(bleed_pdf.content) >= 2)
-            self.assertEqual(client.get(f"/api/calls/by-token/{calm['share_token']}/mother.pdf").content, calm_pdf.content)
-            self.assertEqual(client.get("/api/calls/by-token/not-a-real-token/mother.pdf").status_code, 404)
-            self.assertNotEqual(client.get(f"/api/calls/by-token/{bleed['share_token']}/mother.pdf").content, calm_pdf.content)
-
-        calm_saved, bleed_saved = db.get_call(calm_id)["summary_mother"], db.get_call(bleed_id)["summary_mother"]
-        self.assertTrue("खून" in bleed_saved and "खून" not in calm_saved)
-        calm_text = _pdf_text(calm_pdf.content)
-        for question in _CHILD_QUESTIONS:
-            self.assertNotIn(question[:40], calm_text)
+    def test_samples_are_reproducible_from_the_seed_scenarios(self):
+        written = seed.write_sample_pdfs(_SAMPLES)
+        self.assertEqual(
+            [path.name for path in written],
+            [
+                "SHISHU-sample-red-flags.pdf",
+                "SHISHU-sample-no-flags.pdf",
+                "SHISHU-sample-incomplete.pdf",
+            ],
+        )
+        for path in written:
+            self.assertTrue(path.read_bytes().startswith(b"%PDF"))
+            self.assertTrue(2 <= _pages(path.read_bytes()) <= 3, path.name)
 
 
 if __name__ == "__main__":

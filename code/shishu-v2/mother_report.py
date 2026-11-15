@@ -1,56 +1,29 @@
-"""Hindi mother PDF. Built only after the call is saved."""
+"""Hindi Mother PDF: one typed projection in, one WeasyPrint document out."""
 
 import html
-import logging
 import os
-import subprocess
 import sys
-import tempfile
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 if sys.platform == "darwin":
     os.environ.setdefault("DYLD_FALLBACK_LIBRARY_PATH", "/opt/homebrew/lib")
 
-import call_cursor
-import triage_catalog
-
-logger = logging.getLogger(__name__)
+import copy_hi
+import db
+import summary
+from summary import ScreeningSummary
 
 _STATIC = Path(__file__).resolve().parent / "static"
 _FONT = _STATIC / "fonts" / "NotoSansDevanagari.ttf"
 _LOGO = _STATIC / "shishu-logo.png"
 _IST = timezone(timedelta(hours=5, minutes=30))
-_MONTHS = (
-    "",
-    "जनवरी",
-    "फ़रवरी",
-    "मार्च",
-    "अप्रैल",
-    "मई",
-    "जून",
-    "जुलाई",
-    "अगस्त",
-    "सितम्बर",
-    "अक्टूबर",
-    "नवम्बर",
-    "दिसम्बर",
-)
+
 THALASSEMIA_LINE = (
     "अगली प्रेग्नेंसी से पहले माँ और पिता दोनों की थैलेसीमिया जाँच (स्क्रीनिंग) करवा लें।"
 )
-_GROUP_HI = {
-    "birth": "जन्म और नवजात",
-    "body": "बढ़त और शरीर",
-    "illness": "बीमारी",
-    "pregnancy": "प्रेग्नेंसी",
-    "family": "परिवार",
-    "close": "अंत",
-}
-_INCOMPLETE_REASONS = frozenset({
-    "silence", "time_limit", "emergency", "caller_stop", "technical_failure",
-})
-_CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
 _CSS = """
 @font-face {
@@ -159,11 +132,9 @@ def _ist(started_at: str) -> datetime | None:
     return naive.replace(tzinfo=timezone.utc).astimezone(_IST)
 
 
-def _clock(dt: datetime) -> str:
-    hour = dt.hour
-    suffix = "पूर्वाह्न" if hour < 12 else "अपराह्न"
-    hour12 = hour % 12 or 12
-    return f"{hour12}:{dt.minute:02d} {suffix}"
+def _clock(when: datetime) -> str:
+    suffix = "पूर्वाह्न" if when.hour < 12 else "अपराह्न"
+    return f"{when.hour % 12 or 12}:{when.minute:02d} {suffix}"
 
 
 def _duration(seconds: int) -> str:
@@ -175,146 +146,86 @@ def _duration(seconds: int) -> str:
     return f"{secs} सेकंड"
 
 
-def _add_page2_row(
-    buckets: dict[str, list[str]],
-    order: list[str],
-    unknown: list[str],
-    missed: dict[str, list[str]],
-    missed_order: list[str],
-    title: str,
-    label: str,
-    status: str,
-    incomplete: bool,
-) -> None:
-    if status == "clear":
-        if title not in buckets:
-            order.append(title)
-            buckets[title] = []
-        buckets[title].append(label)
-    elif status == "unknown":
-        unknown.append(label)
-    elif status == "not_asked" and incomplete:
-        if title not in missed:
-            missed_order.append(title)
-            missed[title] = []
-        missed[title].append(label)
+def _groups(groups) -> list[dict[str, Any]]:
+    return [{"title": group.title, "items": list(group.items)} for group in groups]
 
 
-def _page2_from_cursor(state: dict, incomplete: bool) -> tuple[list, list, list]:
-    """Clear, unknown, and unanswered rows. not_applicable is omitted."""
-    answers = state.get("answers") or {}
-    buckets: dict[str, list[str]] = {}
-    order: list[str] = []
-    unknown: list[str] = []
-    missed: dict[str, list[str]] = {}
-    missed_order: list[str] = []
-    for spec in triage_catalog.active_specs():
-        if spec.kind not in ("routing_gate", "gate", "open_capture"):
-            continue
-        entry = answers.get(spec.id)
-        if isinstance(entry, dict):
-            status = entry.get("state") or ""
-        elif incomplete:
-            status = "not_asked"
-        else:
-            continue
-        if status in ("", "concern", "not_applicable"):
-            continue
-        title = _GROUP_HI.get(spec.group, spec.group)
-        label = call_cursor.question_hi_for(state, spec)
-        _add_page2_row(
-            buckets,
-            order,
-            unknown,
-            missed,
-            missed_order,
-            title,
-            label,
-            status,
-            incomplete,
-        )
-    groups = [{"title": title, "items": buckets[title]} for title in order]
-    unasked = [{"title": title, "items": missed[title]} for title in missed_order]
-    return groups, unknown, unasked
-
-
-def build_report(call: dict, synthesis: dict) -> dict:
-    """Mother PDF report payload from cursor state plus synthesis."""
-    state = call_cursor.cursor_from_call(call)
+def build_report(
+    call: Mapping[str, Any], projected: ScreeningSummary | None = None
+) -> dict[str, Any]:
+    """The Mother PDF payload, projected once from the call's typed state."""
+    proj = projected or summary.project_summary(db.call_state_from_row(call))
     when = _ist(str(call.get("started_at") or ""))
-    if when:
-        date = f"{when.day} {_MONTHS[when.month]} {when.year}"
-        clock = _clock(when)
-    else:
-        date, clock = "", ""
-    reason = str(state.get("close_reason") or "")
-    incomplete = reason in _INCOMPLETE_REASONS or (reason != "complete" and state.get("phase") != "closing")
-    groups, unknown, unasked = _page2_from_cursor(state, incomplete)
-    name = str(synthesis.get("mother_name_hi") or "").strip() or "माँ"
-    children = str(synthesis.get("children_label_hi") or "").strip()
-    who = name + (f" · {children}" if children else "")
-    call_id = int(call.get("id") or 0)
     return {
-        "who": who,
-        "ref": f"SHISHU-{call_id}" if call_id else "",
-        "date": date,
-        "time": clock,
-        "duration": _duration(call.get("duration_sec") or 0),
-        "status": "अधूरी कॉल" if incomplete else "पूर्ण कॉल",
-        "incomplete": incomplete,
-        "emergency": reason == "emergency",
-        "questions": [str(question) for question in (synthesis.get("mother_questions_hi") or []) if str(question).strip()],
-        "universal": THALASSEMIA_LINE,
-        "yes": [str(line) for line in (synthesis.get("yes_summaries_hi") or []) if str(line).strip()],
-        "groups": groups,
-        "unknown": unknown,
-        "unasked": unasked,
+        "call_id": int(call.get("id") or 0),
+        "date_hi": f"{when.day} {copy_hi.MONTHS_HI[when.month]} {when.year}" if when else "",
+        "time_hi": _clock(when) if when else "",
+        "duration_hi": _duration(call.get("duration_sec") or 0),
+        "mother_name": proj.mother_name,
+        "child_age": proj.children_label_hi,
+        "incomplete": proj.incomplete,
+        "emergency": proj.emergency,
+        "questions": list(proj.mother_questions_hi),
+        "yes": list(proj.yes_summaries_hi),
+        "page2_groups": _groups(proj.page2_clear_groups),
+        "page2_unknown": list(proj.page2_unknown),
+        "page2_unasked": _groups(proj.page2_unasked_groups),
+        "logo_uri": _LOGO.as_uri(),
+        "font_uri": _FONT.as_uri(),
     }
 
 
-def filename(call: dict) -> str:
+def filename(call: Mapping[str, Any]) -> str:
     when = _ist(str(call.get("started_at") or ""))
-    if when is None:
-        return "SHISHU.pdf"
-    return f"SHISHU-{when:%Y-%m-%d-%H%M}.pdf"
+    return "SHISHU.pdf" if when is None else f"SHISHU-{when:%Y-%m-%d-%H%M}.pdf"
 
 
-def render_html(report: dict) -> str:
-    if report["questions"]:
-        items = "\n".join(f"<li>{html.escape(q)}</li>" for q in report["questions"])
-        questions = (
-            "<h1>डॉक्टर या स्वास्थ्य कार्यकर्ता (ASHA/ANM दीदी) से ये पूछें</h1>\n"
-            f"<ol>{items}</ol>\n"
-        )
-    else:
-        questions = ""
-    universal = (
-        '<aside class="universal">'
-        "<b>सभी के लिए एक जैसी सलाह</b>"
-        '<span class="why">यह इस माँ या बच्चे के बारे में नहीं है।</span>'
-        f"<span>{html.escape(report.get('universal') or THALASSEMIA_LINE)}</span>"
-        "</aside>"
+def _who(report: Mapping[str, Any]) -> str:
+    name = str(report.get("mother_name") or "").strip() or "माँ"
+    children = str(report.get("child_age") or "").strip()
+    return name + (f" · {children}" if children else "")
+
+
+def _questions_html(questions: list[str]) -> str:
+    if not questions:
+        return ""
+    items = "\n".join(f"<li>{html.escape(question)}</li>" for question in questions)
+    return (
+        "<h1>डॉक्टर या स्वास्थ्य कार्यकर्ता (ASHA/ANM दीदी) से ये पूछें</h1>\n"
+        f"<ol>{items}</ol>\n"
     )
-    if report["yes"]:
-        yes = '<ul class="yes">' + "".join(f"<li>{html.escape(line)}</li>" for line in report["yes"]) + "</ul>"
-    elif report.get("unasked") and not report["groups"] and not report.get("unknown"):
-        yes = '<p class="calm">इस कॉल में कोई जवाब दर्ज नहीं हुआ।</p>'
-    else:
-        yes = '<p class="calm">इस कॉल में कोई बात हाँ में नहीं आई।</p>'
-    band = ""
+
+
+def _band_html(report: Mapping[str, Any]) -> str:
     if report.get("emergency"):
-        band = (
-            '<div class="band"><b>बच्चे को अभी तुरंत नज़दीकी अस्पताल ले जाइए, या 108 पर कॉल कीजिए।</b> '
+        headline = "बच्चे को अभी तुरंत नज़दीकी अस्पताल ले जाइए, या 108 पर कॉल कीजिए।"
+        return (
+            f'<div class="band"><b>{headline}</b> '
             "नीचे वही है जो इस कॉल में पूछा जा सका।</div>"
         )
-    elif report["incomplete"]:
-        band = (
+    if report.get("incomplete"):
+        return (
             '<div class="band"><b>यह कॉल अधूरी रही।</b> '
             "नीचे वही है जो इस कॉल में पूछा जा सका। "
             "समय मिले तो दोबारा कॉल करके बाकी सवाल पूरे कर लें।</div>"
         )
+    return ""
+
+
+def _yes_html(report: Mapping[str, Any]) -> str:
+    if report.get("yes"):
+        return '<ul class="yes">' + "".join(
+            f"<li>{html.escape(line)}</li>" for line in report["yes"]
+        ) + "</ul>"
+    empty = report.get("page2_unasked") and not report.get("page2_groups")
+    if empty and not report.get("page2_unknown"):
+        return '<p class="calm">इस कॉल में कोई जवाब दर्ज नहीं हुआ।</p>'
+    return '<p class="calm">इस कॉल में कोई बात हाँ में नहीं आई।</p>'
+
+
+def _page2_html(report: Mapping[str, Any]) -> str:
     rows: list[str] = []
-    for group in report["groups"]:
+    for group in report.get("page2_groups") or []:
         rows.append(f'<div class="group">{html.escape(group["title"])}</div>')
         for question in group["items"]:
             rows.append(
@@ -322,17 +233,17 @@ def render_html(report: dict) -> str:
                 + html.escape(question)
                 + '</span><span class="ans">नहीं</span></div>'
             )
-    if report["unknown"]:
+    if report.get("page2_unknown"):
         rows.append('<div class="group">पक्का जवाब नहीं मिला</div>')
-        for question in report["unknown"]:
+        for question in report["page2_unknown"]:
             rows.append(
                 '<div class="no-row"><span>'
                 + html.escape(question)
                 + '</span><span class="ans">पता नहीं</span></div>'
             )
-    if report.get("unasked"):
+    if report.get("page2_unasked"):
         rows.append('<div class="group">अभी नहीं पूछा गया</div>')
-        for group in report["unasked"]:
+        for group in report["page2_unasked"]:
             rows.append(f'<div class="group">{html.escape(group["title"])}</div>')
             for question in group["items"]:
                 rows.append(
@@ -340,76 +251,64 @@ def render_html(report: dict) -> str:
                     + html.escape(question)
                     + '</span><span class="ans">पूछा नहीं गया</span></div>'
                 )
+    return "".join(rows)
+
+
+def render_html(report: Mapping[str, Any]) -> str:
+    """The full Hindi document, page one for her and page two for the details."""
+    call_id = int(report.get("call_id") or 0)
+    who = _who(report)
     meta = " · ".join(
         bit
         for bit in (
-            report.get("ref"),
-            report["date"],
-            report["time"],
-            report["duration"],
-            report["status"],
+            f"SHISHU-{call_id}" if call_id else "",
+            report.get("date_hi") or "",
+            report.get("time_hi") or "",
+            report.get("duration_hi") or "",
+            "अधूरी कॉल" if report.get("incomplete") else "पूर्ण कॉल",
         )
         if bit
     )
-    css = _CSS.replace("__FONT__", _FONT.as_uri())
+    universal = (
+        '<aside class="universal">'
+        "<b>सभी के लिए एक जैसी सलाह</b>"
+        '<span class="why">यह इस माँ या बच्चे के बारे में नहीं है।</span>'
+        f"<span>{html.escape(THALASSEMIA_LINE)}</span>"
+        "</aside>"
+    )
+    css = _CSS.replace("__FONT__", str(report.get("font_uri") or _FONT.as_uri()))
     return f"""<!DOCTYPE html>
 <html lang="hi">
 <head><meta charset="utf-8"><style>{css}</style></head>
 <body>
 <header>
   <div class="top">
-    <img src="{_LOGO.as_uri()}" alt="">
+    <img src="{report.get("logo_uri") or _LOGO.as_uri()}" alt="">
     <div class="brand">SHISHU</div>
     <div class="kind">कॉल रिपोर्ट</div>
   </div>
   <div class="rule"></div>
-  <p class="who">{html.escape(report["who"])}</p>
+  <p class="who">{html.escape(who)}</p>
   <p class="meta">{html.escape(meta)}</p>
 </header>
 <div class="notice">यह कोई बीमारी की पुष्टि (डायग्नोसिस) नहीं है।<span>केवल डॉक्टर जाँच करके सही सलाह दे सकते हैं।</span></div>
-{band}
-{questions}<p class="note">अगर इसमें कुछ गलत है, या आप कुछ और बताना चाहती हैं, तो दोबारा कॉल कर सकती हैं।</p>
+{_band_html(report)}
+{_questions_html(list(report.get("questions") or []))}<p class="note">अगर इसमें कुछ गलत है, या आप कुछ और बताना चाहती हैं, तो दोबारा कॉल कर सकती हैं।</p>
 <h2>इस कॉल में जो हाँ था</h2>
-{yes}
+{_yes_html(report)}
 {universal}
 <section class="page2">
   <h1>विवरण</h1>
-  <p class="meta">{html.escape(report["who"])}</p>
-  {"".join(rows)}
+  <p class="meta">{html.escape(who)}</p>
+  {_page2_html(report)}
 </section>
 </body>
 </html>
 """
 
 
-def _chrome_pdf(document: str) -> bytes:
-    with tempfile.TemporaryDirectory() as folder:
-        html_path = Path(folder) / "report.html"
-        pdf_path = Path(folder) / "report.pdf"
-        html_path.write_text(document, encoding="utf-8")
-        subprocess.run(
-            [
-                _CHROME,
-                "--headless",
-                "--disable-gpu",
-                "--no-pdf-header-footer",
-                f"--print-to-pdf={pdf_path}",
-                html_path.as_uri(),
-            ],
-            check=True,
-            capture_output=True,
-        )
-        return pdf_path.read_bytes()
+def render_pdf(report: Mapping[str, Any]) -> bytes:
+    """One crisp Devanagari PDF. WeasyPrint is the only renderer."""
+    from weasyprint import HTML
 
-
-def render_pdf(report: dict) -> bytes:
-    document = render_html(report)
-    try:
-        from weasyprint import HTML
-
-        return HTML(string=document, base_url=str(_STATIC)).write_pdf()
-    except Exception:
-        logger.warning("weasyprint failed, trying headless chrome fallback", exc_info=True)
-        if Path(_CHROME).is_file():
-            return _chrome_pdf(document)
-        raise
+    return HTML(string=render_html(report), base_url=str(_STATIC)).write_pdf()

@@ -1,4 +1,4 @@
-"""Stage 3A: single-pass ScreeningSummary projection and the pure live turn machine."""
+"""Stage 3A: the single-pass ScreeningSummary projection and the pure live turn machine."""
 
 import unittest
 
@@ -10,12 +10,27 @@ import post_call  # noqa: E402
 import summary  # noqa: E402
 from engine import apply_profile_patch, reduce_turn  # noqa: E402
 from live_fsm import (  # noqa: E402
-    CHECK_IN_SEC, CLOSING_AUDIO_GRACE_SEC, CLOSING_MAX_WAIT_SEC, HARD_LIMIT_SEC,
-    MAX_WATCHDOG_NUDGES, SILENCE_CLOSE_SEC, SOFT_LIMIT_SEC, LiveTurnMachine,
-    SpeakKind, TurnPhase, WatchdogAction,
+    CHECK_IN_SEC,
+    CLOSING_AUDIO_GRACE_SEC,
+    CLOSING_MAX_WAIT_SEC,
+    HARD_LIMIT_SEC,
+    MAX_WATCHDOG_NUDGES,
+    SILENCE_CLOSE_SEC,
+    SOFT_LIMIT_SEC,
+    LiveTurnMachine,
+    SpeakKind,
+    TurnPhase,
+    WatchdogAction,
 )
 from models import (  # noqa: E402
-    CallState, ChildInput, ChildSex, MaritalStatus, Phase, ProfilePatch, TurnCommand, TurnOutcome,
+    CallState,
+    ChildInput,
+    ChildSex,
+    MaritalStatus,
+    Phase,
+    ProfilePatch,
+    TurnCommand,
+    TurnOutcome,
 )
 from triage_catalog import get_spec  # noqa: E402
 
@@ -24,6 +39,7 @@ _SAFE_NOTE = "चोट पर खून देर तक बहता है"
 _DIAGNOSTIC_NOTE = "डॉक्टर ने हीमोफीलिया बताया था"
 _FORBIDDEN_HI = "हीमोफीलिया"
 _PCM_CHUNK = b"\x01\x00" * 1_600
+_CALL = {"id": 1, "started_at": "2026-11-12 04:00:00", "duration_sec": 240}
 
 
 def _kids(*specs):
@@ -75,86 +91,66 @@ def _section(markdown, heading):
     return markdown.partition(f"{heading}\n")[2].partition("\n\n### ")[0]
 
 
-def _legacy_cursor(state):
-    """Render a typed CallState the way `db.py` stores `cursor_state`."""
-    profile, marital = state.profile, state.profile.marital_status
-    return {
-        "phase": state.phase.value,
-        "close_reason": state.close_reason.value if state.close_reason else None,
-        "emergency_note": state.emergency_note,
-        "profile": {
-            "caller_name": profile.caller_name,
-            "marital_status": marital.value if marital else None,
-            "children": [child.model_dump(mode="json") for child in profile.children],
-            "ever_pregnant": profile.ever_pregnant,
-        },
-        "active_qid": state.cursor.qid,
-        "answers": {qid: _legacy_answer(record) for qid, record in state.answers.items()},
-    }
-
-
-def _legacy_answer(record):
-    """One `answers[qid]` entry: verbatim notes for the doctor, safe notes for Mother."""
-    return {
-        "state": record.state.value,
-        "child_ids": list(record.child_ids),
-        "notes": record.note.verbatim,
-        "mother_notes": record.note.mother_safe,
-        "followups": {fid: _legacy_answer_slot(slot) for fid, slot in record.followups.items()},
-    }
-
-
-def _legacy_answer_slot(slot):
-    state, note = slot.state.value, slot.note
-    return {"state": state, "note": note.verbatim, "mother_note": note.mother_safe}
-
-
 def _as_dicts(groups):
     return [{"title": group.title, "items": list(group.items)} for group in groups]
 
 
+def _call_row(state: CallState, call_id: int = 1) -> dict:
+    """Exactly what `db.get_call` hands the report layer back."""
+    return {**_CALL, "id": call_id, "cursor_state": state.to_dict()}
+
+
+def _scenarios() -> dict[str, CallState]:
+    return {
+        "complete": _run_to_end(_state(_two_kids())),
+        "concern": _concern_state(),
+        "diagnostic": _concern_state(diagnostic=True),
+        "caller_stop": reduce_turn(_state(_two_kids()), TurnCommand(caller_stop=True)),
+        "emergency": reduce_turn(_state(_two_kids()), TurnCommand(emergency=True)),
+        "childless": _run_to_end(_state()),
+    }
+
+
 class SummaryTests(unittest.TestCase):
-    def test_matches_post_call_build_reports_byte_for_byte(self):
-        for label, state in {
-            "complete": _run_to_end(_state(_two_kids())),
-            "concern": _concern_state(),
-            "diagnostic": _concern_state(diagnostic=True),
-            "caller_stop": reduce_turn(_state(_two_kids()), TurnCommand(caller_stop=True)),
-            "emergency": reduce_turn(_state(_two_kids()), TurnCommand(emergency=True)),
-            "childless": _run_to_end(_state()),
-        }.items():
+    def test_projection_matches_post_call_and_mother_report_field_for_field(self):
+        for label, state in _scenarios().items():
             with self.subTest(label):
                 projected = summary.project_summary(state)
-                built = post_call.build_reports({"id": 1, "cursor_state": _legacy_cursor(state)})
-                self.assertEqual(projected.doctor_markdown, built["doctor_markdown"])
-                self.assertEqual(projected.mother_name, built["mother_name_hi"])
-                self.assertEqual(projected.children_label_hi, built["children_label_hi"])
-                for attr in ("red_flags", "yes_summaries_hi", "mother_questions_hi"):
-                    self.assertEqual(list(getattr(projected, attr)), built[attr])
+                built = post_call.build_reports(state)
+                report = mother_report.build_report(_call_row(state))
 
-    def test_matches_mother_report_page2_rows(self):
-        for state in (
-            _run_to_end(_state(_two_kids())),
-            reduce_turn(_state(_two_kids()), TurnCommand(caller_stop=True)),
-        ):
-            projected = summary.project_summary(state)
-            groups, unknown, unasked = mother_report._page2_from_cursor(
-                _legacy_cursor(state), projected.incomplete
-            )
-            self.assertEqual(_as_dicts(projected.page2_clear_groups), groups)
-            self.assertEqual(list(projected.page2_unknown), unknown)
-            self.assertEqual(_as_dicts(projected.page2_unasked_groups), unasked)
+                self.assertEqual(built["doctor_markdown"], projected.doctor_markdown)
+                self.assertEqual(built["red_flags"], list(projected.red_flags))
+                self.assertEqual(built["mother_questions_hi"], list(projected.mother_questions_hi))
+                self.assertEqual(built["yes_summaries_hi"], list(projected.yes_summaries_hi))
+                self.assertEqual(built["mother_name_hi"], projected.mother_name)
+                self.assertEqual(built["children_label_hi"], projected.children_label_hi)
+                self.assertEqual(built["summary"], projected)
+
+                self.assertEqual(report["questions"], list(projected.mother_questions_hi))
+                self.assertEqual(report["yes"], list(projected.yes_summaries_hi))
+                self.assertEqual(report["page2_groups"], _as_dicts(projected.page2_clear_groups))
+                self.assertEqual(report["page2_unknown"], list(projected.page2_unknown))
+                self.assertEqual(report["page2_unasked"], _as_dicts(projected.page2_unasked_groups))
+                self.assertEqual(report["incomplete"], projected.incomplete)
+                self.assertEqual(report["emergency"], projected.emergency)
+
+    def test_mother_summary_text_is_identical_from_a_projection_or_a_dict(self):
+        for label, state in _scenarios().items():
+            with self.subTest(label):
+                projected = summary.project_summary(state)
+                built = post_call.build_reports(state)
+                self.assertEqual(post_call.mother_summary_text(projected), projected.mother_summary_text)
+                self.assertEqual(post_call.mother_summary_text(built), projected.mother_summary_text)
 
     def test_diagnostic_firewall_keeps_disease_words_out_of_hindi(self):
         projected = summary.project_summary(_concern_state(diagnostic=True))
         self.assertIn("Mother's words:", projected.doctor_markdown)
         self.assertIn(_DIAGNOSTIC_NOTE, projected.doctor_markdown)
         self.assertIn(_DIAGNOSTIC_NOTE, projected.red_flags[0])
-        hindi = "\n".join((
-            *projected.yes_summaries_hi,
-            *projected.mother_questions_hi,
-            projected.mother_summary_text,
-        ))
+        hindi = "\n".join(
+            (*projected.yes_summaries_hi, *projected.mother_questions_hi, projected.mother_summary_text)
+        )
         self.assertNotIn(_DIAGNOSTIC_NOTE, hindi)
         self.assertNotIn(_FORBIDDEN_HI, hindi)
         self.assertIn(_SAFE_NOTE, projected.yes_summaries_hi[0])
@@ -181,12 +177,13 @@ class SummaryTests(unittest.TestCase):
         self.assertFalse(complete.incomplete)
         self.assertEqual(complete.page2_unasked_groups, ())
         self.assertTrue(complete.page2_clear_groups)
+
         stopped = reduce_turn(_state(_two_kids()), TurnCommand(caller_stop=True))
         partial = summary.project_summary(stopped)
         self.assertEqual((partial.close_reason, partial.incomplete), ("caller_stop", True))
         self.assertEqual(partial.page2_clear_groups, ())
         self.assertIn(copy_hi.GROUP_HI["family"], [g.title for g in partial.page2_unasked_groups])
-        asked = [i for group in partial.page2_unasked_groups for i in group.items]
+        asked = [item for group in partial.page2_unasked_groups for item in group.items]
         profile = _state(_two_kids()).profile
         self.assertIn(copy_hi.question_hi_for(profile, get_spec("body_blue")), asked)
         self.assertNotIn(copy_hi.question_hi_for(profile, get_spec("body_puberty")), asked)
@@ -203,12 +200,11 @@ class SummaryTests(unittest.TestCase):
     def test_hematology_item_routes_to_its_own_section(self):
         markdown = summary.project_summary(_concern_state()).doctor_markdown
         need_en = get_spec(_CONCERN_QID).need_en
-        self.assertEqual(markdown.count("\n### "), 7)
         system = "### Systemic, Infections & Hematology"
-        growth = "### Development, Growth & Physical Features"
+        self.assertEqual(markdown.count("\n### "), 7)
         self.assertIn(need_en, _section(markdown, system))
         self.assertNotIn(need_en, _section(markdown, "### Birth & Neonatal History"))
-        self.assertNotIn(need_en, _section(markdown, growth))
+        self.assertNotIn(need_en, _section(markdown, "### Development, Growth & Physical Features"))
 
     def test_quiet_complete_call_has_no_yes_lines_and_three_questions(self):
         projected = summary.project_summary(_run_to_end(_state(_kids((7.0, "male", None)))))
@@ -219,6 +215,12 @@ class SummaryTests(unittest.TestCase):
             projected.mother_summary_text.splitlines()[0],
             "इस बातचीत में कोई हाँ वाला बिंदु दर्ज नहीं हुआ।",
         )
+
+    def test_unknown_reason_falls_back_to_incomplete(self):
+        projected = summary.project_summary(CallState())
+        self.assertEqual((projected.close_reason, projected.incomplete), ("incomplete", True))
+        self.assertTrue(projected.page2_unasked_groups)
+        self.assertEqual(post_call.build_reports(CallState())["summary"], projected)
 
 
 class LiveTurnMachineTests(unittest.TestCase):

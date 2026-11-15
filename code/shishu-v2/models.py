@@ -12,6 +12,9 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+DEFAULT_LIVE_MODEL = "gemini-3.1-flash-live-preview"
+DEFAULT_LIVE_VOICE = "Kore"
+
 
 class Phase(StrEnum):
     ASKING = "asking"
