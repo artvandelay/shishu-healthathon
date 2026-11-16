@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio, base64, inspect, json, logging, os, time
+from collections import deque
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -84,7 +85,7 @@ class LiveCallSession:
             silence_close_sec=float(timers.get("silence_close_sec") or 30.0), check_in_sec=float(timers.get("check_in_sec") or 15.0), detector=SileroDetector(),
             vad=ThinkingVad(pack.meta.get("vad")), stop=asyncio.Event(), ws_lock=asyncio.Lock(), send_lock=asyncio.Lock(), resume_requested=False, reconnecting=False,
             ending_sent=False, bot_started=False, bot_text="", clarify_step=False, tool_pending=False, checked_in=False, seen=set(), cancelled=set(),
-            pcm=b"", voiced=0, text="", snapshot=None,
+            pcm=b"", voiced=0, text="", snapshot=None, preroll=deque(maxlen=4),
             task=None, task_key=None, done=None, fallback=None, last_reduced=None)
         self.last_turn_meta: dict[str, Any] = {}  # the meta row for the turn just reduced, waiting for its `tool_call` event
         self.telemetry: dict[str, Any] = dict.fromkeys(_COUNTERS, 0) | {
@@ -141,6 +142,7 @@ class LiveCallSession:
     def _reset_turn(self) -> None:
         self._cancel("task")
         self.pcm, self.voiced, self.text, self.snapshot, self.done, self.tool_pending = b"", 0, "", None, None, False
+        self.preroll.clear()  # a reset abandons the banked onset, so no stale chunk can seed the next turn
     def _start(self, *, speculate: bool = False) -> asyncio.Task:
         key = self._key()
         if self.task is not None and not self.task.done() and self.task_key[:2] == key[:2]: return self.task  # the STT may still be growing; `_banked` folds it in
@@ -193,18 +195,28 @@ class LiveCallSession:
             voiced = voiced or prob >= self.vad.speech_prob_threshold
             events.extend(self.vad.on_frame(prob, is_reflective=refl))
         self.last_voice_ts = time.time()
+        if not was_open and VadEvent.SPEECH_START not in events:  # Silero crosses 0.5 on the vowel, so keep the onset's front edge
+            self.preroll.append((pcm_16k, pcm))  # for Gemini: the raw rate it was recorded at, byte for byte
         if was_open or VadEvent.SPEECH_START in events:
             self.pcm = (self.pcm + pcm_16k)[-_MAX_TURN:]
             self.voiced = len(self.pcm) if voiced else self.voiced
         for ev in events:
             if ev is VadEvent.SPECULATE: self._start(speculate=True)
             elif ev is VadEvent.SPEECH_START:
+                pre = list(self.preroll)  # drained before any reset, so a fresh turn's reset cannot drop its own front edge
+                self.preroll.clear()
                 if self.snapshot is not None: self._reset_turn()
-                self.snapshot, self.text, self.pcm, self.voiced, self.last_reduced = self.state.model_copy(deep=True), "", pcm_16k, len(pcm_16k), None
+                self.snapshot, self.text, self.last_reduced = self.state.model_copy(deep=True), "", None
+                self.pcm = (b"".join(p16 for p16, _ in pre) + pcm_16k)[-_MAX_TURN:]
+                self.voiced = len(self.pcm)  # the same measure line 202 uses, so the cache key stays consistent
                 # manual VAD cannot owe a tool call before `activity_end`, so new speech never owes one
                 self.bot_started, self.tool_pending, self.checked_in, self.speech_ended_ts = False, False, False, 0.0
                 self.telemetry["user_turns"] += 1
                 await self._send_realtime(activity_start=types.ActivityStart())
+                for _, raw_pcm in pre:  # Gemini hears the pre-onset consonants before this chunk
+                    if not await self._send_realtime(audio=types.Blob(data=raw_pcm, mime_type="audio/pcm")):
+                        await self._emit("error", "Could not forward audio to Gemini")
+                        return False
             elif ev is VadEvent.SPEECH_END:
                 self.speech_ended_ts = self.last_voice_ts = time.time()
                 self.checked_in, self.tool_pending = False, True
@@ -361,18 +373,26 @@ class LiveCallSession:
     async def on_turn_complete(self) -> None:
         # Gemini closes the bot turn it aborted with `interrupted`; the caller's turn is still open, and recovering
         # here would start a pass her next frame cancels, taking this loop down with it.
-        if self.tool_pending and not self.vad.in_turn and not self.bot_started:
+        recovered = self.tool_pending and not self.vad.in_turn and not self.bot_started
+        if recovered:
             _body, clarify = await self._next_question()
             await self._emit("tool_call", "missed_tool", self.last_turn_meta or None)
             self.bot_started = False
             if not await self._publish_and_cue(self._cue_kind(clarify)): return await self._fail()
-        if self.bot_started and not self.clarify_step:  # the voice puppet's line is known verbatim, yet Gemini drops its transcription tail
-            expected = " ".join(engine.say_text(self.pack, self.state).split())
-            if expected and (not self.bot_text or (expected.startswith(self.bot_text.rstrip("।?!., ")) and len(self.bot_text) < len(expected))):
-                await self._hear("assistant", expected)
-        self._cancel("fallback")
+        # A tap on A's quick reply moves the call to B while Gemini is still closing A. Both `on_quick_reply` and
+        # `sc.interrupted` clear `bot_started`, and only a bot audio frame (`_bot_audio`) sets it again, so
+        # `bot_started` is already the honest answer to "did we hear a bot turn this `turn_complete` can close?".
+        # Stamping B's token into A's death unlocked B's pills before B had said a word, and cancelled B's pending
+        # safety cue on the way out. The recovered missed-tool cue is spoken here, so it still completes this turn.
+        if self.bot_started or recovered:
+            if self.bot_started and not self.clarify_step:  # the voice puppet's line is known verbatim, yet Gemini drops its transcription tail
+                expected = " ".join(engine.say_text(self.pack, self.state).split())
+                if expected and (not self.bot_text or (expected.startswith(self.bot_text.rstrip("।?!., ")) and len(self.bot_text) < len(expected))):
+                    await self._hear("assistant", expected)
+            self.bot_started = False  # the turn is closed: a repeated `turn_complete` must not re-merge or re-unlock
+            self._cancel("fallback")
+            await self._send_json({"type": "bot_turn_complete", "step": self.state.step_token})
         self.playback_ends_at = max(self.playback_ends_at, time.time())
-        await self._send_json({"type": "bot_turn_complete", "step": self.state.step_token})
         await self._emit("turn_complete")
     async def _close(self, reason: CloseReason) -> None:
         if self.state.phase is not Phase.ASKING: return

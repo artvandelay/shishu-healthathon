@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import unittest
 import unittest.mock
@@ -179,6 +180,10 @@ class OutputTranscriptionTests(unittest.TestCase):
     def complete() -> live.types.LiveServerMessage:
         return live.types.LiveServerMessage(server_content=live.types.LiveServerContent(turn_complete=True))
 
+    @staticmethod
+    def interrupted() -> live.types.LiveServerMessage:
+        return live.types.LiveServerMessage(server_content=live.types.LiveServerContent(interrupted=True))
+
     async def session_at(self, qid: str) -> tuple[live.LiveCallSession, FakeWebSocket, int]:
         """A live session holding on `qid`, with a real call row so the transcript really persists."""
         call_id = await asyncio.to_thread(db.create_call, pack_id=PACK.id)
@@ -201,13 +206,15 @@ class OutputTranscriptionTests(unittest.TestCase):
             await built.on_message(self.said("क्या आपकी"))
             await built.on_message(self.audio())
             await built.on_message(self.complete())
-            self.assertTrue(built.bot_started)
+            self.assertEqual(ws.of("bot_turn_complete"), [{"type": "bot_turn_complete", "step": built.state.step_token}],
+                             "the heard bot turn closes once, unlocking this step's quick replies")
             self.assertEqual(built.bot_text, self.LINE, "the session now tracks the whole spoken line")
             captions = [p["text"] for p in ws.of("transcript") if p["role"] == "assistant"]
             self.assertEqual(captions, ["क्या आपकी", self.LINE], "the browser gets the complete sentence too")
             self.assertEqual(await self.stored(call_id, "assistant"), [self.LINE], "and SQLite holds one merged turn")
             await built.on_message(self.complete())
             self.assertEqual(await self.stored(call_id, "assistant"), [self.LINE], "a repeated turn_complete never doubles the line")
+            self.assertEqual(len(ws.of("bot_turn_complete")), 1, "nor does it unlock the step a second time")
 
         asyncio.run(body())
 
@@ -226,6 +233,89 @@ class ConfigTests(unittest.TestCase):
         clear = live.tool_body(PACK, state, clarify=True)
         self.assertTrue(clear["clarify"])
         self.assertEqual(clear["recorded_concerns"], [])
+
+    def test_asr_vocabulary_carries_the_twins_and_cousin_words(self):
+        # Gemini's Hindi ASR writes "twins" and "cousin" as the English loans the caller actually says.
+        vocab = list(live.build_live_config(PACK).input_audio_transcription.custom_vocabulary or ())
+        self.assertIn("twins", vocab)
+        self.assertIn("cousin", vocab)
+
+
+class PrerollTests(unittest.TestCase):
+    """Silero crosses 0.5 only once the vowel starts: the pre-onset chunks must still reach the turn."""
+
+    @staticmethod
+    def chunk(sample: int) -> bytes:
+        return (sample.to_bytes(2, "little")) * 640  # 640 samples of 16 kHz int16 mono
+
+    def test_pre_onset_chunks_are_kept_and_forwarded_before_the_onset_chunk(self):
+        async def body() -> None:
+            built, _ws, session = build(probs=[0.1, 0.1, 0.9])  # silence, silence, then the vowel
+            c1, c2, c3 = (self.chunk(n) for n in (1, 2, 3))
+            for pcm in (c1, c2, c3):
+                await built.on_audio({"data": base64.b64encode(pcm).decode(), "sample_rate": 16000})
+            self.assertEqual(built.pcm, c1 + c2 + c3, "the pre-onset consonants stay in the turn's audio")
+            self.assertEqual(built.voiced, len(c1 + c2 + c3), "voiced bytes are measured the same way line 202 measures them")
+            self.assertEqual(session.kinds(), ["activity_start", "audio", "audio", "audio"])
+            self.assertEqual([b.data for b in session.realtime("audio")], [c1, c2, c3],
+                             "Gemini hears the pre-roll in the order it was spoken")
+
+        asyncio.run(body())
+
+
+class SpeakingStepTests(unittest.TestCase):
+    """An aborted bot turn's `turn_complete` belongs to the step it aborted, never the one that superseded it."""
+
+    class Fallback:
+        """The pending silent-model safety cue: records whether anything cancels it."""
+
+        def __init__(self) -> None:
+            self.cancelled_ = False
+
+        def done(self) -> bool:
+            return False
+
+        def cancel(self) -> None:
+            self.cancelled_ = True
+
+        def add_done_callback(self, _callback: Any) -> None:
+            return
+
+    def test_an_aborted_turn_complete_never_unlocks_the_superseded_steps_quick_replies(self):
+        # A tap on question A's pill advances to question B; Gemini then closes A with `interrupted` and
+        # `turn_complete`. Stamping B's token into that `turn_complete` unlocked B's pills before B had
+        # spoken a frame, and cancelled B's safety cue on the way out.
+        # The same trap must not swing the other way: B's own real `turn_complete` still has to land.
+        async def body() -> None:
+            built, ws, _session = build()
+            built.state.cursor = built.state.cursor.model_copy(update={"qid": "birth_term"})
+            await built._publish_and_cue("speak", immediate=False)
+            await built.on_message(OutputTranscriptionTests.audio())
+            aborted = built.state.step_token
+            self.assertTrue(built.bot_started, "SHISHU is mid-sentence on the aborted question")
+
+            await built.on_quick_reply({"value": "clear", "step": aborted})
+            fresh = built.state.step_token
+            self.assertNotEqual(fresh, aborted, "the tap moved the call to the next question")
+            fallback = self.Fallback()
+            built.fallback = fallback
+
+            await built.on_message(OutputTranscriptionTests.interrupted())
+            await built.on_message(OutputTranscriptionTests.complete())
+
+            self.assertEqual(ws.of("bot_turn_complete"), [],
+                             "the aborted turn's completion must not unlock the new step's quick replies")
+            self.assertFalse(fallback.cancelled_, "nor may it cancel the new step's safety cue")
+            self.assertEqual(ws.of("telemetry")[-1]["last_event"]["type"], "turn_complete",
+                             "the turn is still reported for telemetry")
+
+            # SHISHU now speaks the new question: its own turn_complete must still unlock its quick replies.
+            await built.on_message(OutputTranscriptionTests.audio())
+            await built.on_message(OutputTranscriptionTests.complete())
+            self.assertEqual(ws.of("bot_turn_complete"), [{"type": "bot_turn_complete", "step": fresh}],
+                             "the new step's own turn_complete still arrives")
+
+        asyncio.run(body())
 
 
 class TurnTests(unittest.TestCase):
