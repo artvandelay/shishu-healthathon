@@ -56,6 +56,21 @@ class FakeSession:
         return [payload[key] for kind, payload in self.sent if kind == "realtime" and key in payload]
 
 
+class Feed(FakeSession):
+    """A Gemini session whose `receive` is fed live, so `_gemini_loop` can be driven mid-conversation."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.queue: asyncio.Queue = asyncio.Queue()
+
+    async def push(self, message: Any) -> None:
+        await self.queue.put(message)
+
+    async def receive(self):
+        while (message := await self.queue.get()) is not None:
+            yield message
+
+
 class FakeWebSocket:
     """A FastAPI-shaped socket fed from a queue, so the browser loop runs in a real task."""
 
@@ -463,6 +478,115 @@ class TurnMetaTests(unittest.TestCase):
 
 class BoundaryEventTests(unittest.TestCase):
     """Barge-ins and late STT are the two invisible boundaries a dumpster dive has to see."""
+
+    GATE = "birth_cord_3weeks"  # a closed-short question: 15 silent frames carry SPECULATE and SPEECH_END
+
+    @staticmethod
+    def tool_results(session: FakeSession) -> dict[str, dict[str, Any]]:
+        return {r.id: r.response for kind, payload in session.sent if kind == "tool" for r in payload}
+
+    def gemini_call(self, probs: list[float]) -> tuple[live.LiveCallSession, FakeWebSocket, Feed, list[int]]:
+        """A live session with a real `_gemini_loop` and a Decision pass that takes 50 ms."""
+        built, ws, _session = build(call_id=None)
+        built.state.cursor = built.state.cursor.model_copy(update={"qid": self.GATE})
+        built.detector, passes = FakeDetector(probs), []
+
+        async def slow_pass(snapshot: CallState, spoken: str, pcm: bytes, **_kwargs: Any) -> live.Turn:
+            passes.append(1)
+            await asyncio.sleep(0.05)
+            return turn_with(snapshot, TurnOutcome.CLEAR, spoken)._replace(pcm_len=len(pcm))
+
+        built._evaluate_turn_task = slow_pass  # type: ignore[method-assign]
+        built.session = feed = Feed()
+        return built, ws, feed, passes
+
+    @staticmethod
+    async def frames(built: live.LiveCallSession, count: int) -> None:
+        for _ in range(count):
+            await built.on_audio({"data": TurnTests.pcm(), "sample_rate": 16000})
+
+    @staticmethod
+    async def shutdown(built: live.LiveCallSession, gem: asyncio.Task) -> None:
+        built.stop.set()
+        for name in ("fallback", "task"):
+            built._cancel(name)
+        gem.cancel()
+        await asyncio.gather(gem, return_exceptions=True)
+
+    def test_a_barge_in_turn_complete_cannot_kill_the_gemini_loop(self):
+        # Calls 8, 9 and 10: Gemini closed the aborted bot turn while the caller was still mid-sentence, so the
+        # recovery pass it started was superseded by her next frame and `_gemini_loop` was cancelled with it.
+        async def body() -> None:
+            built, ws, feed, passes = self.gemini_call([0.9] * 4 + [0.0] * 20)
+            built.bot_started, built.playback_ends_at = True, live.time.time() + 10.0
+            await self.frames(built, 1)  # she cuts in over SHISHU
+            gem = asyncio.ensure_future(built._gemini_loop())
+            try:
+                await feed.push(live.types.LiveServerMessage(server_content=live.types.LiveServerContent(interrupted=True)))
+                await feed.push(live.types.LiveServerMessage(server_content=live.types.LiveServerContent(turn_complete=True)))
+                await asyncio.sleep(0.01)
+                self.assertEqual(passes, [], "an aborted bot turn is not a caller turn to recover")
+                await self.frames(built, 3)
+                await self.frames(built, 15)  # her pause: SPECULATE, then SPEECH_END
+                await asyncio.sleep(0.1)
+                self.assertFalse(gem.done(), "the aborted bot turn must not take the loop down")
+                self.assertEqual(len(feed.realtime("activity_start")), 1, "one cut-in is one Gemini turn")
+                self.assertEqual(len(feed.realtime("activity_end")), 1, "the turn Gemini opened must be closed")
+                self.assertNotIn("missed_tool", [p["last_event"]["detail"] for p in ws.of("telemetry")])
+                await feed.push(live.types.LiveServerMessage(tool_call=live.types.LiveServerToolCall(
+                    function_calls=[live.types.FunctionCall(id="t1", name="next_question", args={})])))
+                await feed.push(live.types.LiveServerMessage(server_content=live.types.LiveServerContent(turn_complete=True)))
+                await asyncio.sleep(0.1)
+                self.assertEqual(self.tool_results(feed)["t1"]["result"], "ok")
+                self.assertEqual(len(passes), 1, "her turn is judged exactly once")
+                self.assertEqual((built.last_reduced or ("",))[0], self.GATE)
+            finally:
+                await self.shutdown(built, gem)
+
+        asyncio.run(body())
+
+    def test_speech_that_supersedes_a_pending_tool_call_cannot_kill_the_gemini_loop(self):
+        # The same crash without `interrupted`: she speaks again while `_next_question` awaits the pass.
+        async def body() -> None:
+            built, _ws, feed, passes = self.gemini_call([0.9] + [0.0] * 12 + [0.9] * 3)
+            gem = asyncio.ensure_future(built._gemini_loop())
+            try:
+                await self.frames(built, 1)
+                await self.frames(built, 12)  # a short utterance, then SPEECH_END
+                await feed.push(live.types.LiveServerMessage(tool_call=live.types.LiveServerToolCall(
+                    function_calls=[live.types.FunctionCall(id="t1", name="next_question", args={})])))
+                await asyncio.sleep(0.01)  # the loop is now inside `_next_question`, awaiting the 50 ms pass
+                await self.frames(built, 3)  # she speaks again: SPEECH_START supersedes the pass
+                kept = (built.pcm, built.vad.in_turn)
+                await feed.push(live.types.LiveServerMessage(
+                    tool_call_cancellation=live.types.LiveServerToolCallCancellation(ids=["t2"])))
+                await asyncio.sleep(0.02)
+                self.assertFalse(gem.done(), "a superseded pass must not take the loop down")
+                self.assertEqual(self.tool_results(feed)["t1"]["result"], "held")
+                self.assertEqual(self.tool_results(feed)["t1"]["reason"], "superseded")
+                self.assertIn("t2", built.cancelled, "Gemini's tool-call cancellation is remembered")
+                self.assertEqual((built.pcm, built.vad.in_turn), kept, "the live turn is left intact")
+                self.assertTrue(kept[1], "she is still mid-sentence")
+                self.assertEqual(len(passes), 1)
+            finally:
+                await self.shutdown(built, gem)
+
+        asyncio.run(body())
+
+    def test_a_live_loop_that_dies_on_its_own_is_reported_never_swallowed(self):
+        # The calls 8-10 symptom: a loop dying silently looked exactly like a caller hangup.
+        async def body() -> None:
+            built, ws, _session = build(call_id=None)
+
+            async def dying() -> None:
+                raise RuntimeError("gemini loop exploded")
+
+            built._gemini_loop = dying  # type: ignore[method-assign]
+            await asyncio.wait_for(built.run(), timeout=2)
+            self.assertEqual([p["message"] for p in ws.of("error")], ["Live loop exited unexpectedly"])
+            self.assertEqual(ws.of("telemetry")[-1]["last_event"]["type"], "error")
+
+        asyncio.run(body())
 
     def test_geminis_interrupt_ack_never_closes_the_callers_open_turn(self):
         # Calls 8 and 9: she cut in over SHISHU, Gemini acked with `interrupted`, and the call went dead air.

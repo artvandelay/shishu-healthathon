@@ -163,10 +163,15 @@ class LiveCallSession:
         if settled == key or not key[2] or not turn.result.ok: return turn
         self.done = (key, reheard := self._rehear(turn, key[2]))
         return reheard
-    async def _turn(self) -> Turn:
+    async def _turn(self) -> Turn | None:
         if (banked := self._banked()) is not None: return banked
-        turn = await self._start()
-        return self._banked() or turn
+        task = self._start()
+        try:
+            return self._banked() or await task
+        except asyncio.CancelledError:  # a `BaseException` in 3.12: it would otherwise sail past every `except Exception`
+            cur = asyncio.current_task()
+            if cur is not None and cur.cancelling(): raise
+            return None  # new caller speech superseded this pass; `on_audio` owns the live turn now
     async def _evaluate_turn_task(self, snapshot: CallState, spoken: str, pcm: bytes, *, speculated: bool = False) -> Turn:
         wav = audio.pcm16_to_wav_bytes(pcm, _IN) if pcm else None
         jobs: list[Awaitable[Any]] = [decisions.evaluate_turn(decisions.build_turn_request(self.pack, snapshot, utterance_text=spoken, audio_wav_bytes=wav, include_turn_incomplete=True))]
@@ -196,7 +201,8 @@ class LiveCallSession:
             elif ev is VadEvent.SPEECH_START:
                 if self.snapshot is not None: self._reset_turn()
                 self.snapshot, self.text, self.pcm, self.voiced, self.last_reduced = self.state.model_copy(deep=True), "", pcm_16k, len(pcm_16k), None
-                self.bot_started, self.tool_pending, self.checked_in, self.speech_ended_ts = False, True, False, 0.0
+                # manual VAD cannot owe a tool call before `activity_end`, so new speech never owes one
+                self.bot_started, self.tool_pending, self.checked_in, self.speech_ended_ts = False, False, False, 0.0
                 self.telemetry["user_turns"] += 1
                 await self._send_realtime(activity_start=types.ActivityStart())
             elif ev is VadEvent.SPEECH_END:
@@ -273,15 +279,18 @@ class LiveCallSession:
         self.last_turn_meta = {}
         if self.state.phase is not Phase.ASKING or not (self.tool_pending or self.pcm or self.text): return tool_body(self.pack, self.state), False
         turn = await self._turn()
+        if turn is None:  # the pass was superseded mid-flight: `on_audio` owns the turn that replaced it
+            self.last_turn_meta = {"step_in": self.state.step_token, "reason": "superseded"}
+            return {**tool_body(self.pack, self.state), "result": "held", "reason": "superseded"}, False
         if not turn.result.ok:
             self.telemetry["tool_errors"] += 1
             self.last_turn_meta = {"step_in": turn.snapshot.step_token, "error": turn.result.error_reason, "decision_ms": turn.result.decision_ms, "attempts": turn.result.attempts}
-            self._reset_turn()
+            if not self.vad.in_turn: self._reset_turn()
             await self._persist(engine.close_technical_failure(self.state))
             return tool_body(self.pack, self.state), False
         if turn.snapshot.step_token != self.state.step_token:
             self.last_turn_meta = {"step_in": turn.snapshot.step_token, "step_out": self.state.step_token, "reason": "stale_turn"}
-            self._reset_turn()
+            if not self.vad.in_turn: self._reset_turn()
             return {**tool_body(self.pack, self.state), "result": "held", "reason": "stale_turn"}, False
         cmd, ext, step_in = turn.intent.command, turn.extraction, turn.snapshot.step_token
         if turn.intent.needs_profile_extraction and ext is None: ext = await extractor.extract_profile_entities(self.pack, turn.snapshot, utterance_text=turn.spoken, audio_wav_bytes=turn.wav)
@@ -290,7 +299,7 @@ class LiveCallSession:
         await self._persist(engine.reduce_turn(self.pack, self.state, cmd))
         self.telemetry["pace_factor"] = round(self.vad.pace_factor, 2)
         self.last_turn_meta = self._turn_meta(turn, step_in, cmd, ext)
-        self._reset_turn()
+        if not self.vad.in_turn: self._reset_turn()  # a turn opened during the extractor's await must survive
         clarify = not (cmd.emergency or cmd.caller_stop) and cmd.outcome is TurnOutcome.CLARIFY
         return tool_body(self.pack, self.state, clarify=clarify), clarify
     async def _answer_tools(self, calls: list[Any]) -> None:
@@ -303,17 +312,18 @@ class LiveCallSession:
             clarify = clarify or asked
             details.append(f"{name}_{body.get('result') or 'ok'}")
             responses.append(types.FunctionResponse(id=cid, name=name, response=body))
+        if not responses: return  # every call was already seen or cancelled: nothing is owed to Gemini
         sent = await _try_call(self._send_tools, responses, default=_BROKE) is not _BROKE
         self.telemetry["tool_calls" if sent else "tool_errors"] += 1
         if not sent: await self._emit("error", "Could not send the tool response to Gemini")
         await self._emit("tool_call", ",".join(details), self.last_turn_meta or None)
-        await self._publish_and_cue(self._cue_kind(clarify), immediate=False)
+        if not self.vad.in_turn: await self._publish_and_cue(self._cue_kind(clarify), immediate=False)
     async def _send_tools(self, responses: list[Any]) -> None:
         async with self.send_lock: await self.session.send_tool_response(function_responses=responses)
     async def _cue_if_silent(self, step: str, kind: str) -> None:
         try: await asyncio.wait_for(self.stop.wait(), timeout=_CUE_DELAY)
         except asyncio.TimeoutError:
-            if not self.bot_started and self.state.step_token == step and not self.stop.is_set(): await self._speak(kind)
+            if not self.bot_started and not self.vad.in_turn and self.state.step_token == step and not self.stop.is_set(): await self._speak(kind)
     async def _bot_audio(self, pcm: bytes, rate: int) -> None:
         self.telemetry["audio_chunks_out"] += 1
         if self.recorder is not None: self.recorder.add_bot_pcm(pcm, rate)
@@ -343,12 +353,15 @@ class LiveCallSession:
                 if not getattr(p, "thought", False) and (sp := _pcm_from_part(p)) is not None: await self._bot_audio(*sp)
                 if (fc := getattr(p, "function_call", None)) is not None: calls.append(fc)
         if (tc := getattr(response, "tool_call", None)) is not None and tc.function_calls: calls.extend(tc.function_calls)
+        if (canc := getattr(response, "tool_call_cancellation", None)) is not None and canc.ids: self.cancelled.update(c for c in canc.ids if c)
         if calls: await self._answer_tools(calls)
         if sc is not None and sc.turn_complete: await self.on_turn_complete()
         if (up := getattr(response, "session_resumption_update", None)) is not None and getattr(up, "resumable", False): self.resume_handle = str(getattr(up, "new_handle", "") or self.resume_handle)
         if getattr(response, "go_away", None) is not None: self.resume_requested = bool(self.resume_handle)
     async def on_turn_complete(self) -> None:
-        if self.tool_pending and not self.bot_started:
+        # Gemini closes the bot turn it aborted with `interrupted`; the caller's turn is still open, and recovering
+        # here would start a pass her next frame cancels, taking this loop down with it.
+        if self.tool_pending and not self.vad.in_turn and not self.bot_started:
             _body, clarify = await self._next_question()
             await self._emit("tool_call", "missed_tool", self.last_turn_meta or None)
             self.bot_started = False
@@ -466,7 +479,13 @@ class LiveCallSession:
             await self._send_realtime(text="\n".join(b for b in (cue, said) if b).strip())
             await self._publish_and_cue(immediate=False)
             tasks.append(asyncio.ensure_future(self._browser_loop()))
-            await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            if not self.stop.is_set():  # a loop that dies on its own is a bug, never a quiet hangup
+                for t in done:
+                    if (t.cancelled() or (exc := t.exception()) is not None):
+                        logger.error("live loop exited unexpectedly", exc_info=None if t.cancelled() else exc)
+                        await self._emit("error", "Live loop exited unexpectedly")
+                        break
         finally:
             self.stop.set()
             self._cancel("fallback")
