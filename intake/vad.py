@@ -58,17 +58,14 @@ class ThinkingVad:
     def on_frame(self, prob: float, *, frame_ms: float = 32.0, is_reflective: bool = False) -> list[VadEvent]:
         if prob >= self.speech_prob_threshold:
             onset = not self.in_turn
-            gap, cap = (self.post_end_silence_ms, 1200.0) if onset else (self.silence_ms, 850.0)
-            if 150.0 <= gap <= cap: self.pauses_ms.append(min(850.0, gap))
-            self.voiced_ms, self.silence_ms, self.post_end_silence_ms = (frame_ms if onset else self.voiced_ms + frame_ms), 0.0, -1.0
+            if not onset and 150.0 <= self.silence_ms <= 850.0: self.pauses_ms.append(self.silence_ms)
+            self.voiced_ms, self.silence_ms = (frame_ms if onset else self.voiced_ms + frame_ms), 0.0
             self.in_turn, self.speculated, self.holding_incomplete = True, False, False
             return [VadEvent.SPEECH_START] if onset else [VadEvent.NONE]
-        if not self.in_turn:
-            self.post_end_silence_ms += frame_ms if self.post_end_silence_ms >= 0 else 0.0
-            return [VadEvent.NONE]
+        if not self.in_turn: return [VadEvent.NONE]
         self.silence_ms += frame_ms
         if self.silence_ms >= self.target_wait_ms(is_reflective):
-            self.in_turn, self.post_end_silence_ms = False, self.silence_ms
+            self.in_turn = False
             return [VadEvent.SPEECH_END]
         fire = not self.speculated and self.silence_ms >= self.speculate_deadline_ms(is_reflective)
         self.speculated |= fire
@@ -76,4 +73,4 @@ class ThinkingVad:
     def extend_for_incomplete(self) -> None: self.holding_incomplete |= self.in_turn
     def on_bot_speaking(self) -> None:
         self.in_turn = self.speculated = self.holding_incomplete = False
-        self.voiced_ms, self.silence_ms, self.post_end_silence_ms = 0.0, 0.0, -1.0
+        self.voiced_ms, self.silence_ms = 0.0, 0.0

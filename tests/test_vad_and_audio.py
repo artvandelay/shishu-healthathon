@@ -55,6 +55,21 @@ class ThinkingVadTurnTests(unittest.TestCase):
         vad.on_frame(0.9)
         self.assertFalse(vad.holding_incomplete, "resuming clears the hold")
 
+    def test_vad_endpoint_wait_is_not_sampled_as_a_caller_pause(self):
+        vad = ThinkingVad()
+        vad.on_frame(0.9)
+        self.assertIn(VadEvent.SPEECH_END, [e for _ in range(12) for e in vad.on_frame(0.05)], "384 ms closes the turn")
+        for _ in range(2): vad.on_frame(0.05)
+        vad.on_frame(0.9)  # caller resumes before `on_bot_speaking`
+        self.assertEqual(vad.pauses_ms, [], "the VAD's own 448 ms endpoint wait is not a speaker pause")
+        self.assertEqual(vad.pace_factor, 1.0)
+
+        reflective = ThinkingVad()
+        self.assertIn(VadEvent.SPEECH_START, reflective.on_frame(0.9, is_reflective=True))
+        for _ in range(8): reflective.on_frame(0.05, is_reflective=True)
+        reflective.on_frame(0.9, is_reflective=True)  # 256 ms stays inside the reflective wait
+        self.assertEqual(reflective.pauses_ms, [256.0], "a real within-turn pause is still sampled")
+
 
 class AudioHelperTests(unittest.TestCase):
     def test_pcm_bytes_accepts_base64_and_drops_an_odd_tail_byte(self):
