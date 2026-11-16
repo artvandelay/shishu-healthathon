@@ -167,7 +167,7 @@
   const actions = {
     refresh: refresh, "refresh-bugs": loadBugs, "print-report": printing,
     "copy-report": () => copy((S.cur && S.cur.summary_doctor) || "", "Report copied."),
-    "copy-debug": () => !S.cur ? Promise.resolve() : copy(JSON.stringify({ call: S.cur.id, telemetry: asObj(S.cur.telemetry), events: asList(S.cur.events), transcript: asList(S.cur.transcript) }, null, 2), "Debug bundle copied."),
+    "copy-debug": () => !S.cur ? Promise.resolve() : copy(JSON.stringify({ call: S.cur.id, pack_id: S.cur.pack_id, cursor_state: asObj(S.cur.cursor_state), telemetry: asObj(S.cur.telemetry), events: asList(S.cur.events), transcript: asList(S.cur.transcript) }, null, 2), "Debug bundle copied."),
     logout: async () => { try { await fetch("/api/logout", { method: "POST", credentials: "same-origin" }); } catch (e) { /* redirect anyway */ } location.href = "/login"; }
   };
   Object.keys(actions).forEach((id) => $(id).addEventListener("click", () => Promise.resolve(actions[id]()).catch((e) => notice(e.message))));

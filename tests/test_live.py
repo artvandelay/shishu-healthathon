@@ -495,7 +495,7 @@ class CallerUtteranceTests(unittest.TestCase):
             built, _ws, _session = build()
             passes: list[str] = []
 
-            async def fake_evaluate(snapshot: CallState, spoken: str, pcm: bytes) -> live.Turn:
+            async def fake_evaluate(snapshot: CallState, spoken: str, pcm: bytes, **_kwargs: Any) -> live.Turn:
                 passes.append(spoken)
                 return self.spoken_turn(snapshot, spoken)
 
@@ -519,7 +519,7 @@ class CallerUtteranceTests(unittest.TestCase):
         async def body() -> None:
             built, _ws, _session = build()
 
-            async def fake_evaluate(snapshot: CallState, spoken: str, pcm: bytes) -> live.Turn:
+            async def fake_evaluate(snapshot: CallState, spoken: str, pcm: bytes, **_kwargs: Any) -> live.Turn:
                 return self.spoken_turn(snapshot, spoken)
 
             built._evaluate_turn_task = fake_evaluate  # type: ignore[method-assign]
@@ -536,7 +536,7 @@ class CallerUtteranceTests(unittest.TestCase):
             built, _ws, _session = build()
             built.state.cursor = built.state.cursor.model_copy(update={"qid": "birth_cord_3weeks"})
 
-            async def fake_evaluate(snapshot: CallState, spoken: str, pcm: bytes) -> live.Turn:
+            async def fake_evaluate(snapshot: CallState, spoken: str, pcm: bytes, **_kwargs: Any) -> live.Turn:
                 return self.spoken_turn(snapshot, spoken)
 
             built._evaluate_turn_task = fake_evaluate  # type: ignore[method-assign]
@@ -556,7 +556,7 @@ class CallerUtteranceTests(unittest.TestCase):
             built, ws, _session = build()
             built.state.cursor = built.state.cursor.model_copy(update={"qid": "birth_cord_3weeks"})
 
-            async def fake_evaluate(snapshot: CallState, spoken: str, pcm: bytes) -> live.Turn:
+            async def fake_evaluate(snapshot: CallState, spoken: str, pcm: bytes, **_kwargs: Any) -> live.Turn:
                 return self.spoken_turn(snapshot, spoken)
 
             built._evaluate_turn_task = fake_evaluate  # type: ignore[method-assign]
@@ -579,7 +579,7 @@ class CallerUtteranceTests(unittest.TestCase):
             built, _ws, _session = build()
             built.state.cursor = built.state.cursor.model_copy(update={"qid": "birth_jaundice"})
 
-            async def fake_evaluate(snapshot: CallState, spoken: str, pcm: bytes) -> live.Turn:
+            async def fake_evaluate(snapshot: CallState, spoken: str, pcm: bytes, **_kwargs: Any) -> live.Turn:
                 return self.spoken_turn(snapshot, spoken)
 
             built._evaluate_turn_task = fake_evaluate  # type: ignore[method-assign]
@@ -601,7 +601,7 @@ class CallerUtteranceTests(unittest.TestCase):
             built, _ws, _session = build()
             built.state.cursor = built.state.cursor.model_copy(update={"qid": "birth_cord_3weeks"})
 
-            async def fake_evaluate(snapshot: CallState, spoken: str, pcm: bytes) -> live.Turn:
+            async def fake_evaluate(snapshot: CallState, spoken: str, pcm: bytes, **_kwargs: Any) -> live.Turn:
                 return self.spoken_turn(snapshot, spoken, TurnOutcome.CLEAR)
 
             built._evaluate_turn_task = fake_evaluate  # type: ignore[method-assign]
@@ -627,6 +627,130 @@ class CallerUtteranceTests(unittest.TestCase):
             built.state.cursor = built.state.cursor.model_copy(update={"qid": "intro_bridge"})
             await built.on_quick_reply({"value": "clear", "step": built.state.step_token})
             self.assertIsNone(built.last_reduced)
+
+        asyncio.run(body())
+
+
+class TurnMetaTests(unittest.TestCase):
+    """Every reduced turn leaves one compact meta row behind, so a finished call can be re-read cold."""
+
+    @staticmethod
+    def fake_pass(outcome: TurnOutcome = TurnOutcome.CONCERN):
+        """A Decisions pass that behaves like the real one: it saw exactly `spoken`, and knows whether it was speculative."""
+        async def evaluate(snapshot: CallState, spoken: str, pcm: bytes, *, speculated: bool = False) -> live.Turn:
+            return turn_with(snapshot, outcome, spoken)._replace(eval_text=" ".join(spoken.split()), speculated=speculated, pcm_len=len(pcm))
+        return evaluate
+
+    def test_a_reduced_turn_leaves_a_scannable_meta_row_on_the_tool_call(self):
+        async def body() -> None:
+            built, ws, _session = build(call_id=None)
+            built.state.cursor = built.state.cursor.model_copy(update={"qid": "birth_cord_3weeks"})
+            built._evaluate_turn_task = self.fake_pass()  # type: ignore[method-assign]
+            await built.on_text({"text": "डोरी सूखी नहीं"})
+            await built._answer_tools([live.types.FunctionCall(id="a", name="next_question", args={})])
+            evt = ws.of("telemetry")[-1]["last_event"]
+            self.assertEqual(evt["type"], "tool_call")
+            meta = evt["meta"]
+            for key in ("step_in", "step_out", "advanced", "outcome", "top2", "decision_ms", "audio_ms"):
+                self.assertIn(key, meta, f"{key} must be on the turn's meta")
+            self.assertEqual(meta["outcome"], "concern")
+            self.assertEqual(meta["top2"], "concern:0.97,clarify:0.006")
+            self.assertNotEqual(meta["step_in"], meta["step_out"], "the turn moved the step")
+            self.assertIs(meta["advanced"], True)
+            self.assertEqual(meta["decision_ms"], 200)
+            self.assertEqual(meta["audio_ms"], 0, "a typed turn carries no audio")
+            self.assertEqual(meta["stt_eval"], "डोरी सूखी नहीं")
+            self.assertNotIn("stt_final", meta, "no divergence between what was judged and what was finally heard")
+            self.assertNotIn("reheard", meta, "an unhurried turn is not marked reheard")
+            self.assertNotIn("speculated", meta)
+
+        asyncio.run(body())
+
+    def test_late_stt_marks_the_turn_reheard_and_keeps_both_transcripts(self):
+        async def body() -> None:
+            built, _ws, _session = build(call_id=None)
+            built.state.cursor = built.state.cursor.model_copy(update={"qid": "birth_cord_3weeks"})
+            built._evaluate_turn_task = self.fake_pass()  # type: ignore[method-assign]
+            built.snapshot, built.voiced, built.pcm, built.text = built.state.model_copy(deep=True), 640, SILENCE[:640], "बुखार"
+            await built._start(speculate=True)
+            await asyncio.sleep(0)
+            built.text = "बुखार तीन दिन से"
+            await built._next_question()
+            meta = built.last_turn_meta
+            self.assertIs(meta["reheard"], True, "the pass was re-interpreted once the STT caught up")
+            self.assertIs(meta["speculated"], True, "it began as a speculative pass")
+            self.assertEqual(meta["stt_eval"], "बुखार", "what the Decisions call itself saw")
+            self.assertEqual(meta["stt_final"], "बुखार तीन दिन से", "what the caller was finally heard to say")
+            self.assertEqual(meta["audio_ms"], 20, "640 bytes of 16 kHz int16 mono is 20 ms")
+
+        asyncio.run(body())
+
+    def test_a_failed_pass_still_leaves_its_reason_and_attempts(self):
+        async def body() -> None:
+            built, _ws, _session = build(call_id=None)
+
+            async def failing(snapshot: CallState, spoken: str, pcm: bytes, *, speculated: bool = False) -> live.Turn:
+                turn = turn_with(snapshot, TurnOutcome.CONCERN, spoken)
+                return turn._replace(result=turn.result._replace(ok=False, error_reason="timeout", attempts=2))
+
+            built._evaluate_turn_task = failing  # type: ignore[method-assign]
+            await built.on_text({"text": "नहीं"})
+            await built._next_question()
+            self.assertEqual(built.last_turn_meta["error"], "timeout")
+            self.assertEqual(built.last_turn_meta["attempts"], 2)
+
+        asyncio.run(body())
+
+    def test_a_stale_turn_records_why_nothing_advanced(self):
+        async def body() -> None:
+            built, _ws, _session = build(call_id=None)
+
+            async def from_the_past(snapshot: CallState, spoken: str, pcm: bytes, *, speculated: bool = False) -> live.Turn:
+                stale = snapshot.model_copy(deep=True)
+                stale.cursor = stale.cursor.model_copy(update={"qid": "birth_jaundice"})
+                return turn_with(stale, TurnOutcome.CONCERN, spoken)
+
+            built._evaluate_turn_task = from_the_past  # type: ignore[method-assign]
+            await built.on_text({"text": "नहीं"})
+            body_json, _clarify = await built._next_question()
+            self.assertEqual(body_json["result"], "held")
+            self.assertEqual(built.last_turn_meta["reason"], "stale_turn")
+            self.assertEqual(built.last_turn_meta["step_out"], built.state.step_token)
+
+        asyncio.run(body())
+
+
+class BoundaryEventTests(unittest.TestCase):
+    """Barge-ins and late STT are the two invisible boundaries a dumpster dive has to see."""
+
+    def test_an_interruption_emits_a_barge_in_event_with_the_live_qid(self):
+        async def body() -> None:
+            built, ws, _session = build(call_id=None)
+            qid = built.state.cursor.qid
+            await built.on_message(live.types.LiveServerMessage(
+                server_content=live.types.LiveServerContent(interrupted=True)))
+            evt = ws.of("telemetry")[-1]["last_event"]
+            self.assertEqual(evt["type"], "barge_in")
+            self.assertEqual(evt["detail"], qid, "the question being answered when the caller cut in")
+            self.assertEqual(built.telemetry["interruptions"], 1)
+
+        asyncio.run(body())
+
+    def test_a_late_chunk_that_lands_on_a_concern_reports_attached(self):
+        async def body() -> None:
+            for outcome, attached in ((TurnOutcome.CONCERN, True), (TurnOutcome.CLEAR, False)):
+                with self.subTest(outcome=outcome.value):
+                    built, ws, _session = build(call_id=None)
+                    built.state.cursor = built.state.cursor.model_copy(update={"qid": "birth_cord_3weeks"})
+                    built._evaluate_turn_task = TurnMetaTests.fake_pass(outcome)  # type: ignore[method-assign]
+                    await built.on_text({"text": "डोरी सूखी नहीं"})
+                    await built._next_question()
+                    built.tool_pending = False
+                    await built._hear("user", "तीन हफ़्ते से")
+                    evt = ws.of("telemetry")[-1]["last_event"]
+                    self.assertEqual(evt["type"], "late_stt")
+                    self.assertEqual(evt["detail"], "birth_cord_3weeks", "booked against the question it answered")
+                    self.assertEqual(evt["meta"], {"attached": attached, "chars": len("तीन हफ़्ते से")})
 
         asyncio.run(body())
 

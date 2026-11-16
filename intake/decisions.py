@@ -170,5 +170,7 @@ def interpret_turn_decision(pack: PackConfig, state: CallState, raw_answers: Map
         stated=stated, semantic_flags=flags, jump_topic=bool(not closing and kind not in ("profile", "bridge") and on["jump_topic"]),
         next_qid_probs=next_probs, utterance=" ".join(utterance_text.split()), redacted=on["redact_patient_note"])
     diag = {"active_qid": state.cursor.qid, "step_kind": kind, "outcome": outcome.value, "stated": {q: o.value for q, o in stated.items()}, "next_qid_probs": next_probs,
-            "semantic_flags": list(flags), "heads": on, **{h: _num(a[h].get("noul")) for h in _NOUL if isinstance(a.get(h), Mapping)}}
+            "semantic_flags": list(flags), "heads": on, **{h: _num(a[h].get("noul")) for h in _NOUL if isinstance(a.get(h), Mapping)},
+            "top2": ",".join(f"{k}:{round(p, 3)}" for k, p in _rank(a, "active_outcome")[:2]),
+            "noul_hot": ",".join(f"{h}:{round(v, 2)}" for h in _NOUL if isinstance(a.get(h), Mapping) and (v := _num(a[h].get("noul"))) is not None and v >= 0.25)}
     return TurnIntent(command=cmd, needs_profile_extraction=on["mentions_profile"] or (kind == "profile" and outcome is not TurnOutcome.CLARIFY), diagnostics=diag)

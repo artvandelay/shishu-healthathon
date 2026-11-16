@@ -12,7 +12,7 @@ from google import genai
 from google.genai import types
 from starlette.websockets import WebSocketState
 
-from intake import audio, db, decisions, engine, extractor
+from intake import audio, db, decisions, engine, extractor, reports
 from intake.models import AnswerStatus, CallState, CloseReason, FollowupSlot, PackConfig, Phase, SubStep, TurnOutcome
 from intake.vad import SileroDetector, ThinkingVad, VadEvent
 
@@ -66,6 +66,9 @@ class Turn(NamedTuple):
     spoken: str
     pcm_len: int
     wav: bytes | None
+    eval_text: str = ""  # what the Decisions pass itself saw (differs from `spoken` when the STT trailed it)
+    speculated: bool = False
+    reheard: bool = False
 Key = tuple[str, int, str]  # (step_token, voiced bytes, cleaned STT text): a turn is only cacheable on all three
 Reduced = tuple[str, SubStep, int, bool]  # (answered qid, substep, followup index, redacted): the turn just committed
 class LiveCallSession:
@@ -83,8 +86,9 @@ class LiveCallSession:
             ending_sent=False, bot_started=False, bot_text="", clarify_step=False, tool_pending=False, checked_in=False, seen=set(), cancelled=set(),
             pcm=b"", voiced=0, text="", snapshot=None,
             task=None, task_key=None, done=None, fallback=None, last_reduced=None)
+        self.last_turn_meta: dict[str, Any] = {}  # the meta row for the turn just reduced, waiting for its `tool_call` event
         self.telemetry: dict[str, Any] = dict.fromkeys(_COUNTERS, 0) | {
-            "model": str(pack.meta.get("gemini_model") or _MODEL), "voice": str(pack.meta.get("gemini_voice") or "Kore"), "pace_factor": 1.0,
+            "build": reports.build_info()["tag"], "model": str(pack.meta.get("gemini_model") or _MODEL), "voice": str(pack.meta.get("gemini_voice") or "Kore"), "pace_factor": 1.0,
             "turn_latencies_ms": [], "avg_latency_ms": 0, "max_latency_ms": 0, "errors": []}
     async def _send_json(self, payload: dict[str, Any]) -> None:
         async def _w() -> None:
@@ -141,7 +145,7 @@ class LiveCallSession:
         key = self._key()
         if self.task is not None and not self.task.done() and self.task_key[:2] == key[:2]: return self.task  # the STT may still be growing; `_banked` folds it in
         self._cancel("task")
-        self.task_key, self.task = key, asyncio.ensure_future(self._evaluate_turn_task(self.snapshot, self.text, self.pcm))
+        self.task_key, self.task = key, asyncio.ensure_future(self._evaluate_turn_task(self.snapshot, self.text, self.pcm, speculated=speculate))
         self.task.add_done_callback(lambda t: self._settle(key, speculate, t))
         return self.task
     def _settle(self, key: Key, speculate: bool, task: asyncio.Task) -> None:
@@ -150,7 +154,7 @@ class LiveCallSession:
         if speculate and self.vad.in_turn and turn.intent.command.turn_incomplete: self.vad.extend_for_incomplete()
     def _rehear(self, turn: Turn, spoken: str) -> Turn:
         """The banked pass ran before the transcription finished; re-interpret its raw answers against the fuller text."""
-        return turn._replace(intent=decisions.interpret_turn_decision(self.pack, turn.snapshot, turn.result.raw_answers, utterance_text=spoken), spoken=spoken)
+        return turn._replace(intent=decisions.interpret_turn_decision(self.pack, turn.snapshot, turn.result.raw_answers, utterance_text=spoken), spoken=spoken, reheard=True)
     def _banked(self) -> Turn | None:
         """The pass for this turn, re-judged against the fuller transcription if the STT has caught up since it ran."""
         if self.done is None: return None
@@ -163,12 +167,13 @@ class LiveCallSession:
         if (banked := self._banked()) is not None: return banked
         turn = await self._start()
         return self._banked() or turn
-    async def _evaluate_turn_task(self, snapshot: CallState, spoken: str, pcm: bytes) -> Turn:
+    async def _evaluate_turn_task(self, snapshot: CallState, spoken: str, pcm: bytes, *, speculated: bool = False) -> Turn:
         wav = audio.pcm16_to_wav_bytes(pcm, _IN) if pcm else None
         jobs: list[Awaitable[Any]] = [decisions.evaluate_turn(decisions.build_turn_request(self.pack, snapshot, utterance_text=spoken, audio_wav_bytes=wav, include_turn_incomplete=True))]
         if engine.step_kind(self.pack, snapshot) == "profile": jobs.append(extractor.extract_profile_entities(self.pack, snapshot, utterance_text=spoken, audio_wav_bytes=wav))
         done = await asyncio.gather(*jobs)
-        return Turn(done[0], decisions.interpret_turn_decision(self.pack, snapshot, done[0].raw_answers, utterance_text=spoken), done[1] if len(done) > 1 else None, snapshot, spoken, len(pcm), wav)
+        return Turn(done[0], decisions.interpret_turn_decision(self.pack, snapshot, done[0].raw_answers, utterance_text=spoken), done[1] if len(done) > 1 else None, snapshot, spoken, len(pcm), wav,
+                    eval_text=" ".join(spoken.split()), speculated=speculated)
     async def on_audio(self, payload: dict[str, Any]) -> bool:
         if not (pcm := audio.pcm_bytes(payload.get("data") or "")) or self.state.phase is not Phase.ASKING: return True
         raw, spec = str(payload.get("sample_rate") or ""), self.pack.by_id.get(self.state.cursor.qid)
@@ -208,18 +213,19 @@ class LiveCallSession:
         if role == "assistant": self.bot_text = engine.merge_transcript_chunk(self.bot_text, text)
         await self._send_json({"type": "transcript", "role": role, "text": text})
         await self._db(db.append_transcript, role, text, self.last_reduced[0] if late else self.state.cursor.qid)
-        if late: await self._attach_late_text(text)
-    async def _attach_late_text(self, text: str) -> None:
+        if late: await self._emit("late_stt", self.last_reduced[0], {"attached": await self._attach_late_text(text), "chars": len(text)})
+    async def _attach_late_text(self, text: str) -> bool:
         """A transcription chunk that trailed the reduction: keep it on the note of the question it answered."""
         qid, substep, idx, redacted = self.last_reduced
         rec, spec = self.state.answers.get(qid), self.pack.by_id.get(qid)
-        if rec is None or rec.state is not AnswerStatus.CONCERN: return
+        if rec is None or rec.state is not AnswerStatus.CONCERN: return False
         st = self.state.model_copy(deep=True)
         if substep is SubStep.FOLLOWUP and spec is not None and idx < len(spec.followups):
             fid, slot = spec.followups[idx], st.answers[qid].followups.get(spec.followups[idx]) or FollowupSlot(state=AnswerStatus.CONCERN)
             st.answers[qid].followups[fid] = slot.model_copy(update={"note": slot.note.append(text, redacted=redacted)})
         else: st.answers[qid].note = st.answers[qid].note.append(text, redacted=redacted)
         await self._persist(st)
+        return True
     async def on_text(self, payload: dict[str, Any]) -> bool:
         if not (text := " ".join(str(payload.get("text") or "").split())) or self.state.phase is not Phase.ASKING: return True
         self._reset_turn()
@@ -253,23 +259,37 @@ class LiveCallSession:
         if not await self._speak(): return await self._fail()
         await self._emit("manual_nudge")
         return True
+    def _turn_meta(self, turn: Turn, step_in: str, cmd: Any, ext: Any) -> dict[str, Any]:
+        """One compact row of scalars per turn: each surviving field answers a different post-hoc question."""
+        val, d = cmd.value if cmd is not None else None, turn.intent.diagnostics
+        meta = {"step_in": step_in, "step_out": self.state.step_token, "advanced": step_in != self.state.step_token, "pace": round(self.vad.pace_factor, 2),
+                "outcome": cmd.outcome.value if cmd is not None else "", "top2": d.get("top2") or "", "noul": d.get("noul_hot") or "", "stated": d.get("stated") or None,
+                "flags": d.get("semantic_flags") or None, "decision_ms": turn.result.decision_ms, "audio_ms": round(turn.pcm_len / 32), "tokens": turn.result.total_input_tokens,
+                "value": json.dumps(val, ensure_ascii=False) if isinstance(val, (dict, list)) else (str(val) if val is not None else ""),
+                "speculated": True if turn.speculated else None, "reheard": True if turn.reheard else None, "attempts": turn.result.attempts if turn.result.attempts > 1 else None,
+                "stt_eval": turn.eval_text[:120], "stt_final": turn.spoken[:120] if turn.spoken != turn.eval_text else "", "ext_ms": ext.extractor_ms if ext is not None else None}
+        return {k: v for k, v in meta.items() if v is not None and v != "" and v != {} and v != []}
     async def _next_question(self) -> tuple[dict[str, Any], bool]:
+        self.last_turn_meta = {}
         if self.state.phase is not Phase.ASKING or not (self.tool_pending or self.pcm or self.text): return tool_body(self.pack, self.state), False
         turn = await self._turn()
         if not turn.result.ok:
             self.telemetry["tool_errors"] += 1
+            self.last_turn_meta = {"step_in": turn.snapshot.step_token, "error": turn.result.error_reason, "decision_ms": turn.result.decision_ms, "attempts": turn.result.attempts}
             self._reset_turn()
             await self._persist(engine.close_technical_failure(self.state))
             return tool_body(self.pack, self.state), False
         if turn.snapshot.step_token != self.state.step_token:
+            self.last_turn_meta = {"step_in": turn.snapshot.step_token, "step_out": self.state.step_token, "reason": "stale_turn"}
             self._reset_turn()
             return {**tool_body(self.pack, self.state), "result": "held", "reason": "stale_turn"}, False
-        cmd, ext = turn.intent.command, turn.extraction
+        cmd, ext, step_in = turn.intent.command, turn.extraction, turn.snapshot.step_token
         if turn.intent.needs_profile_extraction and ext is None: ext = await extractor.extract_profile_entities(self.pack, turn.snapshot, utterance_text=turn.spoken, audio_wav_bytes=turn.wav)
         if ext is not None and ext.ok and not (cmd.emergency or cmd.caller_stop): cmd = cmd.model_copy(update={"profile_patch": ext.patch, "profile_turn_attempted": True})
         self.last_reduced = (self.state.cursor.qid, self.state.cursor.substep, self.state.cursor.followup_idx, cmd.redacted)
         await self._persist(engine.reduce_turn(self.pack, self.state, cmd))
         self.telemetry["pace_factor"] = round(self.vad.pace_factor, 2)
+        self.last_turn_meta = self._turn_meta(turn, step_in, cmd, ext)
         self._reset_turn()
         clarify = not (cmd.emergency or cmd.caller_stop) and cmd.outcome is TurnOutcome.CLARIFY
         return tool_body(self.pack, self.state, clarify=clarify), clarify
@@ -286,7 +306,7 @@ class LiveCallSession:
         sent = await _try_call(self._send_tools, responses, default=_BROKE) is not _BROKE
         self.telemetry["tool_calls" if sent else "tool_errors"] += 1
         if not sent: await self._emit("error", "Could not send the tool response to Gemini")
-        await self._emit("tool_call", ",".join(details))
+        await self._emit("tool_call", ",".join(details), self.last_turn_meta or None)
         await self._publish_and_cue(self._cue_kind(clarify), immediate=False)
     async def _send_tools(self, responses: list[Any]) -> None:
         async with self.send_lock: await self.session.send_tool_response(function_responses=responses)
@@ -316,6 +336,7 @@ class LiveCallSession:
                 self.telemetry["interruptions"] += 1
                 self.playback_ends_at, self.bot_started, self.bot_text = 0.0, False, ""
                 self.vad.on_bot_speaking()
+                await self._emit("barge_in", self.state.cursor.qid)
                 await self._send_json({"type": "clear"})
             for r, p in (("user", getattr(sc, "input_transcription", None)), ("assistant", getattr(sc, "output_transcription", None))):
                 if txt := " ".join(str(getattr(p, "text", "") or "").split()): await self._hear(r, txt)
@@ -330,7 +351,7 @@ class LiveCallSession:
     async def on_turn_complete(self) -> None:
         if self.tool_pending and not self.bot_started:
             _body, clarify = await self._next_question()
-            await self._emit("tool_call", "missed_tool")
+            await self._emit("tool_call", "missed_tool", self.last_turn_meta or None)
             self.bot_started = False
             if not await self._publish_and_cue(self._cue_kind(clarify)): return await self._fail()
         if self.bot_started and not self.clarify_step:  # the voice puppet's line is known verbatim, yet Gemini drops its transcription tail
@@ -440,7 +461,7 @@ class LiveCallSession:
         tasks = [asyncio.ensure_future(self._gemini_loop()), asyncio.ensure_future(self._watchdog())]
         try:
             await self._persist(self.state)
-            await self._emit("session_started", str(self.call_id or ""))
+            await self._emit("session_started", str(self.call_id or ""), {"pack": self.pack.id})
             cue, said = str(self.pack.prompts.get("greeting_cue") or "").rstrip("\n"), engine.say_text(self.pack, self.state)
             self.bot_started, self.speech_ended_ts = False, time.time()
             await self._send_realtime(text="\n".join(b for b in (cue, said) if b).strip())

@@ -374,6 +374,23 @@ class InterpretTests(unittest.TestCase):
         self.assertEqual(intent.diagnostics["step_kind"], "main")
         self.assertEqual(intent.diagnostics["active_qid"], "fever_nature")
 
+    def test_diagnostics_carry_a_compact_top2_and_the_hot_nouls(self):
+        st = state_at(self.fever, "fever_nature")
+        intent = self.interpret(self.fever, st, {
+            "danger_now": noul(0.31), "caller_stop": noul(0.05), "jump_topic": noul(0.44),
+            "active_outcome": choice(concern=0.62, clear=0.2137, unknown=0.1, clarify=0.05, other=0.02)})
+        self.assertEqual(intent.diagnostics["top2"], "concern:0.62,clear:0.214")
+        self.assertEqual(intent.diagnostics["noul_hot"], "danger_now:0.31,jump_topic:0.44",
+                         "only heads at or above 0.25, in _NOUL order, rounded to two places")
+        for key in ("active_qid", "step_kind", "outcome", "stated", "next_qid_probs", "semantic_flags", "heads", "danger_now", "jump_topic"):
+            self.assertIn(key, intent.diagnostics, f"{key} must survive the enrichment")
+
+    def test_an_empty_turn_still_carries_both_scalars_as_empty_strings(self):
+        st = state_at(self.fever, "fever_nature")
+        intent = self.interpret(self.fever, st, {})
+        self.assertEqual(intent.diagnostics["top2"], "")
+        self.assertEqual(intent.diagnostics["noul_hot"], "")
+
     def test_caller_stop_is_suppressed_only_by_an_emergency(self):
         st = engine.new_state(self.shishu)
         intent = self.interpret(self.shishu, st, {"caller_stop": noul(0.93)})
