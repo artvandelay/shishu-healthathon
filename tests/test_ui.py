@@ -54,9 +54,10 @@ for (const m of html.matchAll(/<([a-z]+)\s([^>]*?)\/?>/g)) {
   if (id) nodes[id[1]] = el;
 }
 
-const sent = [], pdfCalls = [];
+const sent = [], pdfCalls = [], intervals = [], worklets = [];
+let timerId = 0;
 let bugBody = null, ctxRef = null, current = null, frames = [], opens = [];
-let PACK_JSON = {};
+let PACK_JSON = {}, NOW = 1_700_000_000_000;
 
 function Ctx() {
   this.currentTime = 0; this.sampleRate = 48000; this.destination = {}; this.sources = [];
@@ -85,10 +86,11 @@ function MockWorkletNode() {
   this.port = { onmessage: null };
   this.connect = () => {};
   this.disconnect = () => {};
+  worklets.push(this);
 }
 
 const sandbox = {
-  console, setTimeout, clearTimeout, setInterval: () => 1, clearInterval() {},
+  console, setTimeout, clearTimeout, setInterval: (fn, ms) => { intervals.push({ id: ++timerId, fn, ms }); return timerId; }, clearInterval: (id) => { const at = intervals.findIndex((t) => t.id === id); if (at >= 0) intervals.splice(at, 1); },
   AudioWorkletNode: MockWorkletNode,
   requestAnimationFrame: (fn) => frames.push(fn), cancelAnimationFrame() {},
   atob: (s) => Buffer.from(s, "base64").toString("binary"),
@@ -98,7 +100,8 @@ const sandbox = {
   File: function (parts, name, cfg) { this.parts = parts; this.name = name; this.type = cfg && cfg.type; },
   Image: function () { const self = this; setTimeout(() => self.onerror && self.onerror(), 0); },
   URLSearchParams, Uint8Array, Int16Array, Float32Array, DataView, ArrayBuffer, JSON, Promise,
-  encodeURIComponent, decodeURIComponent, Object, Number, String, Boolean, Math, Date, RegExp, Error,
+  encodeURIComponent, decodeURIComponent, Object, Number, String, Boolean, Math, RegExp, Error,
+  Date: Object.assign(class extends Date { constructor(...args) { super(...(args.length ? args : [NOW])); } }, { now: () => NOW }),
   document: {
     getElementById: (id) => nodes[id] || (nodes[id] = node(id)),
     createElement: (tag) => node(tag),
@@ -139,6 +142,15 @@ const api = {
   push(msg) { current.onmessage({ data: JSON.stringify(msg) }); },
   pcm(bytes) { return Buffer.alloc(bytes, 8).toString("base64"); },
   visible(id) { return !nodes[id].hidden && nodes[id].classList.contains("is-visible"); },
+  /* Time travel: the timer interval is driven on demand, so the 3 s nudge reveal is testable. */
+  advance(ms) { NOW += ms; intervals.filter((t) => t.ms === 250).forEach((t) => t.fn()); },
+  now() { return NOW; },
+  /* A mic frame straight from the capture worklet: amplitude 0 is silence, anything above 0.015 is voice. */
+  mic(amplitude) {
+    const frame = new Float32Array(1024).fill(amplitude);
+    worklets.forEach((w) => w.port.onmessage && w.port.onmessage({ data: frame }));
+  },
+  micReady() { return worklets.length > 0; },
   boot(pack) {
     PACK_JSON = pack;
     vm.createContext(sandbox);
@@ -259,6 +271,77 @@ return {
         self.assertFalse(out["adminHidden"], "admin role reveals the admin link")
         self.assertEqual(out["logo"], "/static/pack-logo.png")
         self.assertEqual(out["consent"], "/static/consent.pdf")
+
+    def test_the_nudge_button_surfaces_after_three_seconds_of_silence_only(self):
+        out = self.run_js(r"""
+api.boot(JSON.parse(process.env.PACK));
+await api.settle();
+await api.start();
+api.push({ type: "session_started", call_id: 4, share_token: "tok", out_sample_rate: 24000 });
+await api.settle();
+const micReady = api.micReady();
+
+/* Silence with no caller speech never reveals the nudge. */
+api.advance(4000);
+const quietIdle = api.nodes["nudge-btn"].hidden;
+
+/* The caller speaks, then stops: the 3 s clock starts at the silence, not the speech. */
+api.mic(0.2);
+const duringSpeech = api.nodes["nudge-btn"].hidden;
+api.advance(4000);
+const stillSpeaking = api.nodes["nudge-btn"].hidden;
+api.mic(0);
+api.advance(2000);
+const twoSeconds = api.nodes["nudge-btn"].hidden;
+api.advance(1500);
+const afterThree = !api.nodes["nudge-btn"].hidden;
+
+/* Talking again hides it and re-arms the clock. */
+api.mic(0.2);
+const talksAgain = api.nodes["nudge-btn"].hidden;
+api.mic(0);
+api.advance(3500);
+const revealedAgain = !api.nodes["nudge-btn"].hidden;
+
+/* A tap on the nudge clears it and sends one nudge. */
+api.nodes["nudge-btn"].fire("click");
+await api.settle();
+const afterTap = api.nodes["nudge-btn"].hidden;
+const nudges = api.sent.filter((m) => m.type === "nudge").length;
+
+/* A bot turn arriving hides it; a quick-reply tap starts a fresh wait. */
+api.push({ type: "question_state", step: "fever_now", is_yes_no: true, quick_replies: [], prompt_chars: 60 });
+api.push({ type: "audio", data: api.pcm(4800), sample_rate: 24000 });
+api.ctx().currentTime = 0.4;
+api.flushRaf();
+api.nodes["yes-btn"].fire("click");
+await api.settle();
+api.advance(4000);
+const afterReply = !api.nodes["nudge-btn"].hidden;
+api.push({ type: "audio", data: api.pcm(4800), sample_rate: 24000 });
+await api.settle();
+const afterBotAudio = api.nodes["nudge-btn"].hidden;
+api.push({ type: "clear" });
+api.advance(4000);
+const afterClear = api.nodes["nudge-btn"].hidden;
+
+return { micReady, quietIdle, duringSpeech, stillSpeaking, twoSeconds, afterThree, talksAgain, revealedAgain,
+         afterTap, nudges, afterReply, afterBotAudio, afterClear };
+""")
+
+        self.assertTrue(out["micReady"], "the capture worklet is wired up by startCall")
+        self.assertTrue(out["quietIdle"], "silence with no caller speech never nags")
+        self.assertTrue(out["duringSpeech"], "the nudge never appears while the caller is mid-sentence")
+        self.assertTrue(out["stillSpeaking"], "a long utterance keeps it hidden")
+        self.assertTrue(out["twoSeconds"], "2 s of silence is too early")
+        self.assertTrue(out["afterThree"], "past 3 s it must surface")
+        self.assertTrue(out["talksAgain"], "speaking again hides it")
+        self.assertTrue(out["revealedAgain"], "and the clock restarts on silence")
+        self.assertTrue(out["afterTap"], "the tap hides it")
+        self.assertEqual(out["nudges"], 1, "the tap sends exactly one nudge")
+        self.assertTrue(out["afterReply"], "a quick-reply tap arms the wait even with no mic frames")
+        self.assertTrue(out["afterBotAudio"], "bot audio clears the wait")
+        self.assertTrue(out["afterClear"], "a clear clears the wait")
 
     def test_page_is_stylesheet_driven_and_within_budget(self):
         html = (STATIC / "call.html").read_text(encoding="utf-8")

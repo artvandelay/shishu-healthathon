@@ -8,7 +8,8 @@ import unittest
 import unittest.mock
 from typing import Any
 
-from intake import live
+import tests  # noqa: F401 — ensure isolated TEST_DATA_DIR under `-s tests`
+from intake import db, live
 from intake.models import CallState, CloseReason, Phase, TurnCommand, TurnOutcome
 from intake.pack import load_pack
 from starlette.websockets import WebSocketState
@@ -126,6 +127,105 @@ def build(*, probs: list[float] | None = None, messages: list | None = None,
     return built, ws, session
 
 
+def turn_with(state: CallState, outcome: TurnOutcome, spoken: str) -> live.Turn:
+    """A turn as decisions would have produced it: raw heads that re-interpret to `outcome` for `spoken`."""
+    rivals = {o.value: 0.03 / 5 for o in (TurnOutcome.CLEAR, TurnOutcome.CONCERN, TurnOutcome.UNKNOWN, TurnOutcome.CLARIFY, TurnOutcome.RETRACT) if o is not outcome}
+    body = answers(danger_now=0.01, active_outcome={outcome.value: 0.97, **rivals})
+    intent = live.decisions.interpret_turn_decision(PACK, state, body["answers"], utterance_text=spoken)
+    return live.Turn(TurnTests.result(body), intent, None, state.model_copy(deep=True), spoken, 640, None)
+
+
+class OutputTranscriptionTests(unittest.TestCase):
+    """Gemini drops the trailing `output_transcription` chunks; the puppet's known line must still land."""
+
+    LINE = "क्या आपकी शादी हो गई है, होने वाली है, या अभी नहीं हुई?"
+
+    def setUp(self) -> None:
+        self.calls: list[int] = []
+
+    def tearDown(self) -> None:
+        with db._LOCK:  # the real call rows are this suite's own; leave the shared database as it was
+            for call_id in self.calls:
+                db.conn.execute("DELETE FROM calls WHERE id = ?", (call_id,))
+            db.conn.commit()
+
+    @staticmethod
+    def said(text: str) -> live.types.LiveServerMessage:
+        return live.types.LiveServerMessage(server_content=live.types.LiveServerContent(
+            output_transcription=live.types.Transcription(text=text)))
+
+    @staticmethod
+    def audio() -> live.types.LiveServerMessage:
+        blob = live.types.Blob(data=b"\x00\x00" * 480, mime_type="audio/pcm;rate=24000")
+        return live.types.LiveServerMessage(server_content=live.types.LiveServerContent(
+            model_turn=live.types.Content(parts=[live.types.Part(inline_data=blob)])))
+
+    @staticmethod
+    def complete() -> live.types.LiveServerMessage:
+        return live.types.LiveServerMessage(server_content=live.types.LiveServerContent(turn_complete=True))
+
+    async def session_at(self, qid: str) -> tuple[live.LiveCallSession, FakeWebSocket, int]:
+        """A live session holding on `qid`, with a real call row so the transcript really persists."""
+        call_id = await asyncio.to_thread(db.create_call, pack_id=PACK.id)
+        self.calls.append(call_id)
+        state = live.engine.new_state(PACK)
+        state.cursor = state.cursor.model_copy(update={"qid": qid})
+        built, ws, _session = build(call_id=call_id, state=state)
+        return built, ws, call_id
+
+    @staticmethod
+    async def stored(call_id: int, role: str) -> list[str]:
+        call = await asyncio.to_thread(db.get_call, call_id)
+        return [t["text"] for t in (call or {}).get("transcript") or [] if t.get("role") == role]
+
+    def test_a_two_word_prefix_is_completed_to_the_full_line_on_turn_complete(self):
+        async def body() -> None:
+            built, ws, call_id = await self.session_at("intro_married")
+            self.assertEqual(live.engine.say_text(PACK, built.state), self.LINE)
+            await built._publish_and_cue("speak", immediate=False)
+            await built.on_message(self.said("क्या आपकी"))
+            await built.on_message(self.audio())
+            await built.on_message(self.complete())
+            self.assertTrue(built.bot_started)
+            self.assertEqual(built.bot_text, self.LINE, "the session now tracks the whole spoken line")
+            captions = [p["text"] for p in ws.of("transcript") if p["role"] == "assistant"]
+            self.assertEqual(captions, ["क्या आपकी", self.LINE], "the browser gets the complete sentence too")
+            self.assertEqual(await self.stored(call_id, "assistant"), [self.LINE], "and SQLite holds one merged turn")
+            await built.on_message(self.complete())
+            self.assertEqual(await self.stored(call_id, "assistant"), [self.LINE], "a repeated turn_complete never doubles the line")
+
+        asyncio.run(body())
+
+    def test_a_clarify_step_keeps_geminis_own_explanation(self):
+        async def body() -> None:
+            custom = "मतलब, आपकी शादी हो चुकी है या होने वाली है?"
+            built, ws, call_id = await self.session_at("intro_married")
+            await built._publish_and_cue("clarify", immediate=False)
+            self.assertTrue(built.clarify_step)
+            await built.on_message(self.said(custom))
+            await built.on_message(self.audio())
+            await built.on_message(self.complete())
+            captions = [p["text"] for p in ws.of("transcript") if p["role"] == "assistant"]
+            self.assertEqual(captions, [custom], "the custom clarification is never overwritten")
+            self.assertEqual(await self.stored(call_id, "assistant"), [custom])
+
+        asyncio.run(body())
+
+    def test_a_new_step_and_an_interruption_both_clear_the_tracked_line(self):
+        async def body() -> None:
+            built, _ws, _call_id = await self.session_at("intro_married")
+            await built._publish_and_cue("speak", immediate=False)
+            await built.on_message(self.said("अब मैं"))
+            self.assertEqual(built.bot_text, "अब मैं")
+            await built._publish_and_cue("speak", immediate=False)
+            self.assertEqual(built.bot_text, "", "a new step owns a fresh line")
+            await built.on_message(self.said("अब मैं"))
+            await built.on_message(live.types.LiveServerMessage(server_content=live.types.LiveServerContent(interrupted=True)))
+            self.assertEqual(built.bot_text, "", "an interruption drops the half-spoken line")
+
+        asyncio.run(body())
+
+
 class ConfigTests(unittest.TestCase):
     """The one Live config: manual VAD, one tool, one Hindi voice, minimal thinking."""
 
@@ -147,6 +247,15 @@ class ConfigTests(unittest.TestCase):
     def test_resume_handle_is_optional_and_forwarded(self):
         self.assertIsNone(live.build_live_config(PACK).session_resumption.handle)
         self.assertEqual(live.build_live_config(PACK, "abc").session_resumption.handle, "abc")
+
+    def test_output_transcription_is_unpinned_while_input_stays_hindi_with_vocab(self):
+        config = live.build_live_config(PACK)
+        said = config.output_audio_transcription
+        self.assertIsNone(said.language_codes, "pinning the output language flushed 2-word Devanagari fragments")
+        self.assertIsNone(said.custom_vocabulary)
+        self.assertEqual(config.input_audio_transcription.language_codes, ["hi-IN"], "the caller's audio is still Hindi-only")
+        self.assertIn("SHISHU", config.input_audio_transcription.custom_vocabulary[0])
+        self.assertEqual(config.speech_config.language_code, "hi-IN", "the spoken voice is still Hindi")
 
     def test_question_state_payload_matches_call_js(self):
         state = live.engine.new_state(PACK)
@@ -329,7 +438,6 @@ class TurnTests(unittest.TestCase):
             self.assertEqual(built.telemetry["pace_factor"], 0.8)
 
         asyncio.run(body())
-
     @staticmethod
     def pcm(bytes_: int = 640) -> str:
         import base64
@@ -351,6 +459,216 @@ class TurnTests(unittest.TestCase):
             command=cmd, needs_profile_extraction=False, diagnostics={})
         return live.Turn(TurnTests.result(answers(danger_now=0.01)), intent, None,
                          state.model_copy(deep=True), "नहीं", 640, None)
+
+
+class CallerUtteranceTests(unittest.TestCase):
+    """The caller's own words survive onto the note, even when the transcription trails the turn."""
+
+    @staticmethod
+    def spoken_turn(state: CallState, spoken: str, outcome: TurnOutcome = TurnOutcome.CONCERN) -> live.Turn:
+        """A turn whose Decisions pass saw `spoken` (empty means WAV-only)."""
+        return turn_with(state, outcome, spoken)
+
+    def test_speech_end_puts_activity_end_on_the_wire_before_the_endpoint_pass_starts(self):
+        async def body() -> None:
+            built, _ws, session = build(probs=[0.9])
+            sent_before: list[bool] = []
+            real = built._start
+
+            def spy(*, speculate: bool = False) -> asyncio.Task:
+                sent_before.append(bool(session.realtime("activity_end")))
+                return real(speculate=speculate)
+
+            built._start = spy  # type: ignore[method-assign]
+            await built.on_audio({"data": TurnTests.pcm(), "sample_rate": 16000})
+            built.detector = FakeDetector([0.0])
+            for _ in range(40):  # 40 x 32 ms outlasts even the 850 ms reflective wait
+                await built.on_audio({"data": TurnTests.pcm(), "sample_rate": 16000})
+                await asyncio.sleep(0)
+            self.assertIsInstance(session.realtime("activity_end")[0], live.types.ActivityEnd)
+            self.assertEqual(sent_before, [False, True], "speculation may precede it, but the endpoint pass never does")
+
+        asyncio.run(body())
+
+    def test_key_includes_the_transcription_so_late_stt_reruns_the_interpretation(self):
+        async def body() -> None:
+            built, _ws, _session = build()
+            passes: list[str] = []
+
+            async def fake_evaluate(snapshot: CallState, spoken: str, pcm: bytes) -> live.Turn:
+                passes.append(spoken)
+                return self.spoken_turn(snapshot, spoken)
+
+            built._evaluate_turn_task = fake_evaluate  # type: ignore[method-assign]
+            built.snapshot, built.voiced, built.pcm, built.text = built.state.model_copy(deep=True), 640, SILENCE[:640], ""
+            await built._start()
+            await asyncio.sleep(0)
+            self.assertEqual(passes, [""], "the speculative pass ran on WAV alone")
+            built.text = "  बुखार   है "
+            turn = built._banked()
+            self.assertIsNotNone(turn, "the arrived STT is folded in without a second network call")
+            self.assertEqual(passes, [""], "no extra Decisions call")
+            self.assertEqual(turn.intent.command.utterance, "बुखार है")
+            self.assertEqual(turn.spoken, "बुखार है")
+            self.assertEqual(built._key()[2], "बुखार है")
+            self.assertIs(built._banked(), turn, "the reheard turn is now the cache hit")
+
+        asyncio.run(body())
+
+    def test_a_wav_only_pass_is_not_rerun_when_no_text_ever_arrives(self):
+        async def body() -> None:
+            built, _ws, _session = build()
+
+            async def fake_evaluate(snapshot: CallState, spoken: str, pcm: bytes) -> live.Turn:
+                return self.spoken_turn(snapshot, spoken)
+
+            built._evaluate_turn_task = fake_evaluate  # type: ignore[method-assign]
+            built.snapshot, built.voiced, built.pcm = built.state.model_copy(deep=True), 640, SILENCE[:640]
+            await built._start()
+            await asyncio.sleep(0)
+            self.assertEqual(built._banked(), built.done[1], "an exact key hit reuses the banked pass")
+            self.assertEqual(built.done[1].spoken, "", "the cache is untouched")
+
+        asyncio.run(body())
+
+    def test_voice_turn_keeps_the_caller_words_on_the_note(self):
+        async def body() -> None:
+            built, _ws, _session = build()
+            built.state.cursor = built.state.cursor.model_copy(update={"qid": "birth_cord_3weeks"})
+
+            async def fake_evaluate(snapshot: CallState, spoken: str, pcm: bytes) -> live.Turn:
+                return self.spoken_turn(snapshot, spoken)
+
+            built._evaluate_turn_task = fake_evaluate  # type: ignore[method-assign]
+            built.snapshot, built.voiced, built.pcm, built.text = built.state.model_copy(deep=True), 640, SILENCE[:640], ""
+            await built._start()
+            await asyncio.sleep(0)
+            built.text = "तीन हफ़्ते से डोरी सूखी नहीं"
+            await built._next_question()
+            rec = built.state.answers["birth_cord_3weeks"]
+            self.assertIs(rec.state, live.AnswerStatus.CONCERN)
+            self.assertEqual(rec.note.verbatim, "तीन हफ़्ते से डोरी सूखी नहीं", "the note is no longer empty on voice turns")
+
+        asyncio.run(body())
+
+    def test_late_transcription_after_the_reduction_is_appended_to_the_answered_question(self):
+        async def body() -> None:
+            built, ws, _session = build()
+            built.state.cursor = built.state.cursor.model_copy(update={"qid": "birth_cord_3weeks"})
+
+            async def fake_evaluate(snapshot: CallState, spoken: str, pcm: bytes) -> live.Turn:
+                return self.spoken_turn(snapshot, spoken)
+
+            built._evaluate_turn_task = fake_evaluate  # type: ignore[method-assign]
+            before = built.state.step_token
+            await built.on_text({"text": "डोरी सूखी नहीं"})
+            await built._next_question()
+            self.assertNotEqual(before, built.state.step_token, "the call moved on")
+            self.assertEqual(built.state.answers["birth_cord_3weeks"].note.verbatim, "डोरी सूखी नहीं")
+            built.tool_pending = False
+            await built._hear("user", "तीन हफ़्ते से")
+            rec = built.state.answers["birth_cord_3weeks"]
+            self.assertEqual(rec.note.verbatim, "डोरी सूखी नहीं; तीन हफ़्ते से")
+            self.assertEqual(built.last_reduced[0], "birth_cord_3weeks", "the late chunk is booked against the answered question")
+            self.assertEqual(ws.of("transcript")[-1]["text"], "तीन हफ़्ते से")
+
+        asyncio.run(body())
+
+    def test_a_late_chunk_for_a_followup_lands_on_the_followup_slot(self) -> None:
+        async def body() -> None:
+            built, _ws, _session = build()
+            built.state.cursor = built.state.cursor.model_copy(update={"qid": "birth_jaundice"})
+
+            async def fake_evaluate(snapshot: CallState, spoken: str, pcm: bytes) -> live.Turn:
+                return self.spoken_turn(snapshot, spoken)
+
+            built._evaluate_turn_task = fake_evaluate  # type: ignore[method-assign]
+            await built.on_text({"text": "तीन दिन से पीलिया है"})
+            await built._next_question()
+            self.assertIs(built.state.cursor.substep, live.SubStep.FOLLOWUP, "the followup question is now active")
+            built.tool_pending = False
+            built.last_reduced = ("birth_jaundice", live.SubStep.FOLLOWUP, 0, False)
+            await built._hear("user", "और तेज़ी से बढ़ रहा है")
+            fid = PACK.by_id["birth_jaundice"].followups[0]
+            rec = built.state.answers["birth_jaundice"]
+            self.assertIn(fid, rec.followups)
+            self.assertEqual(rec.followups[fid].note.verbatim, "और तेज़ी से बढ़ रहा है")
+
+        asyncio.run(body())
+
+    def test_late_transcription_is_ignored_when_the_answered_question_was_clear(self):
+        async def body() -> None:
+            built, _ws, _session = build()
+            built.state.cursor = built.state.cursor.model_copy(update={"qid": "birth_cord_3weeks"})
+
+            async def fake_evaluate(snapshot: CallState, spoken: str, pcm: bytes) -> live.Turn:
+                return self.spoken_turn(snapshot, spoken, TurnOutcome.CLEAR)
+
+            built._evaluate_turn_task = fake_evaluate  # type: ignore[method-assign]
+            await built.on_text({"text": "नहीं"})
+            await built._next_question()
+            built.tool_pending = False
+            before = built.state.answers["birth_cord_3weeks"].note.verbatim
+            await built._hear("user", "कुछ और")
+            self.assertEqual(built.state.answers["birth_cord_3weeks"].note.verbatim, before)
+
+        asyncio.run(body())
+
+    def test_speech_start_typed_turns_and_taps_clear_the_late_window(self):
+        async def body() -> None:
+            built, _ws, _session = build(probs=[0.9])
+            built.last_reduced = ("birth_jaundice", live.SubStep.MAIN, 0, False)
+            await built.on_audio({"data": TurnTests.pcm(), "sample_rate": 16000})
+            self.assertIsNone(built.last_reduced, "a new turn closes the window")
+            built.last_reduced = ("birth_jaundice", live.SubStep.MAIN, 0, False)
+            await built.on_text({"text": "नहीं"})
+            self.assertIsNone(built.last_reduced)
+            built.last_reduced = ("birth_jaundice", live.SubStep.MAIN, 0, False)
+            built.state.cursor = built.state.cursor.model_copy(update={"qid": "intro_bridge"})
+            await built.on_quick_reply({"value": "clear", "step": built.state.step_token})
+            self.assertIsNone(built.last_reduced)
+
+        asyncio.run(body())
+
+
+class FinalizeTests(unittest.TestCase):
+    """A hangup mid-question must be reported as a partial call, never as a complete one."""
+
+    def test_hangup_while_asking_is_stamped_caller_stop(self):
+        async def body() -> None:
+            built, _ws, _session = build()
+            persisted: list[CallState] = []
+
+            async def spy(state: CallState) -> None:
+                persisted.append(state)
+                built.state = state
+
+            built._persist = spy  # type: ignore[method-assign]
+            await built.finalize()
+            self.assertIs(built.state.phase, Phase.CLOSING)
+            self.assertIs(built.state.close_reason, CloseReason.CALLER_STOP, "no more पूर्ण कॉल on a partial call")
+            self.assertEqual([s.close_reason for s in persisted], [CloseReason.CALLER_STOP])
+
+        asyncio.run(body())
+
+    def test_a_closed_call_keeps_the_reason_it_already_had(self):
+        async def body() -> None:
+            built, _ws, _session = build()
+            st = built.state.model_copy(deep=True)
+            st.phase, st.close_reason = Phase.CLOSING, CloseReason.COMPLETE
+            built.state = st
+            writes: list[CallState] = []
+
+            async def spy(state: CallState) -> None:
+                writes.append(state)
+                built.state = state
+
+            built._persist = spy  # type: ignore[method-assign]
+            await built.finalize()
+            self.assertEqual(writes, [], "a finished call is not rewritten")
+            self.assertIs(built.state.close_reason, CloseReason.COMPLETE)
+
+        asyncio.run(body())
 
 
 class QuickReplyTests(unittest.TestCase):

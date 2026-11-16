@@ -3,8 +3,7 @@
 import os
 import unittest
 
-os.environ.setdefault("APP_PASSCODE", "user-test")
-os.environ.setdefault("ADMIN_PASSCODE", "admin-test")
+import tests  # noqa: F401 — ensure isolated TEST_DATA_DIR under `-s tests`
 
 from fastapi.testclient import TestClient  # noqa: E402
 

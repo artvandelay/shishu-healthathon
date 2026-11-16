@@ -108,7 +108,7 @@ class ThinkingVadPaceTests(unittest.TestCase):
         )
         self.assertEqual(
             (vad.ramp_start_voiced_ms, vad.ramp_full_voiced_ms, vad.speculate_at_ms),
-            (600.0, 1800.0, 400.0),
+            (600.0, 1800.0, 280.0),
         )
         self.assertEqual(
             (vad.incomplete_hold_ms, vad.baseline_pause_ms, vad.pace_min, vad.pace_max),
@@ -166,7 +166,7 @@ class ThinkingVadTurnTests(unittest.TestCase):
         vad = ThinkingVad()
         self.assertEqual(vad.on_frame(0.9), [VadEvent.SPEECH_START])
         events = drive(vad, frames((0.9, 11), (0.1, 11)))
-        self.assertEqual([e for e in events if e is not VadEvent.NONE], [VadEvent.SPEECH_END])
+        self.assertEqual([e for e in events if e is not VadEvent.NONE], [VadEvent.SPECULATE, VadEvent.SPEECH_END])
         self.assertEqual(vad.voiced_ms, 384.0)
         self.assertAlmostEqual(vad.post_end_silence_ms, 352.0, "11 frames of 32 ms")
         self.assertFalse(vad.in_turn)
@@ -179,6 +179,43 @@ class ThinkingVadTurnTests(unittest.TestCase):
         self.assertEqual(events.count(VadEvent.SPECULATE), 1)
         self.assertIn(VadEvent.SPEECH_END, events)
         self.assertLess(events.index(VadEvent.SPECULATE), events.index(VadEvent.SPEECH_END))
+
+    def test_speculation_keeps_96ms_of_headroom_inside_the_shortest_wait(self):
+        brisk = ThinkingVad()
+        brisk.voiced_ms, brisk.pauses_ms = 416.0, [170.0] * 8  # "हाँ डॉक्टर", a caller who talks fast
+        self.assertAlmostEqual(brisk.pace_factor, 0.80)
+        self.assertAlmostEqual(brisk.target_wait_ms(), 280.0)
+        self.assertAlmostEqual(brisk.speculate_deadline_ms(), 184.0)
+        self.assertLess(brisk.speculate_deadline_ms(), brisk.target_wait_ms())
+        self.assertEqual(ThinkingVad().speculate_deadline_ms(), 254.0, "a 350 ms wait speculates at 254 ms")
+        self.assertEqual(ThinkingVad().speculate_deadline_ms(is_reflective=True), 280.0, "a long wait keeps the 280 ms default")
+        self.assertEqual(ThinkingVad({"speculate_at_ms": 100.0}).speculate_deadline_ms(), 100.0, "the floor never raises a pinned value")
+        self.assertEqual(ThinkingVad({"closed_short_ms": 120.0, "speculate_at_ms": 400.0}).speculate_deadline_ms(), 160.0, "160 ms is the floor")
+
+    def test_a_mid_sentence_pause_speculates_before_it_cuts_the_turn_at_pace_min(self):
+        vad = ThinkingVad()
+        vad.pauses_ms = [170.0] * 8
+        self.assertEqual(vad.on_frame(0.9), [VadEvent.SPEECH_START])
+        voiced = [e for _ in range(12) for e in vad.on_frame(0.9)]  # 416 ms of "हाँ डॉक्टर"
+        self.assertEqual([e for e in voiced if e is not VadEvent.NONE], [])
+        pause = [e for _ in range(17) for e in vad.on_frame(0.05)]  # 550 ms of silence
+        firing = [e for e in pause if e is not VadEvent.NONE]
+        self.assertEqual(firing, [VadEvent.SPECULATE, VadEvent.SPEECH_END], "speculation always beats the endpoint")
+        self.assertEqual(pause.index(VadEvent.SPECULATE), 5, "192 ms of silence, inside the 280 ms wait")
+        self.assertEqual(pause.index(VadEvent.SPEECH_END), 8, "288 ms of silence, the shortened 280 ms wait")
+        self.assertFalse(vad.in_turn)
+
+    def test_speculation_precedes_the_endpoint_for_every_voiced_length_and_pace(self):
+        for pauses in ([170.0] * 8, [], [390.0] * 8):  # a brisk, an uncalibrated, and a slow caller
+            for voiced_frames in (2, 12, 19, 57, 90):  # 64 ms .. 2880 ms, across both ramp knees
+                vad = ThinkingVad()
+                vad.pauses_ms = list(pauses)
+                events = drive(vad, frames((0.9, voiced_frames), (0.05, 60)))
+                order = [e for e in events if e is not VadEvent.NONE]
+                with self.subTest(pace=vad.pace_factor, voiced_ms=voiced_frames * 32.0):
+                    self.assertEqual(order[:2], [VadEvent.SPEECH_START, VadEvent.SPECULATE])
+                    self.assertLess(order.index(VadEvent.SPECULATE), order.index(VadEvent.SPEECH_END))
+                    self.assertLess(vad.speculate_deadline_ms(), vad.target_wait_ms() + 1e-9)
 
     def test_each_new_frame_below_threshold_is_silence_not_speech(self):
         vad = ThinkingVad()

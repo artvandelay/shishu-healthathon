@@ -12,7 +12,7 @@ vad:
   reflective_ms: 850
   ramp_start_voiced_ms: 600
   ramp_full_voiced_ms: 1800
-  speculate_at_ms: 400
+  speculate_at_ms: 280
   incomplete_hold_ms: 2000
   baseline_pause_ms: 260
   pace_min: 0.80

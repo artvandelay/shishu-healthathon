@@ -17,8 +17,8 @@ const T = {
   needChip: "श्रेणी चुनें। Pick a category.", saveFail: "सेव नहीं हो पाया। कॉल खुली है। Could not save.", saved: "सेव हो गया। स्नैपशॉट कॉपी हो गया। Saved. Snapshot copied.", savedPartly: "सेव हो गया। कॉपी नहीं हो पाया। Saved. Could not copy the snapshot."
 };
 let phase = "idle", ws = null, ctx = null, mic = null, node = null, tick = 0, raf = 0, shotJob = null; let queueFrom = 0, stepFrom = null, stepQueued = 0, stepDone = false, primed = false, ready = false, busy = false;
-let callId = null, token = "", role = "user", pdf = null, startedAt = 0, shot = ""; let step = "", yesNo = false, options = [], capWho = "", capText = "", chip = "";
-const live = new Set();
+let callId = null, token = "", role = "user", pdf = null, startedAt = 0, shot = ""; let step = "", yesNo = false, options = [], capWho = "", capText = "", chip = ""; let waitingSince = 0, userSpoke = false;
+const live = new Set(), stopWaiting = () => { waitingSince = 0, userSpoke = false; show(nudgeBtn, false); };
 const show = (n, v) => { n.hidden = !v; }, hide = (ns) => ns.forEach((n) => show(n, false)); const pick = (obj, path) => (path == null ? undefined : path.split(".").reduce((n, k) => (n == null ? undefined : n[k]), obj));
 const open = () => ws != null && ws.readyState === WebSocket.OPEN, send = (m) => { if (open()) ws.send(JSON.stringify(m)); };
 const playing = () => live.size > 0 || (ctx != null && ctx.currentTime < queueFrom);
@@ -35,7 +35,7 @@ function runTimer(active) {
   const read = () => clock(Math.floor((Date.now() - startedAt) / 1000));
   if (!active) { if (tick) clearInterval(tick); tick = 0; if (startedAt) timerEl.textContent = read(); return; }
   if (tick) return; startedAt = Date.now();
-  tick = setInterval(() => { timerEl.textContent = read(); }, 250);
+  tick = setInterval(() => { timerEl.textContent = read(); if (phase === "live" && waitingSince && !playing() && Date.now() - waitingSince > 3000) show(nudgeBtn, true); }, 250);
 }
 function flushAudio() {
   live.forEach((src) => {
@@ -45,7 +45,7 @@ function flushAudio() {
   avatarEl.classList.remove("speaking");
 }
 function playPcm(b64, rate) {
-  if (phase !== "live" || !ctx || !b64) return; const pcm = new Int16Array(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)).buffer);
+  if (phase !== "live" || !ctx || !b64) return; stopWaiting(); const pcm = new Int16Array(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)).buffer);
   if (!pcm.length) return; const buffer = ctx.createBuffer(1, pcm.length, rate);
   const at = Math.max(ctx.currentTime, queueFrom); buffer.getChannelData(0).set(Float32Array.from(pcm, (v) => v / 32768));
   const src = ctx.createBufferSource(); src.buffer = buffer;
@@ -72,7 +72,10 @@ function rateFor(samples, from) {
   return out;
 }
 function onMicFrame(samples) {
-  if (samples && samples.length && micLevel) { micSmooth = micSmooth * 0.5 + Math.hypot(...samples) / Math.sqrt(samples.length) * 0.5; const pct = Math.min(100, Math.round((micSmooth / 0.12) * 100)); micLevel.style.width = `${pct}%`; if (micMeter) micMeter.setAttribute("aria-valuenow", String(pct)); }
+  const rms = samples && samples.length ? Math.hypot(...samples) / Math.sqrt(samples.length) : 0; const loud = rms > 0.015 && !playing();
+  if (rms && micLevel) { micSmooth = micSmooth * 0.5 + rms * 0.5; const pct = Math.min(100, Math.round((micSmooth / 0.12) * 100)); micLevel.style.width = `${pct}%`; if (micMeter) micMeter.setAttribute("aria-valuenow", String(pct)); }
+  if (phase === "live" && loud) { userSpoke = true; waitingSince = 0; show(nudgeBtn, false); }
+  else if (userSpoke && !loud) { userSpoke = false; waitingSince = Date.now(); }
   if (phase !== "live" || !open() || ws.bufferedAmount > 262144) return; const pcm = rateFor(samples, (ctx && ctx.sampleRate) || IN_RATE);
   if (!pcm.length) return; const bytes = new Uint8Array(pcm.length * 2), view = new DataView(bytes.buffer);
   pcm.forEach((v, i) => view.setInt16(i * 2, Math.max(-1, Math.min(1, v)) * 0x7fff, true)); send({ type: "audio", data: btoa(String.fromCharCode(...bytes)), sample_rate: IN_RATE });
@@ -112,8 +115,8 @@ function checkReveal() {
 function scheduleReveal() { if (raf || ready) return; raf = requestAnimationFrame(() => { raf = 0; checkReveal(); }); }
 function resetQuick() { step = "", yesNo = false, options = []; ready = busy = stepDone = false; stepFrom = null, stepQueued = 0; unraf(); hideQuick(); }
 function answer(value) {
-  if (phase !== "live" || !open() || !ready || busy) return; ready = false, busy = true;
-  const chosen = options.find((o) => String(o.value) === value); hideQuick(), flushAudio(), say(T.listen), showCaption("user", chosen ? chosen.hi : value);
+  if (phase !== "live" || !open() || !ready || busy) return; ready = false, busy = true; waitingSince = Date.now(), userSpoke = false;
+  const chosen = options.find((o) => String(o.value) === value); hideQuick(), flushAudio(), show(nudgeBtn, false), say(T.listen), showCaption("user", chosen ? chosen.hi : value);
   send({ type: "quick_reply", value, step });
 }
 function showCaption(who, text) {
@@ -128,7 +131,7 @@ function beginTurn(msg) { step = String(msg.step || ""); yesNo = Boolean(msg.is_
 const handlers = {
   session_started(m) { adopt(m); runTimer(true); if (phase === "live") say(T.listen); },
   audio(m) { playPcm(m.data, Number(m.sample_rate) || OUT_RATE); },
-  clear() { flushAudio(); if (phase === "live") say(T.listen); },
+  clear() { flushAudio(); stopWaiting(); if (phase === "live") say(T.listen); },
   transcript(m) { showCaption(m.role, m.text); },
   question_state(m) { beginTurn(m); },
   bot_turn_complete(m) { if (m.step && m.step !== step) return; stepDone = true; checkReveal(); },
@@ -167,7 +170,7 @@ async function startCall() {
 }
 function prepare(hungUp) {
   if (phase === "preparing" || phase === "done") return; phase = "preparing";
-  stopMic(); runTimer(false);
+  stopMic(); runTimer(false); stopWaiting();
   resetQuick(); avatarEl.classList.remove("speaking");
   paint("wait"); if (hungUp) return;
   const beganAt = Date.now(); let quietSince = 0;
@@ -200,7 +203,7 @@ function sharePdf() {
   if (!navigator.canShare || !navigator.canShare({ files: [pdf] })) return savePdf(); navigator.share({ files: [pdf], title: "SHISHU" }).catch(savePdf);
 }
 function showThanks() { phase = "done"; runTimer(false); closeAudio(); paint("thanks"); hide([shareBtn, retryBtn]); subEl.textContent = timerEl.textContent; }
-function resetForNewCall() { phase = "idle", callId = null, token = "", pdf = null, primed = false, startedAt = 0, tick = 0; capWho = capText = "", captionEl.textContent = "", timerEl.textContent = "00:00"; resetQuick(); consentCheck.checked = false; nudgeBtn.hidden = true; paint("idle"); hide([shareBtn, retryBtn]); warn(null); say(T.start); setCallButton(false); }
+function resetForNewCall() { phase = "idle", callId = null, token = "", pdf = null, primed = false, startedAt = 0, tick = 0; capWho = capText = "", captionEl.textContent = "", timerEl.textContent = "00:00"; resetQuick(); stopWaiting(); consentCheck.checked = false; paint("idle"); hide([shareBtn, retryBtn]); warn(null); say(T.start); setCallButton(false); }
 function applyPack(pack) { const copy = pack.ui || {}; const assets = pack.assets_url || {}; if (assets.logo) { brandLogo.src = avatarLogo.src = assets.logo; brandLogo.style.visibility = avatarLogo.style.visibility = "visible"; } if (assets.consent_pdf) consentLink.href = assets.consent_pdf; role = pack.role || role; show(adminLink, role === "admin"); setLabels(primeEl, copy.yes_no_prime); document.querySelectorAll("[data-ui]").forEach((n) => setLabels(n, pick(copy, n.getAttribute("data-ui")))); renderChips(pick(copy, "bug_categories.chips")); }
 function renderChips(chips) {
   bugChips.replaceChildren();
@@ -259,7 +262,7 @@ async function saveBug() {
   } finally { bugSave.disabled = false; }
 }
 function pressCall() { if (phase === "live" || phase === "connecting") return hangUp(); if (!consentCheck.checked) return; show(consentRow, false); primed = false; startCall(); }
-function nudge() { if (phase !== "live") return; send({ type: "nudge" }); nudgeBtn.hidden = true; }
+function nudge() { if (phase !== "live") return; stopWaiting(); send({ type: "nudge" }); }
 on("consent-check", "change", () => { if (phase === "idle" || phase === "error") setCallButton(false); });
 on("bug-btn", "click", () => { hide([bugOk, bugErr]); bugDialog.showModal(); });
 on("bug-close", "click", () => bugDialog.close()); on("call-btn", "click", pressCall);
