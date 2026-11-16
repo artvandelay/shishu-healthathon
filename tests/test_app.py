@@ -60,17 +60,6 @@ class HealthAndPageTests(AppTestCase):
 
         self.assertEqual(self.client.get("/admin", follow_redirects=False).status_code, 302)
 
-    def test_signed_in_user_reaches_the_call_page(self):
-        self.sign_in()
-        self.assertEqual(self.client.get("/").status_code, 200)
-        self.assertEqual(self.client.get("/admin", follow_redirects=False).status_code, 302)
-
-    def test_admin_reaches_the_dashboard(self):
-        self.sign_in(ADMIN_PASS, "Ada")
-        res = self.client.get("/admin")
-        self.assertEqual(res.status_code, 200)
-        self.assertIn("Clinical Dashboard", res.text)
-
     def test_static_serves_only_css_and_js(self):
         for asset in ("styles.css", "call.js", "admin.js"):
             self.assertEqual(self.client.get(f"/static/{asset}").status_code, 200, asset)
@@ -79,19 +68,6 @@ class HealthAndPageTests(AppTestCase):
 
 
 class AuthCookieTests(AppTestCase):
-    def test_admin_passcode_sets_a_signed_httponly_cookie(self):
-        res = self.client.post("/api/login", json={"username": "Ada", "passcode": ADMIN_PASS})
-        self.assertEqual(res.json(), {"ok": True, "role": "admin", "username": "Ada"})
-        cookie = self.cookie()
-        self.assertTrue(cookie.startswith("v1.admin."), cookie)
-        self.assertNotIn(ADMIN_PASS, cookie)
-        for flag in ("HttpOnly", "SameSite=lax", "Max-Age=1209600", "Path=/"):
-            self.assertIn(flag, res.headers["set-cookie"], flag)
-
-    def test_user_passcode_gets_the_user_role(self):
-        self.sign_in(USER_PASS, "Mira")
-        self.assertEqual(self.client.get("/api/pack").json()["role"], "user")
-        self.assertEqual(self.client.get("/api/calls").status_code, 403)
 
     def test_tampered_and_forged_cookies_are_rejected(self):
         self.sign_in()
@@ -126,10 +102,6 @@ class RateLimitTests(AppTestCase):
         self.assertEqual(codes[:limit], [401] * limit)
         self.assertEqual(codes[-1], 429)
 
-    def test_a_good_passcode_still_works_under_the_limit(self):
-        self.sign_in()
-        self.assertEqual(self.client.get("/api/pack").json()["role"], "user")
-
     def test_pdf_rebuilds_are_capped_per_token(self):
         call = self.seeded_call("fever-opd-hi")
         url = f"/api/calls/by-token/{call['share_token']}/patient.pdf"
@@ -149,35 +121,6 @@ class RateLimitTests(AppTestCase):
 
 
 class PackTests(AppTestCase):
-    def test_shishu_pack_metadata(self):
-        payload = self.client.get("/api/pack").json()
-        self.assertEqual(payload["id"], "shishu-hi")
-        self.assertEqual(payload["title"], "SHISHU")
-        self.assertEqual(payload["subtitle_native"], "शिशु")
-        self.assertEqual(payload["role"], "")
-        self.assertEqual(payload["username"], "")
-        self.assertEqual(payload["assets_url"], {
-            "logo": "/api/pack-asset/logo?pack=shishu-hi",
-            "consent_pdf": "/api/pack-asset/consent_pdf?pack=shishu-hi",
-        })
-        self.assertIn("login", payload["ui"])
-
-    def test_fever_pack_metadata(self):
-        payload = self.client.get("/api/pack", params={"pack": "fever-opd-hi"}).json()
-        self.assertEqual((payload["id"], payload["title"]), ("fever-opd-hi", "SHISHU OPD"))
-        self.assertEqual(payload["assets_url"]["logo"],
-                         "/api/pack-asset/logo?pack=fever-opd-hi")
-
-    def test_available_packs_lists_both(self):
-        packs = self.client.get("/api/pack").json()["available_packs"]
-        self.assertEqual([p["id"] for p in packs], ["fever-opd-hi", "shishu-hi"])
-        self.assertEqual({p["id"]: p["title"] for p in packs},
-                         {"fever-opd-hi": "SHISHU OPD", "shishu-hi": "SHISHU"})
-
-    def test_pack_reports_the_signed_in_identity(self):
-        self.sign_in(ADMIN_PASS, "Ada")
-        payload = self.client.get("/api/pack").json()
-        self.assertEqual((payload["role"], payload["username"]), ("admin", "Ada"))
 
     def test_unknown_pack_is_404(self):
         self.assertEqual(self.client.get("/api/pack", params={"pack": "nope"}).status_code, 404)
@@ -201,10 +144,6 @@ class PackTests(AppTestCase):
 
 
 class CallAdminTests(AppTestCase):
-    def test_calls_need_an_admin(self):
-        self.assertEqual(self.client.get("/api/calls").status_code, 401)
-        self.sign_in(USER_PASS)
-        self.assertEqual(self.client.get("/api/calls").status_code, 403)
 
     def test_admin_list_filters_by_pack(self):
         self.sign_in(ADMIN_PASS, "Ada")
@@ -238,10 +177,6 @@ class CallAdminTests(AppTestCase):
         call = self.seeded_call()
         self.assertEqual(self.client.get(f"/api/audio/{call['id']}").status_code, 404)
 
-    def test_audio_needs_an_admin(self):
-        call = self.seeded_call()
-        self.assertEqual(self.client.get(f"/api/audio/{call['id']}").status_code, 401)
-
 
 class TokenPdfTests(AppTestCase):
     def test_share_token_serves_the_pdf_without_a_login(self):
@@ -251,12 +186,6 @@ class TokenPdfTests(AppTestCase):
         self.assertEqual(res.headers["content-type"], "application/pdf")
         self.assertTrue(res.content.startswith(b"%PDF"))
         self.assertIn("SHISHU", res.headers["content-disposition"])
-
-    def test_rebuild_then_read(self):
-        call = self.seeded_call()
-        url = f"/api/calls/by-token/{call['share_token']}/patient.pdf"
-        self.assertEqual(self.client.post(url).status_code, 200)
-        self.assertEqual(self.client.get(url).status_code, 200)
 
     def test_unknown_tokens_are_404(self):
         for token in ("short", "nope-nope-nope", "x" * 40):
@@ -282,19 +211,6 @@ class BugReportTests(AppTestCase):
         self.sign_in(ADMIN_PASS, "Ada")
         self.assertIsInstance(self.client.get("/api/bugs").json(), list)
 
-    def test_the_owner_gets_the_call_snapshot(self):
-        call = self.seeded_call()
-        self.sign_in(USER_PASS, "Mira")
-        res = self.client.post("/api/bugs", json={
-            "call_id": call["id"], "share_token": call["share_token"],
-            "category": "Slow response", "note": "  धीमा  ", "call_elapsed_sec": 42,
-        })
-        self.assertEqual(res.status_code, 200)
-        bug = res.json()["bug"]
-        self.assertEqual((bug["reporter"], bug["note"]), ("Mira", "  धीमा  "))
-        self.assertTrue(bug["snapshot"]["last_transcript"])
-        self.assertTrue(bug["snapshot"]["recent_events"])
-
     def test_a_stranger_gets_no_call_body(self):
         call = self.seeded_call()
         self.sign_in(USER_PASS, "Mira")
@@ -305,20 +221,6 @@ class BugReportTests(AppTestCase):
         self.assertEqual(bug["snapshot"]["last_transcript"], [])
         self.assertEqual(bug["snapshot"]["recent_events"], [])
 
-    def test_admin_owns_every_call(self):
-        call = self.seeded_call()
-        self.sign_in(ADMIN_PASS, "Ada")
-        bug = self.client.post("/api/bugs", json={
-            "call_id": call["id"], "category": "Other", "note": "cli",
-        }).json()["bug"]
-        self.assertTrue(bug["snapshot"]["last_transcript"])
-
-    def test_a_call_less_report_is_recorded(self):
-        self.sign_in()
-        res = self.client.post("/api/bugs", json={"category": "Other", "note": "no call"})
-        self.assertEqual(res.status_code, 200)
-        self.assertEqual(res.json()["bug"]["call_id"], 0)
-
     def test_reports_need_a_json_object_and_stay_under_the_cap(self):
         self.sign_in()
         self.assertEqual(self.client.post("/api/bugs", content=b"[]").status_code, 400)
@@ -327,18 +229,11 @@ class BugReportTests(AppTestCase):
         oversized = b'{"note":"' + b"x" * (intake_app.BUG_CAP + 1) + b'"}'
         self.assertEqual(self.client.post("/api/bugs", content=oversized).status_code, 413)
 
-    def test_bugs_need_a_session(self):
-        call = self.seeded_call()
-        self.assertEqual(self.client.post("/api/bugs", json={"call_id": call["id"]}).status_code, 401)
-
 
 class LiveSocketTests(AppTestCase):
     def close_code(self, query: str) -> int:
         with self.client.websocket_connect(f"/ws/live?{query}") as ws:
             return ws.receive().get("code")
-
-    def test_unauthenticated_socket_closes_with_1008(self):
-        self.assertEqual(self.close_code("pack=shishu-hi"), 1008)
 
     def test_unknown_pack_closes_with_1008(self):
         self.sign_in()

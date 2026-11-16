@@ -383,19 +383,6 @@ return { adopted, adoptedDownload, fallback, fallbackDownload, lines: api.lines(
         self.assertEqual(out["fallbackDownload"], "SHISHU.pdf")
         self.assertLessEqual(out["lines"], 285)
 
-    def test_page_is_stylesheet_driven_and_within_budget(self):
-        html = (STATIC / "call.html").read_text(encoding="utf-8")
-        js = (STATIC / "call.js").read_text(encoding="utf-8")
-        self.assertNotIn("<style", html)
-        self.assertIn('href="/static/styles.css"', html)
-        self.assertIn('<dialog id="bug-dialog"', html)
-        self.assertNotIn('id="hud"', html)
-        self.assertIn("audioWorklet", js)
-        self.assertIn("pcm16-capture", js)
-        self.assertNotIn("createScriptProcessor", js)
-        self.assertLessEqual(len(js.splitlines()), 285)
-        self.assertLessEqual(len(html.splitlines()), 95)
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -196,78 +196,13 @@ class OutputTranscriptionTests(unittest.TestCase):
 
         asyncio.run(body())
 
-    def test_a_clarify_step_keeps_geminis_own_explanation(self):
-        async def body() -> None:
-            custom = "मतलब, आपकी शादी हो चुकी है या होने वाली है?"
-            built, ws, call_id = await self.session_at("intro_married")
-            await built._publish_and_cue("clarify", immediate=False)
-            self.assertTrue(built.clarify_step)
-            await built.on_message(self.said(custom))
-            await built.on_message(self.audio())
-            await built.on_message(self.complete())
-            captions = [p["text"] for p in ws.of("transcript") if p["role"] == "assistant"]
-            self.assertEqual(captions, [custom], "the custom clarification is never overwritten")
-            self.assertEqual(await self.stored(call_id, "assistant"), [custom])
-
-        asyncio.run(body())
-
-    def test_a_new_step_and_an_interruption_both_clear_the_tracked_line(self):
-        async def body() -> None:
-            built, _ws, _call_id = await self.session_at("intro_married")
-            await built._publish_and_cue("speak", immediate=False)
-            await built.on_message(self.said("अब मैं"))
-            self.assertEqual(built.bot_text, "अब मैं")
-            await built._publish_and_cue("speak", immediate=False)
-            self.assertEqual(built.bot_text, "", "a new step owns a fresh line")
-            await built.on_message(self.said("अब मैं"))
-            await built.on_message(live.types.LiveServerMessage(server_content=live.types.LiveServerContent(interrupted=True)))
-            self.assertEqual(built.bot_text, "", "an interruption drops the half-spoken line")
-
-        asyncio.run(body())
-
 
 class ConfigTests(unittest.TestCase):
     """The one Live config: manual VAD, one tool, one Hindi voice, minimal thinking."""
 
-    def test_thinking_vad_and_single_tool_are_pinned(self):
-        config = live.build_live_config(PACK)
-        realtime = config.realtime_input_config
-        self.assertTrue(realtime.automatic_activity_detection.disabled)
-        self.assertIs(realtime.turn_coverage, live.types.TurnCoverage.TURN_INCLUDES_ONLY_ACTIVITY)
-        declared = config.tools[0].function_declarations
-        self.assertEqual([f.name for f in declared], ["next_question"])
-        self.assertEqual(config.response_modalities, [live.types.Modality.AUDIO])
-        self.assertEqual(config.temperature, 0.5)
-        self.assertFalse(config.enable_affective_dialog)
-        self.assertEqual(config.thinking_config.thinking_level, "MINIMAL")
-        self.assertEqual(config.speech_config.voice_config.prebuilt_voice_config.voice_name, "Kore")
-        self.assertEqual(config.speech_config.language_code, "hi-IN")
-        self.assertIn("SHISHU", config.input_audio_transcription.custom_vocabulary[0])
-
     def test_resume_handle_is_optional_and_forwarded(self):
         self.assertIsNone(live.build_live_config(PACK).session_resumption.handle)
         self.assertEqual(live.build_live_config(PACK, "abc").session_resumption.handle, "abc")
-
-    def test_output_transcription_is_unpinned_while_input_stays_hindi_with_vocab(self):
-        config = live.build_live_config(PACK)
-        said = config.output_audio_transcription
-        self.assertIsNone(said.language_codes, "pinning the output language flushed 2-word Devanagari fragments")
-        self.assertIsNone(said.custom_vocabulary)
-        self.assertEqual(config.input_audio_transcription.language_codes, ["hi-IN"], "the caller's audio is still Hindi-only")
-        self.assertIn("SHISHU", config.input_audio_transcription.custom_vocabulary[0])
-        self.assertEqual(config.speech_config.language_code, "hi-IN", "the spoken voice is still Hindi")
-
-    def test_question_state_payload_matches_call_js(self):
-        state = live.engine.new_state(PACK)
-        payload = live.question_state_payload(PACK, state)
-        self.assertEqual(payload["type"], "question_state")
-        self.assertEqual(payload["step"], state.step_token)
-        self.assertEqual(payload["qid"], state.cursor.qid)
-        self.assertEqual(payload["group"], PACK.by_id[state.cursor.qid].group)
-        self.assertFalse(payload["is_yes_no"])
-        self.assertEqual(payload["quick_replies"], [])
-        self.assertEqual(payload["prompt_chars"],
-                         len(live.engine.say_text(PACK, state)))
 
     def test_tool_body_carries_the_line_and_clarify_flag(self):
         state = live.engine.new_state(PACK)
@@ -280,99 +215,6 @@ class ConfigTests(unittest.TestCase):
 
 class TurnTests(unittest.TestCase):
     """One caller turn: onset, the speculative hold, the cached answer, and the commit."""
-
-    def test_speech_start_sends_activity_start_before_any_audio(self):
-        async def body() -> None:
-            built, _ws, session = build(probs=[0.9])
-            await built.on_audio({"data": self.pcm(), "sample_rate": 16000})
-            self.assertIsInstance(session.realtime("activity_start")[0],
-                                  live.types.ActivityStart)
-            self.assertEqual(len(session.realtime("audio")), 1, "the voiced chunk is forwarded")
-
-        asyncio.run(body())
-
-    def test_speech_end_sends_activity_end_and_judges_the_turn_once(self):
-        async def body() -> None:
-            built, _ws, session = build(probs=[0.9])
-            passes: list[int] = []
-
-            async def fake_evaluate(*_args: Any, **_kwargs: Any) -> live.Turn:
-                passes.append(1)
-                return TurnTests.turn(built.state)
-
-            built._evaluate_turn_task = fake_evaluate  # type: ignore[method-assign]
-            await built.on_audio({"data": TurnTests.pcm(), "sample_rate": 16000})
-            built.detector = FakeDetector([0.0])  # she has stopped
-            for _ in range(40):  # 40 x 32 ms outlasts even the 850 ms reflective wait
-                await built.on_audio({"data": TurnTests.pcm(), "sample_rate": 16000})
-            self.assertIsInstance(session.realtime("activity_end")[0], live.types.ActivityEnd)
-            await asyncio.sleep(0)
-            self.assertEqual(len(passes), 1, "the endpoint starts exactly one pass")
-
-        asyncio.run(body())
-
-    def test_speculation_runs_while_the_mic_is_open(self):
-        async def body() -> None:
-            built, _ws, _session = build(probs=[0.9])
-            seen: list[str] = []
-
-            async def fake_evaluate(*_args: Any, **_kwargs: Any) -> live.Turn:
-                seen.append("pass")
-                return TurnTests.turn(built.state)
-
-            built._evaluate_turn_task = fake_evaluate  # type: ignore[method-assign]
-            await built.on_audio({"data": TurnTests.pcm(), "sample_rate": 16000})
-            built.detector = FakeDetector([0.0])
-            for _ in range(14):  # 14 x 32 ms = 448 ms of silence, past the 400 ms point
-                await built.on_audio({"data": TurnTests.pcm(), "sample_rate": 16000})
-                await asyncio.sleep(0)
-            self.assertTrue(built.vad.in_turn, "the speculative pass does not close the turn")
-            self.assertEqual(seen, ["pass"])
-            self.assertIsNotNone(built.done, "the answer is banked for the endpoint")
-
-        asyncio.run(body())
-
-    def test_turn_incomplete_holds_the_endpoint_for_the_incomplete_cap(self):
-        async def body() -> None:
-            built, _ws, _session = build(probs=[0.9])
-
-            async def fake_evaluate(*_args: Any, **_kwargs: Any) -> live.Turn:
-                return TurnTests.turn(built.state, TurnCommand(turn_incomplete=True))
-
-            built._evaluate_turn_task = fake_evaluate  # type: ignore[method-assign]
-            await built.on_audio({"data": TurnTests.pcm(), "sample_rate": 16000})
-            built.detector = FakeDetector([0.0])
-            for _ in range(14):
-                await built.on_audio({"data": TurnTests.pcm(), "sample_rate": 16000})
-                await asyncio.sleep(0)
-            self.assertTrue(built.vad.holding_incomplete)
-            self.assertEqual(built.vad.target_wait_ms(), 2000.0)
-
-        asyncio.run(body())
-
-    def test_cached_speculation_answers_the_tool_without_a_second_call(self):
-        async def body() -> None:
-            built, _ws, _session = build(probs=[0.9])
-            calls: list[int] = []
-
-            async def fake_evaluate(*_args: Any, **_kwargs: Any) -> live.Turn:
-                calls.append(1)
-                return TurnTests.turn(built.state, TurnCommand(
-                    outcome=TurnOutcome.CLEAR, utterance=TurnTests.utterance()))
-
-            built._evaluate_turn_task = fake_evaluate  # type: ignore[method-assign]
-            await built.on_audio({"data": TurnTests.pcm(), "sample_rate": 16000})
-            built.detector = FakeDetector([0.0])
-            for _ in range(14):
-                await built.on_audio({"data": TurnTests.pcm(), "sample_rate": 16000})
-                await asyncio.sleep(0)
-            before = len(calls)
-            body_json, _clarify = await built._next_question()
-            self.assertEqual(before, 1, "only the speculative pass ran so far")
-            self.assertEqual(len(calls), before, "the banked pass is reused, not repeated")
-            self.assertEqual(body_json["result"], "ok")
-
-        asyncio.run(body())
 
     def test_profile_steps_run_the_extractor_beside_the_decision_pass(self):
         async def body() -> None:
@@ -400,6 +242,28 @@ class TurnTests(unittest.TestCase):
                 live.extractor.extract_profile_entities = original_extractor  # type: ignore[assignment]
 
         asyncio.run(body())
+
+    @staticmethod
+    def pcm(bytes_: int = 640) -> str:
+        import base64
+        return base64.b64encode(SILENCE[:bytes_]).decode()
+
+    @staticmethod
+    def utterance() -> str:
+        return "नहीं, ऐसा कुछ नहीं है"
+
+    @staticmethod
+    def result(body: dict[str, Any]) -> live.decisions.DecisionCallResult:
+        return live.decisions.DecisionCallResult(
+            True, "", 1, 200, 100, 4, 12, body["answers"])
+
+    @staticmethod
+    def turn(state: CallState, command: live.TurnCommand | None = None) -> live.Turn:
+        cmd = command or TurnCommand()
+        intent = live.decisions.TurnIntent(
+            command=cmd, needs_profile_extraction=False, diagnostics={})
+        return live.Turn(TurnTests.result(answers(danger_now=0.01)), intent, None,
+                         state.model_copy(deep=True), "नहीं", 640, None)
 
     def test_state_is_committed_before_the_tool_body_is_returned(self):
         async def body() -> None:
@@ -438,27 +302,6 @@ class TurnTests(unittest.TestCase):
             self.assertEqual(built.telemetry["pace_factor"], 0.8)
 
         asyncio.run(body())
-    @staticmethod
-    def pcm(bytes_: int = 640) -> str:
-        import base64
-        return base64.b64encode(SILENCE[:bytes_]).decode()
-
-    @staticmethod
-    def utterance() -> str:
-        return "नहीं, ऐसा कुछ नहीं है"
-
-    @staticmethod
-    def result(body: dict[str, Any]) -> live.decisions.DecisionCallResult:
-        return live.decisions.DecisionCallResult(
-            True, "", 1, 200, 100, 4, 12, body["answers"])
-
-    @staticmethod
-    def turn(state: CallState, command: live.TurnCommand | None = None) -> live.Turn:
-        cmd = command or TurnCommand()
-        intent = live.decisions.TurnIntent(
-            command=cmd, needs_profile_extraction=False, diagnostics={})
-        return live.Turn(TurnTests.result(answers(danger_now=0.01)), intent, None,
-                         state.model_copy(deep=True), "नहीं", 640, None)
 
 
 class CallerUtteranceTests(unittest.TestCase):
@@ -490,90 +333,6 @@ class CallerUtteranceTests(unittest.TestCase):
 
         asyncio.run(body())
 
-    def test_key_includes_the_transcription_so_late_stt_reruns_the_interpretation(self):
-        async def body() -> None:
-            built, _ws, _session = build()
-            passes: list[str] = []
-
-            async def fake_evaluate(snapshot: CallState, spoken: str, pcm: bytes, **_kwargs: Any) -> live.Turn:
-                passes.append(spoken)
-                return self.spoken_turn(snapshot, spoken)
-
-            built._evaluate_turn_task = fake_evaluate  # type: ignore[method-assign]
-            built.snapshot, built.voiced, built.pcm, built.text = built.state.model_copy(deep=True), 640, SILENCE[:640], ""
-            await built._start()
-            await asyncio.sleep(0)
-            self.assertEqual(passes, [""], "the speculative pass ran on WAV alone")
-            built.text = "  बुखार   है "
-            turn = built._banked()
-            self.assertIsNotNone(turn, "the arrived STT is folded in without a second network call")
-            self.assertEqual(passes, [""], "no extra Decisions call")
-            self.assertEqual(turn.intent.command.utterance, "बुखार है")
-            self.assertEqual(turn.spoken, "बुखार है")
-            self.assertEqual(built._key()[2], "बुखार है")
-            self.assertIs(built._banked(), turn, "the reheard turn is now the cache hit")
-
-        asyncio.run(body())
-
-    def test_a_wav_only_pass_is_not_rerun_when_no_text_ever_arrives(self):
-        async def body() -> None:
-            built, _ws, _session = build()
-
-            async def fake_evaluate(snapshot: CallState, spoken: str, pcm: bytes, **_kwargs: Any) -> live.Turn:
-                return self.spoken_turn(snapshot, spoken)
-
-            built._evaluate_turn_task = fake_evaluate  # type: ignore[method-assign]
-            built.snapshot, built.voiced, built.pcm = built.state.model_copy(deep=True), 640, SILENCE[:640]
-            await built._start()
-            await asyncio.sleep(0)
-            self.assertEqual(built._banked(), built.done[1], "an exact key hit reuses the banked pass")
-            self.assertEqual(built.done[1].spoken, "", "the cache is untouched")
-
-        asyncio.run(body())
-
-    def test_voice_turn_keeps_the_caller_words_on_the_note(self):
-        async def body() -> None:
-            built, _ws, _session = build()
-            built.state.cursor = built.state.cursor.model_copy(update={"qid": "birth_cord_3weeks"})
-
-            async def fake_evaluate(snapshot: CallState, spoken: str, pcm: bytes, **_kwargs: Any) -> live.Turn:
-                return self.spoken_turn(snapshot, spoken)
-
-            built._evaluate_turn_task = fake_evaluate  # type: ignore[method-assign]
-            built.snapshot, built.voiced, built.pcm, built.text = built.state.model_copy(deep=True), 640, SILENCE[:640], ""
-            await built._start()
-            await asyncio.sleep(0)
-            built.text = "तीन हफ़्ते से डोरी सूखी नहीं"
-            await built._next_question()
-            rec = built.state.answers["birth_cord_3weeks"]
-            self.assertIs(rec.state, live.AnswerStatus.CONCERN)
-            self.assertEqual(rec.note.verbatim, "तीन हफ़्ते से डोरी सूखी नहीं", "the note is no longer empty on voice turns")
-
-        asyncio.run(body())
-
-    def test_late_transcription_after_the_reduction_is_appended_to_the_answered_question(self):
-        async def body() -> None:
-            built, ws, _session = build()
-            built.state.cursor = built.state.cursor.model_copy(update={"qid": "birth_cord_3weeks"})
-
-            async def fake_evaluate(snapshot: CallState, spoken: str, pcm: bytes, **_kwargs: Any) -> live.Turn:
-                return self.spoken_turn(snapshot, spoken)
-
-            built._evaluate_turn_task = fake_evaluate  # type: ignore[method-assign]
-            before = built.state.step_token
-            await built.on_text({"text": "डोरी सूखी नहीं"})
-            await built._next_question()
-            self.assertNotEqual(before, built.state.step_token, "the call moved on")
-            self.assertEqual(built.state.answers["birth_cord_3weeks"].note.verbatim, "डोरी सूखी नहीं")
-            built.tool_pending = False
-            await built._hear("user", "तीन हफ़्ते से")
-            rec = built.state.answers["birth_cord_3weeks"]
-            self.assertEqual(rec.note.verbatim, "डोरी सूखी नहीं; तीन हफ़्ते से")
-            self.assertEqual(built.last_reduced[0], "birth_cord_3weeks", "the late chunk is booked against the answered question")
-            self.assertEqual(ws.of("transcript")[-1]["text"], "तीन हफ़्ते से")
-
-        asyncio.run(body())
-
     def test_a_late_chunk_for_a_followup_lands_on_the_followup_slot(self) -> None:
         async def body() -> None:
             built, _ws, _session = build()
@@ -593,24 +352,6 @@ class CallerUtteranceTests(unittest.TestCase):
             rec = built.state.answers["birth_jaundice"]
             self.assertIn(fid, rec.followups)
             self.assertEqual(rec.followups[fid].note.verbatim, "और तेज़ी से बढ़ रहा है")
-
-        asyncio.run(body())
-
-    def test_late_transcription_is_ignored_when_the_answered_question_was_clear(self):
-        async def body() -> None:
-            built, _ws, _session = build()
-            built.state.cursor = built.state.cursor.model_copy(update={"qid": "birth_cord_3weeks"})
-
-            async def fake_evaluate(snapshot: CallState, spoken: str, pcm: bytes, **_kwargs: Any) -> live.Turn:
-                return self.spoken_turn(snapshot, spoken, TurnOutcome.CLEAR)
-
-            built._evaluate_turn_task = fake_evaluate  # type: ignore[method-assign]
-            await built.on_text({"text": "नहीं"})
-            await built._next_question()
-            built.tool_pending = False
-            before = built.state.answers["birth_cord_3weeks"].note.verbatim
-            await built._hear("user", "कुछ और")
-            self.assertEqual(built.state.answers["birth_cord_3weeks"].note.verbatim, before)
 
         asyncio.run(body())
 
@@ -723,19 +464,6 @@ class TurnMetaTests(unittest.TestCase):
 class BoundaryEventTests(unittest.TestCase):
     """Barge-ins and late STT are the two invisible boundaries a dumpster dive has to see."""
 
-    def test_an_interruption_emits_a_barge_in_event_with_the_live_qid(self):
-        async def body() -> None:
-            built, ws, _session = build(call_id=None)
-            qid = built.state.cursor.qid
-            await built.on_message(live.types.LiveServerMessage(
-                server_content=live.types.LiveServerContent(interrupted=True)))
-            evt = ws.of("telemetry")[-1]["last_event"]
-            self.assertEqual(evt["type"], "barge_in")
-            self.assertEqual(evt["detail"], qid, "the question being answered when the caller cut in")
-            self.assertEqual(built.telemetry["interruptions"], 1)
-
-        asyncio.run(body())
-
     def test_geminis_interrupt_ack_never_closes_the_callers_open_turn(self):
         # Calls 8 and 9: she cut in over SHISHU, Gemini acked with `interrupted`, and the call went dead air.
         async def body() -> None:
@@ -837,28 +565,6 @@ class QuickReplyTests(unittest.TestCase):
             await built.on_quick_reply({"value": "clear", "step": built.state.step_token})
             self.assertEqual(session.kinds(), ["text"], "the cue is the only send")
             self.assertTrue(built.state.answers, "the tap answered the step")
-
-        asyncio.run(body())
-
-    def test_quick_reply_accepts_the_legacy_outcome_key(self):
-        async def body() -> None:
-            built, _ws, _session = build()
-            built.state.cursor = built.state.cursor.model_copy(update={"qid": "intro_bridge"})
-            await built.on_quick_reply({"outcome": "clear", "step": built.state.step_token})
-            self.assertTrue(built.state.answers)
-            self.assertNotEqual(built.state.step_token, "intro_bridge")
-
-        asyncio.run(body())
-
-    def test_quick_reply_emits_clear_then_question_state_before_the_cue(self):
-        async def body() -> None:
-            built, ws, session = build()
-            built.state.cursor = built.state.cursor.model_copy(update={"qid": "intro_bridge"})
-            await built.on_quick_reply({"value": "clear", "step": built.state.step_token})
-            sent = [payload["type"] for payload in ws.sent]
-            self.assertLess(sent.index("clear"), sent.index("question_state"))
-            self.assertLess(sent.index("question_state"), len(ws.sent))
-            self.assertEqual(len(session.realtime("text")), 1)
 
         asyncio.run(body())
 

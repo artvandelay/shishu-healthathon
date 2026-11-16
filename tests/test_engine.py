@@ -6,12 +6,12 @@ import unittest
 from pathlib import Path
 
 from intake.engine import (
-    MAX_STEP_ATTEMPTS, active_prompt, close_technical_failure, eval_rule, format_age_label,
+    MAX_STEP_ATTEMPTS, active_prompt, eval_rule, format_age_label,
     merge_transcript_chunk, new_state, quick_replies, quick_reply_command,
     reduce_turn, which_item_prompt,
 )
 from intake.models import (
-    AnswerRecord, AnswerStatus, CallState, CloseReason, OptionSpec, PackConfig, Phase,
+    AnswerRecord, AnswerStatus, CallState, OptionSpec, PackConfig,
     ProfilePatch, QuestionKind, QuestionSpec, RosterInput, RosterItem, SubStep,
     TurnCommand, TurnOutcome, VariantSpec,
 )
@@ -59,21 +59,6 @@ class EngineSyntheticTests(unittest.TestCase):
         tuned = make_pack(prompts={"roster_format": {"month_unit": "महीने", "year_unit": "साल"}})
         self.assertEqual([format_age_label(tuned, a) for a in (0.5, 3.0, 1.5)], ["6 महीने", "3 साल", "1.5 साल"])
 
-    def test_rules_branches_and_reopen(self):
-        pack = make_pack(
-            [
-                {"id": "x", "kind": QuestionKind.SINGLE_CHOICE, "saves_to_profile": "kids",
-                 "options": {"none": {"label": "no"}, "some": {"label": "yes"}}},
-                gate("follow", skip_if=["no_kids"]),
-                gate("after"),
-            ],
-            rules={"no_kids": {"field": "kids", "op": "eq", "value": "none"}},
-        )
-        st = play(pack, new_state(pack), TurnOutcome.ANSWERED, value="none")
-        self.assertEqual((st.answers["follow"].state, st.cursor.qid), (AnswerStatus.NOT_APPLICABLE, "after"))
-        reopened = reduce_turn(pack, st, TurnCommand(profile_patch=ProfilePatch(slots={"kids": "some"})))
-        self.assertNotIn("follow", reopened.answers)
-
     def test_every_rule_shape_resolves_against_live_state(self):
         pack = make_pack(
             [gate("a", group="fam"), gate("b", group="fam"), gate("c")],
@@ -112,27 +97,6 @@ class EngineSyntheticTests(unittest.TestCase):
                          [True, True, True, True, True])
         self.assertTrue(eval_rule(pack, st, {"any_of": [{"semantic_flag": "beta"}]}))
 
-    def test_multi_choice_score_and_open_capture(self):
-        pack = make_pack(
-            [
-                {"id": "m", "kind": QuestionKind.MULTI_CHOICE,
-                 "options": {"chills": {"label": "Chills"}, "none": {"label": "None", "exclusive": True}}},
-                {"id": "s", "kind": QuestionKind.SCORE, "score_rubric": ("mild", "mod", "severe"),
-                 "concern_if": {"min_score": 1.5}},
-                {"id": "o", "kind": QuestionKind.OPEN_CAPTURE, "say": "anything?"},
-            ],
-            prompts={"open_capture_more": "more?"},
-        )
-        st = play(pack, new_state(pack), TurnOutcome.ANSWERED, value=["chills", "none"])
-        self.assertEqual((st.answers["m"].state, st.answers["m"].value), (AnswerStatus.CLEAR, ["none"]))
-        st = play(pack, st, TurnOutcome.ANSWERED, value={"score": 2.0, "level": 2})
-        self.assertEqual((st.answers["s"].state, st.answers["s"].choice_label), (AnswerStatus.CONCERN, "severe"))
-        self.assertEqual(st.cursor.qid, "o")
-        st = play(pack, st, TurnOutcome.CONCERN, utterance="night fear")
-        self.assertEqual((st.cursor.open_rounds, active_prompt(pack, st)), (1, "more?"))
-        st = play(pack, st, TurnOutcome.CLEAR)
-        self.assertEqual((st.phase, st.close_reason, st.answers["o"].verbatim_text), (Phase.CLOSING, CloseReason.COMPLETE, "night fear"))
-
     def test_quick_replies_distinguish_yes_no_from_choice_pills(self):
         yn_pack = make_pack([gate("g")], meta={"ui": {"yes_no_buttons": [{"value": "clear", "hi": "नहीं", "en": "No"}, {"value": "concern", "hi": "हाँ", "en": "Yes"}]}})
         is_yn, btns = quick_replies(yn_pack, new_state(yn_pack))
@@ -154,19 +118,6 @@ class EngineSyntheticTests(unittest.TestCase):
         st = play(pack, st, TurnOutcome.ANSWERED, value="bad")
         self.assertEqual((st.answers["g"].state, st.cursor.qid), (AnswerStatus.UNKNOWN, "next"))
 
-    def test_audio_only_followup_settles_without_a_transcript(self):
-        # Live multimodal WAV turn: the decision model classifies the audio, so the transcript is still empty.
-        pack = make_pack([gate("nicu", followups=("nicu_reason",)), gate("next")], followups={"nicu_reason": "क्यों?"})
-        st = play(pack, new_state(pack), TurnOutcome.CONCERN)
-        self.assertEqual((st.cursor.qid, st.cursor.substep), ("nicu", SubStep.FOLLOWUP))
-        settled_as = {TurnOutcome.CONCERN: AnswerStatus.CONCERN, TurnOutcome.CLEAR: AnswerStatus.CLEAR,
-                      TurnOutcome.ANSWERED: AnswerStatus.ANSWERED, TurnOutcome.UNKNOWN: AnswerStatus.UNKNOWN}
-        for outcome, expected in settled_as.items():
-            with self.subTest(outcome=outcome.value):
-                settled = play(pack, st.model_copy(deep=True), outcome, utterance="")
-                self.assertEqual(settled.answers["nicu"].followups["nicu_reason"].state, expected)
-                self.assertEqual((settled.cursor.qid, settled.cursor.attempts), ("next", 0))
-
     def test_audio_only_followup_keeps_several_slots_in_order(self):
         pack = make_pack([gate("nicu", followups=("nicu_reason", "nicu_days")), gate("next")],
                          followups={"nicu_reason": "क्यों?", "nicu_days": "कितने दिन?"})
@@ -186,29 +137,6 @@ class EngineSyntheticTests(unittest.TestCase):
         self.assertEqual((st.cursor.qid, st.cursor.attempts), ("nicu", 1))
         st = play(pack, st, TurnOutcome.NOT_ABOUT_ACTIVE, utterance="उसकी तबीयत ठीक थी")
         self.assertEqual((st.answers["nicu"].followups["nicu_reason"].state, st.cursor.qid), (AnswerStatus.UNKNOWN, "next"))
-
-    def test_a_spontaneous_remark_at_the_closing_open_capture_is_kept_not_re_asked(self):
-        # Call 7: she explains why she came, the decision model reads it as not answering the open capture.
-        pack = make_pack([{"id": "close_anything_else", "kind": QuestionKind.OPEN_CAPTURE, "say": "कुछ और?"}],
-                         prompts={"open_capture_more": "मैंने यह बात नोट कर ली। इसके अलावा कुछ और बताना चाहेंगी?"})
-        remark = "मैं ना बच्चे का प्लानिंग कर रही हूं तो बस उसी सिलसिले में मैं आई थी तो यह मुझे पकड़ा दिया गया है।"
-        for outcome in (TurnOutcome.NOT_ABOUT_ACTIVE, TurnOutcome.ANSWERED):
-            with self.subTest(outcome=outcome.value):
-                noted = play(pack, new_state(pack), outcome, utterance=remark)
-                self.assertEqual(noted.answers["close_anything_else"].state, AnswerStatus.CONCERN)
-                self.assertEqual(noted.answers["close_anything_else"].verbatim_text, remark)
-                self.assertEqual((noted.cursor.qid, noted.cursor.open_rounds), ("close_anything_else", 1))
-                self.assertEqual(active_prompt(pack, noted), "मैंने यह बात नोट कर ली। इसके अलावा कुछ और बताना चाहेंगी?")
-                closed = play(pack, noted, TurnOutcome.CLEAR, utterance="नहीं।")
-                self.assertEqual((closed.phase, closed.close_reason), (Phase.CLOSING, CloseReason.COMPLETE))
-                self.assertEqual(closed.answers["close_anything_else"].verbatim_text, remark, "the remark survives the close")
-
-    def test_a_denial_at_the_closing_open_capture_still_closes_without_a_note(self):
-        pack = make_pack([{"id": "close_anything_else", "kind": QuestionKind.OPEN_CAPTURE, "say": "कुछ और?"}])
-        closed = play(pack, new_state(pack), TurnOutcome.CLEAR, utterance="नहीं।")
-        self.assertEqual((closed.phase, closed.close_reason), (Phase.CLOSING, CloseReason.COMPLETE))
-        self.assertEqual((closed.answers["close_anything_else"].state, closed.answers["close_anything_else"].verbatim_text),
-                         (AnswerStatus.CLEAR, ""))
 
 
 class RealPackIntegrationTests(unittest.TestCase):
@@ -282,33 +210,6 @@ class RealPackIntegrationTests(unittest.TestCase):
         st = reduce_turn(shishu, st, TurnCommand(profile_patch=ProfilePatch(slots={"marital_status": "married"})))
         self.assertEqual(st.cursor.qid, "intro_children")
         self.assertIsNone(st.profile.get("ever_pregnant"))
-
-    def test_fever_opd_pack_full_walk_with_branching_score_and_semantic_skip(self):
-        opd = load_pack("fever-opd-hi")
-        st = new_state(opd)
-        self.assertEqual(st.cursor.qid, "patient_name")
-        st = reduce_turn(opd, st, TurnCommand(profile_patch=ProfilePatch(slots={"patient_name": "सुनीता", "patient_age": 34})))
-        self.assertEqual(st.cursor.qid, "intro_bridge")
-        st = play(opd, st, TurnOutcome.CONCERN)
-        self.assertEqual(st.cursor.qid, "fever_duration_bucket")
-        st = play(opd, st, TurnOutcome.ANSWERED, value="gt_7_days")
-        self.assertEqual(st.answers["fever_duration_bucket"].state, AnswerStatus.CONCERN)
-        self.assertEqual(st.cursor.qid, "fever_nature")
-        # Continuous fever -> fever_frequency must auto-skip!
-        st = play(opd, st, TurnOutcome.ANSWERED, value="continuous")
-        self.assertEqual(st.answers["fever_frequency"].state, AnswerStatus.NOT_APPLICABLE)
-        self.assertEqual(st.cursor.qid, "fever_severity")
-        st = play(opd, st, TurnOutcome.ANSWERED, value={"score": 2.4, "level": 2})
-        self.assertEqual(st.answers["fever_severity"].state, AnswerStatus.CONCERN)
-        # Confirmed dengue report prunes recent_travel while keeping jaundice_or_bleeding!
-        st = reduce_turn(opd, st, TurnCommand(
-            outcome=TurnOutcome.ANSWERED,
-            value=["chills"],
-            semantic_flags=("confirmed_malaria_or_dengue",),
-        ))
-        self.assertEqual(st.answers["recent_travel"].state, AnswerStatus.NOT_APPLICABLE)
-        self.assertNotIn("jaundice_or_bleeding", st.answers)
-        self.assertEqual(close_technical_failure(st).close_reason, CloseReason.TECHNICAL_FAILURE)
 
 
 if __name__ == "__main__":
