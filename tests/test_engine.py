@@ -366,6 +366,45 @@ class RealPackIntegrationTests(unittest.TestCase):
                                                  profile_patch=ProfilePatch(), profile_turn_attempted=True))
         self.assertEqual((st.cursor.qid, st.cursor.attempts), ("preg_delivery", 1))
 
+    def test_a_mid_call_incomplete_twin_update_freezes_roster_op_not_applicable(self):
+        # Bug (Call #11): "मेरे ट्विंस बच्चे हैं, मुझे लगता नहीं आप वो सुन पाए" arrived mid-call with
+        # roster_complete=False. `_roster_op` gates `none_match` on `roster_resolved`, so `no_child_5_plus`
+        # flipped False and `_resync` DELETED the NOT_APPLICABLE on mod_tooth_bleed / mod_heavy_periods /
+        # body_puberty, waking age-gated questions for 2- and 4-year-olds and landing the cursor on
+        # `mod_tooth_bleed` instead of rewinding to the ages reask. `_is_unsatisfied` also trusted a stale
+        # `state.answers["intro_children"]`, so the profile step never reopened.
+        shishu = load_pack("shishu-hi")
+        st = reduce_turn(shishu, at_children(shishu), TurnCommand(profile_patch=ProfilePatch(roster=(
+            RosterInput(age_years=2.0, tag="male"), RosterInput(age_years=4.0, tag="male")), roster_complete=True)))
+        self.assertEqual(st.answers["mod_tooth_bleed"].state, AnswerStatus.NOT_APPLICABLE)
+        self.assertEqual(st.answers["mod_heavy_periods"].state, AnswerStatus.NOT_APPLICABLE)
+        upto = [q.id for q in shishu.questions].index("preg_delivery")
+        for q in shishu.questions[:upto]:
+            if q.id not in st.answers:
+                st.answers[q.id] = AnswerRecord(state=AnswerStatus.CLEAR)
+        st.cursor = CursorStep(qid="preg_delivery")
+
+        st = reduce_turn(shishu, st, TurnCommand(
+            outcome=TurnOutcome.NOT_ABOUT_ACTIVE,
+            profile_patch=ProfilePatch(roster=(RosterInput(id="item_1", age_years=2.0, tag="male"),
+                                               RosterInput(id="item_2", age_years=4.0, tag="male")),
+                                       roster_complete=False),
+            profile_turn_attempted=True))
+        self.assertTrue(st.roster_incomplete)
+        self.assertEqual((st.cursor.qid, st.cursor.hold_slot), ("intro_children", "roster"))
+        self.assertEqual(st.answers["mod_tooth_bleed"].state, AnswerStatus.NOT_APPLICABLE)
+        self.assertEqual(st.answers["mod_heavy_periods"].state, AnswerStatus.NOT_APPLICABLE)
+
+        # The mother then answers the reask with the missed 12-year-old daughter: the frozen NOT_APPLICABLE
+        # must be re-evaluated against the completed roster, so both questions come back to be asked.
+        st = reduce_turn(shishu, st, TurnCommand(profile_patch=ProfilePatch(roster=(
+            RosterInput(id="item_1", age_years=2.0, tag="male"), RosterInput(id="item_2", age_years=4.0, tag="male"),
+            RosterInput(id="item_3", age_years=12.0, tag="female")), roster_complete=True)))
+        self.assertFalse(st.roster_incomplete)
+        self.assertNotIn("mod_heavy_periods", st.answers)
+        self.assertNotIn("mod_tooth_bleed", st.answers)
+        self.assertNotIn("body_puberty", st.answers)
+
     def test_extractor_prompt_handles_mid_call_twins_and_two_pairs_of_twins(self):
         # Bug (Call #11): mid-call "मेरे ट्विंस बच्चे हैं, मुझे लगता नहीं आप वो सुन पाए" returned null/null so the
         # missed twins never reached the roster, and "दो-दो के दो ट्विंस" (four children) was capped at three.

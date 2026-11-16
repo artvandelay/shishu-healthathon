@@ -156,10 +156,12 @@ def close_technical_failure(state: CallState) -> CallState:
     if st.phase is Phase.ASKING: st.phase, st.close_reason, st.cursor = Phase.CLOSING, CloseReason.TECHNICAL_FAILURE, CursorStep(qid=st.cursor.qid)
     return st
 def _is_unsatisfied(pack: PackConfig, state: CallState, spec: QuestionSpec) -> bool:
-    if state.answers.get(spec.id) is not None: return False
     if spec.kind is QuestionKind.PROFILE:
+        # A profile step's satisfaction is ALWAYS its `requires_slot`: a stale `state.answers` entry (a replay
+        # harness CLEAR, or an old answer) must never keep the ages reask from reopening on an incomplete roster.
         slot = spec.requires_slot
         return not (roster_resolved(pack, state) if slot in ("roster", (pack.roster_cfg or {}).get("key")) else state.profile.get(slot) not in (None, "", [], {}))
+    if state.answers.get(spec.id) is not None: return False
     return spec.is_routable or spec.kind is QuestionKind.BRIDGE
 def _imply(pack: PackConfig, state: CallState, *, roster_given: bool = False) -> None:
     explicit = {q.saves_to_profile for q in pack.questions if q.saves_to_profile and (r := state.answers.get(q.id)) and r.state.is_resolved}
@@ -172,9 +174,14 @@ def _imply(pack: PackConfig, state: CallState, *, roster_given: bool = False) ->
         for k, v in (imp.get("default_profile") or {}).items(): state.profile.setdefault(k, v)
         if imp.get("clear_roster_if_unprovided") and not roster_given and not state.roster_stated and not state.roster_incomplete: state.roster = []
 def _resync(pack: PackConfig, state: CallState) -> None:
+    # An unresolved roster cannot prove an age-gated question is skip-free: `none_match` already evaluates to
+    # False while `roster_incomplete`, so stripping its NOT_APPLICABLE would wake `mod_heavy_periods` for the
+    # 2-and-4-year-olds of a mother who only mentioned her twins mid-call. Freeze it; the reask resolves it.
+    frozen = not roster_resolved(pack, state)
     for spec in pack.questions:
         rec, hits = state.answers.get(spec.id), [r for r in spec.skip_if if eval_rule(pack, state, r)]
-        if not hits and rec is not None and rec.state is _NA: del state.answers[spec.id]
+        frozen_here = frozen and any("roster_op" in (pack.rules.get(r) or {}) for r in spec.skip_if)
+        if not hits and rec is not None and rec.state is _NA and not frozen_here: del state.answers[spec.id]
         elif hits and (rec is None or rec.state is _NA or any(_SHAPE & set(pack.rules.get(r) or {}) for r in hits)): state.answers[spec.id] = AnswerRecord(state=_NA)
 def _advance(pack: PackConfig, state: CallState, cmd: TurnCommand | None = None, *, record: bool = True) -> CallState:
     if record and state.cursor.qid: state.last_answered_qid = state.cursor.qid
@@ -188,7 +195,9 @@ def _advance(pack: PackConfig, state: CallState, cmd: TurnCommand | None = None,
     if cmd is not None and cmd.jump_topic and cmd.next_qid_probs and routable and not any(q.kind in _BLOCKING for q in free):
         best = max(routable, key=lambda q: cmd.next_qid_probs.get(q.id, -1.0))
         head = best if cmd.next_qid_probs.get(best.id, -1.0) > 0 else head
-    state.cursor = CursorStep(qid=head.id)
+    # A count with no ages is answered by the ages reask, never by re-asking "how many children" from scratch.
+    held = "roster" if state.roster_incomplete and head.kind is QuestionKind.PROFILE and head.requires_slot in ("roster", (pack.roster_cfg or {}).get("key")) else None
+    state.cursor = CursorStep(qid=head.id, hold_slot=held)
     return state
 def new_state(pack: PackConfig) -> CallState: return _advance(pack, CallState(), record=False)
 
