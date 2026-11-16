@@ -59,7 +59,7 @@ ProfilePatch.is_empty = property(lambda p: not p.slots and p.roster_complete is 
 VariantSpec = _rec("VariantSpec", when=(str, ...), say=(str, ...))
 OptionSpec = _rec("OptionSpec", label=(str, ...), en=(str, ""), criteria=(str, ""), exclusive=(bool, False))
 TurnCommand = _rec(
-    "TurnCommand", emergency=(bool, False), caller_stop=(bool, False), turn_incomplete=(bool, False), profile_patch=(ProfilePatch | None, None),
+    "TurnCommand", emergency=(bool, False), caller_stop=(bool, False), profile_patch=(ProfilePatch | None, None),
     profile_turn_attempted=(bool, False), outcome=(TurnOutcome, TurnOutcome.NOT_ABOUT_ACTIVE), value=(Any, None), item_ref=(str, ""),
     followup_answered=(bool, False), stated=(dict[str, TurnOutcome], Field(default_factory=dict)), semantic_flags=(tuple[str, ...], ()),
     jump_topic=(bool, False), next_qid_probs=(dict[str, float], Field(default_factory=dict)), utterance=(str, ""), redacted=(bool, False))
@@ -94,7 +94,6 @@ QuestionSpec = _rec(
 QuestionSpec.is_routable = property(lambda q: q.kind not in (QuestionKind.PROFILE, QuestionKind.BRIDGE))
 QuestionSpec.is_reportable = property(lambda q: q.is_routable and q.kind is not QuestionKind.ROUTING_GATE)
 QuestionSpec.allows_yes_no = property(lambda q: q.kind in _YES_NO)
-QuestionSpec.is_reflective_vad = property(lambda q: q.kind in (QuestionKind.PROFILE, QuestionKind.MULTI_CHOICE, QuestionKind.OPEN_CAPTURE))
 PackConfig = _rec(
     "PackConfig", _Pack, id=(str, ...), root=(Path, ...), meta=(dict[str, Any], ...), prompts=(dict[str, Any], ...),
     profile_slots=(dict[str, dict[str, Any]], ...), roster_cfg=(dict[str, Any] | None, ...), extractor_prompt=(str, ...),

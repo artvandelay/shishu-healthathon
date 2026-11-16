@@ -18,15 +18,10 @@ patient_scope: "single patient"
 chief_complaint: "बुखार"
 
 vad:
-  closed_short_ms: 350
-  reflective_ms: 850
-  ramp_start_voiced_ms: 600
-  ramp_full_voiced_ms: 1800
-  speculate_at_ms: 280
-  incomplete_hold_ms: 2000
-  baseline_pause_ms: 260
-  pace_min: 0.80
-  pace_max: 1.45
+  start_sensitivity: LOW
+  end_sensitivity: LOW
+  prefix_padding_ms: 100
+  silence_duration_ms: 1000
 
 timers:
   watchdog_timeout_sec: 8.0

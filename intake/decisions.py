@@ -17,7 +17,7 @@ DECISIONS_ENDPOINT, DEFAULT_MODEL = "https://generativelanguage.googleapis.com/v
 Transport = Callable[..., tuple[int, bytes] | Awaitable[tuple[int, bytes]]]
 _CLIENTS: WeakKeyDictionary[asyncio.AbstractEventLoop, httpx.AsyncClient] = WeakKeyDictionary()
 _CORE = ("danger_now", "caller_stop", "mentions_profile", "redact_patient_note")
-_NOUL = (*_CORE, "turn_incomplete", "detail_present", "jump_topic")
+_NOUL = (*_CORE, "detail_present", "jump_topic")
 _STATED_KINDS = (QuestionKind.GATE, QuestionKind.ROUTING_GATE)
 _OUTCOMES, _STATED_OUTCOMES = frozenset({"clear", "concern", "unknown", "clarify", "retract"}), frozenset({"concern", "clear", "clarify"})
 # Out-of-turn CONCERN on an already-CLEAR question is a revision of a closed answer, not a first read: it must clear
@@ -71,12 +71,12 @@ async def evaluate_turn(request: dict[str, Any], *, api_key: str | None = None, 
     return DecisionCallResult(payload is not None, "" if payload is not None else reason, attempts, max(0, int((time.perf_counter() - started) * 1000)),
                               len(body), len(request.get("questions") or {}), toks if type(toks) is int else None, (payload or {}).get("answers") or {})
 def build_turn_request(pack: PackConfig, state: CallState, *, utterance_text: str = "", audio_wav_bytes: bytes | None = None,
-                       audio_mime_type: str = "audio/wav", include_turn_incomplete: bool = False) -> dict[str, Any]:
+                       audio_mime_type: str = "audio/wav") -> dict[str, Any]:
     heads, kind = pack.decisions.get("heads") or {}, engine.step_kind(pack, state)
     spec, rows, audio = pack.by_id.get(state.cursor.qid), engine.roster_rows(state), bytes(audio_wav_bytes or b"")
     router, said, follow = kind != "profile", partial(engine.question_say, pack, state), engine.followup_prompt(pack, state)
     answered = any(r.state.is_resolved for q, r in state.answers.items() if pack.by_id[q].is_routable)
-    qs: dict[str, Any] = {h: heads[h] for h in (*_CORE, "active_outcome", *(("turn_incomplete",) if include_turn_incomplete else ())) if h in heads}
+    qs: dict[str, Any] = {h: heads[h] for h in (*_CORE, "active_outcome") if h in heads}
     if kind == "main" and spec is not None:
         if spec.kind is QuestionKind.SINGLE_CHOICE:
             qs["choice_value"] = {"type": "choice", "instructions": "Which option in active_question did the caller choose?", "criteria": {k: o.criteria or o.label for k, o in spec.options.items()} | {"other": "Did not pick any listed option."}}
@@ -176,7 +176,7 @@ def interpret_turn_decision(pack: PackConfig, state: CallState, raw_answers: Map
     next_probs = _next_qid_probs(a)
     flags = tuple(f for f, fs in pack.semantic_flags.items() if f not in state.semantic_flags and _yes(a, f"flag_{f}", fs.get("min_yes", 0.8)))
     cmd = TurnCommand(
-        emergency=on["danger_now"], caller_stop=not on["danger_now"] and on["caller_stop"], turn_incomplete=on["turn_incomplete"], outcome=outcome, value=val,
+        emergency=on["danger_now"], caller_stop=not on["danger_now"] and on["caller_stop"], outcome=outcome, value=val,
         item_ref=_pick(a, "item_ref", t, "item_ref", allowed=frozenset({i.id for i in state.roster}) | {"all"}) if len(state.roster) >= 2 else "",
         followup_answered=bool(on["detail_present"] and kind in ("main", "close") and outcome is TurnOutcome.CONCERN),
         stated=stated, semantic_flags=flags, jump_topic=bool(not closing and kind != "profile" and on["jump_topic"]),

@@ -174,6 +174,8 @@ const api = {
   pdfName() { return fileNames.slice(); },
   downloads() { return anchors.map((a) => a.download); },
   setPdf(disposition, noHeaders, shareable) { pdfHeaders = disposition || ""; pdfNoHeaders = !!noHeaders; canShare = shareable !== false; },
+  /* `playing()` is a `let` binding inside the page's own context, so it is read there, never from this scope. */
+  playing() { return vm.runInContext("playing()", sandbox); },
   lines() { return source.split("\n").length - (source.endsWith("\n") ? 1 : 0); }
 };
 globalThis.api = api;
@@ -325,6 +327,7 @@ api.nodes["yes-btn"].fire("click");
 await api.settle();
 api.advance(4000);
 const afterReply = !api.nodes["nudge-btn"].hidden;
+api.push({ type: "question_state", step: "fever_days", is_yes_no: true, quick_replies: [], prompt_chars: 60 });
 api.push({ type: "audio", data: api.pcm(4800), sample_rate: 24000 });
 await api.settle();
 const afterBotAudio = api.nodes["nudge-btn"].hidden;
@@ -349,6 +352,85 @@ return { micReady, quietIdle, duringSpeech, stillSpeaking, twoSeconds, afterThre
         self.assertTrue(out["afterReply"], "a quick-reply tap arms the wait even with no mic frames")
         self.assertTrue(out["afterBotAudio"], "bot audio clears the wait")
         self.assertTrue(out["afterClear"], "a clear clears the wait")
+
+    def test_the_mic_is_muted_while_shishu_speaks_so_no_echo_is_sent(self):
+        # "She can tap over SHISHU but not talk over her": while any of her audio is still queued, the capture
+        # worklet keeps running (the meter moves) but nothing is sent and the 3 s nudge timer never arms.
+        out = self.run_js(r"""
+api.boot(JSON.parse(process.env.PACK));
+await api.settle();
+await api.start();
+api.push({ type: "session_started", call_id: 4, share_token: "tok", out_sample_rate: 24000 });
+await api.settle();
+api.push({ type: "question_state", step: "fever_now", is_yes_no: true, quick_replies: [], prompt_chars: 60 });
+api.push({ type: "audio", data: api.pcm(4800), sample_rate: 24000 });
+await api.settle();
+const speaking = api.playing();
+
+api.mic(0.2);
+await api.settle();
+api.advance(4000);
+const echoed = api.sent.filter((m) => m.type === "audio").length;
+const nudgeWhileSpeaking = api.nodes["nudge-btn"].hidden;
+
+/* Her line ends: the caller is heard again at once, and the silence clock starts from that frame. */
+api.ctx().currentTime = 0.4;
+api.ctx().sources.forEach((s) => s.onended && s.onended());
+await api.settle();
+const quietAgain = api.playing();
+api.mic(0.2);
+await api.settle();
+const afterPlayback = api.sent.filter((m) => m.type === "audio").length;
+api.mic(0);
+api.advance(3500);
+const nudgeAfterPlayback = !api.nodes["nudge-btn"].hidden;
+
+return { speaking, echoed, nudgeWhileSpeaking, quietAgain, afterPlayback, nudgeAfterPlayback };
+""")
+
+        self.assertTrue(out["speaking"], "her audio really was queued")
+        self.assertEqual(out["echoed"], 0, "not one echo frame reaches the socket while she speaks")
+        self.assertTrue(out["nudgeWhileSpeaking"], "and a muted mic never arms the 3 s nudge")
+        self.assertFalse(out["quietAgain"], "her queue is empty once the last frame ends")
+        self.assertEqual(out["afterPlayback"], 1, "the moment her audio ends the caller is heard again")
+        self.assertTrue(out["nudgeAfterPlayback"], "and the silence clock runs off her real listening window")
+
+    def test_a_tap_over_shishu_stops_her_at_once_and_ignores_the_aborted_turns_tail(self):
+        out = self.run_js(r"""
+api.boot(JSON.parse(process.env.PACK));
+await api.settle();
+await api.start();
+api.push({ type: "session_started", call_id: 4, share_token: "tok", out_sample_rate: 24000 });
+await api.settle();
+api.push({ type: "question_state", step: "fever_now", is_yes_no: true, quick_replies: [], prompt_chars: 60 });
+api.push({ type: "audio", data: api.pcm(4800), sample_rate: 24000 });
+api.ctx().currentTime = 0.4;
+api.flushRaf();
+const wasPlaying = api.playing();
+
+api.nodes["yes-btn"].fire("click");
+await api.settle();
+const stillPlaying = api.playing();
+const tapped = api.sent.filter((m) => m.type === "quick_reply").length;
+
+/* Question A's in-flight tail lands before Question B's question_state: it must stay silent. */
+api.push({ type: "audio", data: api.pcm(4800), sample_rate: 24000 });
+await api.settle();
+const tailAudible = api.playing();
+
+api.push({ type: "question_state", step: "fever_days", is_yes_no: true, quick_replies: [], prompt_chars: 60 });
+api.push({ type: "audio", data: api.pcm(4800), sample_rate: 24000 });
+await api.settle();
+const secondAudible = api.playing();
+
+return { wasPlaying, stillPlaying, tapped, tailAudible, secondAudible };
+""")
+
+        self.assertTrue(out["wasPlaying"], "the first question really was playing")
+        self.assertFalse(out["stillPlaying"], "the tap cuts her off in the same frame, before any server reply")
+        self.assertEqual(out["tapped"], 1, "and sends exactly one quick reply")
+        self.assertFalse(out["tailAudible"], "Question A's aborted tail never restarts playback over the new step")
+        self.assertTrue(out["secondAudible"], "Question B plays normally once its own state arrives")
 
     def test_the_pdf_adopts_the_served_filename_and_falls_back_without_headers(self):
         out = self.run_js(r"""

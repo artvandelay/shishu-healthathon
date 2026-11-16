@@ -93,7 +93,6 @@
     const rows = [["Model / Voice", (call.model_used || "—") + " · " + (call.voice_used || "default")], ["Turns (Patient / Bot)", num(t.user_turns) + " / " + num(t.bot_turns)]];
     rows.push(["Avg Latency", lats.length ? num(t.avg_latency_ms, " ms") : "—", pills], ["Connect", num(t.connect_ms, " ms")], ["Tool Calls / Nudges", num(t.tool_calls) + " / " + num(t.watchdog_nudges)]);
     rows.push(["Audio Chunks In / Out", num(t.audio_chunks_in) + " / " + num(t.audio_chunks_out)], ["Max Latency", t.max_latency_ms == null ? "—" : num(t.max_latency_ms, " ms")]);
-    if (t.pace_factor != null) rows.push(["Pace Factor", num(t.pace_factor) + "× live pace"]);
     if (t.dropoff_qid) rows.push(["Stopped At", String(t.dropoff_qid)]);
     set("kpis", rows.map((r) => kpi(r[0], r[1], r[2])).join(""));
   }

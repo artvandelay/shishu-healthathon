@@ -98,19 +98,6 @@ heads:
       false_description: >-
         Only a bare yes or no, bare acknowledgement, statement of not knowing, clarification question,
         or no concrete detail.
-  turn_incomplete:
-    type: noul
-    instructions: >-
-      Did the speaker pause mid-sentence, trail off, or leave an incomplete phrase in caller_utterance,
-      rather than finishing her reply?
-    criteria:
-      true_description: >-
-        Caller_utterance breaks off mid-sentence or mid-thought: an unfinished phrase, a dangling connector
-        (और, तो, वो, मतलब), a cut-off word, or speech that stops before naming the thing she started to
-        say.
-      false_description: >-
-        Caller_utterance is a finished reply, however short: a complete yes, no, पता नहीं, a whole sentence,
-        or a complete thought followed by silence.
   jump_topic:
     type: noul
     instructions: >-
@@ -172,7 +159,6 @@ heads:
 thresholds:
   danger_now_min_yes: 0.494
   caller_stop_min_yes: 0.5739
-  turn_incomplete_min_yes: 0.55
   mentions_profile_min_yes: 0.4914
   redact_patient_note_min_yes: 0.5606
   detail_present_min_yes: 0.5262

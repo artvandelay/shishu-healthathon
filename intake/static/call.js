@@ -41,16 +41,14 @@ function flushAudio() {
   live.forEach((src) => {
     try { src.onended = null; src.stop(0); src.disconnect(); } catch (e) { /* already gone */ }
   });
-  live.clear(); queueFrom = 0;
-  avatarEl.classList.remove("speaking");
+  live.clear(); queueFrom = 0; avatarEl.classList.remove("speaking");
 }
 function playPcm(b64, rate) {
-  if (phase !== "live" || !ctx || !b64) return; stopWaiting(); const pcm = new Int16Array(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)).buffer);
-  if (!pcm.length) return; const buffer = ctx.createBuffer(1, pcm.length, rate);
-  const at = Math.max(ctx.currentTime, queueFrom); buffer.getChannelData(0).set(Float32Array.from(pcm, (v) => v / 32768));
+  if (phase !== "live" || !ctx || !b64 || busy) return; stopWaiting(); const pcm = new Int16Array(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)).buffer);
+  if (!pcm.length) return; const buffer = ctx.createBuffer(1, pcm.length, rate), at = Math.max(ctx.currentTime, queueFrom);
+  buffer.getChannelData(0).set(Float32Array.from(pcm, (v) => v / 32768));
   const src = ctx.createBufferSource(); src.buffer = buffer;
-  src.connect(ctx.destination); src.start(at);
-  queueFrom = at + buffer.duration; stepQueued += buffer.duration;
+  src.connect(ctx.destination); src.start(at); queueFrom = at + buffer.duration; stepQueued += buffer.duration;
   if (stepFrom == null) stepFrom = at; live.add(src);
   avatarEl.classList.add("speaking"); say(T.speak);
   scheduleReveal();
@@ -72,11 +70,13 @@ function rateFor(samples, from) {
   return out;
 }
 function onMicFrame(samples) {
-  const rms = samples && samples.length ? Math.hypot(...samples) / Math.sqrt(samples.length) : 0; const loud = rms > 0.015 && !playing();
-  if (rms && micLevel) { micSmooth = micSmooth * 0.5 + rms * 0.5; const pct = Math.min(100, Math.round((micSmooth / 0.12) * 100)); micLevel.style.width = `${pct}%`; if (micMeter) micMeter.setAttribute("aria-valuenow", String(pct)); }
-  if (phase === "live" && loud) { userSpoke = true; waitingSince = 0; show(nudgeBtn, false); }
-  else if (userSpoke && !loud) { userSpoke = false; waitingSince = Date.now(); }
-  if (phase !== "live" || !open() || ws.bufferedAmount > 262144) return; const pcm = rateFor(samples, (ctx && ctx.sampleRate) || IN_RATE);
+  const rms = samples && samples.length ? Math.hypot(...samples) / Math.sqrt(samples.length) : 0, mic = phase === "live" && !playing() && !busy;
+  // Half-duplex: she can be tapped over, never talked over. A muted frame never arms the nudge clock.
+  micSmooth = mic && rms ? micSmooth * 0.5 + rms * 0.5 : 0;
+  const pct = Math.min(100, Math.round((micSmooth / 0.12) * 100)); micLevel.style.width = `${pct}%`; if (micMeter) micMeter.setAttribute("aria-valuenow", String(pct));
+  if (mic && rms > 0.015) { userSpoke = true; waitingSince = 0; show(nudgeBtn, false); }
+  else if (mic && userSpoke) { userSpoke = false; waitingSince = Date.now(); }
+  if (!mic || !open() || ws.bufferedAmount > 262144) return; const pcm = rateFor(samples, (ctx && ctx.sampleRate) || IN_RATE);
   if (!pcm.length) return; const bytes = new Uint8Array(pcm.length * 2), view = new DataView(bytes.buffer);
   pcm.forEach((v, i) => view.setInt16(i * 2, Math.max(-1, Math.min(1, v)) * 0x7fff, true)); send({ type: "audio", data: btoa(String.fromCharCode(...bytes)), sample_rate: IN_RATE });
 }

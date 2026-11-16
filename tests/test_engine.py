@@ -305,7 +305,9 @@ class RealPackIntegrationTests(unittest.TestCase):
             ),
         )))
         self.assertEqual(st.cursor.qid, "intro_bridge")
-        self.assertIn("बेझिझक खुलकर बोलकर", active_prompt(shishu, st))
+        bridge = active_prompt(shishu, st)
+        self.assertIn("खुलकर बोलकर", bridge, "the bridge still invites a spoken answer")
+        self.assertLess(len(bridge), 100, "the bridge is spoken in one breath, not twelve seconds")
         st = play(shishu, st, TurnOutcome.CONCERN)
         self.assertEqual(st.cursor.qid, "birth_mode_detail")
 
@@ -404,6 +406,15 @@ class RealPackIntegrationTests(unittest.TestCase):
         self.assertNotIn("mod_heavy_periods", st.answers)
         self.assertNotIn("mod_tooth_bleed", st.answers)
         self.assertNotIn("body_puberty", st.answers)
+
+    def test_both_packs_speak_their_bridge_in_one_short_breath(self):
+        # The 12-second bridge held the call open with no reply: two sentences say the same thing in 4.
+        for pack_id in ("shishu-hi", "fever-opd-hi"):
+            with self.subTest(pack=pack_id):
+                bridge = load_pack(pack_id).by_id["intro_bridge"]
+                self.assertIn("खुलकर बोलकर बताएँ", bridge.say, "the open-speech invite survives the cut")
+                self.assertLess(len(bridge.say), 100)
+                self.assertLess(len(bridge.stem), 100)
 
     def test_extractor_prompt_handles_mid_call_twins_and_two_pairs_of_twins(self):
         # Bug (Call #11): mid-call "मेरे ट्विंस बच्चे हैं, मुझे लगता नहीं आप वो सुन पाए" returned null/null so the

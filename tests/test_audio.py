@@ -1,4 +1,4 @@
-"""Behavioral tests for `intake.vad` (real Silero model) and `intake.audio`."""
+"""Behavioral tests for `intake.audio`: PCM helpers and the stereo WAV recorder."""
 
 from __future__ import annotations
 
@@ -18,57 +18,6 @@ from intake.audio import (
     pcm_rms,
     rate_from_mime,
 )
-from intake.vad import SileroDetector, ThinkingVad, VadEvent
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-U4 = REPO_ROOT / "scripts" / "calibration_audio" / "u4_jaundice_16k.wav"
-
-
-def read_wav(path: Path) -> bytes:
-    with wave.open(str(path), "rb") as wf:
-        assert wf.getnchannels() == 1 and wf.getsampwidth() == 2 and wf.getframerate() == 16000
-        return wf.readframes(wf.getnframes())
-
-
-class SileroDetectorTests(unittest.TestCase):
-    """The real ONNX graph must score the calibration clip sanely."""
-
-    def test_partial_frames_are_buffered_until_a_full_1024_byte_frame_arrives(self):
-        pcm = read_wav(U4)
-        detector = SileroDetector()
-        self.assertEqual(detector.feed_pcm16(pcm[:1000]), [])  # no frame yet
-        self.assertEqual(len(detector._buf), 1000)
-        self.assertEqual(len(detector.feed_pcm16(pcm[1000:2048])), 2)  # 2048 bytes -> two frames
-        self.assertEqual(len(detector._buf), 0)
-
-
-class ThinkingVadTurnTests(unittest.TestCase):
-    """Turn boundaries, speculation, pace sampling, and the self-healing resume."""
-
-    def test_extend_for_incomplete_holds_the_endpoint_until_the_caller_resumes(self):
-        vad = ThinkingVad()
-        vad.on_frame(0.9)
-        vad.extend_for_incomplete()
-        self.assertTrue(vad.holding_incomplete)
-        silent = [e for _ in range(60) for e in vad.on_frame(0.05)]
-        self.assertNotIn(VadEvent.SPEECH_END, silent, "held for 2000 ms")
-        vad.on_frame(0.9)
-        self.assertFalse(vad.holding_incomplete, "resuming clears the hold")
-
-    def test_vad_endpoint_wait_is_not_sampled_as_a_caller_pause(self):
-        vad = ThinkingVad()
-        vad.on_frame(0.9)
-        self.assertIn(VadEvent.SPEECH_END, [e for _ in range(12) for e in vad.on_frame(0.05)], "384 ms closes the turn")
-        for _ in range(2): vad.on_frame(0.05)
-        vad.on_frame(0.9)  # caller resumes before `on_bot_speaking`
-        self.assertEqual(vad.pauses_ms, [], "the VAD's own 448 ms endpoint wait is not a speaker pause")
-        self.assertEqual(vad.pace_factor, 1.0)
-
-        reflective = ThinkingVad()
-        self.assertIn(VadEvent.SPEECH_START, reflective.on_frame(0.9, is_reflective=True))
-        for _ in range(8): reflective.on_frame(0.05, is_reflective=True)
-        reflective.on_frame(0.9, is_reflective=True)  # 256 ms stays inside the reflective wait
-        self.assertEqual(reflective.pauses_ms, [256.0], "a real within-turn pause is still sampled")
 
 
 class AudioHelperTests(unittest.TestCase):
