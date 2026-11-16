@@ -11,6 +11,8 @@ Hindi string, every template — lives in a declarative pack under `packs/`. Add
 use case costs zero lines of Python.
 
 Design of record: [`docs/v3-design-and-thinking-vad.md`](docs/v3-design-and-thinking-vad.md).
+What a pack can and cannot change without touching code:
+[`docs/v3-moldability-boundary.md`](docs/v3-moldability-boundary.md).
 
 ## The loop
 
