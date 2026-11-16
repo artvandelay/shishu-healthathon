@@ -207,6 +207,18 @@ class EngineSyntheticTests(unittest.TestCase):
         self.assertEqual(which_item_prompt(shishu, CallState(roster=twins)),
                          "यह किस बच्चे की बात है — पहले 2 साल वाले बेटे, या दूसरे 2 साल वाले बेटे?")
 
+    def test_youngest_twins_in_a_three_child_roster_are_numbered_never_called_middle(self):
+        # Bug (Call #11): [4, 2, 2] appended " (बीच वाले)" to the FIRST 2-year-old twin, so `parts[1]` and
+        # `parts[2]` stopped being equal, `counts[p]` never fired and SHISHU asked
+        # "4 साल वाले, 2 साल वाले (बीच वाले), या 2 साल वाले?" — ambiguous on the phone, and a twin who ties
+        # for youngest is not the middle child at all.
+        shishu = load_pack("shishu-hi")
+        trio = [RosterItem(id="item_1", age_years=4, age_label="4 साल", tag="unknown"),
+                RosterItem(id="item_2", age_years=2, age_label="2 साल", tag="unknown"),
+                RosterItem(id="item_3", age_years=2, age_label="2 साल", tag="unknown")]
+        self.assertEqual(which_item_prompt(shishu, CallState(roster=trio)),
+                         "यह किस बच्चे की बात है — 4 साल वाले, पहले 2 साल वाले, या दूसरे 2 साल वाले?")
+
     def test_equal_age_twins_are_same_age_not_oldest_and_youngest(self):
         # Bug: two 2-year-old twins were labelled oldest/youngest, feeding gemini-decision-1 false age ranks.
         twins = [RosterItem(id="item_1", age_years=2, age_label="2 साल", tag="male"),
@@ -335,6 +347,34 @@ class RealPackIntegrationTests(unittest.TestCase):
         self.assertEqual(st.answers["body_blood_count"].state, AnswerStatus.NOT_APPLICABLE)
         # body_transfusion is ALREADY answered, so jump_topic picks the top STILL-ELIGIBLE target: preg_thalassemia!
         self.assertEqual(st.cursor.qid, "preg_thalassemia")
+
+    def test_an_empty_profile_patch_mid_call_is_still_an_off_topic_miss(self):
+        # Bug (Call #11): `mentions_profile` fired on a non-profile step (preg_delivery) while the extractor
+        # returned an EMPTY ProfilePatch(), yet `profile_ran` was True because `profile_turn_attempted` was
+        # set. Line 380 then returned an untouched state, so the off-topic turn never burned an attempt and
+        # `preg_delivery` could be re-asked forever. Only a profile-step attempt can hold its own slot.
+        shishu = load_pack("shishu-hi")
+        st = reduce_turn(shishu, at_children(shishu), TurnCommand(profile_patch=ProfilePatch(roster=(
+            RosterInput(age_years=4.0, tag="male"), RosterInput(age_years=2.0, tag="male")))))
+        self.assertEqual(st.cursor.qid, "intro_bridge")
+        upto = [q.id for q in shishu.questions].index("preg_delivery")
+        for q in shishu.questions[:upto]:
+            st.answers[q.id] = AnswerRecord(state=AnswerStatus.CLEAR)
+        st.cursor = CursorStep(qid="preg_delivery")
+        self.assertEqual(engine.step_kind(shishu, st), "main")
+        st = reduce_turn(shishu, st, TurnCommand(outcome=TurnOutcome.NOT_ABOUT_ACTIVE,
+                                                 profile_patch=ProfilePatch(), profile_turn_attempted=True))
+        self.assertEqual((st.cursor.qid, st.cursor.attempts), ("preg_delivery", 1))
+
+    def test_extractor_prompt_handles_mid_call_twins_and_two_pairs_of_twins(self):
+        # Bug (Call #11): mid-call "मेरे ट्विंस बच्चे हैं, मुझे लगता नहीं आप वो सुन पाए" returned null/null so the
+        # missed twins never reached the roster, and "दो-दो के दो ट्विंस" (four children) was capped at three.
+        prompt = load_pack("shishu-hi").extractor_prompt
+        self.assertIn("NOT heard", prompt)
+        self.assertIn("Never leave roster and roster_complete both null", prompt)
+        self.assertIn("2 साल और 4 साल", prompt)
+        self.assertIn('"roster_complete": true', prompt)
+        self.assertIn("दो-दो", prompt)
 
     def test_shishu_unmarried_to_married_reopens_children_and_pregnancy(self):
         shishu = load_pack("shishu-hi")

@@ -81,8 +81,12 @@ def which_item_prompt(pack: PackConfig, state: CallState) -> str:
     for i, c in enumerate(ordered):
         fem, name = c.tag == "female", (c.name or "").strip()
         gender = "female" if fem else ("male" if name or c.tag == "male" else "other")
+        # "The middle child" only exists when the three ages are strictly ordered. A twin who merely ties for
+        # youngest is not middle, and appending the suffix there would also break the twin labels apart, hiding
+        # the collision from `counts` below so both twins were read out with one identical age label.
+        is_middle = len(ordered) == 3 and i == 1 and ordered[0].age_years > c.age_years > ordered[2].age_years
         parts.append(str(w.get(f"named_{gender}" if name else f"unnamed_{gender}", "{age} {name}" if name else "{age}")).format(age=c.age_label, name=name)
-                     + (str(w.get("middle_female" if fem else "middle_male", "")) if len(ordered) == 3 and i == 1 else ""))
+                     + (str(w.get("middle_female" if fem else "middle_male", "")) if is_middle else ""))
     # Equal-age twins render identically, so a repeated label is ambiguous out loud: number only the collisions.
     ords, counts, seen = list(w.get("ordinals") or ()), {p: parts.count(p) for p in parts}, {}
     for i, p in enumerate(parts):
@@ -367,7 +371,7 @@ def reduce_turn(pack: PackConfig, state: CallState, cmd: TurnCommand) -> CallSta
         st.semantic_flags = list(dict.fromkeys([*st.semantic_flags, *cmd.semantic_flags]))
         _resync(pack, st)
     prev_qid, prev_hold, prev_kind = st.cursor.qid, st.cursor.hold_slot, step_kind(pack, st)
-    profile_ran, skip_active = (cmd.profile_patch is not None and not cmd.profile_patch.is_empty) or cmd.profile_turn_attempted, False
+    profile_ran, skip_active = (cmd.profile_patch is not None and not cmd.profile_patch.is_empty) or (cmd.profile_turn_attempted and prev_kind == _PROFILE), False
     if profile_ran:
         st = apply_profile_patch(pack, st, cmd.profile_patch or ProfilePatch(), attempted_on_profile=cmd.profile_turn_attempted)
         skip_active = prev_kind == _PROFILE or st.cursor.qid != prev_qid or st.cursor.hold_slot is not None or (prev_hold is not None and st.cursor.hold_slot is None)
