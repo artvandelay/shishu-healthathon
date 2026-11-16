@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#1b2a4a">
+<title>SHISHU — Call</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body class="call-body">
+<header>
+    <h1 class="lockup"><img id="brand-logo" src="/api/pack-asset/logo" alt="" onerror="this.style.visibility='hidden'"><span id="brand-title" data-ui="call.header_title">SHISHU (शिशु)</span></h1>
+  <div class="header-actions">
+    <button id="bug-btn" class="header-btn" type="button" data-ui="bug_categories.modal.open_btn"><span class="hi">समस्या बताएँ</span><span class="en">Report bug</span></button>
+    <a id="admin-link" class="admin-link" href="/admin" hidden>Admin</a>
+    <button id="logout-btn" class="header-btn" type="button"><span class="hi">बाहर जाएँ</span><span class="en">Log out</span></button>
+  </div>
+</header>
+<main>
+  <section id="stage" class="stage">
+    <div id="avatar-wrap" class="avatar-wrap">
+      <span class="ring r1"></span><span class="ring r2"></span>
+      <div class="avatar" aria-hidden="true"><img id="avatar-logo" src="/api/pack-asset/logo" alt="" onerror="this.style.visibility='hidden'"></div>
+    </div>
+    <p id="status" role="status" aria-live="polite"><span class="hi">कॉल शुरू करने के लिए नीचे दबाएँ</span><span class="en">Tap below to start the call</span></p>
+    <p id="timer">00:00</p>
+    <div id="mic-meter" class="mic-meter" role="meter" aria-label="Microphone level" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="mic-level" class="mic-level"></span></div>
+    <p id="caption"></p>
+    <p id="wait" role="status" hidden><span data-ui="call.preparing"><span class="hi">रिपोर्ट तैयार हो रही है…</span><span class="en">Preparing report…</span></span><span data-ui="call.preparing_hint"><span class="hi">इसमें थोड़ा समय लग सकता है। कृपया इस पेज पर बने रहिए।</span><span class="en">This can take a little while. Please stay on this page.</span></span><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span></p>
+    <p id="consent-row" class="consent-row">
+      <label><input id="consent-check" type="checkbox"><span data-ui="call.consent_agree"><span class="hi">मैं सहमत हूँ</span><span class="en">I agree</span></span></label>
+      <a id="consent-link" href="/api/pack-asset/consent_pdf" target="_blank" rel="noopener" data-ui="call.consent_link"><span class="hi">सहमति पत्र</span><span class="en">Consent</span></a>
+    </p>
+    <p id="yes-no-prime" class="yes-no-prime" role="note" hidden><span class="hi">जवाब सिर्फ़ हाँ/नहीं से बड़ा हो तो बेझिझक बोलकर बताएँ — हम ध्यान से सुन रहे हैं।</span><span class="en">More than yes or no? Speak freely — we're listening.</span></p>
+    <div id="choice-pills" class="choice-pills" role="group" aria-label="विकल्प (Options)" hidden></div>
+    <div id="call-dock" class="call-dock">
+      <button id="no-btn" class="call-btn quick-btn no-btn" type="button" aria-label="नहीं, आगे बढ़ें (No)" hidden><span class="hi">नहीं</span><span class="en">No</span></button>
+      <button id="call-btn" class="call-btn" type="button" disabled><span class="hi">शुरू</span><span class="en">Start</span></button>
+      <button id="yes-btn" class="call-btn quick-btn yes-btn" type="button" aria-label="हाँ (Yes)" hidden><span class="hi">हाँ</span><span class="en">Yes</span></button>
+    </div>
+    <button id="nudge-btn" class="nudge-btn" type="button" hidden data-ui="call.nudge_btn"><span class="hi">जवाब नहीं आया? यहाँ दबाएँ</span><span class="en">No reply? Tap here</span></button>
+  </section>
+  <section id="thanks" class="thanks" hidden>
+    <h2 data-ui="call.thanks_title"><span class="hi">धन्यवाद</span><span class="en">Thank you</span></h2>
+    <p id="thanks-sub" class="sub"></p>
+    <p id="thanks-summary" class="summary" data-ui="call.thanks_summary"><span class="hi">इस रिपोर्ट (PDF) में वे सवाल हैं जो आप अगली मुलाकात में डॉक्टर से पूछ सकती हैं।</span><span class="en">This report (PDF) has the questions you can ask the doctor at your next visit.</span></p>
+    <div class="thanks-actions">
+      <button id="share-pdf" class="text-btn" type="button" hidden data-ui="call.share_btn"><span class="hi">शेयर करें</span><span class="en">Share</span></button>
+      <button id="retry-pdf" class="text-btn" type="button" hidden data-ui="call.retry_btn"><span class="hi">रिपोर्ट दोबारा बनाएँ</span><span class="en">Make the report again</span></button>
+      <button id="new-call" class="text-btn" type="button" data-ui="call.new_call_btn"><span class="hi">नई कॉल</span><span class="en">New call</span></button>
+    </div>
+  </section>
+  <p id="error" role="alert" hidden></p>
+</main>
+<dialog id="bug-dialog" class="bug-card" aria-labelledby="bug-title">
+  <h2 id="bug-title" data-ui="bug_categories.modal.title"><span class="hi">समस्या बताएँ</span><span class="en">Report a problem</span></h2>
+  <p class="sub" data-ui="bug_categories.modal.sub"><span class="hi">कॉल चलती रहेगी। क्या गड़बड़ हुई, चुनें।</span><span class="en">The call keeps running. Pick what went wrong.</span></p>
+  <div id="bug-chips" class="chip-row" role="group" aria-label="समस्या की श्रेणी (Issue category)"></div>
+  <textarea id="bug-note" placeholder="थोड़ी सी बात लिखें / Quick note" aria-label="समस्या का विवरण (Bug note)"></textarea>
+  <label class="sub" for="bug-shot"><span class="hi">अगर फोटो आसान हो, तो स्क्रीनशॉट जोड़ें</span><span class="en">Screenshot, if a picture is easier</span></label>
+  <input id="bug-shot" type="file" accept="image/*">
+  <div class="bug-actions">
+    <button id="bug-save" class="text-btn" type="button" data-ui="bug_categories.modal.save_btn"><span class="hi">सेव करें और कॉपी करें</span><span class="en">Save bug and copy the debug snapshot</span></button>
+    <button id="bug-close" class="ghost-btn" type="button" data-ui="bug_categories.modal.close_btn"><span class="hi">बंद करें</span><span class="en">Close</span></button>
+  </div>
+  <p id="bug-confirm" class="bug-confirm" role="status" hidden></p>
+  <p id="bug-error" class="bug-error" role="alert" hidden></p>
+</dialog>
+<script src="/static/call.js"></script>
+</body>
+</html>

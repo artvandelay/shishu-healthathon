@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#1b2a4a">
+  <title>SHISHU — Sign in</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body class="login-body">
+  <main class="login-card">
+    <div class="lockup">
+      <img id="logo" src="/api/pack-asset/logo" alt="" onerror="this.style.visibility='hidden'">
+      <div><h1 id="title">SHISHU</h1><p id="native" class="native">शिशु</p></div>
+    </div>
+    <p id="lede" class="lede">अपना नाम और पासकोड लिखें। फिर कॉल शुरू होगी।<span class="en">Enter your name and the passcode. Then the call starts.</span></p>
+    <form id="form" novalidate>
+      <div class="field">
+        <label for="username" id="name-label">आपका नाम<span class="en">Your name</span></label>
+        <input id="username" name="username" type="text" autocomplete="name" required>
+      </div>
+      <div class="field">
+        <label for="passcode" id="pass-label">पासकोड<span class="en">Passcode</span></label>
+        <input id="passcode" name="passcode" type="password" autocomplete="current-password" required>
+      </div>
+      <button id="submit" type="submit">आगे बढ़ें<span class="en">Continue</span></button>
+      <p id="error" class="error" role="alert" hidden></p>
+    </form>
+  </main>
+  <script>
+    (function () {
+      const $ = (id) => document.getElementById(id);
+      const params = new URLSearchParams(location.search);
+      const next = (() => {
+        try { const u = new URL(params.get("next") || "/", location.origin); return u.origin === location.origin ? u.pathname + u.search + u.hash : "/"; } catch (e) { return "/"; }
+      })();
+      const pack = params.get("pack") || new URL(next, location.origin).searchParams.get("pack") || "";
+
+      function pair(node, v) {
+        if (!v || (!v.hi && !v.en)) return;
+        node.textContent = v.hi || v.en;
+        if (!v.hi || !v.en) return;
+        const en = document.createElement("span"); en.className = "en"; en.textContent = v.en; node.appendChild(en);
+      }
+      function fail(msg) { $("error").textContent = msg; $("error").hidden = false; }
+
+      fetch("/api/pack" + (pack ? "?pack=" + encodeURIComponent(pack) : ""), { headers: { Accept: "application/json" } })
+        .then((r) => (r.ok ? r.json() : null)).then((d) => {
+          if (!d) return;
+          if (d.title) { $("title").textContent = d.title; document.title = d.title + " — Sign in"; }
+          if (d.subtitle_native) $("native").textContent = d.subtitle_native;
+          if (d.assets_url && d.assets_url.logo) $("logo").src = d.assets_url.logo;
+          const ui = (d.ui && d.ui.login) || {};
+          pair($("lede"), ui.lede); pair($("name-label"), ui.name_label);
+          pair($("pass-label"), ui.passcode_label); pair($("submit"), ui.continue_btn);
+        }).catch(() => {});
+
+      $("form").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        $("error").hidden = true;
+        const username = $("username").value.trim();
+        const passcode = $("passcode").value.trim();
+        if (!username) { fail("नाम लिखें। Enter your name to continue."); $("username").focus(); return; }
+        if (!passcode) { fail("पासकोड लिखें। Enter the passcode to continue."); $("passcode").focus(); return; }
+        $("submit").disabled = true;
+        try {
+          const res = await fetch("/api/login", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ username: username, passcode: passcode }) });
+          if (res.status === 401) { fail("नाम या पासकोड सही नहीं है। That passcode was not accepted."); $("passcode").select(); return; }
+          if (res.status === 429) { fail("बहुत बार गलत कोशिश। एक मिनट रुकें। Too many attempts, wait a minute."); return; }
+          if (!res.ok) { fail("साइन-इन नहीं हो पाया। Sign-in failed, try again."); return; }
+          location.href = next;
+        } catch (e) {
+          fail("SHISHU तक नहीं पहुँच पाए। Could not reach SHISHU, check the connection.");
+        } finally {
+          $("submit").disabled = false;
+        }
+      });
+      $("username").focus();
+    })();
+  </script>
+</body>
+</html>

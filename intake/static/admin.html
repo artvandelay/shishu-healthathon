@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#1b2a4a">
+  <title>SHISHU — Clinical Dashboard</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body class="admin-body">
+  <header class="topbar">
+    <div class="brand">
+      <img id="logo" src="/api/pack-asset/logo" alt="" onerror="this.style.visibility='hidden'">
+      <div><strong id="brand-title">SHISHU</strong><span id="brand-sub">Clinical dashboard</span></div>
+    </div>
+    <div class="topbar-actions">
+      <a class="test" href="/">Test Call -&gt;</a>
+      <button id="logout" class="ghost" type="button">Log out</button>
+    </div>
+  </header>
+  <div class="layout">
+    <aside>
+      <div class="side-tabs" role="tablist" aria-label="Dashboard lists">
+        <button id="tab-calls" type="button" role="tab" aria-selected="true" aria-controls="calls-pane">Calls</button>
+        <button id="tab-bugs" type="button" role="tab" aria-selected="false" aria-controls="bugs-pane">Bug Reports</button>
+      </div>
+      <div id="calls-pane" role="tabpanel">
+        <div class="aside-head"><h2>Calls</h2><button id="refresh" class="refresh" type="button">Refresh</button></div>
+        <label class="pack-filter" for="pack-filter">Pack
+          <select id="pack-filter"><option value="">All packs</option></select>
+        </label>
+        <p id="calls-updated" class="updated"></p>
+        <div id="call-list"></div>
+      </div>
+      <div id="bugs-pane" role="tabpanel" hidden>
+        <div class="aside-head"><h2>Bug Reports</h2><button id="refresh-bugs" class="refresh" type="button">Refresh</button></div>
+        <p id="bugs-updated" class="updated"></p>
+        <div id="bug-list"></div>
+      </div>
+    </aside>
+    <main id="detail">
+      <p id="notice" class="notice" role="status" hidden></p>
+      <p id="empty" class="empty">Select a call to review the recording, red flags, and reports.</p>
+      <article id="report" hidden>
+        <header class="detail-head"><h2 id="call-title"></h2><p id="call-meta"></p></header>
+        <section class="block player" id="player-block">
+          <h3>Call Recording (stereo WAV)</h3>
+          <div class="player-row">
+            <audio id="player" controls preload="none" aria-label="Call recording playback"></audio>
+            <a id="download" class="download" href="/api/audio/0" download>Download WAV</a>
+          </div>
+          <p id="audio-note" class="calm" hidden>Recording is not available yet.</p>
+        </section>
+        <section id="flag-banner" class="banner" hidden><h3>Red Flags Alert Banner</h3><ul id="flag-list"></ul></section>
+        <p id="no-flags" class="calm" hidden>No red flags recorded.</p>
+        <div class="columns">
+          <section class="block">
+            <div class="head-row">
+              <h3>Doctor Clinical Intake Report</h3>
+              <div class="actions">
+                <button id="copy-report" class="ghost" type="button">Copy Report</button>
+                <button id="print-report" class="ghost" type="button">Print</button>
+                <a id="patient-pdf" class="ghost" href="/api/calls/0/patient.pdf">Patient PDF</a>
+              </div>
+            </div>
+            <div id="doctor" class="md"></div>
+          </section>
+          <div class="patient-col">
+            <section class="block"><h3>Patient Summary</h3><p id="patient" class="patient" lang="hi"></p></section>
+            <section class="block"><h3>Structured Answers</h3><div id="answers"></div></section>
+          </div>
+        </div>
+        <section class="block transcript"><h3>Full Call Transcript</h3><div id="transcript"></div></section>
+        <section class="block telemetry" id="telemetry-block">
+          <div class="head-row">
+            <h3>Under-the-Hood Telemetry</h3>
+            <div class="actions"><button id="copy-debug" class="ghost" type="button">Copy Full Debug Bundle</button></div>
+          </div>
+          <div id="kpis" class="kpi-grid"></div>
+          <details id="event-trace" class="trace">
+            <summary id="event-summary">Under-the-Hood Event Trace (0)</summary>
+            <div id="event-table"></div>
+          </details>
+        </section>
+      </article>
+    </main>
+  </div>
+  <script src="/static/admin.js"></script>
+</body>
+</html>
