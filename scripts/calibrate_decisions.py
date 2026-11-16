@@ -71,7 +71,7 @@ def build_state(pack: PackConfig, setup: Row) -> CallState:
     prof, kids = setup.get("profile") or {}, tuple((setup.get("profile") or {}).get("children") or ())
     patches = [ProfilePatch(slots={k: str(prof[k])}) for k in ("caller_name", "marital_status") if prof.get(k)]
     if "children" in prof:
-        patches.append(ProfilePatch(roster_count=len(kids), roster=tuple(
+        patches.append(ProfilePatch(roster_complete=True, roster=tuple(
             RosterInput(age_years=float(c["age_years"]), name=c.get("name"),
                         tag=str(c.get("tag") or c.get("sex") or "unknown")) for c in kids)))
     state, priors = engine.new_state(pack), {str(p["qid"]): p for p in setup.get("prior_answers") or ()}

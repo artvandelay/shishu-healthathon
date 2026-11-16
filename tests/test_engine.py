@@ -5,13 +5,14 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+from intake import engine
 from intake.engine import (
     MAX_STEP_ATTEMPTS, active_prompt, eval_rule, format_age_label,
     merge_transcript_chunk, new_state, quick_replies, quick_reply_command,
     reduce_turn, roster_rows, which_item_prompt,
 )
 from intake.models import (
-    AnswerRecord, AnswerStatus, CallState, CloseReason, OptionSpec, PackConfig, Phase,
+    AnswerRecord, AnswerStatus, CallState, CloseReason, CursorStep, OptionSpec, PackConfig, Phase,
     ProfilePatch, QuestionKind, QuestionSpec, RosterInput, RosterItem, SubStep,
     TurnCommand, TurnOutcome, VariantSpec,
 )
@@ -217,7 +218,65 @@ class EngineSyntheticTests(unittest.TestCase):
                          ["oldest", "middle", "same_age", "same_age"])
 
 
+def at_children(shishu: PackConfig, *, qid: str = "intro_children") -> CallState:
+    """The real intro flow up to the children question: a named, married caller, nothing answered yet."""
+    st = reduce_turn(shishu, engine.new_state(shishu), TurnCommand(profile_patch=ProfilePatch(slots={"caller_name": "कविता"})))
+    st = reduce_turn(shishu, st, TurnCommand(outcome=TurnOutcome.ANSWERED, value="married"))
+    st.cursor = CursorStep(qid=qid)
+    return st
+
+
 class RealPackIntegrationTests(unittest.TestCase):
+    def test_a_stated_count_with_no_ages_holds_on_the_children_question(self):
+        # Bug: an empty-ages children turn fell through to `st.roster = []` + `roster_stated = True`, so
+        # `no_children` went true and all 40 child questions were skipped for a mother who has three children.
+        shishu = load_pack("shishu-hi")
+        st = reduce_turn(shishu, at_children(shishu), TurnCommand(profile_patch=ProfilePatch(roster=())))
+        self.assertEqual((st.roster, st.roster_stated), ([], False))
+        self.assertFalse(eval_rule(shishu, st, "no_children"))
+        self.assertFalse(st.answers.get("birth_nicu") is not None and st.answers["birth_nicu"].state is AnswerStatus.NOT_APPLICABLE)
+        self.assertEqual((st.cursor.qid, st.cursor.hold_slot), ("intro_children", "roster"))
+        self.assertTrue(st.roster_incomplete)
+        self.assertEqual(active_prompt(shishu, st), "जी, उन सभी बच्चों की उम्र क्या-क्या है?")
+
+    def test_explicit_zero_children_still_marks_every_child_question_not_applicable(self):
+        shishu = load_pack("shishu-hi")
+        st = reduce_turn(shishu, at_children(shishu), TurnCommand(profile_patch=ProfilePatch(roster=(), roster_complete=True)))
+        self.assertEqual((st.roster, st.roster_stated, st.roster_incomplete), ([], True, False))
+        self.assertTrue(eval_rule(shishu, st, "no_children"))
+        self.assertEqual(st.answers["birth_nicu"].state, AnswerStatus.NOT_APPLICABLE)
+        self.assertEqual(st.cursor.qid, "intro_bridge")
+
+    def test_a_mid_call_count_only_statement_rewinds_to_the_ages_reask(self):
+        shishu = load_pack("shishu-hi")
+        st = at_children(shishu, qid="birth_nicu")
+        st.roster = [RosterItem(id="item_1", age_years=2.0, age_label="2 साल", tag="male"),
+                     RosterItem(id="item_2", age_years=4.0, age_label="4 साल", tag="female")]
+        st.roster_stated = True
+        st = reduce_turn(shishu, st, TurnCommand(profile_patch=ProfilePatch(roster=())))
+        self.assertEqual((st.cursor.qid, st.cursor.hold_slot), ("intro_children", "roster"))
+        self.assertEqual([c.id for c in st.roster], ["item_1", "item_2"])
+        self.assertEqual(active_prompt(shishu, st), "जी, उन सभी बच्चों की उम्र क्या-क्या है?")
+
+    def test_a_mid_call_child_update_keeps_every_existing_id_and_never_wipes_the_roster(self):
+        # Bug: a roster patch always renumbered item_1..item_n, so every answer already pointing at item_1
+        # silently pointed at a different child, and an ages-less patch wiped the roster to zero children.
+        shishu = load_pack("shishu-hi")
+        st = at_children(shishu)
+        st.roster = [RosterItem(id="item_1", age_years=2.0, age_label="2 साल", tag="male"),
+                     RosterItem(id="item_2", age_years=4.0, age_label="4 साल", tag="female")]
+        st.roster_stated = True
+        st.answers["body_fits"] = AnswerRecord(state=AnswerStatus.CONCERN, item_ids=["item_1"])
+        st = reduce_turn(shishu, st, TurnCommand(profile_patch=ProfilePatch(roster=(
+            RosterInput(age_years=2.0), RosterInput(age_years=2.0), RosterInput(age_years=4.0)))))
+        self.assertEqual([c.id for c in st.roster], ["item_1", "item_3", "item_2"])
+        self.assertEqual([c.age_years for c in st.roster], [2.0, 2.0, 4.0])
+        self.assertEqual(st.answers["body_fits"].item_ids, ["item_1"])
+        self.assertEqual(st.answers["body_fits"].item_ids, [c.id for c in st.roster if c.age_years == 2.0][:1])
+        kept = reduce_turn(shishu, st, TurnCommand(profile_patch=ProfilePatch(roster=())))
+        self.assertEqual([c.id for c in kept.roster], ["item_1", "item_3", "item_2"])
+        self.assertEqual((kept.cursor.qid, kept.cursor.hold_slot), ("intro_children", "roster"))
+
     def test_shishu_pack_reactive_thalassemia_autofill_semantic_skip_and_topic_jump(self):
         shishu = load_pack("shishu-hi")
         st = new_state(shishu)

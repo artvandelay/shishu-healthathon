@@ -26,7 +26,8 @@ def format_age_label(pack: PackConfig, age_years: float) -> str:
     return f"{value} {fmt.get('month_unit' if age_years < 1 else 'year_unit', unit)}"
 def roster_resolved(pack: PackConfig, state: CallState) -> bool:
     if pack.roster_cfg is None: return True
-    return bool(state.roster or state.roster_stated or any(eval_rule(pack, state, r) for r in (pack.roster_cfg.get("skip_if") or ())))
+    return bool(((state.roster or state.roster_stated) and not state.roster_incomplete)
+                or any(eval_rule(pack, state, r) for r in (pack.roster_cfg.get("skip_if") or ())))
 def _field_value(state: CallState, field: str) -> Any:
     if field in state.profile: return state.profile[field]
     rec = state.answers.get(field)
@@ -165,7 +166,7 @@ def _imply(pack: PackConfig, state: CallState, *, roster_given: bool = False) ->
         if not all(eval_rule(pack, state, r) for r in imp.get("when") or ()): continue
         state.profile.update(imp.get("set_profile") or {})
         for k, v in (imp.get("default_profile") or {}).items(): state.profile.setdefault(k, v)
-        if imp.get("clear_roster_if_unprovided") and not roster_given and not state.roster_stated: state.roster, state.pending_roster, state.pending_roster_count = [], [], None
+        if imp.get("clear_roster_if_unprovided") and not roster_given and not state.roster_stated and not state.roster_incomplete: state.roster = []
 def _resync(pack: PackConfig, state: CallState) -> None:
     for spec in pack.questions:
         rec, hits = state.answers.get(spec.id), [r for r in spec.skip_if if eval_rule(pack, state, r)]
@@ -187,6 +188,20 @@ def _advance(pack: PackConfig, state: CallState, cmd: TurnCommand | None = None,
     return state
 def new_state(pack: PackConfig) -> CallState: return _advance(pack, CallState(), record=False)
 
+def _pick_roster_id(r: RosterInput, old: list[RosterItem], used: set[str]) -> str:
+    """A child's stable id: the one the extractor echoed, else the same child already on record, else a new one.
+
+    `item_1..item_n` must never be renumbered, because every answer already recorded points at them.
+    """
+    known = {c.id for c in old}
+    if r.id and r.id not in used and r.id in known: return r.id
+    free = [c for c in old if c.id not in used]
+    same = (next((c for c in free if (c.age_years, c.name) == (float(r.age_years), r.name)), None)
+            or next((c for c in free if c.age_years == float(r.age_years)), None))
+    if same is not None: return same.id
+    taken, n = used | known, 1
+    while f"item_{n}" in taken: n += 1
+    return f"item_{n}"
 def apply_profile_patch(pack: PackConfig, state: CallState, patch: ProfilePatch, *, attempted_on_profile: bool = False) -> CallState:
     st, step, spec = state.model_copy(deep=True), state.cursor, pack.by_id.get(state.cursor.qid)
     on_profile = spec is not None and spec.kind is QuestionKind.PROFILE
@@ -196,24 +211,31 @@ def apply_profile_patch(pack: PackConfig, state: CallState, patch: ProfilePatch,
         for q in pack.questions:
             if clean not in (None, "") and q.saves_to_profile == k and q.kind is QuestionKind.SINGLE_CHOICE and clean in q.options:
                 st.answers[q.id] = AnswerRecord(state=AnswerStatus.ANSWERED, value=clean, choice_label=q.options[clean].label)
-    roster_given = patch.roster is not None or patch.roster_count is not None
+    roster_given = patch.roster is not None or patch.roster_complete is not None
     if roster_given:
-        typed = [RosterItem(id=f"item_{i}", age_years=float(r.age_years), tag=r.tag, name=r.name, age_label=format_age_label(pack, float(r.age_years))) for i, r in enumerate(patch.roster or (), 1)]
-        given, total = (typed if patch.roster is not None else list(st.pending_roster or st.roster)), (len(typed) if patch.roster_count is None else patch.roster_count)
-        if 0 < len(given) < total: st.pending_roster, st.pending_roster_count = given, total
-        else: st.roster, st.roster_stated, st.pending_roster, st.pending_roster_count = ([] if total == 0 else given), True, [], None
+        old, used, typed = list(st.roster), set(), []
+        for r in patch.roster or ():
+            cid = _pick_roster_id(r, old, used)
+            used.add(cid)
+            typed.append(RosterItem(id=cid, age_years=float(r.age_years), tag=r.tag, name=r.name, age_label=format_age_label(pack, float(r.age_years))))
+        complete = patch.roster_complete if patch.roster_complete is not None else bool(patch.roster)
+        if patch.roster: st.roster = typed
+        elif complete: st.roster = []  # an explicit zero children; an ages-less count keeps what is already typed
+        st.roster_incomplete, st.roster_stated = not complete, complete
     _imply(pack, st, roster_given=roster_given)
     _resync(pack, st)
     hold = None
     if on_profile and spec is not None and _is_unsatisfied(pack, st, spec) and (attempted_on_profile or roster_given):
-        hold = "roster" if st.pending_roster else ("roster" if spec.requires_slot in ("roster", (pack.roster_cfg or {}).get("key")) else spec.requires_slot)
+        hold = "roster" if (st.roster_incomplete or spec.requires_slot in ("roster", (pack.roster_cfg or {}).get("key"))) else spec.requires_slot
     if hold:
         st.cursor = CursorStep(qid=step.qid, hold_slot=hold)
         return st
     st.cursor.hold_slot = None
     pos = {q.id: i for i, q in enumerate(pack.questions)}
     if (top := next((q.id for q in pack.questions if _is_unsatisfied(pack, st, q)), None)) and pos[top] < pos.get(step.qid, -1):
-        st.cursor = CursorStep(qid=top)
+        # Reaching the children again with a count but no ages asks the ages reask, never the question from scratch.
+        held = "roster" if st.roster_incomplete and pack.by_id[top].requires_slot in ("roster", (pack.roster_cfg or {}).get("key")) else None
+        st.cursor = CursorStep(qid=top, hold_slot=held)
         return st
     done = st.answers.get(step.qid)
     settled = (done is not None and (done.state is _NA or done.state.is_resolved)) or (on_profile and spec is not None and not _is_unsatisfied(pack, st, spec))

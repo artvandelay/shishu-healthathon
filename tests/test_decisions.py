@@ -6,6 +6,8 @@ import asyncio
 import json
 import unittest
 
+from google.genai import types
+
 from intake import decisions, engine, extractor
 from intake.models import (
     AnswerRecord, AnswerStatus, CallState, CursorStep, PackConfig,
@@ -191,34 +193,96 @@ class ExtractorTests(unittest.TestCase):
     def test_valid_payload_becomes_a_typed_patch(self):
         result = self.run_extract(self.shishu, {
             "caller_name": "  सुनीता  ", "marital_status": "married",
-            "roster_count": 2, "roster": [
-                {"age_years": 6, "tag": "female", "name": "Riya"},
-                {"age_years": 0.5, "tag": "male", "name": None}]})
+            "roster_complete": True, "roster": [
+                {"id": None, "age_years": 6, "tag": "female", "name": "Riya"},
+                {"id": "item_1", "age_years": 0.5, "tag": "male", "name": None}]})
         self.assertTrue(result.ok)
         self.assertEqual(result.error_reason, "")
         self.assertEqual(result.patch.slots["caller_name"], "सुनीता")
-        self.assertEqual(result.patch.roster_count, 2)
+        self.assertIs(result.patch.roster_complete, True)
         self.assertEqual([r.age_years for r in result.patch.roster], [6.0, 0.5])
+        self.assertEqual([r.id for r in result.patch.roster], [None, "item_1"])
         self.assertEqual(result.patch.roster[0].name, "Riya")
+
+    def test_count_without_ages_is_an_incomplete_roster_not_a_complete_one(self):
+        result = self.run_extract(self.shishu, {"roster_complete": False, "roster": []})
+        self.assertTrue(result.ok)
+        self.assertIs(result.patch.roster_complete, False)
+        self.assertEqual(result.patch.roster, ())
 
     def test_unexpected_keys_are_rejected(self):
         result = self.run_extract(self.fever, {"patient_name": "x", "diagnosis": "thal"})
         self.assertEqual((result.ok, result.error_reason), (False, "invalid_schema"))
 
-    def test_invalid_age_and_count_are_rejected(self):
+    def test_invalid_age_and_completeness_are_rejected(self):
         bad_age = self.run_extract(self.shishu, {"roster": [{"age_years": -1, "tag": "male"}]})
         self.assertEqual(bad_age.error_reason, "invalid_schema")
-        bad_count = self.run_extract(self.shishu, {"roster_count": -2})
-        self.assertEqual(bad_count.error_reason, "invalid_schema")
+        bad_complete = self.run_extract(self.shishu, {"roster_complete": "yes"})
+        self.assertEqual(bad_complete.error_reason, "invalid_schema")
+        bad_id = self.run_extract(self.shishu, {"roster": [{"id": 7, "age_years": 2, "tag": "male"}]})
+        self.assertEqual(bad_id.error_reason, "invalid_schema")
 
-    def test_json_text_output_is_parsed(self):
+    def test_json_text_output_is_parsed_to_a_number(self):
         async def gen(**_kwargs):
             return type("Out", (), {"text": '{"patient_age": 4}'})()
 
         result = asyncio.run(extractor.extract_profile_entities(
             self.fever, utterance_text="chaar saal", generator=gen))
         self.assertTrue(result.ok)
-        self.assertEqual(result.patch.slots, {"patient_age": "4"})
+        self.assertEqual(result.patch.slots, {"patient_age": 4})
+        self.assertNotIsInstance(result.patch.slots["patient_age"], str)
+
+    def test_a_number_slot_builds_a_number_schema_and_rejects_a_word(self):
+        # Bug: every profile slot was types.Type.STRING, so the model's 4 came back as "4" and nothing could
+        # ever compare an age numerically — and "four" sailed through as a valid slot value.
+        schema = extractor.build_response_schema(self.fever)
+        self.assertIs(schema.properties["patient_age"].type, types.Type.NUMBER)
+        self.assertIs(schema.properties["patient_name"].type, types.Type.STRING)
+        self.assertEqual(extractor.validate_payload(self.fever, {"patient_age": 4}).slots, {"patient_age": 4})
+        self.assertIsInstance(extractor.validate_payload(self.fever, {"patient_age": 4}).slots["patient_age"], int)
+        self.assertEqual(extractor.validate_payload(self.fever, {"patient_age": 0.5}).slots, {"patient_age": 0.5})
+        with self.assertRaises(ValueError):
+            extractor.validate_payload(self.fever, {"patient_age": "four"})
+        self.assertEqual(self.run_extract(self.fever, {"patient_age": "four"}).error_reason, "invalid_schema")
+
+    def test_roster_schema_carries_ids_and_a_completeness_flag(self):
+        schema = extractor.build_response_schema(self.shishu)
+        self.assertIs(schema.properties["roster_complete"].type, types.Type.BOOLEAN)
+        items = schema.properties["roster"].items
+        self.assertEqual(set(items.properties), {"id", "age_years", "tag", "name"})
+        self.assertEqual(tuple(items.required), ("age_years",))
+        self.assertNotIn("roster_count", schema.properties)
+
+    def test_children_already_on_record_reach_the_prompt_with_their_ids(self):
+        # Bug: only current_profile was sent, so a mid-call "she has a twin too" could not name the existing
+        # children and the extractor re-invented item_1..item_n from scratch.
+        st = state_at(self.shishu, "intro_children")
+        st.roster = [RosterItem(id="item_1", age_years=2.0, age_label="2 साल", tag="male"),
+                     RosterItem(id="item_2", age_years=4.0, age_label="4 साल", tag="female", name="रीना")]
+        text = self.prompt_sent(st)
+        self.assertIn("current_roster:", text)
+        self.assertIn('{"id": "item_1", "age_years": 2.0, "tag": "male", "name": null}', text)
+        self.assertIn('{"id": "item_2", "age_years": 4.0, "tag": "female", "name": "रीना"}', text)
+        self.assertIn("roster_complete: true", text)
+
+    def test_an_incomplete_roster_is_announced_as_incomplete(self):
+        st = state_at(self.shishu, "intro_children")
+        st.roster_incomplete = True
+        text = self.prompt_sent(st)
+        self.assertIn("current_roster: []", text)
+        self.assertIn("roster_complete: false", text)
+        self.assertEqual(self.prompt_sent(state_at(self.shishu, "birth_nicu")).count("roster_complete"), 0)
+
+    def prompt_sent(self, state) -> str:
+        seen: dict = {}
+
+        async def gen(**kwargs):
+            seen["contents"] = kwargs["contents"]
+            return {"caller_name": None}
+
+        asyncio.run(extractor.extract_profile_entities(
+            self.shishu, state, utterance_text="उसकी उम्र चार साल है", generator=gen))
+        return str(seen["contents"])
 
     def test_malformed_json_maps_to_invalid_json(self):
         async def gen(**_kwargs):

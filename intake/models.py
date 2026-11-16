@@ -44,7 +44,7 @@ class NoteText(_Frozen):
     def append(self, text: str, *, redacted: bool = False) -> NoteText:
         safe = self.patient_safe if redacted else dedupe_clauses([self.patient_safe, text])
         return self.model_copy(update={"verbatim": dedupe_clauses([self.verbatim, text]), "patient_safe": safe})
-RosterInput = _rec("RosterInput", age_years=(float, Field(ge=0.0)), tag=(str, "unknown"), name=(str | None, None))
+RosterInput = _rec("RosterInput", id=(str | None, None), age_years=(float, Field(ge=0.0)), tag=(str, "unknown"), name=(str | None, None))
 RosterItem = _rec("RosterItem", id=(str, ...), age_years=(float, Field(ge=0.0)), age_label=(str, ...), tag=(str, "unknown"), name=(str | None, None))
 FollowupSlot = _rec("FollowupSlot", Strict, state=(AnswerStatus, ...), note=(NoteText, Field(default_factory=NoteText)))
 AnswerRecord = _rec("AnswerRecord", Strict, state=(AnswerStatus, ...), value=(Any, None), choice_label=(str, ""), item_ids=(list[str], Field(default_factory=list)),
@@ -53,9 +53,9 @@ AnswerRecord.verbatim_text = property(lambda self: _joined(self, "verbatim"))
 AnswerRecord.patient_safe_text = property(lambda self: _joined(self, "patient_safe", skip_clear=True))
 CursorStep = _rec("CursorStep", Strict, qid=(str, ""), substep=(SubStep, SubStep.MAIN), followup_idx=(int, Field(default=0, ge=0)),
                   hold_slot=(str | None, None), attempts=(int, Field(default=0, ge=0)), open_rounds=(int, Field(default=0, ge=0)))
-ProfilePatch = _rec("ProfilePatch", slots=(dict[str, Any], Field(default_factory=dict)), roster_count=(int | None, Field(default=None, ge=0)),
+ProfilePatch = _rec("ProfilePatch", slots=(dict[str, Any], Field(default_factory=dict)), roster_complete=(bool | None, None),
                     roster=(tuple[RosterInput, ...] | None, None))
-ProfilePatch.is_empty = property(lambda p: not p.slots and p.roster_count is None and p.roster is None)
+ProfilePatch.is_empty = property(lambda p: not p.slots and p.roster_complete is None and p.roster is None)
 VariantSpec = _rec("VariantSpec", when=(str, ...), say=(str, ...))
 OptionSpec = _rec("OptionSpec", label=(str, ...), en=(str, ""), criteria=(str, ""), exclusive=(bool, False))
 TurnCommand = _rec(
@@ -69,8 +69,7 @@ class CallState(Strict):
     profile: dict[str, Any] = Field(default_factory=dict)
     roster: list[RosterItem] = Field(default_factory=list)
     roster_stated: bool = False
-    pending_roster: list[RosterItem] = Field(default_factory=list)
-    pending_roster_count: int | None = None
+    roster_incomplete: bool = False
     semantic_flags: list[str] = Field(default_factory=list)
     cursor: CursorStep = Field(default_factory=CursorStep)
     last_answered_qid: str | None = None

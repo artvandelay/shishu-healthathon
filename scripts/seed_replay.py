@@ -62,7 +62,7 @@ def replay_seed_scenario(pack: PackConfig, scenario: Mapping[str, Any]) -> tuple
             turns.append(("assistant", pr, spec.id))
         if slot := (st.cursor.hold_slot or (spec.requires_slot if spec.kind is QuestionKind.PROFILE else "")):
             is_ros = slot in ("roster", (pack.roster_cfg or {}).get("key"))
-            patch = ProfilePatch(roster=roster, roster_count=len(roster)) if is_ros else ProfilePatch(slots={slot: scenario[slot]} if _clean(scenario.get(slot)) else {})
+            patch = ProfilePatch(roster=roster, roster_complete=True) if is_ros else ProfilePatch(slots={slot: scenario[slot]} if _clean(scenario.get(slot)) else {})
             if said := _clean(" · ".join(f"{c.name or ''} {c.age_years}".strip() for c in roster) if is_ros else str(scenario.get(slot) or "")):
                 turns.append(("user", said, spec.id))
             st = engine.reduce_turn(pack, st, TurnCommand(profile_patch=patch))

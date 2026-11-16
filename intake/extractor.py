@@ -15,7 +15,9 @@ from intake.models import CallState, PackConfig, ProfilePatch, QuestionKind, Ros
 
 DEFAULT_MODEL = "gemini-3.5-flash-lite"
 _CLIENTS: dict[str, genai.Client] = {}
-_ROSTER_FIELDS = ("roster_count", "roster")
+_ROSTER_FIELDS = ("roster_complete", "roster")
+_SLOT_TYPES = {"number": types.Type.NUMBER, "integer": types.Type.INTEGER, "boolean": types.Type.BOOLEAN}
+_UNSET = object()
 
 @dataclass(frozen=True, slots=True)
 class ProfileExtractionResult:
@@ -24,29 +26,48 @@ class ProfileExtractionResult:
     error_reason: str = ""
     extractor_ms: int = 0
 def build_response_schema(pack: PackConfig) -> types.Schema:
-    fields = {sid: types.Schema(type=types.Type.STRING, nullable=True) for sid in pack.profile_slots}
+    fields = {sid: types.Schema(type=_SLOT_TYPES.get(str(cfg.get("type") or "").lower(), types.Type.STRING), nullable=True)
+              for sid, cfg in pack.profile_slots.items()}
     if m := next((q for q in pack.questions if q.saves_to_profile == "marital_status" and q.kind is QuestionKind.SINGLE_CHOICE), None):
         fields["marital_status"] = types.Schema(type=types.Type.STRING, enum=list(m.options), nullable=True)
     if pack.roster_cfg is not None:
         tags = [str(t) for t in pack.roster_cfg.get("tags") or ["unknown"]]
-        entry = {"age_years": types.Schema(type=types.Type.NUMBER), "tag": types.Schema(type=types.Type.STRING, enum=tags), "name": types.Schema(type=types.Type.STRING, nullable=True)}
-        fields["roster_count"] = types.Schema(type=types.Type.INTEGER, nullable=True)
+        entry = {"id": types.Schema(type=types.Type.STRING, nullable=True), "age_years": types.Schema(type=types.Type.NUMBER),
+                 "tag": types.Schema(type=types.Type.STRING, enum=tags), "name": types.Schema(type=types.Type.STRING, nullable=True)}
+        fields["roster_complete"] = types.Schema(type=types.Type.BOOLEAN, nullable=True)
         fields["roster"] = types.Schema(type=types.Type.ARRAY, nullable=True, items=types.Schema(type=types.Type.OBJECT, required=["age_years"], properties=entry))
     return types.Schema(type=types.Type.OBJECT, properties=fields, required=sorted(fields))
 def _roster_input(i: int, entry: Any) -> RosterInput:
     age = entry.get("age_years") if isinstance(entry, dict) else None
     if isinstance(age, bool) or not isinstance(age, (int, float)) or not math.isfinite(age) or age < 0: raise ValueError(f"roster[{i}].age_years invalid")
-    name = entry.get("name")
+    name, cid = entry.get("name"), entry.get("id")
+    if cid is not None and (not isinstance(cid, str) or not cid.strip()): raise ValueError(f"roster[{i}].id invalid")
     if name is not None and not isinstance(name, str): raise ValueError(f"roster[{i}].name invalid")
-    return RosterInput(age_years=float(age), tag=str(entry.get("tag") or "unknown"), name=(" ".join(name.split()) or None) if name else None)
+    return RosterInput(id=(" ".join(cid.split()) if cid else None), age_years=float(age), tag=str(entry.get("tag") or "unknown"),
+                       name=(" ".join(name.split()) or None) if name else None)
+def _slot_value(k: str, cfg: dict[str, Any], v: Any) -> Any:
+    """A typed slot's value, `_UNSET` when unmentioned, or `ValueError` when it cannot be that type at all."""
+    if v is None: return _UNSET
+    kind = str(cfg.get("type") or "").lower()
+    if kind == "number":
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v): raise ValueError(f"invalid {k}")
+        return int(v) if float(v).is_integer() else float(v)
+    if kind == "integer":
+        if isinstance(v, bool) or not isinstance(v, int): raise ValueError(f"invalid {k}")
+        return v
+    if kind == "boolean":
+        if not isinstance(v, bool): raise ValueError(f"invalid {k}")
+        return v
+    if isinstance(v, bool) or not isinstance(v, (str, int, float)): return _UNSET
+    return " ".join(str(v).split()) or _UNSET
 def validate_payload(pack: PackConfig, raw: Any) -> ProfilePatch:
     if not isinstance(raw, dict) or (set(raw) - {*pack.profile_slots, "marital_status", *_ROSTER_FIELDS}): raise ValueError("unexpected profile payload")
-    clean = lambda k: " ".join(str(raw[k]).split())
-    slots = {k: clean(k) for k in ({*pack.profile_slots, "marital_status"}) if isinstance(raw.get(k), (str, int, float)) and not isinstance(raw.get(k), bool) and clean(k)}
-    count, entries = raw.get("roster_count"), raw.get("roster")
-    if count is not None and (isinstance(count, bool) or not isinstance(count, int) or count < 0): raise ValueError("invalid roster_count")
+    values = {k: _slot_value(k, pack.profile_slots.get(k) or {}, raw.get(k)) for k in ({*pack.profile_slots, "marital_status"})}
+    slots = {k: v for k, v in values.items() if v is not _UNSET}
+    complete, entries = raw.get("roster_complete"), raw.get("roster")
+    if complete is not None and not isinstance(complete, bool): raise ValueError("invalid roster_complete")
     if entries is not None and not isinstance(entries, list): raise ValueError("invalid roster")
-    return ProfilePatch(slots=slots, roster_count=count, roster=tuple(_roster_input(i, e) for i, e in enumerate(entries)) if entries is not None else None)
+    return ProfilePatch(slots=slots, roster_complete=complete, roster=tuple(_roster_input(i, e) for i, e in enumerate(entries)) if entries is not None else None)
 async def extract_profile_entities(pack: PackConfig, state: CallState | None = None, utterance_text: str = "", audio_wav_bytes: bytes | None = None,
                                    *, model: str | None = None, api_key: str | None = None, attempt_timeout_sec: float = 3.0,
                                    generator: Callable[..., Any] | None = None) -> ProfileExtractionResult:
@@ -57,8 +78,13 @@ async def extract_profile_entities(pack: PackConfig, state: CallState | None = N
     key = str(api_key if api_key is not None else os.environ.get("GEMINI_API_KEY") or "").strip()
     if generator is None and not key: return fail("missing_api_key")
     known = {k: v for k, v in (state.profile if state else {}).items() if v not in (None, "")}
+    roster: list[str] = []
+    if state is not None and pack.roster_cfg is not None and (state.roster or state.roster_stated or state.roster_incomplete):
+        roster = [f"current_roster: {json.dumps([{'id': c.id, 'age_years': c.age_years, 'tag': c.tag, 'name': c.name} for c in state.roster], ensure_ascii=False)}",
+                  f"roster_complete: {json.dumps(not state.roster_incomplete and bool(state.roster or state.roster_stated))}"]
     text = "\n".join([f"active_qid: {state.cursor.qid if state else ''}", f"active_prompt: {engine.active_prompt(pack, state) if state else ''}",
-                      *([f"current_profile: {json.dumps(known, ensure_ascii=False)}"] if known else []), f"utterance_text: {spoken or '[audio reply]'}"])
+                      *([f"current_profile: {json.dumps(known, ensure_ascii=False)}"] if known else []), *roster,
+                      f"utterance_text: {spoken or '[audio reply]'}"])
     contents: Any = [types.Part.from_text(text=text), types.Part.from_bytes(data=audio, mime_type="audio/wav")] if audio else text
     cfg = types.GenerateContentConfig(system_instruction=pack.extractor_prompt, response_mime_type="application/json", response_schema=build_response_schema(pack), temperature=0.0)
     chosen = str(model or os.environ.get("PROFILE_EXTRACTOR_MODEL") or "").strip() or DEFAULT_MODEL
