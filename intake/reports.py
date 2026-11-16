@@ -20,7 +20,6 @@ from .pack import DEFAULT_PACK_ID, list_pack_ids, load_pack
 
 IST = timezone(timedelta(hours=5, minutes=30))
 SAMPLE_STARTED_AT, _SPECIAL = "2026-11-12 04:00:00", ("patient_profile", "alerts", "negatives")
-_KINDS = (QuestionKind.SINGLE_CHOICE, QuestionKind.MULTI_CHOICE, QuestionKind.SCORE)
 _INCOMPLETE = frozenset(r.value for r in CloseReason if r is not CloseReason.COMPLETE)
 _inflight: WeakKeyDictionary[Any, dict[int, asyncio.Task]] = WeakKeyDictionary()
 _guards: WeakKeyDictionary[Any, asyncio.Lock] = WeakKeyDictionary()
@@ -59,15 +58,14 @@ class ProjectedReport(Strict, frozen=True):
 def _clean(text: Any) -> str: return " ".join(str(text or "").split())
 def _note(text: Any) -> str: return _clean(text).rstrip("।. ")
 def _unique(items: Sequence[Any]) -> list[str]: return list(dict.fromkeys(c for c in map(_clean, items) if c))
-def _grouped(pairs: Mapping[str, list[str]]) -> tuple[dict[str, Any], ...]: return tuple({"title": k, "items": tuple(v)} for k, v in pairs.items())
+def _grouped(pairs: Mapping[str, list[Any]]) -> tuple[dict[str, Any], ...]:
+    """Group detail rows for page two. A row is either a plain string (a clear gate, printed with the group default
+    answer) or a `{question, answer}` pair (a real answer, where a blanket negative would be a lie)."""
+    return tuple({"title": k, "items": tuple(_clean(i) if isinstance(i, str) else {"question": _clean(i["question"]), "answer": _clean(i["answer"])} for i in v)} for k, v in pairs.items())
 
 def _scope(pack: PackConfig, st: CallState, rec: AnswerRecord, *, clinician: bool) -> str:
     if not rec.item_ids or len(st.roster) <= 1: return ""
     return engine.roster_label_clinician(st, rec.item_ids) if clinician else engine.roster_label_patient(pack, st, rec.item_ids)
-def _choice_suffix(spec: QuestionSpec, label: str, rec: AnswerRecord) -> str:
-    """The chosen option in parentheses, only when the question stem does not already contain it."""
-    ch = _clean(rec.choice_label)
-    return f" ({ch})" if spec.kind in _KINDS and ch and ch not in label else ""
 def _section_target(pack: PackConfig, spec: QuestionSpec, known: set[str]) -> str:
     """The clinician heading an answer belongs under: the spec's own override when declared, else its group's title."""
     if spec.clinician_group and f"### {spec.clinician_group}" in known: return f"### {spec.clinician_group}"
@@ -125,7 +123,9 @@ def project_summary(pack: PackConfig, state: CallState | None) -> ProjectedRepor
             continue
         if rec.state is AnswerStatus.NOT_APPLICABLE: continue
         if rec.state is AnswerStatus.UNKNOWN: unknown.append(label)
-        elif rec.state is not AnswerStatus.CONCERN: clear.setdefault(title, []).append(f"{label}{_choice_suffix(q, label, rec)}")
+        elif rec.state is not AnswerStatus.CONCERN:
+            chosen = _clean(rec.choice_label) if rec.state is AnswerStatus.ANSWERED else ""
+            clear.setdefault(title, []).append({"question": label, "answer": chosen} if chosen else label)
         if not q.is_reportable: continue
         child, said = (f" [{sc}]" if (sc := _scope(pack, st, rec, clinician=True)) else ""), (_note(rec.verbatim_text) or _note(rec.choice_label))
         target = _section_target(pack, q, known)

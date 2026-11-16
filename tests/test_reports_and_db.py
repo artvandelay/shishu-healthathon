@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import io
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -60,6 +61,52 @@ class ProjectionTests(unittest.TestCase):
         self.assertIn("hospital or 108", proj.red_flags[0])
         self.assertTrue(proj.red_flags[0].endswith("अभी बेहोश है"))
         self.assertIn("Active emergency", proj.doctor_markdown)
+
+
+class Page2DetailTests(unittest.TestCase):
+    """Page two must print what she actually answered, not a blanket `नहीं` on every detail row.
+
+    Regression: `intro_married="married"` and `fever_duration_bucket="days_3_to_7"` are
+    `AnswerStatus.ANSWERED`, so they landed in `page2_groups` as bare question stems and the
+    template painted `<span class="ans">नहीं</span>` next to them — a married mother read
+    "आपकी शादी हो गई है… नहीं" and a 3-7 day fever read "बुखार कब से है… नहीं".
+    """
+
+    MARRIED_Q = "आपकी शादी हो गई है, होने वाली है, या अभी नहीं हुई"
+    DURATION_Q = "बुखार कब से है — 3 दिन से कम, 3 से 7 दिन, या 7 दिन से ज़्यादा"
+    NATURE_Q = "बुखार लगातार रहता है, या बीच-बीच में आता-जाता है"
+    SHISHU_CLEAR_Q = "बच्चे का जन्म ऑपरेशन (सिजेरियन) से हुआ था"
+    FEVER_CLEAR_Q = "साँस लेने में तकलीफ़ है, या छाती में दर्द या जकड़न है"
+
+    def html(self, pack_id: str, scenario_id: str) -> str:
+        pack = load_pack(pack_id)
+        state = _replay(pack, scenario_id)
+        call = {"id": 7, "started_at": reports.SAMPLE_STARTED_AT, "duration_sec": 360}
+        return reports.render_patient_html(pack, call, reports.project_summary(pack, state))
+
+    def ans_for(self, html: str, question: str) -> str:
+        row = re.search(r'<div class="no-row"><span>' + re.escape(question) + r'</span>'
+                        r'<span class="ans">([^<]*)</span></div>', html)
+        self.assertIsNotNone(row, f"no page-two row for {question!r}")
+        return row.group(1)
+
+    def test_answered_choice_rows_print_the_chosen_label_not_nahi(self):
+        shishu, fever = self.html(_SHISHU, "no_flags"), self.html(_FEVER, "clean_fever")
+        cases = (("shishu married", shishu, self.MARRIED_Q, "शादी हो गई"),
+                 ("fever duration", fever, self.DURATION_Q, "3 दिन से कम"),
+                 ("fever nature", fever, self.NATURE_Q, "लगातार रहता है"),
+                 ("shishu clear gate", shishu, self.SHISHU_CLEAR_Q, "नहीं"),
+                 ("fever clear gate", fever, self.FEVER_CLEAR_Q, "नहीं"))
+        for name, html, question, expected in cases:
+            with self.subTest(row=name):
+                self.assertEqual(self.ans_for(html, question), expected)
+
+    def test_projection_keeps_answered_detail_as_question_and_answer_pair(self):
+        pack = load_pack(_SHISHU)
+        groups = reports.project_summary(pack, _replay(pack, "no_flags")).page2_groups
+        items = [item for group in groups for item in group["items"]]
+        self.assertIn({"question": self.MARRIED_Q, "answer": "शादी हो गई"}, items)
+        self.assertIn(self.SHISHU_CLEAR_Q, items)
 
 
 class BuildInfoTests(unittest.TestCase):

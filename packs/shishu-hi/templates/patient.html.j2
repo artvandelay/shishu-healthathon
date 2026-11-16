@@ -5,8 +5,10 @@
 {%- set title = group["title"] if group is mapping else group.title -%}
 {%- set items = group["items"] if group is mapping else group.items -%}
   <div class="group">{{ title|e }}</div>
-{% for question in items %}
-  <div class="no-row"><span>{{ question|e }}</span><span class="ans">{{ answer }}</span></div>
+{% for item in items %}
+{%- set question = item["question"] if item is mapping else item -%}
+{%- set ans = item["answer"] if (item is mapping and item.get("answer")) else answer -%}
+  <div class="no-row"><span>{{ question|e }}</span><span class="ans">{{ ans|e }}</span></div>
 {% endfor %}
 {%- endmacro -%}
 <!DOCTYPE html>
