@@ -5,13 +5,17 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import time
 import unittest
 import unittest.mock
 from typing import Any
 
 import tests  # noqa: F401 — ensure isolated TEST_DATA_DIR under `-s tests`
 from intake import db, live
-from intake.models import CallState, CloseReason, Phase, TurnCommand, TurnOutcome
+from intake.models import (
+    AnswerRecord, AnswerStatus, CallState, CloseReason, CursorStep, Phase,
+    RosterItem, SubStep, TurnCommand, TurnOutcome,
+)
 from intake.pack import load_pack
 from starlette.websockets import WebSocketState
 
@@ -473,6 +477,158 @@ class CallerUtteranceTests(unittest.TestCase):
             built.state.cursor = built.state.cursor.model_copy(update={"qid": "intro_bridge"})
             await built.on_quick_reply({"value": "clear", "step": built.state.step_token})
             self.assertIsNone(built.last_reduced)
+
+        asyncio.run(body())
+
+
+class ExtractorParallelismTests(unittest.TestCase):
+    """A step that saves to the profile must never pay for the extractor after the Decisions pass."""
+
+    def test_a_saves_to_profile_step_runs_the_extractor_beside_the_decision_pass(self):
+        # Call #11's `intro_married`: the caller answered "हाँ शादी हो गई है, मेरे दो बच्चे हैं" and `mentions_profile`
+        # fired, so `_next_question` ran the extractor *after* Decisions and the turn cost 3.4 s.
+        async def body() -> None:
+            built, _ws, _session = build(call_id=None)
+            state = live.engine.new_state(PACK)
+            state.cursor = state.cursor.model_copy(update={"qid": "intro_married"})
+            state.profile["caller_name"] = "मीरा"  # named, but the roster is still unresolved
+            built.state = state
+            ran: list[str] = []
+            original_decisions, original_extractor = live.decisions.evaluate_turn, live.extractor.extract_profile_entities
+
+            async def fake_decisions(*_args: Any, **_kwargs: Any) -> live.decisions.DecisionCallResult:
+                ran.append("decisions")
+                await asyncio.sleep(0.12)
+                return TurnTests.result(answers(danger_now=0.01, mentions_profile=0.9,
+                                                choice_value={"married": 0.95, "unmarried": 0.03, "other": 0.02}))
+
+            async def fake_extractor(*_args: Any, **_kwargs: Any) -> Any:
+                ran.append("extractor")
+                await asyncio.sleep(0.12)
+                return live.extractor.ProfileExtractionResult(True)
+
+            live.decisions.evaluate_turn = fake_decisions  # type: ignore[assignment]
+            live.extractor.extract_profile_entities = fake_extractor  # type: ignore[assignment]
+            try:
+                await built.on_text({"text": "हाँ शादी हो गई है, मेरे दो बच्चे हैं"})
+                started = time.perf_counter()
+                await built._next_question()
+                elapsed = time.perf_counter() - started
+            finally:
+                live.decisions.evaluate_turn = original_decisions  # type: ignore[assignment]
+                live.extractor.extract_profile_entities = original_extractor  # type: ignore[assignment]
+            self.assertEqual(sorted(ran), ["decisions", "extractor"], "the extractor runs exactly once, on this turn")
+            self.assertLess(elapsed, 0.21,
+                            f"decisions and the extractor must overlap: 2 x 120 ms run sequentially took {elapsed * 1000:.0f} ms")
+
+        asyncio.run(body())
+
+
+class SttReevaluationTests(unittest.TestCase):
+    """The speculative pass starts on audio alone; once the STT lands the turn is judged again with both."""
+
+    GATE = "gate_bones_fractures"
+    ROSTER = (RosterItem(id="item_1", age_years=2.0, age_label="2 साल", tag="male"),
+              RosterItem(id="item_2", age_years=6.0, age_label="6 साल", tag="female"))
+
+    def which_item_session(self) -> tuple[live.LiveCallSession, CallState, list[str]]:
+        """A session parked on the child-selection substep, with a Decision pass that hears the ages only as text."""
+        built, _ws, _session = build(call_id=None)
+        state = live.engine.new_state(PACK)
+        state.roster = list(self.ROSTER)
+        state.cursor = CursorStep(qid=self.GATE, substep=SubStep.WHICH_ITEM)
+        state.answers[self.GATE] = AnswerRecord(state=AnswerStatus.CONCERN)
+        built.state = state
+        spoken: list[str] = []
+
+        async def fake_pass(snapshot: CallState, text: str, pcm: bytes, *, speculated: bool = False) -> live.Turn:
+            spoken.append(text)
+            head = ({"item_1": 0.99, "other": 0.01} if "2 साल" in text
+                    else {"item_2": 0.45, "item_1": 0.42, "other": 0.13})
+            body = answers(danger_now=0.01, active_outcome={"concern": 0.97, "clear": 0.01, "unknown": 0.01}, item_ref=head)
+            intent = live.decisions.interpret_turn_decision(PACK, snapshot, body["answers"], utterance_text=text)
+            turn = live.Turn(TurnTests.result(body), intent, None, snapshot.model_copy(deep=True), text, len(pcm), None,
+                             eval_text=" ".join(text.split()), speculated=speculated)
+            return turn
+
+        built._evaluate_turn_task = fake_pass  # type: ignore[method-assign]
+        return built, state, spoken
+
+    def test_the_child_named_in_the_stt_is_resolved_by_a_second_pass_on_the_first_try(self):
+        # `"2 साल"` only exists in the transcription: the audio-only pass picks item_2 below the confidence gate,
+        # and the old `_rehear` re-read the same raw answers without ever asking the model again.
+        async def body() -> None:
+            built, state, spoken = self.which_item_session()
+            built.snapshot, built.voiced, built.pcm, built.text = state.model_copy(deep=True), 640, SILENCE[:640], ""
+            await built._start(speculate=True)
+            await asyncio.sleep(0)  # the 280 ms speculation lands first, blind
+            self.assertEqual(spoken, [""], "the speculative pass ran on audio alone")
+            await built._hear("user", "2 साल")
+            await built._next_question()
+            self.assertEqual(spoken, ["", "2 साल"], "the STT bought a real second pass, not a re-read of stale answers")
+            self.assertEqual(built.state.answers[self.GATE].item_ids, ["item_1"],
+                             "the named child is resolved on the first try")
+
+        asyncio.run(body())
+
+    def test_stt_replaces_a_blind_pass_that_needs_the_words_instead_of_waiting_it_out(self):
+        # The extractor runs for 3 s on its own timeout: reusing the blind pass would make the profile turn cost all of it.
+        async def body() -> None:
+            built, _ws, _session = build(call_id=None)
+            state = live.engine.new_state(PACK)
+            state.cursor = state.cursor.model_copy(update={"qid": "intro_married"})
+            state.profile["caller_name"] = "मीरा"
+            built.state = state
+            gate, spoken = asyncio.Event(), []
+
+            async def blind_then_real(snapshot: CallState, text: str, pcm: bytes, *, speculated: bool = False) -> live.Turn:
+                spoken.append(text)
+                if not text:
+                    await gate.wait()  # the audio-only pass is still on the wire when the STT lands
+                    return TurnTests.turn(snapshot, TurnCommand(outcome=TurnOutcome.NOT_ABOUT_ACTIVE, utterance=text))
+                return TurnTests.turn(snapshot, TurnCommand(outcome=TurnOutcome.ANSWERED, value="married", utterance=text))
+
+            built._evaluate_turn_task = blind_then_real  # type: ignore[method-assign]
+            built.snapshot, built.voiced, built.pcm, built.text = state.model_copy(deep=True), 640, SILENCE[:640], ""
+            built._start(speculate=True)
+            await asyncio.sleep(0)  # the blind pass is on the wire, still awaiting `gate`
+            self.assertEqual(spoken, [""], "the speculative pass started with no words at all")
+            blind = built.task
+            await built._hear("user", "हाँ शादी हो गई है")
+            fresh = built._start()  # the words are here: the blind pass must not be reused
+            self.assertIsNot(fresh, blind, "a blind audio-only pass that needs the words is replaced, never awaited")
+            await asyncio.sleep(0)
+            self.assertEqual(spoken, ["", "हाँ शादी हो गई है"], "a real (WAV + STT) pass took its place at once")
+            gate.set()
+            await asyncio.sleep(0)
+
+        asyncio.run(body())
+
+    def test_stt_that_lands_while_the_pass_is_in_flight_still_reaches_the_note(self):
+        # Call #11: 12 of 22 turns lost `cmd.utterance` because `await task` skipped `_banked()` entirely.
+        async def body() -> None:
+            built, _ws, _session = build(call_id=None)
+            state = live.engine.new_state(PACK)
+            state.cursor = state.cursor.model_copy(update={"qid": "birth_bcg"})
+            built.state = state
+            gate, passes = asyncio.Event(), []
+
+            async def pending(snapshot: CallState, text: str, pcm: bytes, *, speculated: bool = False) -> live.Turn:
+                passes.append(text)
+                await gate.wait()
+                return turn_with(snapshot, TurnOutcome.CONCERN, text)._replace(pcm_len=len(pcm), speculated=speculated)
+
+            built._evaluate_turn_task = pending  # type: ignore[method-assign]
+            built.snapshot, built.voiced, built.pcm, built.text = state.model_copy(deep=True), 640, SILENCE[:640], ""
+            built._start(speculate=True)
+            asked = asyncio.ensure_future(built._next_question())
+            await asyncio.sleep(0)  # `_next_question` is now awaiting the blind in-flight pass
+            await built._hear("user", "हाँ गाठ हुई थी")  # the transcription arrives mid-flight
+            gate.set()
+            await asked
+            self.assertEqual(passes, [""], "a crisp gate on MAIN needs no second network hop")
+            self.assertEqual(built.state.answers["birth_bcg"].note.verbatim, "हाँ गाठ हुई थी",
+                             "the in-flight STT is folded into the turn instead of being dropped")
 
         asyncio.run(body())
 

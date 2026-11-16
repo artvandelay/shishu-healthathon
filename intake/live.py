@@ -72,6 +72,17 @@ class Turn(NamedTuple):
     reheard: bool = False
 Key = tuple[str, int, str]  # (step_token, voiced bytes, cleaned STT text): a turn is only cacheable on all three
 Reduced = tuple[str, SubStep, int, bool]  # (answered qid, substep, followup index, redacted): the turn just committed
+def _needs_stt_pass(turn: Turn) -> bool:
+    """True when the pass ran audio-only and the transcription could still change its mind (or its extraction).
+
+    The speculative pass fires 280 ms into the pause, before Gemini's `input_transcription` exists. Folding the STT
+    into an already-decided `clear`/`concern` gate costs nothing, but a `which_item`, an open follow-up, a profile
+    patch, or a reply the model could not place needs the model to hear the words, not just the waveform.
+    """
+    if not turn.result.ok or turn.eval_text: return False
+    step, cmd = turn.snapshot.cursor, turn.intent.command
+    return bool(turn.extraction is not None or turn.intent.needs_profile_extraction or cmd.outcome is TurnOutcome.NOT_ABOUT_ACTIVE
+                or (step.substep is SubStep.WHICH_ITEM and not cmd.item_ref) or step.substep is SubStep.FOLLOWUP)
 class LiveCallSession:
     def __init__(self, *, ws: WebSocket, pack: PackConfig, session: Any, call_id: int | None = None, state: CallState | None = None,
                  recorder: audio.CallAudioRecorder | None = None, connect: Callable[[str], Awaitable[Any]] | None = None,
@@ -139,13 +150,21 @@ class LiveCallSession:
     def _key(self) -> Key:
         if self.snapshot is None: self.snapshot = self.state.model_copy(deep=True)
         return self.snapshot.step_token, self.voiced, " ".join(self.text.split())
+    def _wants_extractor(self, snapshot: CallState) -> bool:
+        """A profile step, a step that writes the profile, or a caller whose roster is still unknown all need it."""
+        spec = self.pack.by_id.get(snapshot.cursor.qid)
+        return (engine.step_kind(self.pack, snapshot) == "profile" or bool(spec and spec.saves_to_profile)
+                or not engine.roster_resolved(self.pack, snapshot))
     def _reset_turn(self) -> None:
         self._cancel("task")
         self.pcm, self.voiced, self.text, self.snapshot, self.done, self.tool_pending = b"", 0, "", None, None, False
         self.preroll.clear()  # a reset abandons the banked onset, so no stale chunk can seed the next turn
-    def _start(self, *, speculate: bool = False) -> asyncio.Task:
+    def _start(self, *, speculate: bool = False, force: bool = False) -> asyncio.Task:
         key = self._key()
-        if self.task is not None and not self.task.done() and self.task_key[:2] == key[:2]: return self.task  # the STT may still be growing; `_banked` folds it in
+        if not force and self.task is not None and not self.task.done() and self.task_key[:2] == key[:2]:
+            # The STT may still be growing, and `_banked` folds it in. But a blind audio-only pass that needs the words
+            # (a profile patch, a child's name) must be replaced by a real `(WAV + STT)` pass now, not after its timeout.
+            if self.task_key[2] or not key[2] or not self._wants_extractor(self.snapshot): return self.task
         self._cancel("task")
         self.task_key, self.task = key, asyncio.ensure_future(self._evaluate_turn_task(self.snapshot, self.text, self.pcm, speculated=speculate))
         self.task.add_done_callback(lambda t: self._settle(key, speculate, t))
@@ -154,22 +173,25 @@ class LiveCallSession:
         if task.cancelled() or task.exception() is not None: return consume_task_error(task)
         self.done = (key, turn := task.result())
         if speculate and self.vad.in_turn and turn.intent.command.turn_incomplete: self.vad.extend_for_incomplete()
-    def _rehear(self, turn: Turn, spoken: str) -> Turn:
-        """The banked pass ran before the transcription finished; re-interpret its raw answers against the fuller text."""
-        return turn._replace(intent=decisions.interpret_turn_decision(self.pack, turn.snapshot, turn.result.raw_answers, utterance_text=spoken), spoken=spoken, reheard=True)
+    def _fold_stt(self, turn: Turn, spoken: str) -> Turn:
+        """A decided turn whose transcription trailed it: keep her words, no second network hop needed."""
+        cmd = turn.intent.command.model_copy(update={"utterance": spoken})
+        return turn._replace(intent=turn.intent.model_copy(update={"command": cmd}), spoken=spoken, reheard=True)
     def _banked(self) -> Turn | None:
         """The pass for this turn, re-judged against the fuller transcription if the STT has caught up since it ran."""
         if self.done is None: return None
         key, (settled, turn) = self._key(), self.done
         if settled[:2] != key[:2]: return None
+        if key[2] and _needs_stt_pass(turn): return None  # force `_turn()` to run the real `(WAV + STT)` pass
         if settled == key or not key[2] or not turn.result.ok: return turn
-        self.done = (key, reheard := self._rehear(turn, key[2]))
-        return reheard
+        self.done = (key, folded := self._fold_stt(turn, key[2]))
+        return folded
     async def _turn(self) -> Turn | None:
         if (banked := self._banked()) is not None: return banked
-        task = self._start()
         try:
-            return self._banked() or await task
+            turn = await self._start()
+            if self._key()[2] and _needs_stt_pass(turn): turn = await self._start(force=True)
+            return self._banked() or turn  # `_banked` folds in an STT that landed while the pass was in flight
         except asyncio.CancelledError:  # a `BaseException` in 3.12: it would otherwise sail past every `except Exception`
             cur = asyncio.current_task()
             if cur is not None and cur.cancelling(): raise
@@ -177,7 +199,7 @@ class LiveCallSession:
     async def _evaluate_turn_task(self, snapshot: CallState, spoken: str, pcm: bytes, *, speculated: bool = False) -> Turn:
         wav = audio.pcm16_to_wav_bytes(pcm, _IN) if pcm else None
         jobs: list[Awaitable[Any]] = [decisions.evaluate_turn(decisions.build_turn_request(self.pack, snapshot, utterance_text=spoken, audio_wav_bytes=wav, include_turn_incomplete=True))]
-        if engine.step_kind(self.pack, snapshot) == "profile": jobs.append(extractor.extract_profile_entities(self.pack, snapshot, utterance_text=spoken, audio_wav_bytes=wav))
+        if self._wants_extractor(snapshot): jobs.append(extractor.extract_profile_entities(self.pack, snapshot, utterance_text=spoken, audio_wav_bytes=wav))
         done = await asyncio.gather(*jobs)
         return Turn(done[0], decisions.interpret_turn_decision(self.pack, snapshot, done[0].raw_answers, utterance_text=spoken), done[1] if len(done) > 1 else None, snapshot, spoken, len(pcm), wav,
                     eval_text=" ".join(spoken.split()), speculated=speculated)
