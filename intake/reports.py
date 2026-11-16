@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio, os, sys, tempfile, threading
+import asyncio, functools, os, sys, tempfile, threading
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -25,6 +25,21 @@ _INCOMPLETE = frozenset(r.value for r in CloseReason if r is not CloseReason.COM
 _inflight: WeakKeyDictionary[Any, dict[int, asyncio.Task]] = WeakKeyDictionary()
 _guards: WeakKeyDictionary[Any, asyncio.Lock] = WeakKeyDictionary()
 _guard_lock = threading.Lock()
+
+@functools.lru_cache(maxsize=1)
+def build_info() -> dict[str, str]:
+    """Deploy stamp: `env@commit`, from platform variables or a plain `.git` read (never a subprocess)."""
+    commit = (os.environ.get("GIT_COMMIT") or os.environ.get("RAILWAY_GIT_COMMIT_SHA") or "").strip()[:7].lower()
+    if not commit:
+        git, sha = Path(__file__).resolve().parents[1] / ".git", ""
+        try:
+            head = (git / "HEAD").read_text(encoding="utf-8").strip(); rel = head.partition(":")[2].strip() if head.startswith("ref:") else ""
+            if rel: sha = (git / rel).read_text(encoding="utf-8") if (git / rel).is_file() else next((l.split()[0] for l in (git / "packed-refs").read_text(encoding="utf-8").splitlines() if l.endswith(f" {rel}")), "")
+            sha = (sha or head).strip()[:7].lower(); commit = sha if all(c in "0123456789abcdef" for c in sha) else ""
+        except OSError: commit = ""
+    where = " ".join(os.environ.get(k, "") for k in ("RAILWAY_PROJECT_NAME", "RAILWAY_PUBLIC_DOMAIN", "RAILWAY_ENVIRONMENT_NAME")).lower()
+    env = (os.environ.get("APP_ENV") or "").strip().lower() or ("staging" if "staging" in where else "prod" if "prod" in where else "local")
+    return {"env": env, "commit": commit, "tag": f"{env}@{commit}" if commit else env}
 
 class ProjectedReport(Strict, frozen=True):
     patient_name: str = ""
@@ -154,11 +169,14 @@ def render_patient_html(pack: PackConfig, call: Mapping[str, Any], proj: Project
     clock = f"{when.hour % 12 or 12}:{when.minute:02d} {cfg.get('am_label', 'AM') if when.hour < 12 else cfg.get('pm_label', 'PM')}" if when else ""
     who = " · ".join(b for b in (rep.patient_name, rep.roster_patient) if b) or str((pack.prompts.get("roster_format") or {}).get("patient_default_who") or "")
     pref = str(pack.meta.get("pdf_prefix") or pack.id.upper())
-    meta = " · ".join(b for b in (f"{pref}-{int(call.get('id') or 0)}", date_hi, clock, dur, str(cfg.get("incomplete_badge", "incomplete") if rep.incomplete else cfg.get("complete_badge", "complete"))) if b)
+    build, cid, tok = build_info()["tag"], int(call.get("id") or 0), str(call.get("share_token") or "")[:8]; ref = f"{pref}-{cid}" if cid else pref
+    meta = " · ".join(b for b in (ref, date_hi, clock, dur, str(cfg.get("incomplete_badge", "incomplete") if rep.incomplete else cfg.get("complete_badge", "complete"))) if b)
     assets = pack.meta.get("assets") or {}
+    subject = " ".join(x for x in (f"pack={pack.id}", f"call={cid}" if cid else "", f"token={tok}" if tok else "", f"build={build}") if x)
     css = (pack.root / "templates" / "pdf.css").read_text(encoding="utf-8").replace("__FONT__", (pack.root / "assets" / str(assets.get("font") or "")).as_uri())
+    css = css.replace("__FOOTER__", f"{ref} · {build}".replace("\\", "\\\\").replace('"', '\\"'))
     return _template(pack, "patient.html.j2").render(
-        css=css, logo_uri=(pack.root / "assets" / str(assets.get("logo") or "")).as_uri(), call_id=int(call.get("id") or 0), who=who, meta=meta,
+        css=css, doc_title=ref, pdf_subject=subject, logo_uri=(pack.root / "assets" / str(assets.get("logo") or "")).as_uri(), call_id=cid, who=who, meta=meta,
         emergency=rep.emergency, incomplete=rep.incomplete, questions=list(rep.patient_questions), yes_items=list(rep.yes_items), page2_groups=list(rep.page2_groups),
         page2_unknown=list(rep.page2_unknown), page2_unasked=list(rep.page2_unasked), universal_line=str(pack.report_cfg.get("universal_advice_line_hi") or ""))
 def render_patient_pdf(pack: PackConfig, call: Mapping[str, Any], proj: ProjectedReport | None = None) -> bytes:
@@ -166,8 +184,9 @@ def render_patient_pdf(pack: PackConfig, call: Mapping[str, Any], proj: Projecte
 def patient_pdf_path(call_id: int) -> Path: return Path(db.DATA_DIR) / "pdfs" / f"call-{int(call_id)}.pdf"
 
 def pdf_filename(pack: PackConfig, call: Mapping[str, Any]) -> str:
-    when, pref = _ist(call.get("started_at")), str(pack.meta.get("pdf_prefix") or pack.id.upper())
-    return f"{pref}.pdf" if when is None else f"{pref}-{when:%Y-%m-%d-%H%M}.pdf"
+    when, pref, cid = _ist(call.get("started_at")), str(pack.meta.get("pdf_prefix") or pack.id.upper()), int(call.get("id") or 0)
+    suffix = f"-c{cid}" if cid > 0 else ""
+    return f"{pref}{suffix}.pdf" if when is None else f"{pref}-{when:%Y-%m-%d-%H%M%S}{suffix}.pdf"
 def build_patient_pdf_sync(call_id: int) -> tuple[bytes, str]:
     if (call := db.get_call(call_id)) is None: raise LookupError(f"Call {call_id} not found")
     pack = load_pack(str(call.get("pack_id") or DEFAULT_PACK_ID))

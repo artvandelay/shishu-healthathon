@@ -11,7 +11,7 @@
   size: A4;
   margin: 14mm 16mm 16mm;
   @bottom-left {
-    content: "SHISHU";
+    content: "__FOOTER__";
     font-family: "Body", sans-serif;
     font-size: 8pt;
     color: #8E95A3;

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import base64, hashlib, hmac, json, logging, os, secrets, threading, time
+import base64, hashlib, hmac, json, logging, os, re, secrets, threading, time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote
@@ -54,6 +54,11 @@ def _call(call_id: int | None = None, token: str = "", *, live: bool = False) ->
     if call is None: raise HTTPException(404, "Call not found")
     if not live and call.get("status") == "active": raise HTTPException(409, "Call is still running")
     return call
+def _clinic_code(raw: str | None) -> str:
+    """A clinic code only as a plain slug, else the configured default — never a path or free text."""
+    for value in ((raw or "").strip().lower(), (os.environ.get("DEFAULT_CLINIC_CODE") or "").strip().lower()):
+        if re.fullmatch(r"[a-z0-9_-]{1,40}", value): return value
+    return ""
 def _inside(root: Path, *parts: str) -> Path:
     base, path = root.resolve(), root.joinpath(*parts).resolve()
     if base not in path.parents: raise HTTPException(404, "Not found")
@@ -77,7 +82,7 @@ async def _gate(request: Request, call_next):
     if path in PUBLIC or path.startswith(OPEN) or (role and (role == "admin" or not admin_only)): return await call_next(request)
     if path.startswith("/api/"): return JSONResponse({"ok": False}, status_code=403 if role else 401)
     return RedirectResponse(f"/login?next={quote(f'{path}?{request.url.query}' if request.url.query else path, safe='/')}", status_code=302)
-app.get("/health")(lambda: {"status": "ok"})
+app.get("/health")(lambda: {"status": "ok", "build": reports.build_info()["tag"]})
 for _route, _page in PAGES.items(): app.get(_route)(lambda html=_page: FileResponse(STATIC / html, media_type="text/html"))
 
 @app.get("/static/{asset}")
@@ -168,4 +173,4 @@ async def ws_live(ws: WebSocket) -> None:
         return
     await ws.accept()
     from intake import live
-    await live.handle_live_ws(ws, pack=pack, caller_name=username, user_role=role, clinic_code=(ws.query_params.get("clinic") or "").strip(), on_call_completed=_prepare_pdf)
+    await live.handle_live_ws(ws, pack=pack, caller_name=username, user_role=role, clinic_code=_clinic_code(ws.query_params.get("clinic")), on_call_completed=_prepare_pdf)

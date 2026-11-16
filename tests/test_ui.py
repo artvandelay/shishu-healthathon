@@ -58,6 +58,8 @@ const sent = [], pdfCalls = [], intervals = [], worklets = [];
 let timerId = 0;
 let bugBody = null, ctxRef = null, current = null, frames = [], opens = [];
 let PACK_JSON = {}, NOW = 1_700_000_000_000;
+let pdfHeaders = "", pdfNoHeaders = false, canShare = true;
+const fileNames = [], anchors = [];
 
 function Ctx() {
   this.currentTime = 0; this.sampleRate = 48000; this.destination = {}; this.sources = [];
@@ -97,21 +99,21 @@ const sandbox = {
   btoa: (s) => Buffer.from(s, "binary").toString("base64"),
   URL: { createObjectURL: () => "blob:x", revokeObjectURL() {} },
   Blob: function (parts) { this.parts = parts; },
-  File: function (parts, name, cfg) { this.parts = parts; this.name = name; this.type = cfg && cfg.type; },
+  File: function (parts, name, cfg) { this.parts = parts; this.name = name; this.type = cfg && cfg.type; fileNames.push(name); },
   Image: function () { const self = this; setTimeout(() => self.onerror && self.onerror(), 0); },
   URLSearchParams, Uint8Array, Int16Array, Float32Array, DataView, ArrayBuffer, JSON, Promise,
   encodeURIComponent, decodeURIComponent, Object, Number, String, Boolean, Math, RegExp, Error,
   Date: Object.assign(class extends Date { constructor(...args) { super(...(args.length ? args : [NOW])); } }, { now: () => NOW }),
   document: {
     getElementById: (id) => nodes[id] || (nodes[id] = node(id)),
-    createElement: (tag) => node(tag),
+    createElement: (tag) => { const made = node(tag); if (tag === "a") anchors.push(made); return made; },
     querySelectorAll: (sel) => (sel === "[data-ui]" ? uiNodes : []),
     body: { appendChild() {} }
   },
   location: { protocol: "http:", host: "t", search: "", href: "http://t/", pathname: "/" },
   navigator: {
     mediaDevices: { getUserMedia: () => Promise.resolve({ getTracks: () => [{ stop() {} }] }) },
-    canShare: () => true, share: () => Promise.resolve(),
+    canShare: () => canShare, share: () => Promise.resolve(),
     clipboard: { writeText: () => Promise.resolve() }
   },
   WebSocket: MockWS,
@@ -128,7 +130,8 @@ sandbox.fetch = (url, init) => {
   }
   if (url.includes("patient.pdf")) {
     pdfCalls.push(init && init.method);
-    return Promise.resolve({ ok: true, status: 200, blob: () => Promise.resolve(new Blob([])) });
+    const headers = pdfNoHeaders ? undefined : { get: (k) => (k.toLowerCase() === "content-disposition" ? pdfHeaders : null) };
+    return Promise.resolve({ ok: true, status: 200, headers, blob: () => Promise.resolve(new Blob([])) });
   }
   return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) });
 };
@@ -167,7 +170,11 @@ const api = {
     const chip = nodes["bug-chips"].children.find((c) => c.dataset.value === value);
     nodes["bug-chips"].fire("click", { target: { closest: () => chip } });
   },
-  bug() { return bugBody; }
+  bug() { return bugBody; },
+  pdfName() { return fileNames.slice(); },
+  downloads() { return anchors.map((a) => a.download); },
+  setPdf(disposition, noHeaders, shareable) { pdfHeaders = disposition || ""; pdfNoHeaders = !!noHeaders; canShare = shareable !== false; },
+  lines() { return source.split("\n").length - (source.endsWith("\n") ? 1 : 0); }
 };
 globalThis.api = api;
 """
@@ -342,6 +349,39 @@ return { micReady, quietIdle, duringSpeech, stillSpeaking, twoSeconds, afterThre
         self.assertTrue(out["afterReply"], "a quick-reply tap arms the wait even with no mic frames")
         self.assertTrue(out["afterBotAudio"], "bot audio clears the wait")
         self.assertTrue(out["afterClear"], "a clear clears the wait")
+
+    def test_the_pdf_adopts_the_served_filename_and_falls_back_without_headers(self):
+        out = self.run_js(r"""
+api.boot(JSON.parse(process.env.PACK));
+await api.settle();
+await api.start();
+api.push({ type: "session_started", call_id: 4, share_token: "tok", out_sample_rate: 24000 });
+await api.settle();
+
+api.setPdf('attachment; filename="SHISHU-2026-11-12-093000-c4.pdf"', false, false);
+api.push({ type: "call_completed", call_id: 4, share_token: "tok" });
+await api.settle();
+const adopted = api.pdfName().pop();
+api.nodes["share-pdf"].fire("click");
+await api.settle();
+const adoptedDownload = api.downloads().pop();
+
+api.setPdf("", true, false);
+api.nodes["retry-pdf"].fire("click");
+await api.settle();
+const fallback = api.pdfName().pop();
+api.nodes["share-pdf"].fire("click");
+await api.settle();
+const fallbackDownload = api.downloads().pop();
+
+return { adopted, adoptedDownload, fallback, fallbackDownload, lines: api.lines() };
+""")
+
+        self.assertEqual(out["adopted"], "SHISHU-2026-11-12-093000-c4.pdf")
+        self.assertEqual(out["adoptedDownload"], "SHISHU-2026-11-12-093000-c4.pdf")
+        self.assertEqual(out["fallback"], "SHISHU.pdf", "no Content-Disposition still yields a name")
+        self.assertEqual(out["fallbackDownload"], "SHISHU.pdf")
+        self.assertLessEqual(out["lines"], 285)
 
     def test_page_is_stylesheet_driven_and_within_budget(self):
         html = (STATIC / "call.html").read_text(encoding="utf-8")

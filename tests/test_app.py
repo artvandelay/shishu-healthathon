@@ -2,13 +2,14 @@
 
 import os
 import unittest
+from unittest import mock
 
 import tests  # noqa: F401 — ensure isolated TEST_DATA_DIR under `-s tests`
 
 from fastapi.testclient import TestClient  # noqa: E402
 
 from intake import app as intake_app  # noqa: E402
-from intake import db  # noqa: E402
+from intake import db, live, reports  # noqa: E402
 
 USER_PASS = os.environ["APP_PASSCODE"]
 ADMIN_PASS = os.environ["ADMIN_PASSCODE"]
@@ -39,8 +40,11 @@ class AppTestCase(unittest.TestCase):
 
 
 class HealthAndPageTests(AppTestCase):
-    def test_health_is_public(self):
-        self.assertEqual(self.client.get("/health").json(), {"status": "ok"})
+    def test_health_is_public_and_reports_the_build_stamp(self):
+        payload = self.client.get("/health").json()
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["build"], reports.build_info()["tag"])
+        self.assertTrue(payload["build"].startswith(reports.build_info()["env"]))
 
     def test_pages_redirect_to_login_and_keep_the_query(self):
         login = self.client.get("/login")
@@ -339,6 +343,31 @@ class LiveSocketTests(AppTestCase):
     def test_unknown_pack_closes_with_1008(self):
         self.sign_in()
         self.assertEqual(self.close_code("pack=nope"), 1008)
+
+    def test_clinic_code_keeps_a_slug_and_falls_back_to_the_default(self):
+        with mock.patch.dict(os.environ, {"DEFAULT_CLINIC_CODE": "clinic-a"}):
+            self.assertEqual(intake_app._clinic_code("opd_2"), "opd_2")
+            self.assertEqual(intake_app._clinic_code("OPD-2"), "opd-2")
+            for bad in ("", "   ", "../etc/passwd", "opd 2", "a" * 41, "opd/2"):
+                self.assertEqual(intake_app._clinic_code(bad), "clinic-a", bad)
+        with mock.patch.dict(os.environ, {"DEFAULT_CLINIC_CODE": "../bad"}):
+            self.assertEqual(intake_app._clinic_code("../also-bad"), "", "an unsafe default is dropped too")
+
+    def test_the_socket_is_handed_the_validated_clinic_code(self):
+        self.sign_in()
+        seen = {}
+
+        async def capture(ws, **kwargs):
+            seen.update(kwargs)
+
+        with mock.patch.object(live, "handle_live_ws", capture), \
+                mock.patch.dict(os.environ, {"DEFAULT_CLINIC_CODE": "clinic-a"}):
+            with self.client.websocket_connect("/ws/live?pack=shishu-hi&clinic=../evil"):
+                pass
+            self.assertEqual(seen["clinic_code"], "clinic-a")
+            with self.client.websocket_connect("/ws/live?pack=shishu-hi&clinic=opd_2"):
+                pass
+            self.assertEqual(seen["clinic_code"], "opd_2")
 
 
 if __name__ == "__main__":

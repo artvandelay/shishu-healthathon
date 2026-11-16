@@ -191,12 +191,12 @@ function closeAudio() {
 async function loadPdf(method) {
   hide([shareBtn, retryBtn]);
   try {
-    const url = `/api/calls/by-token/${encodeURIComponent(token)}/patient.pdf`; const res = await fetch(url, { method, credentials: "same-origin" });
-    if (!res.ok) throw new Error("report"); pdf = new File([await res.blob()], "SHISHU.pdf", { type: "application/pdf" });
+    const url = `/api/calls/by-token/${encodeURIComponent(token)}/patient.pdf`; const res = await fetch(url, { method, credentials: "same-origin" }); const cd = (res.headers && res.headers.get && res.headers.get("content-disposition")) || "";
+    if (!res.ok) throw new Error("report"); const m = /filename="([^"]+)"/.exec(cd); pdf = new File([await res.blob()], (m && m[1]) || "SHISHU.pdf", { type: "application/pdf" });
     show(shareBtn, true);
   } catch (e) { show(retryBtn, true); }
 }
-function savePdf() { if (!pdf) return; const url = URL.createObjectURL(pdf); const link = Object.assign(document.createElement("a"), { href: url, download: "SHISHU.pdf" }); document.body.appendChild(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
+function savePdf() { if (!pdf) return; const url = URL.createObjectURL(pdf); const link = Object.assign(document.createElement("a"), { href: url, download: pdf.name || "SHISHU.pdf" }); document.body.appendChild(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
 function sharePdf() {
   if (!pdf) return;
   if (token) { const url = `/api/calls/by-token/${encodeURIComponent(token)}/events`; const body = JSON.stringify({ event: "share_clicked" }); fetch(url, { method: "POST", credentials: "same-origin", body }).catch(() => {}); }

@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import io
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import tests  # noqa: F401 — ensure isolated TEST_DATA_DIR under `-s tests`
 from intake import db, engine, reports
@@ -187,6 +189,68 @@ class ProjectionTests(unittest.TestCase):
         self.assertEqual(reports.project_summary(pack, None).close_reason, "complete")
 
 
+class BuildInfoTests(unittest.TestCase):
+    """The deploy stamp resolves from platform env first, then a plain `.git` read, and never raises."""
+
+    def stamp(self, **env: str) -> dict[str, str]:
+        reports.build_info.cache_clear()
+        self.addCleanup(reports.build_info.cache_clear)
+        with mock.patch.dict(os.environ, env, clear=True):
+            return reports.build_info()
+
+    def test_commit_and_env_come_from_the_platform_variables(self):
+        self.assertEqual(self.stamp(GIT_COMMIT="ABC1234DEF", RAILWAY_PROJECT_NAME="shishu-staging"),
+                         {"env": "staging", "commit": "abc1234", "tag": "staging@abc1234"})
+        self.assertEqual(self.stamp(RAILWAY_GIT_COMMIT_SHA="9999999", RAILWAY_ENVIRONMENT_NAME="production")
+                         ["tag"], "prod@9999999")
+
+    def test_app_env_wins_and_a_bare_local_stamp_is_consistent(self):
+        self.assertEqual(self.stamp(APP_ENV="prod", GIT_COMMIT="aaaaaaa", RAILWAY_PROJECT_NAME="staging")
+                         ["tag"], "prod@aaaaaaa")
+        local = self.stamp()
+        self.assertEqual(local["env"], "local")
+        self.assertEqual(local["tag"], f"local@{local['commit']}" if local["commit"] else "local")
+
+    def test_a_missing_or_corrupt_git_directory_never_raises(self):
+        reports.build_info.cache_clear()
+        self.addCleanup(reports.build_info.cache_clear)
+        with mock.patch.object(reports, "__file__", "/nonexistent/intake/reports.py"), \
+                mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(reports.build_info(), {"env": "local", "commit": "", "tag": "local"})
+
+    def test_the_real_ref_and_a_packed_ref_both_resolve_to_seven_hex(self):
+        reports.build_info.cache_clear()
+        self.addCleanup(reports.build_info.cache_clear)
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {}, clear=True):
+            git = Path(tmp, ".git")
+            (git / "refs" / "heads").mkdir(parents=True)
+            (git / "refs/heads/v3").write_text("0123456789abcdef\n", encoding="utf-8")
+            (git / "HEAD").write_text("ref: refs/heads/v3\n", encoding="utf-8")
+            with mock.patch.object(reports, "__file__", str(Path(tmp, "intake", "reports.py"))):
+                self.assertEqual(reports.build_info()["commit"], "0123456")
+                reports.build_info.cache_clear()
+                (git / "refs/heads/v3").unlink()
+                (git / "packed-refs").write_text("fedcba9876543210 refs/heads/v3\n", encoding="utf-8")
+                self.assertEqual(reports.build_info()["commit"], "fedcba9")
+                reports.build_info.cache_clear()
+                (git / "HEAD").write_text("not-a-sha\n", encoding="utf-8")
+                self.assertEqual(reports.build_info()["commit"], "")
+
+
+class PdfFilenameTests(unittest.TestCase):
+    def test_the_filename_carries_seconds_and_the_call_id_but_no_patient_name(self):
+        pack = load_pack(_SHISHU)
+        name = reports.pdf_filename(pack, {"id": 7, "started_at": "2026-11-12 04:00:00",
+                                           "patient_name": "शिल्पा", "caller_name": "शिल्पा"})
+        self.assertEqual(name, "SHISHU-2026-11-12-093000-c7.pdf")
+        self.assertNotIn("शिल्पा", name)
+
+    def test_a_call_without_a_start_or_an_id_still_gets_a_name(self):
+        pack = load_pack(_FEVER)
+        self.assertEqual(reports.pdf_filename(pack, {}), "SHISHU.pdf")
+        self.assertEqual(reports.pdf_filename(pack, {"id": 12}), "SHISHU-c12.pdf")
+
+
 class PatientPdfTests(unittest.TestCase):
     """Real WeasyPrint renders: these are the tests that catch a Mac with no Pango."""
 
@@ -257,6 +321,23 @@ class PatientPdfTests(unittest.TestCase):
         self.assertIn("NotoSansDevanagari.ttf", html)
         self.assertIn("shishu-logo.png", html)
         self.assertNotIn("__FONT__", html)
+        self.assertNotIn("__FOOTER__", html)
+
+    def test_the_pdf_carries_a_title_subject_and_footer_stamp_without_a_patient_name(self):
+        from pypdf import PdfReader
+
+        pack = load_pack(_SHISHU)
+        proj = reports.project_summary(pack, _replay(pack, "red_flags"))
+        call = {**_SAMPLE_CALL, "share_token": "abcdefghijklmnop"}
+        pdf = reports.render_patient_pdf(pack, call, proj)
+        reader = PdfReader(io.BytesIO(pdf))
+        build = reports.build_info()["tag"]
+        self.assertEqual(reader.metadata.title, "SHISHU-7")
+        for part in ("pack=shishu-hi", "call=7", "token=abcdefgh", f"build={build}"):
+            self.assertIn(part, reader.metadata.subject)
+        body = "\n".join(page.extract_text() or "" for page in reader.pages)
+        self.assertIn(f"SHISHU-7 · {build}", body)
+        self.assertNotIn("शिल्पा", reader.metadata.title + reader.metadata.subject)
 
     def test_write_sample_pdfs_names_every_scenario_file(self):
         for pack_id, names in _SCENARIOS.items():
