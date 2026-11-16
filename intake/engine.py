@@ -40,11 +40,17 @@ def _roster_op(pack: PackConfig, state: CallState, spec: dict[str, Any]) -> bool
     if op == "count_gt": return len(state.roster) > int(spec.get("value", 0))
     if op == "any_match": return bool(hits)
     return roster_resolved(pack, state) and (not state.roster if op == "is_empty" else not hits)
+def _group_clear(pack: PackConfig, state: CallState, group: str, rule: str) -> bool:
+    """True when no already-recorded CONCERN in `group` can be contradicted by asking `rule`'s question."""
+    for qid, rec in state.answers.items():
+        q = pack.by_id.get(qid)
+        if rec.state is AnswerStatus.CONCERN and q is not None and q.group == group and rule != qid and rule not in q.skip_if: return False
+    return True
 def eval_rule(pack: PackConfig, state: CallState, rule: str | dict[str, Any]) -> bool:
     spec = (pack.rules.get(rule) or {}) if isinstance(rule, str) else rule
     if "any_of" in spec or "all_of" in spec: return (any if "any_of" in spec else all)(eval_rule(pack, state, r) for r in spec.get("any_of") or spec["all_of"])
     if "semantic_flag" in spec: return spec["semantic_flag"] in state.semantic_flags
-    if "group_no_concern" in spec: return not any(r.state is AnswerStatus.CONCERN and (q := pack.by_id.get(qid)) is not None and q.group == spec["group_no_concern"] and rule != qid and rule not in q.skip_if for qid, r in state.answers.items())
+    if "group_no_concern" in spec: return _group_clear(pack, state, spec["group_no_concern"], rule)
     if "roster_op" in spec: return _roster_op(pack, state, spec)
     if "field" not in spec: return False
     op, target, val = spec.get("op", ""), spec.get("value"), _field_value(state, spec["field"])
@@ -70,7 +76,7 @@ def which_item_prompt(pack: PackConfig, state: CallState) -> str:
     parts = []
     for i, c in enumerate(ordered):
         fem, name = c.tag == "female", (c.name or "").strip()
-        gender = ("female" if fem else "male") if name else ("female" if fem else ("male" if c.tag == "male" else "other"))
+        gender = "female" if fem else ("male" if name or c.tag == "male" else "other")
         parts.append(str(w.get(f"named_{gender}" if name else f"unnamed_{gender}", "{age} {name}" if name else "{age}")).format(age=c.age_label, name=name)
                      + (str(w.get("middle_female" if fem else "middle_male", "")) if len(ordered) == 3 and i == 1 else ""))
     listed = ", ".join(parts[:-1]) + str(w.get("or_joiner", ", or ")) + parts[-1] if len(parts) >= 2 else (parts[0] if parts else "")
@@ -270,7 +276,9 @@ def _which_item(pack: PackConfig, st: CallState, cmd: TurnCommand, spec: Questio
     st.cursor = CursorStep(qid=spec.id, substep=SubStep.FOLLOWUP, followup_idx=open_f[0])
     return st
 def _followup(pack: PackConfig, st: CallState, cmd: TurnCommand, spec: QuestionSpec, utt: str) -> CallState:
-    settled = cmd.outcome is TurnOutcome.UNKNOWN or (bool(utt) and cmd.outcome is not TurnOutcome.NOT_ABOUT_ACTIVE)
+    # Any classified outcome settles the slot: on a live multimodal turn the decision model reads the audio and
+    # returns concern/clear/answered while the transcript is still empty, so an absent `utt` must not force a retry.
+    settled = cmd.outcome in _STATUS or (bool(utt) and cmd.outcome is not TurnOutcome.NOT_ABOUT_ACTIVE)
     if not settled and not _bump(st.cursor): return st
     rec, fid = st.answers.get(spec.id) or AnswerRecord(state=AnswerStatus.CONCERN), spec.followups[st.cursor.followup_idx]
     note = (rec.followups[fid].note if fid in rec.followups else NoteText()).append(utt if settled else "", redacted=cmd.redacted)

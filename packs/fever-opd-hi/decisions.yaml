@@ -50,10 +50,15 @@ heads:
       mentions another topic, classify how it answers active_question.)
     criteria:
       clear: Denies, answers no, negative, normal, nothing further, or "कुछ नहीं" for active_question (even if also mentioning
-        a different topic in the same sentence).
+        a different topic in the same sentence). For a test-result question, choose clear only when the test/check was done
+        and had no abnormality, or she denies having the condition — NOT when she says the test itself was never done
+        (जाँच नहीं हुई थी is unknown, not clear).
       concern: Affirms, answers yes, agrees, or provides the symptom, duration, or description that active_question asks for
         (even if also mentioning a different topic).
-      unknown: States that they do not know, do not remember, or are unsure about active_question.
+      unknown: States that they do not know, do not remember, or are unsure about active_question, or states that a requested
+        screening test or medical check (such as a blood test, an X-ray/scan, or a hearing/vision test) was NEVER done or never
+        tested (जाँच नहीं हुई थी, टेस्ट नहीं करवाया), even when the sentence is prefaced with "नहीं" (as in "नहीं डॉक्टर,
+        जाँच नहीं हुई थी").
       clarify: Asks what active_question itself or a term inside active_question means, or says they did not understand
         active_question.
       retract: Takes back or reverses a yes or an affirmative answer just given for active_question (or its parent_question

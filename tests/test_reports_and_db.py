@@ -13,6 +13,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import tests  # noqa: F401 — ensure isolated TEST_DATA_DIR under `-s tests`
 from intake import db, engine, reports
 from intake.models import AnswerStatus, CallState, Phase, ProfilePatch, TurnCommand
 from intake.pack import load_pack

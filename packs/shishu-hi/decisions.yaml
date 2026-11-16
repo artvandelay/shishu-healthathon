@@ -61,12 +61,18 @@ heads:
     criteria:
       clear: >-
         Denies, answers no, negative, normal, or nothing further for active_question (even if also mentioning
-        a different topic in the same sentence).
+        a different topic in the same sentence). For a test-result question, choose clear only when the test/check
+        was done and had no abnormality, or she denies having the condition — NOT when she says the test itself
+        was never done (जाँच नहीं हुई थी is unknown, not clear).
       concern: >-
         Affirms, answers yes, agrees to start, identifies an affected child when active_question asks
         which child, or provides the answer requested by active_question (even if also mentioning a different
         topic).
-      unknown: States that she does not know, does not remember, or is unsure about active_question.
+      unknown: >-
+        States that she does not know, does not remember, or is unsure about active_question, or states that
+        a requested screening test or medical check (such as a thalassemia blood test, a scan, or a hearing/vision
+        test) was NEVER done or never tested (जाँच नहीं हुई थी, टेस्ट नहीं करवाया), even when the sentence is
+        prefaced with "नहीं" (as in "नहीं डॉक्टर, जाँच नहीं हुई थी").
       clarify: >-
         Asks what active_question itself or a term inside active_question means, or says she did not understand
         active_question.

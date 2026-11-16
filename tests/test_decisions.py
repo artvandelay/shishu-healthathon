@@ -8,7 +8,7 @@ import unittest
 
 from intake import decisions, engine, extractor
 from intake.models import (
-    AnswerRecord, AnswerStatus, CallState, CursorStep, PackConfig, Phase, QuestionKind,
+    AnswerRecord, AnswerStatus, CallState, CursorStep, PackConfig, QuestionKind,
     RosterItem, SubStep, TurnOutcome,
 )
 from intake.pack import load_pack
@@ -380,6 +380,53 @@ class InterpretTests(unittest.TestCase):
         self.assertTrue(intent.command.caller_stop)
         self.assertFalse(intent.command.emergency)
 
+    def test_weak_out_of_turn_concern_cannot_flip_an_already_clear_answer(self):
+        st = state_at(self.shishu, "body_bruise_bleed")
+        st.answers["body_blue"] = AnswerRecord(state=AnswerStatus.CLEAR)
+        st.answers["birth_cord_3weeks"] = AnswerRecord(state=AnswerStatus.CLEAR)
+        noisy = {
+            "stated_body_blue": choice(concern=0.82, unmentioned=0.1, clear=0.05, clarify=0.03),
+            "stated_birth_cord_3weeks": choice(concern=0.84, unmentioned=0.08, clear=0.05, clarify=0.03),
+        }
+        self.assertEqual(self.interpret(self.shishu, st, noisy).command.stated, {})
+
+    def test_strong_out_of_turn_concern_still_revises_a_clear_answer(self):
+        st = state_at(self.shishu, "body_bruise_bleed")
+        st.answers["body_blue"] = AnswerRecord(state=AnswerStatus.CLEAR)
+        intent = self.interpret(self.shishu, st, {
+            "stated_body_blue": choice(concern=0.95, unmentioned=0.02, clear=0.02, clarify=0.01)})
+        self.assertEqual(intent.command.stated, {"body_blue": TurnOutcome.CONCERN})
+
+    def test_clear_answer_still_takes_a_retraction_and_a_clarification_at_the_normal_gate(self):
+        st = state_at(self.shishu, "body_bruise_bleed")
+        st.answers["birth_cord_3weeks"] = AnswerRecord(state=AnswerStatus.CLEAR)
+        retracted = self.interpret(self.shishu, st, {
+            "stated_birth_cord_3weeks": choice(clear=0.85, unmentioned=0.1, concern=0.03, clarify=0.02)})
+        self.assertEqual(retracted.command.stated["birth_cord_3weeks"], TurnOutcome.CLEAR)
+        clarified = self.interpret(self.shishu, st, {
+            "stated_birth_cord_3weeks": choice(clarify=0.86, unmentioned=0.08, concern=0.04, clear=0.02)})
+        self.assertEqual(clarified.command.stated["birth_cord_3weeks"], TurnOutcome.CLARIFY)
+
+    def test_unresolved_and_unknown_priors_keep_the_pack_stated_gate(self):
+        for prior in (None, AnswerRecord(state=AnswerStatus.UNKNOWN), AnswerRecord(state=AnswerStatus.CONCERN)):
+            with self.subTest(prior=None if prior is None else prior.state.value):
+                st = state_at(self.shishu, "body_bruise_bleed")
+                if prior is not None:
+                    st.answers["body_blue"] = prior
+                intent = self.interpret(self.shishu, st, {
+                    "stated_body_blue": choice(concern=0.85, unmentioned=0.09, clear=0.03, clarify=0.03)})
+                self.assertEqual(intent.command.stated, {"body_blue": TurnOutcome.CONCERN})
+
+    def test_engine_applies_the_guarded_flip_end_to_end(self):
+        st = state_at(self.shishu, "body_bruise_bleed")
+        st.answers["body_blue"] = AnswerRecord(state=AnswerStatus.CLEAR)
+        weak = self.interpret(self.shishu, st, {
+            "active_outcome": choice(clear=0.95, other=0.02),
+            "stated_body_blue": choice(concern=0.82, unmentioned=0.1, clear=0.05, clarify=0.03),
+        }, utterance_text="नील पड़ जाते हैं")
+        kept = engine.reduce_turn(self.shishu, st, weak.command)
+        self.assertIs(kept.answers["body_blue"].state, AnswerStatus.CLEAR)
+
 
 class ExtractorTests(unittest.TestCase):
     """Schema construction, strict validation, and failure mapping — no live client."""
@@ -425,7 +472,7 @@ class ExtractorTests(unittest.TestCase):
 
     def test_null_fields_are_left_unstated(self):
         result = self.run_extract(self.fever, {"patient_name": None, "patient_age": None})
-            self.assertTrue(result.ok)
+        self.assertTrue(result.ok)
         self.assertTrue(result.patch.is_empty)
 
     def test_unexpected_keys_are_rejected(self):

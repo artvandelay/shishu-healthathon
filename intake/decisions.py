@@ -11,7 +11,7 @@ from weakref import WeakKeyDictionary
 import httpx
 
 from intake import engine
-from intake.models import CallState, PackConfig, QuestionKind, Strict, TurnCommand, TurnOutcome
+from intake.models import AnswerStatus, CallState, PackConfig, QuestionKind, QuestionSpec, Strict, TurnCommand, TurnOutcome
 
 DECISIONS_ENDPOINT, DEFAULT_MODEL = "https://generativelanguage.googleapis.com/v1beta/decisions", "gemini-decision-1"
 Transport = Callable[..., tuple[int, bytes] | Awaitable[tuple[int, bytes]]]
@@ -20,6 +20,9 @@ _CORE = ("danger_now", "caller_stop", "mentions_profile", "redact_patient_note")
 _NOUL = (*_CORE, "turn_incomplete", "detail_present", "jump_topic")
 _STATED_KINDS = (QuestionKind.GATE, QuestionKind.ROUTING_GATE, QuestionKind.OPEN_CAPTURE)
 _OUTCOMES, _STATED_OUTCOMES = frozenset({"clear", "concern", "unknown", "clarify", "retract"}), frozenset({"concern", "clear", "clarify"})
+# Out-of-turn CONCERN on an already-CLEAR question is a revision of a closed answer, not a first read: it must clear
+# this floor on top of the pack's stated gate (the bench's 0.82 audio-only flip must never be enough).
+_REVISED_CONCERN_MIN = 0.92
 _SAFETY, _RETRY_CODES = frozenset({"safety", "prohibited_content", "blocklist", "image_safety", "content_blocked"}), {408, 429}
 
 class DecisionCallResult(NamedTuple):
@@ -100,39 +103,65 @@ def build_turn_request(pack: PackConfig, state: CallState, *, utterance_text: st
     inp: Any = [{"type": "text", "text": text + "\n"}, {"type": "audio", "data": base64.b64encode(audio).decode(), "mime_type": audio_mime_type}] if audio else text
     return {"model": str(pack.decisions.get("model") or DEFAULT_MODEL), "input": inp, "questions": qs}
 def _num(v: Any) -> float | None: return float(v) if type(v) in (int, float) and math.isfinite(v) else None
-
 def _yes(a: Mapping[str, Any], key: str, floor: Any) -> bool:
     p = _num(a[key].get("noul")) if isinstance(a.get(key), Mapping) else None
     return p is not None and p >= float(floor)
-def _pick(a: Mapping[str, Any], key: str, t: Mapping[str, float], pair: str = "", catchall: str = "other", allowed: frozenset[str] | None = None) -> str:
+def _rank(a: Mapping[str, Any], key: str) -> list[tuple[str, float]]:
+    """A choice head's options, best first, with non-finite and non-numeric probabilities dropped."""
     raw = a[key].get("probabilities") if isinstance(a.get(key), Mapping) else None
-    ranked = sorted([(str(k), p) for k, v in (raw or {}).items() if (p := _num(v)) is not None], key=lambda x: (-x[1], x[0]))
+    return sorted(((str(k), p) for k, v in (raw or {}).items() if (p := _num(v)) is not None), key=lambda x: (-x[1], x[0]))
+def _pick(a: Mapping[str, Any], key: str, t: Mapping[str, float], pair: str = "", catchall: str = "other",
+          allowed: frozenset[str] | None = None, floors: Mapping[str, float] | None = None) -> str:
+    """The head's winner, accepted only when it clears its own confidence gate (optionally raised per option) and margin."""
+    ranked = _rank(a, key)
     if not ranked or ranked[0][0] == catchall or (allowed and ranked[0][0] not in allowed): return ""
     (top, best), sec, name = ranked[0], (ranked[1][1] if len(ranked) > 1 else 0.0), pair or key
-    return top if best >= t[f"{name}_min_confidence"] and best - sec >= t[f"{name}_min_margin"] else ""
+    need = max(t[f"{name}_min_confidence"], (floors or {}).get(top, 0.0))
+    return top if best >= need and best - sec >= t[f"{name}_min_margin"] else ""
+def _score_value(a: Mapping[str, Any], t: Mapping[str, float]) -> dict[str, Any] | None:
+    """A rubric score plus its nearest level, accepted only when the head's own confidence clears the pack gate."""
+    head = a.get("score_value")
+    if not isinstance(head, Mapping): return None
+    score, confidence = _num(head.get("score")), _num(head.get("confidence"))
+    if score is None or confidence is None or confidence < t["score_min_confidence"]: return None
+    levels = {k: p for k, v in (head.get("probabilities") or {}).items() if (p := _num(v))}
+    return {"score": score, "level": int(max(levels, key=levels.get)) if levels else int(round(score))}
+def _active_value(spec: QuestionSpec | None, a: Mapping[str, Any], t: Mapping[str, float]) -> Any:
+    """The typed answer the active question asks for, or None when its head did not produce one."""
+    if spec is None: return None
+    if spec.kind is QuestionKind.SINGLE_CHOICE: return _pick(a, "choice_value", t, "choice", allowed=frozenset(spec.options)) or None
+    if spec.kind is QuestionKind.MULTI_CHOICE: return [k for k in spec.options if _yes(a, f"opt_{k}", t["multi_choice_min_yes"])] or None
+    return _score_value(a, t) if spec.kind is QuestionKind.SCORE else None
+def _stated_writes(pack: PackConfig, state: CallState, a: Mapping[str, Any], t: Mapping[str, float], *, kind: str, outcome: TurnOutcome) -> dict[str, TurnOutcome]:
+    """Out-of-turn revisions of the other routable questions, each gated by its own stated thresholds."""
+    out: dict[str, TurnOutcome] = {}
+    for key in (k for k in a if str(k).startswith("stated_")):
+        spec = pack.by_id.get(str(key).removeprefix("stated_"))
+        if spec is None or not spec.is_routable or spec.id == state.cursor.qid: continue
+        if spec.kind is QuestionKind.OPEN_CAPTURE and kind != "close" and outcome is not TurnOutcome.CLARIFY: continue
+        # An out-of-turn concern on a question she already denied needs near-certain evidence: the pack's own stated
+        # gate passes 0.80, which a noisy audio turn can clear while it is really talking about another symptom.
+        # Revising UNKNOWN, retracting CONCERN to CLEAR, and asking what a term means keep the normal stated gate.
+        prior = state.answers.get(spec.id)
+        raised = {"concern": _REVISED_CONCERN_MIN} if prior is not None and prior.state is AnswerStatus.CLEAR else None
+        if w := _pick(a, key, t, "stated", "unmentioned", _STATED_OUTCOMES, raised): out[spec.id] = TurnOutcome(w)
+    return out
+def _next_qid_probs(a: Mapping[str, Any]) -> dict[str, float]:
+    """The router head's candidate questions, minus the catchall and any non-finite probability."""
+    head = a.get("next_qid")
+    probs = (head.get("probabilities") if isinstance(head, Mapping) else None) or {}
+    return {str(k): p for k, v in probs.items() if str(k) != "other" and (p := _num(v)) is not None}
 def interpret_turn_decision(pack: PackConfig, state: CallState, raw_answers: Mapping[str, Any], *, utterance_text: str = "") -> TurnIntent:
     t = {k: float(v) for k, v in (pack.decisions.get("thresholds") or {}).items()}
     a = raw_answers if isinstance(raw_answers, Mapping) else {}
     kind, spec = engine.step_kind(pack, state), pack.by_id.get(state.cursor.qid)
     on = {h: _yes(a, h, t[f"{h}_min_yes"]) for h in _NOUL}
-    closing, val = on["danger_now"] or on["caller_stop"], None
-    if not closing and kind == "main" and spec is not None:
-        if spec.kind is QuestionKind.SINGLE_CHOICE: val = _pick(a, "choice_value", t, "choice", allowed=frozenset(spec.options)) or None
-        elif spec.kind is QuestionKind.MULTI_CHOICE: val = [k for k in spec.options if _yes(a, f"opt_{k}", t["multi_choice_min_yes"])] or None
-        elif spec.kind is QuestionKind.SCORE and isinstance(sh := a.get("score_value"), Mapping):
-            sc, cf = _num(sh.get("score")), _num(sh.get("confidence"))
-            probs = {k: p for k, v in (sh.get("probabilities") or {}).items() if (p := _num(v))}
-            if sc is not None and cf is not None and cf >= t["score_min_confidence"]: val = {"score": sc, "level": int(max(probs, key=probs.get)) if probs else int(round(sc))}
+    closing = on["danger_now"] or on["caller_stop"]
+    val = None if closing or kind != "main" else _active_value(spec, a, t)
     outcome = TurnOutcome.ANSWERED if val is not None else TurnOutcome.NOT_ABOUT_ACTIVE
     if not closing and val is None and (w := _pick(a, "active_outcome", t, "outcome", allowed=_OUTCOMES)): outcome = TurnOutcome(w)
-    stated: dict[str, TurnOutcome] = {}
-    for k in ([] if closing else [k for k in a if str(k).startswith("stated_")]):
-        tgt = pack.by_id.get(str(k).removeprefix("stated_"))
-        if tgt is None or not tgt.is_routable or tgt.id == state.cursor.qid: continue
-        if tgt.kind is QuestionKind.OPEN_CAPTURE and kind != "close" and outcome is not TurnOutcome.CLARIFY: continue
-        if w := _pick(a, k, t, "stated", "unmentioned", _STATED_OUTCOMES): stated[tgt.id] = TurnOutcome(w)
-    nh = a.get("next_qid")
-    next_probs = {str(k): p for k, v in ((nh.get("probabilities") if isinstance(nh, Mapping) else None) or {}).items() if str(k) != "other" and (p := _num(v))}
+    stated = {} if closing else _stated_writes(pack, state, a, t, kind=kind, outcome=outcome)
+    next_probs = _next_qid_probs(a)
     flags = tuple(f for f, fs in pack.semantic_flags.items() if f not in state.semantic_flags and _yes(a, f"flag_{f}", fs.get("min_yes", 0.8)))
     cmd = TurnCommand(
         emergency=on["danger_now"], caller_stop=not on["danger_now"] and on["caller_stop"], turn_incomplete=on["turn_incomplete"], outcome=outcome, value=val,

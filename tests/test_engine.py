@@ -6,11 +6,9 @@ import unittest
 from pathlib import Path
 
 from intake.engine import (
-    MAX_STEP_ATTEMPTS, active_prompt, apply_profile_patch, close_technical_failure, eval_rule,
-    followup_prompt, format_age_label, has_clinical_concern, last_answered_prompt,
-    merge_transcript_chunk, new_state, question_say, quick_replies, quick_reply_command,
-    recorded_concerns_summary, reduce_turn, roster_label_clinician, roster_label_patient,
-    roster_resolved, roster_rows, say_text, step_kind, which_item_prompt,
+    MAX_STEP_ATTEMPTS, active_prompt, close_technical_failure, eval_rule, format_age_label,
+    merge_transcript_chunk, new_state, quick_replies, quick_reply_command,
+    reduce_turn, which_item_prompt,
 )
 from intake.models import (
     AnswerRecord, AnswerStatus, CallState, CloseReason, OptionSpec, PackConfig, Phase,
@@ -76,6 +74,44 @@ class EngineSyntheticTests(unittest.TestCase):
         reopened = reduce_turn(pack, st, TurnCommand(profile_patch=ProfilePatch(slots={"kids": "some"})))
         self.assertNotIn("follow", reopened.answers)
 
+    def test_every_rule_shape_resolves_against_live_state(self):
+        pack = make_pack(
+            [gate("a", group="fam"), gate("b", group="fam"), gate("c")],
+            rules={
+                "flag_on": {"semantic_flag": "beta"},
+                "flagged": {"field": "ever_pregnant", "op": "eq", "value": True},
+                "not_flagged": {"field": "ever_pregnant", "op": "ne", "value": True},
+                "either": {"any_of": ["flag_on", "flagged"]},
+                "both": {"all_of": ["flag_on", "flagged"]},
+                "fam_clear": {"group_no_concern": "fam"},
+                "kids_in": {"field": "kids", "op": "in", "value": ["none", "some"]},
+                "kids_absent": {"field": "kids", "op": "missing"},
+                "kids_contains": {"field": "kids", "op": "contains", "value": "om"},
+                "two_kids": {"roster_op": "count_gt", "value": 1},
+                "any_girl": {"roster_op": "any_match", "tag": "female"},
+                "toddler": {"roster_op": "any_match", "max_age": 3},
+                "no_roster": {"roster_op": "is_empty"},
+                "has_roster": {"roster_op": "non_empty"},
+                "unknown_op": {"field": "kids", "op": "wat"},
+                "empty": {},
+            },
+            roster={"key": "children", "tags": ["male", "female"]},
+        )
+        st = new_state(pack)
+        st.roster = [RosterItem(id="item_1", age_years=6, age_label="6 साल", tag="male", name="अमन"),
+                     RosterItem(id="item_2", age_years=2, age_label="2 साल", tag="female", name="रीना")]
+        st.profile["kids"], st.answers["a"] = "some", AnswerRecord(state=AnswerStatus.CONCERN)
+        truth = {r: eval_rule(pack, st, r) for r in pack.rules}
+        self.assertEqual(truth, {"flag_on": False, "flagged": False, "not_flagged": True, "either": False, "both": False,
+                                 "fam_clear": False, "kids_in": True, "kids_absent": False, "kids_contains": True,
+                                 "two_kids": True, "any_girl": True, "toddler": True, "no_roster": False,
+                                 "has_roster": True, "unknown_op": False, "empty": False})
+        st.semantic_flags, st.profile["ever_pregnant"] = ["beta"], True
+        st.answers["a"] = AnswerRecord(state=AnswerStatus.CLEAR)
+        self.assertEqual([eval_rule(pack, st, r) for r in ("flag_on", "flagged", "either", "both", "fam_clear")],
+                         [True, True, True, True, True])
+        self.assertTrue(eval_rule(pack, st, {"any_of": [{"semantic_flag": "beta"}]}))
+
     def test_multi_choice_score_and_open_capture(self):
         pack = make_pack(
             [
@@ -117,6 +153,39 @@ class EngineSyntheticTests(unittest.TestCase):
             self.assertEqual(st.cursor.qid, "g")
         st = play(pack, st, TurnOutcome.ANSWERED, value="bad")
         self.assertEqual((st.answers["g"].state, st.cursor.qid), (AnswerStatus.UNKNOWN, "next"))
+
+    def test_audio_only_followup_settles_without_a_transcript(self):
+        # Live multimodal WAV turn: the decision model classifies the audio, so the transcript is still empty.
+        pack = make_pack([gate("nicu", followups=("nicu_reason",)), gate("next")], followups={"nicu_reason": "क्यों?"})
+        st = play(pack, new_state(pack), TurnOutcome.CONCERN)
+        self.assertEqual((st.cursor.qid, st.cursor.substep), ("nicu", SubStep.FOLLOWUP))
+        settled_as = {TurnOutcome.CONCERN: AnswerStatus.CONCERN, TurnOutcome.CLEAR: AnswerStatus.CLEAR,
+                      TurnOutcome.ANSWERED: AnswerStatus.ANSWERED, TurnOutcome.UNKNOWN: AnswerStatus.UNKNOWN}
+        for outcome, expected in settled_as.items():
+            with self.subTest(outcome=outcome.value):
+                settled = play(pack, st.model_copy(deep=True), outcome, utterance="")
+                self.assertEqual(settled.answers["nicu"].followups["nicu_reason"].state, expected)
+                self.assertEqual((settled.cursor.qid, settled.cursor.attempts), ("next", 0))
+
+    def test_audio_only_followup_keeps_several_slots_in_order(self):
+        pack = make_pack([gate("nicu", followups=("nicu_reason", "nicu_days")), gate("next")],
+                         followups={"nicu_reason": "क्यों?", "nicu_days": "कितने दिन?"})
+        st = play(pack, new_state(pack), TurnOutcome.CONCERN)
+        st = play(pack, st, TurnOutcome.CONCERN, utterance="")
+        self.assertEqual((st.cursor.qid, st.cursor.followup_idx), ("nicu", 1))
+        st = play(pack, st, TurnOutcome.ANSWERED, utterance="")
+        self.assertEqual((st.cursor.qid, [f.state for f in st.answers["nicu"].followups.values()]),
+                         ("next", [AnswerStatus.CONCERN, AnswerStatus.ANSWERED]))
+
+    def test_followup_still_retries_when_the_turn_is_not_about_the_slot(self):
+        pack = make_pack([gate("nicu", followups=("nicu_reason",)), gate("next")],
+                         followups={"nicu_reason": "क्यों?"})
+        st = play(pack, new_state(pack), TurnOutcome.CONCERN)
+        # Only a classified outcome settles the slot, so a transcript on an off-topic turn still costs one retry.
+        st = play(pack, st, TurnOutcome.NOT_ABOUT_ACTIVE, utterance="")
+        self.assertEqual((st.cursor.qid, st.cursor.attempts), ("nicu", 1))
+        st = play(pack, st, TurnOutcome.NOT_ABOUT_ACTIVE, utterance="उसकी तबीयत ठीक थी")
+        self.assertEqual((st.answers["nicu"].followups["nicu_reason"].state, st.cursor.qid), (AnswerStatus.UNKNOWN, "next"))
 
 
 class RealPackIntegrationTests(unittest.TestCase):

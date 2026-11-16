@@ -49,26 +49,45 @@ def _grouped(pairs: Mapping[str, list[str]]) -> tuple[dict[str, Any], ...]: retu
 def _scope(pack: PackConfig, st: CallState, rec: AnswerRecord, *, clinician: bool) -> str:
     if not rec.item_ids or len(st.roster) <= 1: return ""
     return engine.roster_label_clinician(st, rec.item_ids) if clinician else engine.roster_label_patient(pack, st, rec.item_ids)
+def _choice_suffix(spec: QuestionSpec, label: str, rec: AnswerRecord) -> str:
+    """The chosen option in parentheses, only when the question stem does not already contain it."""
+    ch = _clean(rec.choice_label)
+    return f" ({ch})" if spec.kind in _KINDS and ch and ch not in label else ""
+def _section_target(pack: PackConfig, spec: QuestionSpec, known: set[str]) -> str:
+    """The clinician heading an answer belongs under: the spec's own override when declared, else its group's title."""
+    if spec.clinician_group and f"### {spec.clinician_group}" in known: return f"### {spec.clinician_group}"
+    return f"### {(pack.groups.get(spec.group) or {}).get('title_clinician') or spec.group}"
+def _chief_complaint(pack: PackConfig, concerns: Sequence[tuple[QuestionSpec, AnswerRecord]], emergency: bool) -> str:
+    if concerns: return _clean(concerns[0][0].need)
+    return _clean(pack.meta.get("chief_complaint")) or ("Active emergency reported during call." if emergency else "not reported")
 def _template(pack: PackConfig, name: str):
     return Environment(loader=FileSystemLoader(str(pack.root / "templates")), undefined=StrictUndefined, autoescape=False).get_template(name)
 def _pick(cfg: dict[str, Any], *keys: str, fallback: str = "") -> str:
     return next((str(cfg[k]) for k in keys if cfg.get(k)), fallback)
+def _concern_copy(cfg: dict[str, Any], spec: QuestionSpec, rec: AnswerRecord, scope: str) -> tuple[str, str]:
+    """One reported concern as the two patient-facing lines it produces: the yes-summary and the question to ask."""
+    stem, choice, note = _clean(spec.stem or spec.say), _note(rec.choice_label), _note(rec.patient_safe_text)
+    head = f"{stem} ({scope})" if scope else stem
+    if not note and choice and choice not in stem: head = f"{head} ({choice})"
+    prefix = str(cfg["concern_question_scope_prefix_hi"]).format(child_scope=scope) if (scope and scope not in note and cfg.get("concern_question_scope_prefix_hi")) else ""
+    if spec.kind is QuestionKind.OPEN_CAPTURE:
+        yes = _pick(cfg, "yes_summary_open_hi" if note else "yes_summary_open_empty_hi", fallback="{note}")
+        asked = _pick(cfg, "concern_question_with_note_hi" if note else "concern_question_open_hi", fallback="{prefix}{note}")
+        return yes.format(note=note), asked.format(prefix=prefix, note=note)
+    yes = _pick(cfg, "yes_summary_stem_hi" if note else "yes_summary_stem_no_note_hi", fallback="{head}")
+    asked = _pick(cfg, "concern_question_with_note_hi" if note else "concern_question_stem_hi", fallback="{head}")
+    return yes.format(head=head, note=note), asked.format(prefix=prefix, head=head, note=note)
+
 def _patient_copy(pack: PackConfig, st: CallState, concerns: Sequence[tuple[QuestionSpec, AnswerRecord]], emergency: bool) -> tuple[list[str], list[str]]:
     cfg = pack.report_cfg
     routine = _unique(cfg.get("routine_questions") or ())
     if pack.roster_cfg is not None and not st.roster: routine = _unique(cfg.get("routine_empty_roster_questions") or ()) or routine
-    fillers, yes, asked = (_unique(cfg.get("emergency_questions") or ()) if emergency else routine), [], []
+    fillers = _unique(cfg.get("emergency_questions") or ()) if emergency else routine
+    yes, asked = [], []
     for q, rec in concerns:
-        stem, choice, note, scope = _clean(q.stem or q.say), _note(rec.choice_label), _note(rec.patient_safe_text), _scope(pack, st, rec, clinician=False)
-        head = f"{stem} ({scope})" if scope else stem
-        if not note and choice and choice not in stem: head = f"{head} ({choice})"
-        pref = str(cfg["concern_question_scope_prefix_hi"]).format(child_scope=scope) if (scope and scope not in note and cfg.get("concern_question_scope_prefix_hi")) else ""
-        if q.kind is QuestionKind.OPEN_CAPTURE:
-            yes.append(_pick(cfg, "yes_summary_open_hi" if note else "yes_summary_open_empty_hi", fallback="{note}").format(note=note))
-            asked.append(_pick(cfg, "concern_question_with_note_hi" if note else "concern_question_open_hi", fallback="{prefix}{note}").format(prefix=pref, note=note))
-        else:
-            yes.append(_pick(cfg, "yes_summary_stem_hi" if note else "yes_summary_stem_no_note_hi", fallback="{head}").format(head=head, note=note))
-            asked.append(_pick(cfg, "concern_question_with_note_hi" if note else "concern_question_stem_hi", fallback="{head}").format(prefix=pref, head=head, note=note))
+        line, question = _concern_copy(cfg, q, rec, _scope(pack, st, rec, clinician=False))
+        yes.append(line)
+        asked.append(question)
     kept = [q for q in _unique(asked) if q not in routine or not emergency][:6]
     return yes, (kept + [f for f in fillers if len(kept) < 3 and f not in kept])[:6]
 def project_summary(pack: PackConfig, state: CallState | None) -> ProjectedReport:
@@ -90,12 +109,11 @@ def project_summary(pack: PackConfig, state: CallState | None) -> ProjectedRepor
             if incomplete: unasked.setdefault(title, []).append(label)
             continue
         if rec.state is AnswerStatus.NOT_APPLICABLE: continue
-        ch = _clean(rec.choice_label)
         if rec.state is AnswerStatus.UNKNOWN: unknown.append(label)
-        elif rec.state is not AnswerStatus.CONCERN: clear.setdefault(title, []).append(f"{label}{f' ({ch})' if q.kind in _KINDS and ch and ch not in label else ''}")
+        elif rec.state is not AnswerStatus.CONCERN: clear.setdefault(title, []).append(f"{label}{_choice_suffix(q, label, rec)}")
         if not q.is_reportable: continue
         child, said = (f" [{sc}]" if (sc := _scope(pack, st, rec, clinician=True)) else ""), (_note(rec.verbatim_text) or _note(rec.choice_label))
-        target = f"### {q.clinician_group}" if (q.clinician_group and f"### {q.clinician_group}" in known) else f"### {(pack.groups.get(q.group) or {}).get('title_clinician') or q.group}"
+        target = _section_target(pack, q, known)
         lines = specials[target] if target in specials else sections.setdefault(target, [])
         if rec.state is AnswerStatus.CONCERN:
             concerns.append((q, rec))
@@ -108,7 +126,7 @@ def project_summary(pack: PackConfig, state: CallState | None) -> ProjectedRepor
             lines.append(f"{rec.state.value.title()}. {q.need}.")
             if rec.state is AnswerStatus.CLEAR: negatives.append(f"Clear: {q.need}.")
     roster = engine.roster_label_clinician(st)
-    chief = _clean(concerns[0][0].need) if concerns else (_clean(pack.meta.get("chief_complaint")) or ("Active emergency reported during call." if emergency else "not reported"))
+    chief = _chief_complaint(pack, concerns, emergency)
     prof = [f"{s.replace('_', ' ').capitalize()}: {_clean(st.profile[s])}." for s in pack.profile_slots if st.profile.get(s)]
     prof += [f"{s.replace('_', ' ').capitalize()}: {_clean(v)}." for s, v in st.profile.items() if s not in pack.profile_slots]
     if pack.roster_cfg: prof.append(f"Children: {roster or 'none reported'}.")
