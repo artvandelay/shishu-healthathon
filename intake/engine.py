@@ -63,8 +63,11 @@ def _selected(state: CallState, item_ids: Sequence[str] | None) -> list[RosterIt
 def roster_rows(state: CallState) -> list[dict[str, Any]]:
     items = state.ordered_roster
     if len(items) < 2: return []
-    ranks = ["oldest", *(["middle"] * (len(items) - 2)), "youngest"]
-    return [{"id": c.id, "rank": r, "age_label": c.age_label, "tag": c.tag, "name": c.name} for r, c in zip(ranks, items)]
+    def rank(c: RosterItem) -> str:
+        # Equal-age twins must never be told apart by a rank the model could then quote back as truth.
+        if sum(x.age_years == c.age_years for x in items) > 1: return "same_age"
+        return "oldest" if c.age_years == items[0].age_years else ("youngest" if c.age_years == items[-1].age_years else "middle")
+    return [{"id": c.id, "rank": rank(c), "age_label": c.age_label, "tag": c.tag, "name": c.name} for c in items]
 def roster_label_patient(pack: PackConfig, state: CallState, item_ids: Sequence[str] | None = None) -> str:
     fmt, tags = pack.prompts.get("roster_format") or {}, (pack.prompts.get("roster_format") or {}).get("tag_labels") or {}
     labels = (" ".join(p for p in (c.name or "", c.age_label, str(tags.get(c.tag, ""))) if p) for c in _selected(state, item_ids))
@@ -79,6 +82,13 @@ def which_item_prompt(pack: PackConfig, state: CallState) -> str:
         gender = "female" if fem else ("male" if name or c.tag == "male" else "other")
         parts.append(str(w.get(f"named_{gender}" if name else f"unnamed_{gender}", "{age} {name}" if name else "{age}")).format(age=c.age_label, name=name)
                      + (str(w.get("middle_female" if fem else "middle_male", "")) if len(ordered) == 3 and i == 1 else ""))
+    # Equal-age twins render identically, so a repeated label is ambiguous out loud: number only the collisions.
+    ords, counts, seen = list(w.get("ordinals") or ()), {p: parts.count(p) for p in parts}, {}
+    for i, p in enumerate(parts):
+        if counts[p] < 2: continue
+        k = seen.get(p, 0)
+        seen[p] = k + 1
+        parts[i] = f"{ords[k]} {p}" if k < len(ords) else f"{p} #{k + 1}"
     listed = ", ".join(parts[:-1]) + str(w.get("or_joiner", ", or ")) + parts[-1] if len(parts) >= 2 else (parts[0] if parts else "")
     return str(w.get("template", "{items}")).format(items=listed)
 def question_say(pack: PackConfig, state: CallState, spec: QuestionSpec) -> str:
@@ -232,11 +242,10 @@ def _read_answer(spec: QuestionSpec, cmd: TurnCommand) -> tuple[AnswerStatus, An
     lvl, floor = (int(val.get("level", round(score))) if isinstance(val, dict) else int(round(score))), spec.concern_if.get("min_score")
     return (AnswerStatus.CONCERN if floor is not None and score >= float(floor) else AnswerStatus.ANSWERED), round(score, 2), spec.score_rubric[max(0, min(len(spec.score_rubric) - 1, lvl))]
 def _note_concern(pack: PackConfig, st: CallState, step: CursorStep, spec: QuestionSpec, cmd: TurnCommand, rec: AnswerRecord, utt: str, *, stated: bool = False) -> dict[str, Any]:
-    act = pack.by_id.get(step.qid)
     extra: dict[str, Any] = {}
     if spec.roster_scoped:
-        ref = "" if (stated and act and act.roster_scoped and cmd.outcome is TurnOutcome.CONCERN) else cmd.item_ref
-        if ids := _ids(st, ref): extra["item_ids"] = list(dict.fromkeys([*rec.item_ids, *ids]))
+        # A mother co-reporting two concerns for the same child must keep the child she just named.
+        if ids := _ids(st, cmd.item_ref): extra["item_ids"] = list(dict.fromkeys([*rec.item_ids, *ids]))
     if utt:
         if stated or not spec.followups or cmd.followup_answered: extra["note"] = rec.note.append(utt, redacted=cmd.redacted)
         if spec.followups and (stated or cmd.followup_answered):
@@ -265,7 +274,9 @@ def _apply_stated(pack: PackConfig, st: CallState, cmd: TurnCommand, utt: str) -
     return False
 def _which_item(pack: PackConfig, st: CallState, cmd: TurnCommand, spec: QuestionSpec, utt: str) -> CallState:
     rec = st.answers.get(spec.id) or AnswerRecord(state=AnswerStatus.CONCERN)
-    note = rec.note.append(utt, redacted=cmd.redacted) if (utt and cmd.outcome in (TurnOutcome.CONCERN, TurnOutcome.UNKNOWN)) else rec.note
+    # A named child the model could not map still carries her words; a meta question about the notes never does.
+    keep = cmd.outcome in (TurnOutcome.CONCERN, TurnOutcome.ANSWERED, TurnOutcome.UNKNOWN)
+    note = rec.note.append(utt, redacted=cmd.redacted) if (utt and keep) else rec.note
     rec, ids = rec.model_copy(update={"note": note}), _ids(st, cmd.item_ref) if cmd.outcome is not TurnOutcome.NOT_ABOUT_ACTIVE else []
     if not (ids or cmd.outcome is TurnOutcome.UNKNOWN or _bump(st.cursor)):
         st.answers[spec.id] = rec
@@ -346,7 +357,14 @@ def reduce_turn(pack: PackConfig, state: CallState, cmd: TurnCommand) -> CallSta
     if spec is None or spec.kind is QuestionKind.PROFILE or cmd.outcome is TurnOutcome.CLARIFY: return st
     if (cur := st.answers.get(spec.id)) is not None and cur.state is _NA: return _advance(pack, st, cmd, record=False)
     # A spontaneous remark at the closing open-capture is a finding, not a miss: it must reach `_open_capture`.
-    if cmd.outcome is TurnOutcome.NOT_ABOUT_ACTIVE and (profile_ran or cmd.stated or (step.substep is SubStep.MAIN and not (spec.kind is QuestionKind.OPEN_CAPTURE and utt))): return st
+    if cmd.outcome is TurnOutcome.NOT_ABOUT_ACTIVE and (profile_ran or cmd.stated): return st
+    if cmd.outcome is TurnOutcome.NOT_ABOUT_ACTIVE and step.substep is SubStep.MAIN and not (spec.kind is QuestionKind.OPEN_CAPTURE and utt):
+        # An off-topic turn is still a miss: burn the attempt so the question can never repeat forever.
+        if not _bump(st.cursor): return st
+        # Mirror `_open_capture`: a spoken finding already on record is never flattened to a bare UNKNOWN.
+        prior = st.answers.get(spec.id)
+        if not (prior is not None and prior.state is AnswerStatus.CONCERN and prior.verbatim_text): st.answers[spec.id] = AnswerRecord(state=AnswerStatus.UNKNOWN)
+        return _advance(pack, st, cmd)
     if cmd.outcome is TurnOutcome.RETRACT or (step.substep is SubStep.WHICH_ITEM and cmd.outcome is TurnOutcome.CLEAR and not _ids(st, cmd.item_ref)):
         prior = st.answers.get(spec.id)
         if not (spec.kind is QuestionKind.OPEN_CAPTURE and prior is not None and prior.state is AnswerStatus.CONCERN and prior.verbatim_text): st.answers[spec.id] = AnswerRecord(state=AnswerStatus.CLEAR)

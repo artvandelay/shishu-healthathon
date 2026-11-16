@@ -8,10 +8,10 @@ from pathlib import Path
 from intake.engine import (
     MAX_STEP_ATTEMPTS, active_prompt, eval_rule, format_age_label,
     merge_transcript_chunk, new_state, quick_replies, quick_reply_command,
-    reduce_turn, which_item_prompt,
+    reduce_turn, roster_rows, which_item_prompt,
 )
 from intake.models import (
-    AnswerRecord, AnswerStatus, CallState, OptionSpec, PackConfig,
+    AnswerRecord, AnswerStatus, CallState, CloseReason, OptionSpec, PackConfig, Phase,
     ProfilePatch, QuestionKind, QuestionSpec, RosterInput, RosterItem, SubStep,
     TurnCommand, TurnOutcome, VariantSpec,
 )
@@ -137,6 +137,84 @@ class EngineSyntheticTests(unittest.TestCase):
         self.assertEqual((st.cursor.qid, st.cursor.attempts), ("nicu", 1))
         st = play(pack, st, TurnOutcome.NOT_ABOUT_ACTIVE, utterance="उसकी तबीयत ठीक थी")
         self.assertEqual((st.answers["nicu"].followups["nicu_reason"].state, st.cursor.qid), (AnswerStatus.UNKNOWN, "next"))
+
+    def test_off_topic_turn_at_main_costs_an_attempt_then_gives_up(self):
+        # Bug: NOT_ABOUT_ACTIVE at SubStep.MAIN returned an untouched state, so `attempts` never moved and the
+        # same question repeated forever. It must burn an attempt, then record UNKNOWN and move on.
+        pack = make_pack([gate("g"), gate("next")])
+        st = play(pack, new_state(pack), TurnOutcome.NOT_ABOUT_ACTIVE)
+        self.assertEqual((st.cursor.qid, st.cursor.attempts), ("g", 1))
+        self.assertIn("try:1", st.step_token)
+        st = play(pack, st, TurnOutcome.NOT_ABOUT_ACTIVE)
+        self.assertEqual((st.answers["g"].state, st.cursor.qid), (AnswerStatus.UNKNOWN, "next"))
+
+    def test_open_capture_off_topic_turns_close_cleanly_and_keep_a_finding(self):
+        pack = make_pack([{"id": "close_any", "kind": QuestionKind.OPEN_CAPTURE, "say": "कुछ और?"}])
+        st = play(pack, new_state(pack), TurnOutcome.CONCERN, utterance="उसके पेट में दर्द रहता है")
+        self.assertEqual(st.answers["close_any"].state, AnswerStatus.CONCERN)
+        # A spoken spontaneous remark is still a finding, not a miss.
+        st = play(pack, st, TurnOutcome.NOT_ABOUT_ACTIVE, utterance="उसको रात में खांसी आती है")
+        self.assertEqual(st.answers["close_any"].verbatim_text, "उसके पेट में दर्द रहता है; उसको रात में खांसी आती है")
+        # Silent off-topic turns burn attempts, then close the call with the finding intact.
+        for _ in range(MAX_STEP_ATTEMPTS - 1):
+            st = play(pack, st, TurnOutcome.NOT_ABOUT_ACTIVE)
+            self.assertEqual((st.cursor.qid, st.phase), ("close_any", Phase.ASKING))
+        st = play(pack, st, TurnOutcome.NOT_ABOUT_ACTIVE)
+        self.assertEqual((st.phase, st.close_reason), (Phase.CLOSING, CloseReason.COMPLETE))
+        self.assertEqual(st.answers["close_any"].state, AnswerStatus.CONCERN)
+        self.assertEqual(st.answers["close_any"].verbatim_text, "उसके पेट में दर्द रहता है; उसको रात में खांसी आती है")
+        # `_open_capture` line 302 semantics: the prior CONCERN transcript is never replaced by a bare UNKNOWN.
+
+    def test_which_item_keeps_the_spoken_answer_when_no_child_resolves(self):
+        # Bug: an ANSWERED turn naming no roster id dropped the transcript, losing "दोनों जुड़वाँ को".
+        pack = make_pack([{"id": "jaundice", "kind": QuestionKind.GATE, "roster_scoped": True}, gate("next")],
+                         roster={"key": "children", "tags": ["male", "female"]})
+        twins = [RosterItem(id="item_1", age_years=2, age_label="2 साल", tag="male"),
+                 RosterItem(id="item_2", age_years=2, age_label="2 साल", tag="male")]
+        st = new_state(pack)
+        st.roster = twins
+        st = play(pack, st, TurnOutcome.CONCERN)
+        self.assertEqual(st.cursor.substep, SubStep.WHICH_ITEM)
+        st = play(pack, st, TurnOutcome.ANSWERED, utterance="दोनों जुड़वाँ को")
+        self.assertEqual(st.answers["jaundice"].note.verbatim, "दोनों जुड़वाँ को")
+        # A meta question about the notes must still never leak into a child's clinical note.
+        st2 = new_state(pack)
+        st2.roster = twins
+        st2 = play(pack, st2, TurnOutcome.CONCERN)
+        st2 = play(pack, st2, TurnOutcome.NOT_ABOUT_ACTIVE, utterance="क्या नोट किया है? मेरे कितने बच्चे हैं?")
+        self.assertEqual(st2.answers["jaundice"].note.verbatim, "")
+
+    def test_stated_concern_keeps_the_child_named_in_the_same_sentence(self):
+        # Bug: a mother co-reporting two concerns for one child in one sentence lost the second child ref.
+        pack = make_pack([{"id": "a", "kind": QuestionKind.GATE, "roster_scoped": True},
+                          {"id": "b", "kind": QuestionKind.GATE, "roster_scoped": True}],
+                         roster={"key": "children", "tags": ["male", "female"]})
+        st = new_state(pack)
+        st.roster = [RosterItem(id="item_1", age_years=4, age_label="4 साल", tag="male"),
+                     RosterItem(id="item_2", age_years=2, age_label="2 साल", tag="male")]
+        st = play(pack, st, TurnOutcome.CONCERN, item_ref="item_2")
+        self.assertEqual(st.answers["a"].item_ids, ["item_2"])
+        st = play(pack, st, TurnOutcome.CONCERN, item_ref="item_1", utterance="दोनों को दौरे आए",
+                  stated={"a": TurnOutcome.CONCERN})
+        self.assertEqual(st.answers["a"].item_ids, ["item_2", "item_1"])
+
+    def test_equal_age_twins_get_distinct_which_item_labels_from_the_pack(self):
+        # Bug: two unnamed 2-year-olds rendered identically ("2 साल वाले, या 2 साल वाले").
+        shishu = load_pack("shishu-hi")
+        twins = [RosterItem(id="item_1", age_years=2, age_label="2 साल", tag="male"),
+                 RosterItem(id="item_2", age_years=2, age_label="2 साल", tag="male")]
+        self.assertEqual(which_item_prompt(shishu, CallState(roster=twins)),
+                         "यह किस बच्चे की बात है — पहले 2 साल वाले बेटे, या दूसरे 2 साल वाले बेटे?")
+
+    def test_equal_age_twins_are_same_age_not_oldest_and_youngest(self):
+        # Bug: two 2-year-old twins were labelled oldest/youngest, feeding gemini-decision-1 false age ranks.
+        twins = [RosterItem(id="item_1", age_years=2, age_label="2 साल", tag="male"),
+                 RosterItem(id="item_2", age_years=2, age_label="2 साल", tag="male")]
+        self.assertEqual([r["rank"] for r in roster_rows(CallState(roster=twins))], ["same_age", "same_age"])
+        spread = [*twins, RosterItem(id="item_3", age_years=6, age_label="6 साल", tag="female"),
+                  RosterItem(id="item_4", age_years=11, age_label="11 साल", tag="female")]
+        self.assertEqual([r["rank"] for r in roster_rows(CallState(roster=spread))],
+                         ["oldest", "middle", "same_age", "same_age"])
 
 
 class RealPackIntegrationTests(unittest.TestCase):

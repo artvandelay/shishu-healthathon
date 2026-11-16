@@ -121,6 +121,8 @@ roster_format:
   which_item:
     template: "यह किस बच्चे की बात है — {items}?"
     or_joiner: ", या "
+    # Used only for children whose label repeats (equal-age twins), so two 2-year-olds are never read alike.
+    ordinals: ["पहले", "दूसरे", "तीसरे", "चौथे"]
     named_female: "{age} वाली {name}"
     named_male: "{age} वाले {name}"
     unnamed_female: "{age} वाली बेटी"
