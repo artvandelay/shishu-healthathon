@@ -18,7 +18,7 @@ Transport = Callable[..., tuple[int, bytes] | Awaitable[tuple[int, bytes]]]
 _CLIENTS: WeakKeyDictionary[asyncio.AbstractEventLoop, httpx.AsyncClient] = WeakKeyDictionary()
 _CORE = ("danger_now", "caller_stop", "mentions_profile", "redact_patient_note")
 _NOUL = (*_CORE, "turn_incomplete", "detail_present", "jump_topic")
-_STATED_KINDS = (QuestionKind.GATE, QuestionKind.ROUTING_GATE, QuestionKind.OPEN_CAPTURE)
+_STATED_KINDS = (QuestionKind.GATE, QuestionKind.ROUTING_GATE)
 _OUTCOMES, _STATED_OUTCOMES = frozenset({"clear", "concern", "unknown", "clarify", "retract"}), frozenset({"concern", "clear", "clarify"})
 # Out-of-turn CONCERN on an already-CLEAR question is a revision of a closed answer, not a first read: it must clear
 # this floor on top of the pack's stated gate (the bench's 0.82 audio-only flip must never be enough).
@@ -74,7 +74,7 @@ def build_turn_request(pack: PackConfig, state: CallState, *, utterance_text: st
                        audio_mime_type: str = "audio/wav", include_turn_incomplete: bool = False) -> dict[str, Any]:
     heads, kind = pack.decisions.get("heads") or {}, engine.step_kind(pack, state)
     spec, rows, audio = pack.by_id.get(state.cursor.qid), engine.roster_rows(state), bytes(audio_wav_bytes or b"")
-    router, said, follow = kind not in ("profile", "bridge"), partial(engine.question_say, pack, state), engine.followup_prompt(pack, state)
+    router, said, follow = kind != "profile", partial(engine.question_say, pack, state), engine.followup_prompt(pack, state)
     answered = any(r.state.is_resolved for q, r in state.answers.items() if pack.by_id[q].is_routable)
     qs: dict[str, Any] = {h: heads[h] for h in (*_CORE, "active_outcome", *(("turn_incomplete",) if include_turn_incomplete else ())) if h in heads}
     if kind == "main" and spec is not None:
@@ -98,7 +98,14 @@ def build_turn_request(pack: PackConfig, state: CallState, *, utterance_text: st
     ctx: dict[str, Any] = {"active_question": engine.active_prompt(pack, state), "caller_utterance": utt, "followup_question": follow,
                            "last_answered_question": engine.last_answered_prompt(pack, state)[1]}
     if kind in ("which_item", "followup") and spec is not None: ctx["parent_question"] = said(spec)
-    if len(rows) >= 2: ctx["roster"] = rows
+    # A mid-call "मेरे ट्विंस बच्चे हैं, मुझे लगता नहीं आप वो सुन पाए" can only be read against what is already
+    # stored, so the caller's filled profile slots and the children on record both travel with every turn.
+    if known := {k: v for k, v in state.profile.items() if v not in (None, "")}: ctx["profile"] = known
+    if state.ordered_roster:
+        # One child still travels: a single child is what she is talking about, and "rank: only" carries no
+        # choice set. item_ref stays gated on two or more rows above — there is nobody to choose between.
+        ctx["roster"] = rows or [{"id": c.id, "rank": "only", "age_label": c.age_label, "tag": c.tag, "name": c.name}
+                                 for c in state.ordered_roster]
     text = json.dumps(ctx, ensure_ascii=False)
     inp: Any = [{"type": "text", "text": text + "\n"}, {"type": "audio", "data": base64.b64encode(audio).decode(), "mime_type": audio_mime_type}] if audio else text
     return {"model": str(pack.decisions.get("model") or DEFAULT_MODEL), "input": inp, "questions": qs}
@@ -138,13 +145,12 @@ def _active_value(spec: QuestionSpec | None, a: Mapping[str, Any], t: Mapping[st
     if spec.kind is QuestionKind.SINGLE_CHOICE: return _pick(a, "choice_value", t, "choice", allowed=frozenset(spec.options)) or None
     if spec.kind is QuestionKind.MULTI_CHOICE: return [k for k in spec.options if _yes(a, f"opt_{k}", t["multi_choice_min_yes"])] or None
     return _score_value(a, t) if spec.kind is QuestionKind.SCORE else None
-def _stated_writes(pack: PackConfig, state: CallState, a: Mapping[str, Any], t: Mapping[str, float], *, kind: str, outcome: TurnOutcome) -> dict[str, TurnOutcome]:
+def _stated_writes(pack: PackConfig, state: CallState, a: Mapping[str, Any], t: Mapping[str, float]) -> dict[str, TurnOutcome]:
     """Out-of-turn revisions of the other routable questions, each gated by its own stated thresholds."""
     out: dict[str, TurnOutcome] = {}
     for key in (k for k in a if str(k).startswith("stated_")):
         spec = pack.by_id.get(str(key).removeprefix("stated_"))
-        if spec is None or not spec.is_routable or spec.id == state.cursor.qid: continue
-        if spec.kind is QuestionKind.OPEN_CAPTURE and kind != "close" and outcome is not TurnOutcome.CLARIFY: continue
+        if spec is None or not spec.is_routable or spec.kind not in _STATED_KINDS or spec.id == state.cursor.qid: continue
         # An out-of-turn concern on a question she already denied needs near-certain evidence: the pack's own stated
         # gate passes 0.80, which a noisy audio turn can clear while it is really talking about another symptom.
         # Revising UNKNOWN, retracting CONCERN to CLEAR, and asking what a term means keep the normal stated gate.
@@ -166,14 +172,14 @@ def interpret_turn_decision(pack: PackConfig, state: CallState, raw_answers: Map
     val = None if closing or kind != "main" else _active_value(spec, a, t)
     outcome = TurnOutcome.ANSWERED if val is not None else TurnOutcome.NOT_ABOUT_ACTIVE
     if not closing and val is None and (w := _pick(a, "active_outcome", t, "outcome", allowed=_OUTCOMES) or _quiet_split(a, t)): outcome = TurnOutcome(w)
-    stated = {} if closing else _stated_writes(pack, state, a, t, kind=kind, outcome=outcome)
+    stated = {} if closing else _stated_writes(pack, state, a, t)
     next_probs = _next_qid_probs(a)
     flags = tuple(f for f, fs in pack.semantic_flags.items() if f not in state.semantic_flags and _yes(a, f"flag_{f}", fs.get("min_yes", 0.8)))
     cmd = TurnCommand(
         emergency=on["danger_now"], caller_stop=not on["danger_now"] and on["caller_stop"], turn_incomplete=on["turn_incomplete"], outcome=outcome, value=val,
         item_ref=_pick(a, "item_ref", t, "item_ref", allowed=frozenset({i.id for i in state.roster}) | {"all"}) if len(state.roster) >= 2 else "",
         followup_answered=bool(on["detail_present"] and kind in ("main", "close") and outcome is TurnOutcome.CONCERN),
-        stated=stated, semantic_flags=flags, jump_topic=bool(not closing and kind not in ("profile", "bridge") and on["jump_topic"]),
+        stated=stated, semantic_flags=flags, jump_topic=bool(not closing and kind != "profile" and on["jump_topic"]),
         next_qid_probs=next_probs, utterance=" ".join(utterance_text.split()), redacted=on["redact_patient_note"])
     diag = {"active_qid": state.cursor.qid, "step_kind": kind, "outcome": outcome.value, "stated": {q: o.value for q, o in stated.items()}, "next_qid_probs": next_probs,
             "semantic_flags": list(flags), "heads": on, **{h: _num(a[h].get("noul")) for h in _NOUL if isinstance(a.get(h), Mapping)},

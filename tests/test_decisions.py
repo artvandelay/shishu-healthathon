@@ -109,6 +109,48 @@ class BuildRequestTests(unittest.TestCase):
         self.assertIn("roster", json.loads(decisions.build_turn_request(self.shishu, st)["input"]))
         self.assertEqual(set(heads["item_ref"]["criteria"]), {"item_1", "item_2", "all", "other"})
 
+    def test_a_bridge_step_still_offers_the_stated_heads_and_the_router(self):
+        # Bug: `router = kind not in ("profile", "bridge")` muted every routing and out-of-turn head on a bridge
+        # step, whose whole script invites the caller to speak freely ("बेझिझक खुलकर बोलकर बताइए"). In fever-opd-hi
+        # patient_name/patient_age are profile questions (is_routable False), so `answered` was False too and the
+        # caller's volunteered breathing complaint had neither a stated_ head nor a next_qid head to land in.
+        st = state_at(self.fever, "intro_bridge")
+        st.profile = {"patient_name": "रीटा", "patient_age": 4}
+        heads = decisions.build_turn_request(self.fever, st)["questions"]
+        self.assertIn("stated_breathing_or_chest", heads)
+        self.assertNotIn("stated_close_anything_else", heads)
+        self.assertIn("next_qid", heads)
+        self.assertIn("jump_topic", heads)
+
+    def test_the_context_carries_the_profile_and_a_lone_child_without_item_ref(self):
+        # Bug: build_turn_request never sent state.profile, and sent state.roster only for 2+ children, so
+        # mentions_profile could not see what was already stored when a caller corrected a detail or said
+        # "मेरे ट्विंस बच्चे हैं, मुझे लगता नहीं आप वो सुन पाए".
+        st = state_at(self.shishu, "intro_children")
+        st.profile = {"caller_name": "रीटा"}
+        st.roster = [RosterItem(id="item_1", age_years=3, age_label="3 साल", tag="female", name="मीरा")]
+        req = decisions.build_turn_request(self.shishu, st)
+        self.assertEqual(json.loads(req["input"])["profile"], {"caller_name": "रीटा"})
+        self.assertEqual(json.loads(req["input"])["roster"], [
+            {"id": "item_1", "rank": "only", "age_label": "3 साल", "tag": "female", "name": "मीरा"}])
+        self.assertNotIn("item_ref", req["questions"], "one child has nobody to choose between")
+
+        blank = state_at(self.shishu, "intro_children")
+        blank.profile = {"caller_name": "", "marital_status": None}
+        self.assertNotIn("profile", json.loads(decisions.build_turn_request(self.shishu, blank)["input"]),
+                         "an all-blank profile is not a stored fact")
+
+    def test_the_pack_names_the_roster_key_the_context_actually_sends(self):
+        # Bug: decisions.yaml told the model "children_roster" while ctx sent "roster", and its mentions_profile
+        # instructions only counted a stated or corrected detail, so "मेरे ट्विंस बच्चे हैं, आप वो सुन नहीं पाए"
+        # (twins already on record, never restated) could not be read as a profile mention at all.
+        text = (self.shishu.root / "decisions.yaml").read_text(encoding="utf-8")
+        self.assertNotIn("children_roster", text)
+        self.assertIn("roster", text)
+        self.assertIn("twins", text)
+        self.assertIn("multiples", text)
+        self.assertEqual(self.shishu.decisions["heads"]["mentions_profile"]["type"], "noul")
+
 
 class InterpretTests(unittest.TestCase):
     """Threshold gating in both directions, per question kind."""
@@ -153,13 +195,25 @@ class InterpretTests(unittest.TestCase):
         self.assertIs(intent.command.outcome, TurnOutcome.NOT_ABOUT_ACTIVE)
         self.assertIsNone(intent.command.value)
 
-    def test_open_capture_is_not_double_written_outside_a_closing_or_clarifying_turn(self):
+    def test_jump_topic_is_honoured_on_a_bridge_step(self):
+        # Bug: interpret_turn_decision gated jump_topic on `kind not in ("profile", "bridge")`, so even when the
+        # router head fired on the bridge the command dropped it.
+        st = state_at(self.fever, "intro_bridge")
+        intent = self.interpret(self.fever, st, {"jump_topic": noul(0.93)})
+        self.assertTrue(intent.command.jump_topic)
+        profile_step = state_at(self.fever, "patient_name")
+        self.assertFalse(self.interpret(self.fever, profile_step, {"jump_topic": noul(0.93)}).command.jump_topic,
+                         "a profile slot still owns the turn")
+
+    def test_an_open_capture_stated_head_is_never_sent_and_never_written(self):
+        # Bug: OPEN_CAPTURE sat in _STATED_KINDS, so every turn paid for a stated_close_anything_else head that
+        # _stated_writes then threw away unless the turn was closing or clarifying.
         st = state_at(self.fever, "fever_nature")
         answers = {"stated_close_anything_else": choice(concern=0.95, unmentioned=0.02)}
         self.assertNotIn("close_anything_else", self.interpret(self.fever, st, answers).command.stated)
         clarifying = dict(answers, active_outcome=choice(clarify=0.9, other=0.02))
-        intent = self.interpret(self.fever, st, clarifying)
-        self.assertEqual(intent.command.stated["close_anything_else"], TurnOutcome.CONCERN)
+        self.assertNotIn("close_anything_else", self.interpret(self.fever, st, clarifying).command.stated)
+        self.assertNotIn("stated_close_anything_else", decisions.build_turn_request(self.fever, st)["questions"])
 
     def test_next_qid_probabilities_drop_the_catchall_and_non_finite_values(self):
         st = state_at(self.fever, "fever_nature")

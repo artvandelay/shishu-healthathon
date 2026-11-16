@@ -24,19 +24,21 @@ heads:
   mentions_profile:
     type: noul
     instructions: >-
-      Does caller_utterance state, add, or correct the caller's own demographic profile (her name, marital
-      status as married/about to marry/unmarried, total child count, or adding/correcting her children's
-      ages, sex, or names), rather than merely referring to an already-known child in children_roster
+      Does caller_utterance state, add, correct, or point out a gap in the caller's own demographic profile (her
+      name, marital status as married/about to marry/unmarried, total child count, or her children's number, ages,
+      sex, or names) — including telling us about a child, twin, or multiple that was missed or misheard earlier,
+      even without restating that child's age — rather than merely referring to an already-known child in roster
       while answering a clinical or child-selection question?
     criteria:
       true_description: >-
-        Caller states, adds, or corrects her own name, marital status, total child count, or a child's
-        age, sex, or name (including giving remaining children's ages or adding another child).
+        Caller states, adds, or corrects her own name, marital status, total child count, or a child's age, sex, or
+        name (including giving remaining children's ages, adding another child, or saying she has twins/multiples
+        or another child we did not record or did not hear — such as "मेरे ट्विंस बच्चे हैं, आप वो सुन नहीं पाए" —
+        even when no age is restated).
       false_description: >-
-        Caller only answers a clinical, pregnancy, or family question, refers to an already-known child
-        from children_roster (such as oldest, middle, youngest, all of them, or by existing name) to answer
-        a symptom question, asks for clarification, or makes no statement or update about her demographic
-        profile.
+        Caller only answers a clinical, pregnancy, or family question, refers to an already-known child from roster
+        (such as oldest, middle, youngest, all of them, or by existing name) to answer a symptom question, asks for
+        clarification, or makes no statement or update about her demographic profile.
   redact_patient_note:
     type: noul
     instructions: >-
@@ -145,7 +147,7 @@ heads:
   item_ref_template:
     type: choice
     instructions: >-
-      Which child from children_roster has or experienced the health symptom or event asked about in active_question
+      Which child from roster has or experienced the health symptom or event asked about in active_question
       or parent_question? Choose a child only if caller_utterance affirms or identifies that child as
       affected; choose other if the symptom is denied or a child is mentioned only to say they were NOT
       affected.
@@ -153,10 +155,10 @@ heads:
       Child {id} (rank={rank}, age={age_label}, tag={tag}, name={name_or_unnamed}) has or experienced
       the reported concern.
     unnamed_label: unnamed
-    all_description: All or every child in children_roster (such as both or all of them) experienced the
+    all_description: All or every child in roster (such as both or all of them) experienced the
       reported concern.
     other_description: >-
-      No specific child in children_roster is identified as affected, the concern is denied or retracted,
+      No specific child in roster is identified as affected, the concern is denied or retracted,
       or a child is mentioned only to say they were not affected.
   next_qid_template:
     type: choice
