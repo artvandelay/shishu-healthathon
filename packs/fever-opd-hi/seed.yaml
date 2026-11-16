@@ -1,0 +1,125 @@
+# packs/fever-opd-hi/seed.yaml
+# Offline fixtures: three scripted calls replayed through the real reducer, zero network.
+# They are the pack's regression set — one red-flag call, one clean call, one that
+# stops early — so `intake/reports.py` can be exercised with no audio.
+#
+# Convention (same as `shishu-hi`): a follow-up answer is an extra `say` line under its
+# PARENT qid, because the cursor keeps the parent id during a follow-up substep.
+scenarios:
+# Fever > 7 days, intermittent on alternate days, severity 3 with breathlessness:
+# exercises concern_if, conditional branching, the score head, a RED_FLAG gate
+# with its follow-up, and the exclusive "कुछ नहीं" multi-choice.
+- id: urgent_fever
+  pdf: SHISHU-OPD-sample-urgent.pdf
+  caller_name: रमेश
+  patient_name: सुनीता
+  patient_age: 34
+  duration_sec: 300
+  answers:
+  - qid: fever_duration_bucket
+    say:
+    - नौ दिन से बुखार है।
+  - qid: fever_nature
+    say:
+    - बीच-बीच में आता-जाता है, एक दिन छोड़कर आता है।
+  - qid: fever_frequency
+    say:
+    - एक दिन छोड़कर आता है।
+  - qid: fever_severity
+    say:
+    - बहुत तेज़ बुखार है, खड़े नहीं हो पाते और कुछ खा भी नहीं पाते।
+  - qid: associated_symptoms
+    say:
+    - कंपकंपी बहुत लगती है और बदन में दर्द रहता है।
+  - qid: breathing_or_chest
+    say:
+    - हाँ, सीढ़ियाँ चढ़ने पर साँस फूलती है।
+    - तीन दिन से है, आराम करने पर भी साँस फूलती है।
+  - qid: jaundice_or_bleeding
+    say:
+    - नहीं, पीलापन नहीं है और खून भी नहीं आ रहा।
+  - qid: vomiting_or_diarrhea
+    say:
+    - नहीं, उल्टी या दस्त नहीं है।
+  - qid: received_treatment
+    say:
+    - हाँ, दो दिन पहले डॉक्टर से दिखाया था।
+    - पास के क्लिनिक से पैरासिटामोल दी थी, दो दिन चली, आराम नहीं मिला।
+  - qid: recent_travel
+    say:
+    - हाँ, पिछले हफ़्ते गाँव गए थे।
+  - qid: close_anything_else
+    say:
+    - भूख बिल्कुल नहीं लग रही, और बहुत कमज़ोरी लगती है।
+    - भूख बिल्कुल नहीं लग रही, और बहुत कमज़ोरी लगती है।
+  stop_after_gates: null
+
+# A short, clean fever: every gate clear, symptoms "कुछ नहीं", no follow-ups.
+# Proves that a resolved all-clear call still renders a calm two-page report, and that
+# `fever_frequency` is correctly absent because the fever was continuous.
+- id: clean_fever
+  pdf: SHISHU-OPD-sample-clean.pdf
+  caller_name: मीना
+  patient_name: आरिफ़
+  patient_age: 6
+  duration_sec: 180
+  answers:
+  - qid: fever_duration_bucket
+    say:
+    - दो दिन से है।
+  - qid: fever_nature
+    say:
+    - लगातार रहता है।
+  - qid: fever_severity
+    say:
+    - हल्का बुखार है, खाना-पीना और खेलना सब चल रहा है।
+  - qid: associated_symptoms
+    say:
+    - कुछ नहीं, बस बुखार है।
+  - qid: breathing_or_chest
+    say:
+    - नहीं।
+  - qid: jaundice_or_bleeding
+    say:
+    - नहीं।
+  - qid: vomiting_or_diarrhea
+    say:
+    - नहीं।
+  - qid: received_treatment
+    say:
+    - नहीं, अभी कोई दवा नहीं दी।
+  - qid: recent_travel
+    say:
+    - नहीं, कहीं नहीं गए।
+  - qid: close_anything_else
+    say:
+    - नहीं, बस इतना ही।
+  stop_after_gates: null
+
+# Stopped part-way: the caller has to leave after the second warning gate.
+# Proves `incomplete` is a first-class render: unasked questions are listed as
+# पूछा नहीं गया, never reported as "no".
+- id: stopped_early
+  pdf: SHISHU-OPD-sample-incomplete.pdf
+  caller_name: कबीर
+  patient_name: हीरा
+  patient_age: 51
+  duration_sec: 95
+  answers:
+  - qid: fever_duration_bucket
+    say:
+    - चार दिन से है।
+  - qid: fever_nature
+    say:
+    - लगातार रहता है।
+  - qid: fever_severity
+    say:
+    - तेज़ बुखार है, बिस्तर पर रहना पड़ता है।
+  - qid: associated_symptoms
+    say:
+    - बदन दर्द और रात में पसीना।
+  - qid: breathing_or_chest
+    say:
+    - हल्की साँस फूलती है, पर छाती में दर्द नहीं।
+    - चलने पर थोड़ी फूलती है।
+  stop_after_gates: 2

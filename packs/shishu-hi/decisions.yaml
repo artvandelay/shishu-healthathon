@@ -1,0 +1,181 @@
+model: gemini-decision-1
+heads:
+  danger_now:
+    type: noul
+    instructions: >-
+      Is the caller describing an active life-threatening medical emergency happening RIGHT NOW in caller_utterance
+      (such as not breathing, severe fast breathing, blue lips now, unconsciousness, unstoppable seizures,
+      unstoppable bleeding, or explicitly stating an emergency right now)?
+    criteria:
+      true_description: >-
+        Active life-threatening danger sign happening right now in caller_utterance, or explicit statement
+        of a medical emergency happening right now.
+      false_description: >-
+        Past medical history, a resolved event from earlier in life, a routine yes/no or symptom answer,
+        or no emergency happening right now.
+  caller_stop:
+    type: noul
+    instructions: Does the caller explicitly ask to end, stop, or disconnect the call now in caller_utterance?
+    criteria:
+      true_description: Caller explicitly asks to end, stop, or hang up the call now or continue another
+        time.
+      false_description: Caller asks only to pause or wait briefly, asks a clarification question, or
+        gives a normal reply.
+  mentions_profile:
+    type: noul
+    instructions: >-
+      Does caller_utterance state, add, or correct the caller's own demographic profile (her name, marital
+      status as married/about to marry/unmarried, total child count, or adding/correcting her children's
+      ages, sex, or names), rather than merely referring to an already-known child in children_roster
+      while answering a clinical or child-selection question?
+    criteria:
+      true_description: >-
+        Caller states, adds, or corrects her own name, marital status, total child count, or a child's
+        age, sex, or name (including giving remaining children's ages or adding another child).
+      false_description: >-
+        Caller only answers a clinical, pregnancy, or family question, refers to an already-known child
+        from children_roster (such as oldest, middle, youngest, all of them, or by existing name) to answer
+        a symptom question, asks for clarification, or makes no statement or update about her demographic
+        profile.
+  redact_patient_note:
+    type: noul
+    instructions: >-
+      Does caller_utterance name a specific genetic, inherited, or rare disease diagnosis label (such
+      as hemophilia, Duchenne muscular dystrophy, Pompe, Gaucher, SCID, SMA, MPS, Wiskott-Aldrich, sickle
+      cell disease, cystic fibrosis, Fanconi anemia, PKU, thalassemia major, or any other named rare disorder
+      or syndrome) rather than plain everyday symptoms, common conditions (BP, sugar, thyroid, jaundice,
+      fits, cancer, kidney stones), or routine thalassemia minor/trait carrier screening?
+    criteria:
+      true_description: >-
+        Names a specific genetic, inherited, or rare disease diagnosis or syndrome label (including thalassemia
+        major) in caller_utterance.
+      false_description: >-
+        Describes only plain everyday symptoms, treatments, body parts, common conditions (such as BP,
+        diabetes, thyroid, jaundice, seizures, generic cancer), or routine thalassemia minor/trait carrier
+        checks without naming a rare or genetic disease diagnosis.
+  active_outcome:
+    type: choice
+    instructions: >-
+      How does caller_utterance respond to active_question? (If caller_utterance answers active_question
+      AND also mentions another topic, classify how it answers active_question.)
+    criteria:
+      clear: >-
+        Denies, answers no, negative, normal, or nothing further for active_question (even if also mentioning
+        a different topic in the same sentence).
+      concern: >-
+        Affirms, answers yes, agrees to start, identifies an affected child when active_question asks
+        which child, or provides the answer requested by active_question (even if also mentioning a different
+        topic).
+      unknown: States that she does not know, does not remember, or is unsure about active_question.
+      clarify: >-
+        Asks what active_question itself or a term inside active_question means, or says she did not understand
+        active_question.
+      retract: >-
+        Takes back or reverses a yes or affirmative answer just given for active_question (or its parent_question
+        when active_question is a sub-question).
+      other: >-
+        caller_utterance gives NO answer at all to active_question (for example when it talks ONLY about
+        a different topic without saying yes or no to active_question, rules out one child on a which-child
+        question without naming the affected child, only updates demographic profile details, or is unrelated
+        chatter).
+  detail_present:
+    type: noul
+    instructions: >-
+      Does caller_utterance already include concrete factual or clinical detail answering followup_question,
+      rather than only a bare yes/no or acknowledgement?
+    criteria:
+      true_description: >-
+        Includes concrete factual or clinical detail (such as duration, count, cause, symptom, age, or
+        affected person) answering followup_question.
+      false_description: >-
+        Only a bare yes or no, bare acknowledgement, statement of not knowing, clarification question,
+        or no concrete detail.
+  turn_incomplete:
+    type: noul
+    instructions: >-
+      Did the speaker pause mid-sentence, trail off, or leave an incomplete phrase in caller_utterance,
+      rather than finishing her reply?
+    criteria:
+      true_description: >-
+        Caller_utterance breaks off mid-sentence or mid-thought: an unfinished phrase, a dangling connector
+        (और, तो, वो, मतलब), a cut-off word, or speech that stops before naming the thing she started to
+        say.
+      false_description: >-
+        Caller_utterance is a finished reply, however short: a complete yes, no, पता नहीं, a whole sentence,
+        or a complete thought followed by silence.
+  jump_topic:
+    type: noul
+    instructions: >-
+      Does caller_utterance volunteer a specific clinical condition or family history outside active_question
+      (for example naming thalassemia, sickle cell, a transfusion history, a child's death, or a relative
+      with the same problem) that warrants jumping directly to a related follow-on topic rather than continuing
+      routine order?
+    criteria:
+      true_description: >-
+        Volunteers a concrete clinical condition or family history that another catalog question or follow-up
+        would ask about and that is NOT what active_question asked (unprompted transfusion, a diagnosed
+        blood disorder, a death in the family, consanguinity, a relative with the same problem).
+      false_description: >-
+        Answers only active_question, gives a bare yes/no or a symptom detail that belongs to active_question
+        or its follow-up, asks for clarification, or makes unrelated small talk.
+  stated_template:
+    type: choice
+    instructions: >-
+      OUTSIDE of active_question and parent_question, does caller_utterance ALSO explicitly state, revise, or ask about
+      THIS SEPARATE screening item (group={group}): "{question_say}" ({need})?
+      CRITICAL: A bare yes/no or a reply that only answers active_question does NOT state an answer to this separate item —
+      choose unmentioned unless caller_utterance specifically names or describes "{need}" for group={group} (child-scoped items
+      apply ONLY to the caller's own children; family-scoped items apply ONLY to relatives outside the caller's children).
+    criteria:
+      concern: >-
+        Caller_utterance explicitly names or describes "{need}" as present for group={group} (beyond merely answering active_question).
+      clear: >-
+        Caller_utterance explicitly denies or retracts "{need}" by name/topic for group={group} (NEVER for a bare "नहीं" to active_question).
+      clarify: >-
+        Caller_utterance explicitly asks the meaning of "{need}" / "{question_say}" while on a different active_question.
+      unmentioned: >-
+        Caller_utterance only answers active_question (such as a bare हाँ/नहीं or active_question's own topic), talks about a different
+        person/scope, updates profile details, or does not explicitly mention "{need}".
+  item_ref_template:
+    type: choice
+    instructions: >-
+      Which child from children_roster has or experienced the health symptom or event asked about in active_question
+      or parent_question? Choose a child only if caller_utterance affirms or identifies that child as
+      affected; choose other if the symptom is denied or a child is mentioned only to say they were NOT
+      affected.
+    option_template: >-
+      Child {id} (rank={rank}, age={age_label}, tag={tag}, name={name_or_unnamed}) has or experienced
+      the reported concern.
+    unnamed_label: unnamed
+    all_description: All or every child in children_roster (such as both or all of them) experienced the
+      reported concern.
+    other_description: >-
+      No specific child in children_roster is identified as affected, the concern is denied or retracted,
+      or a child is mentioned only to say they were not affected.
+  next_qid_template:
+    type: choice
+    instructions: >-
+      Which open screening question is caller_utterance answering or volunteering information about, other
+      than active_question and parent_question?
+    option_template: '{question_say} ({need})'
+    other_description: >-
+      The caller is not referring to any open screening question outside active_question and parent_question,
+      or there is not enough evidence to identify one.
+thresholds:
+  danger_now_min_yes: 0.494
+  caller_stop_min_yes: 0.5739
+  turn_incomplete_min_yes: 0.55
+  mentions_profile_min_yes: 0.4914
+  redact_patient_note_min_yes: 0.5606
+  detail_present_min_yes: 0.5262
+  jump_topic_min_yes: 0.7
+  outcome_min_confidence: 0.5196
+  outcome_min_margin: 0.2297
+  choice_min_confidence: 0.52
+  choice_min_margin: 0.2
+  multi_choice_min_yes: 0.55
+  score_min_confidence: 0.45
+  stated_min_confidence: 0.8
+  stated_min_margin: 0.35
+  item_ref_min_confidence: 0.65
+  item_ref_min_margin: 0.05

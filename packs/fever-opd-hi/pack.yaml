@@ -1,0 +1,176 @@
+# SHISHU intake pack #2: Hindi OPD fever & acute-symptom triage for one patient.
+# Same engine, same reducer, same two templates-as-data surface — zero lines of Python.
+# Everything a caller reads or hears lives in this file, prompts.yaml, or form.yaml.
+id: "fever-opd-hi"
+version: "1.0.0"
+title: "SHISHU OPD"
+subtitle_native: "बुखार जाँच"
+pdf_prefix: "SHISHU"
+language_code: "hi-IN"
+gemini_model: "gemini-3.1-flash-live-preview"
+gemini_voice: "Kore"
+
+# Clinical scope, in the pack's own words. No engine module reads this; it is the
+# human-readable contract for whoever picks up the next pack.
+domain: "outpatient"
+setting: "OPD fever and acute-symptom triage"
+patient_scope: "single patient"
+chief_complaint: "बुखार"
+
+vad:
+  closed_short_ms: 350
+  reflective_ms: 850
+  ramp_start_voiced_ms: 600
+  ramp_full_voiced_ms: 1800
+  speculate_at_ms: 400
+  incomplete_hold_ms: 2000
+  baseline_pause_ms: 260
+  pace_min: 0.80
+  pace_max: 1.45
+
+timers:
+  watchdog_timeout_sec: 8.0
+  check_in_sec: 15.0
+  silence_close_sec: 30.0
+  soft_limit_sec: 1140.0
+  hard_limit_sec: 1200.0
+
+assets:
+  logo: "shishu-logo.png"
+  font: "NotoSansDevanagari.ttf"
+  consent_pdf: "SHISHU-consent.pdf"
+
+ui:
+  login:
+    lede:
+      hi: "अपना नाम और पासकोड लिखें। फिर कॉल शुरू होगी।"
+      en: "Enter your name and the passcode. Then the call starts."
+    name_label:
+      hi: "आपका नाम"
+      en: "Your name"
+    passcode_label:
+      hi: "पासकोड"
+      en: "Passcode"
+    continue_btn:
+      hi: "आगे बढ़ें"
+      en: "Continue"
+
+  call:
+    header_title: "SHISHU OPD (बुखार जाँच)"
+    start_prompt:
+      hi: "कॉल शुरू करने के लिए नीचे दबाएँ"
+      en: "Tap below to start the call"
+    listening:
+      hi: "सुन रही हूँ…"
+      en: "Listening"
+    speaking:
+      hi: "SHISHU बोल रही है…"
+      en: "SHISHU is speaking"
+    thinking:
+      hi: "सोच रही हूँ…"
+      en: "Thinking"
+    reconnecting:
+      hi: "लाइन जुड़ रही है…"
+      en: "Reconnecting"
+    preparing:
+      hi: "रिपोर्ट तैयार हो रही है…"
+      en: "Preparing report…"
+    preparing_hint:
+      hi: "इसमें थोड़ा समय लग सकता है। कृपया इस पेज पर बने रहिए।"
+      en: "This can take a little while. Please stay on this page."
+    consent_agree:
+      hi: "मैं सहमत हूँ"
+      en: "I agree"
+    consent_link:
+      hi: "सहमति पत्र"
+      en: "Consent"
+    start_btn:
+      hi: "शुरू"
+      en: "Start"
+    end_btn:
+      hi: "बंद"
+      en: "End"
+    nudge_btn:
+      hi: "जवाब नहीं आया? यहाँ दबाएँ"
+      en: "No reply? Tap here"
+    thanks_title:
+      hi: "धन्यवाद"
+      en: "Thank you"
+    thanks_summary:
+      hi: "इस रिपोर्ट (PDF) में वे सवाल हैं जो आप डॉक्टर से अगली मुलाक़ात में पूछ सकते हैं। इसे व्हाट्सएप पर भेजने या सेव करने के लिए नीचे 'शेयर करें' दबाएँ।"
+      en: "This report (PDF) has the questions you can ask the doctor at your next visit. To send it on WhatsApp or save it, tap Share below."
+    share_btn:
+      hi: "शेयर करें"
+      en: "Share"
+    retry_btn:
+      hi: "रिपोर्ट दोबारा बनाएँ"
+      en: "Make the report again"
+    new_call_btn:
+      hi: "नई कॉल"
+      en: "New call"
+
+  # Shown before the very first yes/no pair, so the caller knows a longer answer is welcome.
+  yes_no_prime:
+    hi: "जवाब सिर्फ़ हाँ/नहीं से बड़ा हो तो बेझिझक बोलकर बताएँ — हम ध्यान से सुन रहे हैं।"
+    en: "More than yes or no? Speak freely — we're listening."
+
+  # Quick-reply buttons, in the order they sit on screen: No on the left, Yes on the right.
+  yes_no_buttons:
+    - value: "clear"
+      hi: "नहीं"
+      en: "No"
+    - value: "concern"
+      hi: "हाँ"
+      en: "Yes"
+
+  # Single-choice rows are tapped as chips, so the label is also the button face.
+  choice_buttons:
+    - value: "first"
+      hi: "पहला"
+      en: "First"
+    - value: "second"
+      hi: "दूसरा"
+      en: "Second"
+    - value: "third"
+      hi: "तीसरा"
+      en: "Third"
+    - value: "fourth"
+      hi: "चौथा"
+      en: "Fourth"
+
+  bug_categories:
+    chips:
+      - value: "Model stuck / no reply"
+        hi: "जवाब नहीं आ रहा"
+        en: "Model stuck / no reply"
+      - value: "Clipped / misheard Hindi"
+        hi: "हिंदी कटी या गलत सुनी"
+        en: "Clipped / misheard Hindi"
+      - value: "Slow response"
+        hi: "जवाब धीमा है"
+        en: "Slow response"
+      - value: "Wrong language"
+        hi: "गलत भाषा"
+        en: "Wrong language"
+      - value: "Repeated question"
+        hi: "सवाल दोहराया"
+        en: "Repeated question"
+      - value: "Other"
+        hi: "कुछ और"
+        en: "Other"
+    modal:
+      open_btn:
+        hi: "समस्या बताएँ"
+        en: "Report bug"
+      title:
+        hi: "समस्या बताएँ"
+        en: "Report a problem"
+      sub:
+        hi: "कॉल चलती रहेगी। क्या गड़बड़ हुई, चुनें।"
+        en: "The call keeps running. Pick what went wrong."
+      save_btn:
+        hi: "सेव करें और कॉपी करें"
+        en: "Save bug and copy the debug snapshot"
+      close_btn:
+        hi: "बंद करें"
+        en: "Close"

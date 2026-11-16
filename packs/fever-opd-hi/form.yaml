@@ -1,0 +1,373 @@
+# packs/fever-opd-hi/form.yaml
+# Hindi OPD fever & acute-symptom triage: 14 steps, one patient, zero lines of Python.
+# This pack deliberately exercises every QuestionKind the V3 reducer knows:
+#   profile -> patient_name, patient_age
+#   bridge  -> intro_bridge (spoken open-speech priming)
+#   single_choice -> fever_duration_bucket, fever_nature, fever_frequency (conditional)
+#   score   -> fever_severity (0..3 ordered rubric)
+#   multi_choice -> associated_symptoms ("कोई नहीं" is exclusive)
+#   gate    -> breathing_or_chest, jaundice_or_bleeding, vomiting_or_diarrhea,
+#              received_treatment, recent_travel
+#   open_capture -> close_anything_else
+
+stem_prefixes:
+- 'क्या '
+
+profile_slots:
+- id: patient_name
+  type: string
+  reask: जी, आराम से बताइए — मरीज़ का नाम क्या है?
+- id: patient_age
+  type: number
+  reask: जी, मरीज़ की उम्र कितनी है? साल में बता दीजिए।
+
+# No roster: this pack is about exactly one patient, so the roster machinery is
+# simply absent. Nothing in the engine needs to know that.
+extractor_prompt: 'Extract ONLY the profile facts stated or directly answered by the caller''s utterance given
+  active_qid, active_prompt, and optional current_profile. Return strictly matching JSON with only the two schema
+  fields (patient_name, patient_age), and leave every unmentioned field null.
+
+  - patient_name: the patient''s name only when actually stated; null for a lead-in fragment with no name. Never copy
+  a symptom or a disease word into patient_name.
+
+  - patient_age: the patient''s age in whole years as a number >= 0 when stated or directly answered (on patient_age
+  a bare number such as "तीस" means 30). Months as fractional years such as 0.5 for six months. Convert Hindi number
+  words to digits. Set null when the age is not stated, or when the caller only described a symptom.'
+
+semantic_flags:
+  confirmed_malaria_or_dengue:
+    # A caller who brings a positive malaria/dengue report has already answered the
+    # exposure question by other means. The flag prunes ONLY the questions this pack
+    # names in `skip_if`; it can never reach an unrelated organ system.
+    instructions: Does caller_utterance state an already lab-confirmed or doctor-confirmed malaria or dengue
+      diagnosis for this patient (a positive test, a written report, or "डॉक्टर ने बता दिया है")?
+    true_description: Explicitly states a confirmed malaria or dengue diagnosis, a positive test report, or that a
+      doctor has already confirmed it.
+    false_description: Asks whether it could be malaria or dengue, describes fever with chills without a confirmed
+      diagnosis, mentions a past episode in someone else, or does not mention it at all.
+    min_yes: 0.85
+
+rules:
+  not_intermittent:
+    field: fever_nature
+    op: ne
+    value: intermittent
+  known_dengue_or_malaria:
+    semantic_flag: confirmed_malaria_or_dengue
+
+groups:
+  intro:
+    title_patient: परिचय
+    title_clinician: Patient Profile & Chief Complaint
+  fever:
+    title_patient: बुखार का हाल
+    title_clinician: Fever History
+  warning:
+    title_patient: खतरे की निशानी
+    title_clinician: Danger Signs (Red Flags)
+  history:
+    title_patient: इलाज और संपर्क
+    title_clinician: Treatment & Exposure History
+  close:
+    title_patient: अंत
+    title_clinician: Closing
+
+followups:
+  breathing_detail: साँस लेने में क्या दिक्कत होती है — कब से, और क्या आराम करने पर भी साँस फूलती है?
+  treatment_detail: कहाँ से और क्या इलाज लिया — कौन सी दवा, कितने दिन, और आराम मिला या नहीं?
+  open_detail: जी बताइए, डॉक्टर के लिए क्या बात नोट करूँ?
+
+questions:
+# ---------- profile ----------------------------------------------------------
+- id: patient_name
+  group: intro
+  kind: profile
+  say: नमस्ते, मैं शिशु हूँ। मरीज़ का नाम बताइएगा प्लीज़?
+  stem: नमस्ते, मैं शिशु हूँ। मरीज़ का नाम बताइएगा प्लीज़
+  need: patient name
+  tag: PROFILE
+  requires_slot: patient_name
+  reask: जी, आराम से बताइए — मरीज़ का नाम क्या है?
+
+- id: patient_age
+  group: intro
+  kind: profile
+  say: मरीज़ की उम्र कितनी है?
+  stem: मरीज़ की उम्र कितनी है
+  need: patient age in years
+  tag: PROFILE
+  requires_slot: patient_age
+  reask: जी, मरीज़ की उम्र कितनी है? साल में बता दीजिए।
+
+# ---------- bridge: the one-time spoken open-speech priming -------------------
+- id: intro_bridge
+  group: intro
+  kind: bridge
+  say: अब मैं बुखार के बारे में एक-एक करके छोटे और आसान सवाल पूछूँगी। आप नीचे हाँ या नहीं दबा सकते हैं — और अगर किसी
+    सवाल में हाँ-नहीं से ज़्यादा कोई बात हो, तो बेझिझक खुलकर बोलकर बताइए, मैं ध्यान से सुन रही हूँ। शुरू करें?
+  stem: अब मैं बुखार के बारे में एक-एक करके छोटे और आसान सवाल पूछूँगी। आप बोलकर या नीचे हाँ या नहीं का बटन दबाकर जवाब दे
+    सकते हैं, और कुछ समझ न आए तो पूछ सकते हैं। शुरू करें
+  need: short fever questions; the caller can tap हाँ/नहीं or speak freely whenever there is more to share
+  tag: PROFILE
+
+# ---------- single_choice ----------------------------------------------------
+- id: fever_duration_bucket
+  group: fever
+  kind: single_choice
+  say: बुखार कब से है — 3 दिन से कम, 3 से 7 दिन, या 7 दिन से ज़्यादा?
+  stem: बुखार कब से है — 3 दिन से कम, 3 से 7 दिन, या 7 दिन से ज़्यादा
+  need: how long the fever has lasted
+  tag: FEVER
+  quick_options: true
+  reask: जी, बुखार कब से है — 3 दिन से कम, 3 से 7 दिन, या 7 दिन से ज़्यादा?
+  concern_if:
+    in:
+    - gt_7_days
+  options:
+    lt_3_days:
+      label: 3 दिन से कम
+      en: Less than 3 days
+      criteria: The caller says the fever started today, yesterday, or two days ago.
+    days_3_to_7:
+      label: 3 से 7 दिन
+      en: 3 to 7 days
+      criteria: The caller says three, four, five, six, or seven days of fever.
+    gt_7_days:
+      label: 7 दिन से ज़्यादा
+      en: More than 7 days
+      criteria: The caller says the fever has lasted more than a week, such as eight days, two weeks, or a month.
+
+- id: fever_nature
+  group: fever
+  kind: single_choice
+  say: बुखार लगातार रहता है, या बीच-बीच में आता-जाता है?
+  stem: बुखार लगातार रहता है, या बीच-बीच में आता-जाता है
+  need: whether the fever is continuous or comes and goes
+  tag: FEVER
+  quick_options: true
+  reask: जी, बुखार लगातार रहता है, या बीच-बीच में आता-जाता है?
+  options:
+    continuous:
+      label: लगातार रहता है
+      en: Continuous (constant)
+      criteria: The caller says the fever stays all through the day, or does not come down and go back up.
+    intermittent:
+      label: बीच-बीच में आता-जाता है
+      en: Intermittent (comes and goes)
+      criteria: The caller says the fever comes and goes, rises and settles, or returns after being normal.
+
+# Conditional branching: asked ONLY when the fever is intermittent at all.
+- id: fever_frequency
+  group: fever
+  kind: single_choice
+  say: बुखार कितनी बार आता है — दिन में कुछ-कुछ घंटों में, एक दिन छोड़कर, या दो-तीन दिन में एक बार?
+  stem: बुखार कितनी बार आता है — दिन में कुछ-कुछ घंटों में, एक दिन छोड़कर, या दो-तीन दिन में एक बार
+  need: how often the intermittent fever returns
+  tag: FEVER
+  skip_if:
+  - not_intermittent
+  reask: जी, बुखार दिन में कुछ-कुछ घंटों में आता है, एक दिन छोड़कर, या दो-तीन दिन में एक बार?
+  options:
+    few_hours:
+      label: दिन में कुछ-कुछ घंटों में
+      en: Every few hours a day
+      criteria: The fever returns several times within the same day, a few hours apart.
+    alternate_days:
+      label: एक दिन छोड़कर
+      en: Alternate days
+      criteria: The fever comes on one day, is gone the next, and returns the day after.
+    every_two_three_days:
+      label: दो-तीन दिन में एक बार
+      en: Once in two or three days
+      criteria: The fever returns after a gap of two or three days.
+
+# ---------- score: the 0..3 ordered rubric head ------------------------------
+- id: fever_severity
+  group: fever
+  kind: score
+  say: बुखार कितना तेज़ है — हल्का गरम लगता है, साफ़ बुखार है पर उठकर काम हो जाता है, तेज़ बुखार में बिस्तर पर रहना पड़ता
+    है, या इतना तेज़ कि खड़े नहीं हो पाते?
+  stem: बुखार कितना तेज़ है
+  need: how severe the fever is, from mild warmth to being unable to stand or eat
+  tag: FEVER
+  reask: जी, बुखार कितना तेज़ है — हल्का, साफ़, तेज़, या बहुत तेज़?
+  score_rubric:
+  - हल्का गरम लगता है — बुखार जैसा महसूस होता है, पर खाना-पीना और रोज़ का काम सब चल रहा है।
+  - साफ़ बुखार है — थोड़ी कमज़ोरी और सिर भारी लगता है, पर उठकर काम कर पाते हैं।
+  - तेज़ बुखार है — बिस्तर पर रहना पड़ता है, और खाने-पीने में दिक्कत होती है।
+  - बहुत तेज़ बुखार है — खड़े नहीं हो पाते, या कुछ खा-पी नहीं पाते।
+  concern_if:
+    min_score: 2.0
+
+# ---------- multi_choice: "कोई नहीं" is exclusive ----------------------------
+- id: associated_symptoms
+  group: fever
+  kind: multi_choice
+  say: बुखार के साथ क्या-क्या होता है — कंपकंपी और ठंड लगना, बदन दर्द, रात में पसीना, शरीर पर दाने, या कुछ और? अगर
+    कुछ नहीं होता तो 'कुछ नहीं' कह दीजिए।
+  stem: बुखार के साथ क्या-क्या होता है
+  need: which symptoms accompany the fever
+  tag: FEVER
+  reask: जी, बुखार के साथ कंपकंपी, बदन दर्द, रात में पसीना, दाने, कुछ और — या कुछ नहीं?
+  options:
+    none:
+      label: कुछ नहीं
+      en: None
+      exclusive: true
+      criteria: The caller says there is nothing else along with the fever, only the fever.
+    chills:
+      label: कंपकंपी और ठंड लगना
+      en: Chills and shivering
+      criteria: The caller describes shivering, feeling cold, or the body shaking with the fever.
+    body_ache:
+      label: बदन दर्द
+      en: Body ache
+      criteria: The caller describes pain or heaviness in the body, muscles, or limbs along with the fever.
+    night_sweats:
+      label: रात में पसीना
+      en: Night sweats
+      criteria: The caller describes sweating at night or waking up drenched.
+    rash:
+      label: शरीर पर दाने
+      en: Rash
+      criteria: The caller describes spots, pimples, or a rash on the skin.
+    other:
+      label: कुछ और
+      en: Something else
+      criteria: The caller describes another accompanying symptom that is not chills, body ache, night sweats,
+        or rash.
+
+# ---------- gate: RED_FLAG with a follow-up --------------------------------
+- id: breathing_or_chest
+  group: warning
+  kind: gate
+  say: क्या साँस लेने में तकलीफ़ है, या छाती में दर्द या जकड़न है?
+  stem: साँस लेने में तकलीफ़ है, या छाती में दर्द या जकड़न है
+  need: difficulty breathing, or chest pain or tightness
+  tag: RED_FLAG
+  clinician_group: Danger Signs (Red Flags)
+  followups:
+  - breathing_detail
+  reask: जी, क्या साँस लेने में तकलीफ़ है, या छाती में दर्द या जकड़न है?
+
+# ---------- gate: RED_FLAG, pruned when a lab report already answers it ----
+- id: jaundice_or_bleeding
+  group: warning
+  kind: gate
+  say: क्या आँखों या शरीर में पीलापन दिख रहा है, या नाक, मसूड़े या पेशाब से खून आ रहा है?
+  stem: आँखों या शरीर में पीलापन दिख रहा है, या नाक, मसूड़े या पेशाब से खून आ रहा है
+  need: jaundice, or bleeding from the nose, gums, or in the urine
+  tag: RED_FLAG
+  clinician_group: Danger Signs (Red Flags)
+  reask: जी, क्या आँखों में पीलापन है, या कहीं से खून आ रहा है?
+
+- id: vomiting_or_diarrhea
+  group: warning
+  kind: gate
+  say: क्या बार-बार उल्टी हो रही है, या पतले दस्त आ रहे हैं?
+  stem: बार-बार उल्टी हो रही है, या पतले दस्त आ रहे हैं
+  need: repeated vomiting or loose stools
+  # Deliberately NOT `RED_FLAG`: repeated vomiting/diarrhea is a hydration risk that the
+  # doctor must see, but it is not a 108-level sign on its own. Keeping the tag distinct
+  # is what lets the report band stay reserved for breathing/chest and bleeding.
+  tag: WARNING
+  clinician_group: Danger Signs (Red Flags)
+  reask: जी, क्या उल्टी हो रही है, या पतले दस्त आ रहे हैं?
+
+# ---------- gate with a follow-up -----------------------------------------
+- id: received_treatment
+  group: history
+  kind: gate
+  say: क्या इस बुखार के लिए अब तक कोई दवा ली है, या डॉक्टर से दिखाया है?
+  stem: इस बुखार के लिए अब तक कोई दवा ली है, या डॉक्टर से दिखाया है
+  need: any medicine taken or any health provider seen for this fever
+  tag: HISTORY
+  followups:
+  - treatment_detail
+  reask: जी, क्या इस बुखार के लिए कोई दवा ली है, या किसी डॉक्टर से दिखाया है?
+
+# ---------- gate: pruned by a pack-declared semantic flag ------------------
+- id: recent_travel
+  group: history
+  kind: gate
+  say: क्या पिछले दो हफ़्तों में कहीं बाहर सफ़र किया है — दूसरे गाँव, शहर, या जंगल के इलाक़े में?
+  stem: पिछले दो हफ़्तों में कहीं बाहर सफ़र किया है — दूसरे गाँव, शहर, या जंगल के इलाक़े में
+  need: any travel outside the area in the last two weeks
+  tag: HISTORY
+  # If the patient already brings a lab-confirmed malaria/dengue report, the exposure
+  # probe adds nothing. `confirmed_malaria_or_dengue` prunes exactly this step and no other:
+  # the bleeding gate above stays, because a confirmed dengue makes it MORE important.
+  skip_if:
+  - known_dengue_or_malaria
+  reask: जी, क्या पिछले दो हफ़्तों में कहीं बाहर सफ़र किया है?
+
+# ---------- open_capture ---------------------------------------------------
+- id: close_anything_else
+  group: close
+  kind: open_capture
+  say: क्या इसके अलावा डॉक्टर के लिए कुछ और बताना है जो आपके मन में हो?
+  stem: इसके अलावा डॉक्टर के लिए कुछ और बताना है जो आपके मन में हो
+  need: anything else the caller wants the doctor to know
+  tag: CLOSE
+  followups:
+  - open_detail
+  shares_recorded_concerns: true
+
+report:
+  routine_questions:
+  - मेरे बुखार की वजह पता करने के लिए कौन सी जाँच करवानी चाहिए?
+  - बुखार में कौन सी दवा, कितनी मात्रा में और कितने दिन लेनी है?
+  - किन चेतावनी की बातों पर ध्यान रखूँ, और कब तुरंत अस्पताल जाना चाहिए?
+  - खाने-पीने और आराम के बारे में क्या ध्यान रखूँ, और कब दोबारा दिखाना है?
+  emergency_questions:
+  - इमरजेंसी डॉक्टर से अभी पूछूँ कि यह खतरे की निशानी कितनी गंभीर है और मुझे अस्पताल या 108 पर क्या करना है?
+  - अभी साँस और हालत को स्थिर करने के लिए डॉक्टर कौन सी जाँच तुरंत करेंगे?
+  - अस्पताल पहुँचकर डॉक्टर को कौन सी चेतावनी की बातें और पहले की बीमारी बतानी चाहिए?
+  yes_header_hi: 'जो बातें हाँ में दर्ज हुईं:'
+  yes_empty_hi: इस बातचीत में कोई हाँ वाला बिंदु दर्ज नहीं हुआ।
+  question_header_hi: 'डॉक्टर से पूछने के सवाल:'
+  concern_question_scope_prefix_hi: ''
+  concern_question_with_note_hi: '{prefix}मैंने बताया कि {note}। डॉक्टर, इसकी जाँच क्या होनी चाहिए?'
+  concern_question_open_hi: मैंने कॉल के अंत में एक और बात दर्ज करवाई थी। डॉक्टर, उस पर क्या सलाह है?
+  concern_question_stem_hi: मैंने हाँ कहा कि {head}। डॉक्टर, अब क्या जाँच करनी चाहिए?
+  yes_summary_open_hi: अन्य बात — {note}।
+  yes_summary_open_empty_hi: डॉक्टर को बताने के लिए एक अन्य बात दर्ज की गई।
+  yes_summary_stem_hi: '{head} — {note}।'
+  yes_summary_stem_no_note_hi: '{head}।'
+  universal_advice_title_hi: सभी के लिए एक जैसी सलाह
+  universal_advice_why_hi: यह किसी एक मरीज़ की जाँच के बारे में नहीं है।
+  universal_advice_line_hi: बुखार में पानी और तरल ज़्यादा लें, और कोई दवा अपने मन से शुरू या बंद न करें — डॉक्टर से
+    पूछकर लें।
+  months_hi:
+  - ''
+  - जनवरी
+  - फ़रवरी
+  - मार्च
+  - अप्रैल
+  - मई
+  - जून
+  - जुलाई
+  - अगस्त
+  - सितम्बर
+  - अक्टूबर
+  - नवम्बर
+  - दिसम्बर
+  clinician_headings:
+    patient_profile: '### Patient Profile & Chief Complaint'
+    alerts: '### Positive Red Flags & Gate Alerts'
+    fever: '### Fever History'
+    danger: '### Danger Signs (Red Flags)'
+    treatment: '### Treatment & Exposure History'
+    negatives: '### Pertinent Negatives'
+  nothing_reported_en: None reported in this call.
+  no_alerts_en: No positive gate alerts.
+  no_negatives_en: No confirmed negatives were recorded.
+  partial_call_en: Call ended before every applicable question was asked.
+  emergency_flag_en: 'emergency: active danger sign now; hospital or 108'
+  emergency_line_en: Active emergency. Caller was told to go to the nearest hospital or call 108.
+  minute_unit: मिनट
+  second_unit: सेकंड
+  am_label: पूर्वाह्न
+  pm_label: अपराह्न
+  incomplete_badge: अधूरी कॉल
+  complete_badge: पूर्ण कॉल

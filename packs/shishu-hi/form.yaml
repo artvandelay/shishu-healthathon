@@ -1,0 +1,993 @@
+stem_prefixes:
+- 'क्या '
+profile_slots:
+- id: caller_name
+  type: string
+  reask: जी, आराम से बताइए — आपका पूरा नाम क्या है?
+roster:
+  key: children
+  tags:
+  - male
+  - female
+  - unknown
+  reask: जी, उन सभी बच्चों की उम्र क्या-क्या है?
+  skip_if:
+  - unmarried
+  - about_to_marry
+extractor_prompt: |-
+  Extract ONLY demographic profile entities stated or directly answered by the caller's utterance given active_qid, active_prompt, and optional current_profile. Return strictly matching JSON with only the four schema fields (caller_name, marital_status, roster_count, roster), and leave every unmentioned field null.
+  - caller_name: her given/family name only when actually stated; null for a lead-in fragment with no name. Never copy a diagnosis or disease name into caller_name.
+  - marital_status: 'married', 'about_to_marry', or 'unmarried' when stated or directly answered (on intro_married a bare negative means 'unmarried' and a bare affirmative means 'married'); otherwise null. intro_married is normally answered by its own single_choice step that saves straight to the profile, so fill marital_status only when she volunteers or corrects it out of turn on another profile step.
+  - roster_count and roster: when she mentions, adds, completes, or updates children, set roster_count to the total (integer >= 0) and roster to one item per child whose age was stated (age_years as float years >= 0, months as fractional years such as 0.5 for 6 months; tag 'male', 'female', or 'unknown'; optional personal name or null, never a disease name). When current_profile is present and she adds another child, supplies remaining ages in an ages follow-up, or corrects a child's details, output the COMPLETE updated roster_count and roster, preserving known children and pending_roster_count unless she explicitly replaces them. On intro_children a bare negative or zero count means roster_count=0 and roster=[]. If she states a count without all ages, keep the count and list only the children whose ages were given. Set both fields null when children are not mentioned or updated.
+implications:
+- when:
+  - has_children
+  set_profile:
+    ever_pregnant: true
+- when:
+  - unmarried_or_engaged
+  clear_roster_if_unprovided: true
+  default_profile:
+    ever_pregnant: false
+semantic_flags:
+  confirmed_hemoglobinopathy:
+    instructions: >-
+      Does caller_utterance explicitly state an already-diagnosed severe inherited blood/hemoglobin disorder
+      in the child (such as thalassemia major or sickle cell disease) that is already under medical care?
+    true_description: >-
+      Explicitly states a confirmed diagnosis of thalassemia major, sickle cell disease, or another severe
+      hemoglobinopathy already diagnosed by a doctor.
+    false_description: >-
+      Routine symptom answer, carrier/trait test check, jaundice, anemia without a confirmed hemoglobinopathy
+      diagnosis, or unmentioned.
+    min_yes: 0.85
+rules:
+  unmarried:
+    field: marital_status
+    op: eq
+    value: unmarried
+  about_to_marry:
+    field: marital_status
+    op: eq
+    value: about_to_marry
+  unmarried_or_engaged:
+    field: marital_status
+    op: in
+    value:
+    - unmarried
+    - about_to_marry
+  no_children:
+    roster_op: is_empty
+  has_children:
+    roster_op: non_empty
+  multi_child:
+    roster_op: count_gt
+    value: 1
+  no_child_5_plus:
+    roster_op: none_match
+    min_age: 5
+  all_under_10:
+    roster_op: none_match
+    min_age: 10
+  no_daughter_11_plus:
+    roster_op: none_match
+    tag: female
+    min_age: 11
+  ever_pregnant_no:
+    any_of:
+    - field: ever_pregnant
+      op: eq
+      value: false
+    - all_of:
+      - unmarried_or_engaged
+      - field: ever_pregnant
+        op: ne
+        value: true
+  no_family_concern:
+    group_no_concern: family
+  known_hemoglobinopathy:
+    semantic_flag: confirmed_hemoglobinopathy
+groups:
+  intro:
+    title_patient: परिचय
+    title_clinician: Patient Profile & Chief Complaint
+  birth:
+    title_patient: जन्म और नवजात
+    title_clinician: Birth & Neonatal History
+  body:
+    title_patient: बढ़त और शरीर
+    title_clinician: Development, Growth & Physical Features
+  illness:
+    title_patient: बीमारी
+    title_clinician: Systemic, Infections & Hematology
+  pregnancy:
+    title_patient: प्रेग्नेंसी
+    title_clinician: Antenatal (Pregnancy) History
+  family:
+    title_patient: परिवार
+    title_clinician: Family & Pedigree History
+  close:
+    title_patient: अंत
+    title_clinician: Patient Profile & Chief Complaint
+followups:
+  operation_reason: ऑपरेशन किस वजह से करना पड़ा था?
+  term_how_early: बच्चा पूरे समय से कितने हफ्ते या महीने पहले पैदा हुआ था?
+  nicu_reason: काँच के बक्से (NICU) में किस वजह से रखना पड़ा था?
+  nicu_days: वहाँ कितने दिन रखना पड़ा था?
+  jaundice_days: नीली लाइट में कितने दिन रखना पड़ा था?
+  sudden_detail: यह कब हुआ था और डॉक्टर ने क्या बताया था?
+  fits_onset: झटके पहली बार किस उम्र में आए थे?
+  lost_skill: बच्चा पहले क्या कर लेता था जो अब नहीं कर पाता?
+  transfusion_count: खून कितनी बार चढ़ाना पड़ा है?
+  fracture_count_or_bowing: हड्डी कितनी बार टूटी, या पैर टेढ़े होने की बात है?
+  urine_or_stone_detail: बार-बार पेशाब-प्यास की बात है, या पथरी या गुर्दे की दिक्कत?
+  admissions_count: बच्चे को कितनी बार अस्पताल में भर्ती करना पड़ा है?
+  admissions_reason: किस बीमारी या वजह से भर्ती करना पड़ा था?
+  preg_cond_detail: बीपी, शुगर या थायरॉइड में से क्या था, और क्या डिलीवरी के बाद भी रहा?
+  scan_detail: स्कैन में क्या दिक्कत बताई गई थी?
+  delivery_detail: डिलीवरी के समय क्या दिक्कत आई थी?
+  related_how: आप दोनों का शादी से पहले क्या रिश्ता था?
+  miscarriage_count: गर्भ कितनी बार गिरा था?
+  miscarriage_month: यह कितने महीने की प्रेग्नेंसी में हुआ था?
+  infant_death_age: उस बच्चे की उम्र कितनी थी, और आपसे क्या रिश्ता था?
+  infant_death_cause: क्या मौत की कोई वजह पता चली थी?
+  fam_who: परिवार में यह दिक्कत किसको है — आपसे उनका क्या रिश्ता है?
+  bp_who: यह सगे रिश्तेदार (जैसे माता-पिता, भाई-बहन) को हुआ, या दूर के रिश्तेदार को?
+  bp_age: उन्हें यह किस उम्र में हुआ था?
+  open_concern_detail: जी बताइए, डॉक्टर के लिए क्या बात नोट करूँ?
+questions:
+- id: intro_name
+  group: intro
+  kind: profile
+  say: नमस्ते, मैं शिशु हूँ। आपका नाम बताइएगा प्लीज़?
+  stem: नमस्ते, मैं शिशु हूँ। आपका नाम बताइएगा प्लीज़
+  need: caller name
+  requires_slot: caller_name
+  reask: जी, आराम से बताइए — आपका पूरा नाम क्या है?
+- id: intro_married
+  group: intro
+  kind: single_choice
+  say: क्या आपकी शादी हो गई है, होने वाली है, या अभी नहीं हुई?
+  stem: आपकी शादी हो गई है, होने वाली है, या अभी नहीं हुई
+  need: married, about to marry, or unmarried
+  saves_to_profile: marital_status
+  reask: जी, क्या आपकी शादी हो गई है, होने वाली है, या अभी नहीं हुई?
+  options:
+    married:
+      label: शादी हो गई
+      en: Married
+      criteria: Caller states or affirms they are already married (including bare yes/affirmative to intro_married).
+    about_to_marry:
+      label: होने वाली है
+      en: About to marry
+      criteria: Caller states they are engaged or about to get married soon.
+    unmarried:
+      label: अभी नहीं हुई
+      en: Unmarried
+      criteria: Caller states they are unmarried / not married (including bare no/negative to intro_married).
+- id: intro_children
+  group: intro
+  kind: profile
+  say: आपके कितने बच्चे हैं, और उनकी उम्र क्या-क्या है?
+  stem: आपके कितने बच्चे हैं, और उनकी उम्र क्या-क्या है
+  need: how many children and each child's age
+  requires_slot: roster
+  reask: जी, उन सभी बच्चों की उम्र क्या-क्या है?
+  skip_if:
+  - unmarried
+  - about_to_marry
+- id: intro_bridge
+  group: intro
+  kind: bridge
+  say: >-
+    अब मैं एक-एक करके छोटे और आसान सवाल पूछूँगी। आप नीचे हाँ या नहीं दबा सकती हैं — और अगर किसी सवाल में
+    हाँ-नहीं से ज़्यादा कोई बात हो, तो बेझिझक खुलकर बोलकर बताइए, मैं ध्यान से सुन रही हूँ। शुरू करें?
+  stem: >-
+    अब मैं एक-एक करके छोटे और आसान सवाल पूछूँगी। आप नीचे हाँ या नहीं दबा सकती हैं — और अगर किसी सवाल में
+    हाँ-नहीं से ज़्यादा कोई बात हो, तो बेझिझक खुलकर बोलकर बताइए, मैं ध्यान से सुन रही हूँ। शुरू करें
+  need: short yes or no questions; she can tap हाँ/नहीं or speak freely whenever there is more to share
+- id: birth_mode_detail
+  group: birth
+  kind: gate
+  say: क्या बच्चे का जन्म ऑपरेशन (सिजेरियन) से हुआ था?
+  stem: बच्चे का जन्म ऑपरेशन (सिजेरियन) से हुआ था
+  need: birth by operation
+  tag: Q03
+  roster_scoped: true
+  skip_if:
+  - no_children
+  followups:
+  - operation_reason
+  variants:
+  - when: multi_child
+    say: क्या आपके किसी भी बच्चे का जन्म ऑपरेशन (सिजेरियन) से हुआ था?
+- id: birth_term
+  group: birth
+  kind: gate
+  say: क्या बच्चे का जन्म समय से बहुत पहले (9 महीने से काफी पहले) हुआ था?
+  stem: बच्चे का जन्म समय से बहुत पहले (9 महीने से काफी पहले) हुआ था
+  need: birth much before 9 months
+  tag: Q03
+  roster_scoped: true
+  skip_if:
+  - no_children
+  followups:
+  - term_how_early
+  variants:
+  - when: multi_child
+    say: क्या आपके किसी भी बच्चे का जन्म समय से बहुत पहले (9 महीने से काफी पहले) हुआ था?
+- id: birth_nicu
+  group: birth
+  kind: gate
+  say: क्या जन्म के बाद बच्चे को काँच के बक्से या बच्चों के ICU (NICU) में रखना पड़ा था?
+  stem: जन्म के बाद बच्चे को काँच के बक्से या बच्चों के ICU (NICU) में रखना पड़ा था
+  need: NICU or glass-box stay after birth
+  tag: Q03
+  roster_scoped: true
+  skip_if:
+  - no_children
+  followups:
+  - nicu_reason
+  - nicu_days
+  variants:
+  - when: multi_child
+    say: क्या जन्म के बाद आपके किसी भी बच्चे को काँच के बक्से या बच्चों के ICU (NICU) में रखना पड़ा था?
+- id: birth_jaundice
+  group: birth
+  kind: gate
+  say: क्या जन्म के बाद पीलिया के लिए बच्चे को नीली लाइट में रखना पड़ा था?
+  stem: जन्म के बाद पीलिया के लिए बच्चे को नीली लाइट में रखना पड़ा था
+  need: jaundice treated under blue light
+  tag: Q03
+  roster_scoped: true
+  skip_if:
+  - no_children
+  followups:
+  - jaundice_days
+  variants:
+  - when: multi_child
+    say: क्या जन्म के बाद पीलिया के लिए आपके किसी भी बच्चे को नीली लाइट में रखना पड़ा था?
+- id: birth_sudden
+  group: birth
+  kind: gate
+  say: क्या जन्म के बाद बच्चा अचानक बहुत बीमार पड़ा और इमरजेंसी में ले जाना पड़ा?
+  stem: जन्म के बाद बच्चा अचानक बहुत बीमार पड़ा और इमरजेंसी में ले जाना पड़ा
+  need: suddenly very ill after birth and taken to emergency
+  tag: Q03
+  roster_scoped: true
+  skip_if:
+  - no_children
+  followups:
+  - sudden_detail
+  variants:
+  - when: multi_child
+    say: क्या जन्म के बाद आपका कोई भी बच्चा अचानक बहुत बीमार पड़ा और इमरजेंसी में ले जाना पड़ा?
+- id: birth_cord_3weeks
+  group: birth
+  kind: gate
+  say: क्या जन्म के बाद बच्चे की नाल गिरने में 3 हफ्ते से ज़्यादा लगे थे?
+  stem: जन्म के बाद बच्चे की नाल गिरने में 3 हफ्ते से ज़्यादा लगे थे
+  need: cord took more than 3 weeks to fall
+  tag: Q03
+  roster_scoped: true
+  skip_if:
+  - no_children
+  variants:
+  - when: multi_child
+    say: क्या जन्म के बाद आपके किसी भी बच्चे की नाल गिरने में 3 हफ्ते से ज़्यादा लगे थे?
+- id: birth_cord_bleed
+  group: birth
+  kind: gate
+  say: क्या नाल गिरने पर बहुत ज़्यादा खून आया था?
+  stem: नाल गिरने पर बहुत ज़्यादा खून आया था
+  need: heavy bleeding when the cord fell
+  tag: Q03
+  roster_scoped: true
+  skip_if:
+  - no_children
+  variants:
+  - when: multi_child
+    say: क्या आपके किसी भी बच्चे की नाल गिरने पर बहुत ज़्यादा खून आया था?
+- id: birth_bcg
+  group: birth
+  kind: gate
+  say: क्या कंधे के BCG टीके की जगह पर बड़ा फोड़ा, मवाद, या बगल में गाँठ हुई थी?
+  stem: कंधे के BCG टीके की जगह पर बड़ा फोड़ा, मवाद, या बगल में गाँठ हुई थी
+  need: big boil, pus, or armpit lump at the BCG site
+  tag: Q03
+  roster_scoped: true
+  skip_if:
+  - no_children
+  variants:
+  - when: multi_child
+    say: क्या आपके किसी भी बच्चे को कंधे के BCG टीके की जगह पर बड़ा फोड़ा, मवाद, या बगल में गाँठ हुई थी?
+- id: birth_cleft
+  group: birth
+  kind: gate
+  say: क्या जन्म से बच्चे का होंठ या तालू कटा हुआ था?
+  stem: जन्म से बच्चे का होंठ या तालू कटा हुआ था
+  need: cleft lip or palate from birth
+  tag: Q02
+  roster_scoped: true
+  skip_if:
+  - no_children
+  variants:
+  - when: multi_child
+    say: क्या जन्म से आपके किसी भी बच्चे का होंठ या तालू कटा हुआ था?
+- id: birth_hearing
+  group: birth
+  kind: gate
+  say: क्या बच्चे को सुनने में कोई दिक्कत है?
+  stem: बच्चे को सुनने में कोई दिक्कत है
+  need: hearing difficulty
+  tag: Q02
+  roster_scoped: true
+  skip_if:
+  - no_children
+  variants:
+  - when: multi_child
+    say: क्या आपके किसी भी बच्चे को सुनने में कोई दिक्कत है?
+- id: birth_vision
+  group: birth
+  kind: gate
+  say: क्या बच्चे को देखने में कोई दिक्कत है?
+  stem: बच्चे को देखने में कोई दिक्कत है
+  need: vision difficulty
+  tag: Q02
+  roster_scoped: true
+  skip_if:
+  - no_children
+  variants:
+  - when: multi_child
+    say: क्या आपके किसी भी बच्चे को देखने में कोई दिक्कत है?
+- id: body_fits
+  group: body
+  kind: gate
+  say: क्या बच्चे को कभी झटके या दौरे (फ़िट्स) आए हैं?
+  stem: बच्चे को कभी झटके या दौरे (फ़िट्स) आए हैं
+  need: fits or seizures
+  tag: Q02
+  roster_scoped: true
+  skip_if:
+  - no_children
+  followups:
+  - fits_onset
+  variants:
+  - when: multi_child
+    say: क्या आपके किसी भी बच्चे को कभी झटके या दौरे (फ़िट्स) आए हैं?
+- id: body_milestones
+  group: body
+  kind: gate
+  say: क्या बच्चे ने बैठना, चलना या बोलना बाकी बच्चों से काफी देर से सीखा?
+  stem: बच्चे ने बैठना, चलना या बोलना बाकी बच्चों से काफी देर से सीखा
+  need: late sitting, walking, or talking
+  tag: Q02
+  roster_scoped: true
+  skip_if:
+  - no_children
+  variants:
+  - when: multi_child
+    say: क्या आपके किसी भी बच्चे ने बैठना, चलना या बोलना बाकी बच्चों से काफी देर से सीखा?
+- id: body_regression
+  group: body
+  kind: gate
+  say: क्या बच्चा कोई पहले से सीखी हुई बात (जैसे चलना या बोलना) अब भूल गया है?
+  stem: बच्चा कोई पहले से सीखी हुई बात (जैसे चलना या बोलना) अब भूल गया है
+  need: lost a skill the child had already learned
+  tag: Q02
+  roster_scoped: true
+  skip_if:
+  - no_children
+  followups:
+  - lost_skill
+  variants:
+  - when: multi_child
+    say: क्या आपका कोई भी बच्चा पहले से सीखी हुई कोई बात (जैसे चलना या बोलना) अब भूल गया है?
+- id: body_blue
+  group: body
+  kind: gate
+  say: क्या बच्चे के होंठ या उंगलियाँ कभी नीली पड़ती हैं?
+  stem: बच्चे के होंठ या उंगलियाँ कभी नीली पड़ती हैं
+  need: lips or fingers turn blue
+  tag: Q02
+  roster_scoped: true
+  skip_if:
+  - no_children
+  variants:
+  - when: multi_child
+    say: क्या आपके किसी भी बच्चे के होंठ या उंगलियाँ कभी नीली पड़ती हैं?
+- id: preg_heart
+  group: body
+  kind: gate
+  say: क्या स्कैन में या जन्म पर डॉक्टर ने बच्चे के दिल में कोई खराबी बताई थी?
+  stem: स्कैन में या जन्म पर डॉक्टर ने बच्चे के दिल में कोई खराबी बताई थी
+  need: heart problem on the scan or at birth
+  tag: Q02
+  roster_scoped: true
+  skip_if:
+  - no_children
+  variants:
+  - when: multi_child
+    say: क्या स्कैन में या जन्म पर डॉक्टर ने आपके किसी भी बच्चे के दिल में कोई खराबी बताई थी?
+- id: body_bleeding_bruise
+  group: body
+  kind: gate
+  say: क्या मामूली चोट पर खून देर तक बहता है, या आसानी से नील पड़ जाते हैं?
+  stem: मामूली चोट पर खून देर तक बहता है, या आसानी से नील पड़ जाते हैं
+  need: prolonged bleeding after a small injury, or easy bruising
+  tag: Q04
+  clinician_group: Systemic, Infections & Hematology
+  roster_scoped: true
+  skip_if:
+  - no_children
+  variants:
+  - when: multi_child
+    say: क्या आपके किसी भी बच्चे को मामूली चोट पर खून देर तक बहता है, या आसानी से नील पड़ जाते हैं?
+- id: body_joint_swelling
+  group: body
+  kind: gate
+  say: क्या गिरने पर घुटने या जोड़ में सूजन आती है जो कुछ दिनों में अपने आप ठीक हो जाती है?
+  stem: गिरने पर घुटने या जोड़ में सूजन आती है जो कुछ दिनों में अपने आप ठीक हो जाती है
+  need: knee or joint swelling after a fall that settles in a few days
+  tag: Q04
+  clinician_group: Systemic, Infections & Hematology
+  roster_scoped: true
+  skip_if:
+  - no_children
+  variants:
+  - when: multi_child
+    say: क्या आपके किसी भी बच्चे के घुटने या जोड़ में गिरने पर सूजन आती है जो कुछ दिनों में ठीक हो जाती
+      है?
+- id: mod_tooth_bleed
+  group: body
+  kind: gate
+  say: क्या दूध का दाँत टूटने पर खून बहुत देर तक बहता रहा था?
+  stem: दूध का दाँत टूटने पर खून बहुत देर तक बहता रहा था
+  need: prolonged bleeding when a milk tooth broke; only if a child is 5 or older
+  tag: Q04
+  clinician_group: Systemic, Infections & Hematology
+  roster_scoped: true
+  skip_if:
+  - no_children
+  - no_child_5_plus
+  variants:
+  - when: multi_child
+    say: क्या आपके किसी भी बच्चे का दूध का दाँत टूटने पर खून बहुत देर तक बहता रहा था?
+- id: mod_heavy_periods
+  group: body
+  kind: gate
+  say: क्या आपकी बेटी को पीरियड्स में बहुत ज़्यादा खून आता है?
+  stem: आपकी बेटी को पीरियड्स में बहुत ज़्यादा खून आता है
+  need: very heavy periods; only if a girl is 11 or older
+  tag: Q04
+  clinician_group: Systemic, Infections & Hematology
+  roster_scoped: true
+  skip_if:
+  - no_children
+  - no_daughter_11_plus
+  variants:
+  - when: multi_child
+    say: क्या आपकी किसी बेटी को पीरियड्स में बहुत ज़्यादा खून आता है?
+- id: body_transfusion
+  group: body
+  kind: gate
+  say: क्या बच्चे को कभी खून चढ़ाना पड़ा है?
+  stem: बच्चे को कभी खून चढ़ाना पड़ा है
+  need: the child ever needed a blood transfusion
+  tag: Q05
+  clinician_group: Systemic, Infections & Hematology
+  roster_scoped: true
+  skip_if:
+  - no_children
+  followups:
+  - transfusion_count
+  variants:
+  - when: multi_child
+    say: क्या आपके किसी भी बच्चे को कभी खून चढ़ाना पड़ा है?
+- id: body_blood_count
+  group: body
+  kind: gate
+  say: क्या डॉक्टर ने कभी बच्चे का खून बहुत कम या असामान्य बताया है?
+  stem: डॉक्टर ने कभी बच्चे का खून बहुत कम या असामान्य बताया है
+  need: a doctor said the blood count was very low or abnormal
+  tag: Q05
+  clinician_group: Systemic, Infections & Hematology
+  roster_scoped: true
+  skip_if:
+  - no_children
+  - known_hemoglobinopathy
+  variants:
+  - when: multi_child
+    say: क्या डॉक्टर ने कभी आपके किसी भी बच्चे का खून बहुत कम या असामान्य बताया है?
+- id: body_limb_pain
+  group: body
+  kind: gate
+  say: क्या बच्चे के हाथ-पैर में बार-बार इतना तेज़ दर्द होता है कि अस्पताल जाना पड़े?
+  stem: बच्चे के हाथ-पैर में बार-बार इतना तेज़ दर्द होता है कि अस्पताल जाना पड़े
+  need: repeated severe limb pain that needs hospital
+  tag: Q05
+  clinician_group: Systemic, Infections & Hematology
+  roster_scoped: true
+  skip_if:
+  - no_children
+  variants:
+  - when: multi_child
+    say: क्या आपके किसी भी बच्चे के हाथ-पैर में बार-बार इतना तेज़ दर्द होता है कि अस्पताल जाना पड़े?
+- id: body_tummy
+  group: body
+  kind: gate
+  say: क्या बच्चे का पेट धीरे-धीरे बड़ा हो रहा है (लिवर या तिल्ली बढ़ना)?
+  stem: बच्चे का पेट धीरे-धीरे बड़ा हो रहा है (लिवर या तिल्ली बढ़ना)
+  need: tummy slowly getting bigger
+  tag: Q06
+  roster_scoped: true
+  skip_if:
+  - no_children
+  variants:
+  - when: multi_child
+    say: क्या आपके किसी भी बच्चे का पेट धीरे-धीरे बड़ा हो रहा है (लिवर या तिल्ली बढ़ना)?
+- id: body_lumps_birth
+  group: body
+  kind: gate
+  say: क्या जन्म से बच्चे के शरीर पर कोई सूजन या गाँठें हैं?
+  stem: जन्म से बच्चे के शरीर पर कोई सूजन या गाँठें हैं
+  need: swellings or lumps on the body since birth
+  tag: Q06
+  roster_scoped: true
+  skip_if:
+  - no_children
+  variants:
+  - when: multi_child
+    say: क्या जन्म से आपके किसी भी बच्चे के शरीर पर कोई सूजन या गाँठें हैं?
+- id: body_growth
+  group: body
+  kind: gate
+  say: क्या बच्चे का कद या वज़न बाकी बच्चों से काफी कम बढ़ रहा है?
+  stem: बच्चे का कद या वज़न बाकी बच्चों से काफी कम बढ़ रहा है
+  need: height or weight growing much less than other children
+  tag: Q07
+  roster_scoped: true
+  skip_if:
+  - no_children
+  variants:
+  - when: multi_child
+    say: क्या आपके किसी भी बच्चे का कद या वज़न बाकी बच्चों से काफी कम बढ़ रहा है?
+- id: body_proportion
+  group: body
+  kind: gate
+  say: क्या बच्चे के हाथ-पैर शरीर के मुकाबले बहुत छोटे हैं?
+  stem: बच्चे के हाथ-पैर शरीर के मुकाबले बहुत छोटे हैं
+  need: arms or legs very short compared with the body
+  tag: Q07
+  roster_scoped: true
+  skip_if:
+  - no_children
+  variants:
+  - when: multi_child
+    say: क्या आपके किसी भी बच्चे के हाथ-पैर शरीर के मुकाबले बहुत छोटे हैं?
+- id: body_thumb
+  group: body
+  kind: gate
+  say: क्या बच्चे की कोई उंगली या अंगूठा छोटा है, या कम है?
+  stem: बच्चे की कोई उंगली या अंगूठा छोटा है, या कम है
+  need: a small or missing finger or thumb
+  tag: Q07
+  roster_scoped: true
+  skip_if:
+  - no_children
+  variants:
+  - when: multi_child
+    say: क्या आपके किसी भी बच्चे की कोई उंगली या अंगूठा छोटा है, या कम है?
+- id: gate_bones_fractures
+  group: body
+  kind: gate
+  say: क्या मामूली गिरने पर बच्चे की हड्डी टूटी है, या दवा के बाद भी पैर टेढ़े हैं?
+  stem: मामूली गिरने पर बच्चे की हड्डी टूटी है, या दवा के बाद भी पैर टेढ़े हैं
+  need: fracture after a minor fall, or bowed legs after treatment
+  tag: Q08
+  roster_scoped: true
+  skip_if:
+  - no_children
+  followups:
+  - fracture_count_or_bowing
+  variants:
+  - when: multi_child
+    say: क्या मामूली गिरने पर आपके किसी भी बच्चे की हड्डी टूटी है, या दवा के बाद भी पैर टेढ़े हैं?
+- id: gate_urine_kidney
+  group: body
+  kind: gate
+  say: क्या बच्चा बार-बार बहुत ज़्यादा पेशाब करता और पानी पीता है, या गुर्दे/पथरी की दिक्कत है?
+  stem: बच्चा बार-बार बहुत ज़्यादा पेशाब करता और पानी पीता है, या गुर्दे/पथरी की दिक्कत है
+  need: excess urine and thirst, or a kidney or stone problem
+  tag: Q09
+  roster_scoped: true
+  skip_if:
+  - no_children
+  followups:
+  - urine_or_stone_detail
+  variants:
+  - when: multi_child
+    say: क्या आपका कोई भी बच्चा बार-बार बहुत ज़्यादा पेशाब करता और पानी पीता है, या गुर्दे/पथरी की दिक्कत
+      है?
+- id: body_private_parts
+  group: body
+  kind: gate
+  say: क्या बच्चे के गुप्त अंग वैसे नहीं दिखते जैसे होने चाहिए?
+  stem: बच्चे के गुप्त अंग वैसे नहीं दिखते जैसे होने चाहिए
+  need: private parts do not look as they should
+  tag: Q10
+  roster_scoped: true
+  skip_if:
+  - no_children
+  variants:
+  - when: multi_child
+    say: क्या आपके किसी भी बच्चे के गुप्त अंग वैसे नहीं दिखते जैसे होने चाहिए?
+- id: body_puberty
+  group: body
+  kind: gate
+  say: क्या 10 साल से बड़े बच्चे में बढ़ती उम्र के बदलाव बहुत जल्दी या बहुत देर से आए हैं?
+  stem: 10 साल से बड़े बच्चे में बढ़ती उम्र के बदलाव बहुत जल्दी या बहुत देर से आए हैं
+  need: puberty much earlier or later; only if a child is 10 or older
+  tag: Q10
+  roster_scoped: true
+  skip_if:
+  - no_children
+  - all_under_10
+  variants:
+  - when: multi_child
+    say: क्या 10 साल से बड़े आपके किसी बच्चे में बढ़ती उम्र के बदलाव बहुत जल्दी या बहुत देर से आए हैं?
+- id: ill_fasting
+  group: illness
+  kind: gate
+  say: क्या खाना छूटने या हल्की बीमारी में बच्चा बहुत सुस्त पड़ जाता है या बार-बार उल्टी करता है?
+  stem: खाना छूटने या हल्की बीमारी में बच्चा बहुत सुस्त पड़ जाता है या बार-बार उल्टी करता है
+  need: very sleepy or repeated vomiting when a meal is missed or during a mild illness
+  tag: Q01
+  roster_scoped: true
+  skip_if:
+  - no_children
+  variants:
+  - when: multi_child
+    say: क्या खाना छूटने या हल्की बीमारी में आपका कोई भी बच्चा बहुत सुस्त पड़ जाता है या बार-बार उल्टी
+      करता है?
+- id: ill_odor
+  group: illness
+  kind: gate
+  say: क्या बच्चे के पेशाब या पॉटी में कभी अजीब बदबू आती है?
+  stem: बच्चे के पेशाब या पॉटी में कभी अजीब बदबू आती है
+  need: urine or stool smells unusual
+  tag: Q01
+  roster_scoped: true
+  skip_if:
+  - no_children
+  variants:
+  - when: multi_child
+    say: क्या आपके किसी भी बच्चे के पेशाब या पॉटी में कभी अजीब बदबू आती है?
+- id: ill_admissions
+  group: illness
+  kind: gate
+  say: क्या बच्चे को बार-बार अस्पताल में भर्ती करना पड़ा है?
+  stem: बच्चे को बार-बार अस्पताल में भर्ती करना पड़ा है
+  need: admitted to hospital again and again
+  tag: Q03
+  roster_scoped: true
+  skip_if:
+  - no_children
+  followups:
+  - admissions_count
+  - admissions_reason
+  variants:
+  - when: multi_child
+    say: क्या आपके किसी भी बच्चे को बार-बार अस्पताल में भर्ती करना पड़ा है?
+- id: ill_iv_antibiotics
+  group: illness
+  kind: gate
+  say: क्या बार-बार इंफेक्शन के लिए बच्चे को नस में (IV ड्रिप से) दवा लगी है?
+  stem: बार-बार इंफेक्शन के लिए बच्चे को नस में (IV ड्रिप से) दवा लगी है
+  need: repeated infections that needed medicine through a vein
+  tag: Q03
+  roster_scoped: true
+  skip_if:
+  - no_children
+  variants:
+  - when: multi_child
+    say: क्या बार-बार इंफेक्शन के लिए आपके किसी भी बच्चे को नस में (IV ड्रिप से) दवा लगी है?
+- id: ever_pregnant
+  group: pregnancy
+  kind: routing_gate
+  say: क्या आप कभी गर्भवती हुई हैं?
+  stem: आप कभी गर्भवती हुई हैं
+  need: whether the caller has ever been pregnant
+  saves_to_profile: ever_pregnant
+  skip_if:
+  - unmarried
+  - about_to_marry
+  - has_children
+- id: preg_conditions
+  group: pregnancy
+  kind: gate
+  say: क्या किसी प्रेग्नेंसी में आपको हाई बीपी, शुगर या थायरॉइड रहा था?
+  stem: किसी प्रेग्नेंसी में आपको हाई बीपी, शुगर या थायरॉइड रहा था
+  need: high BP, sugar, or thyroid in a pregnancy
+  tag: Antenatal
+  skip_if:
+  - unmarried
+  - about_to_marry
+  - ever_pregnant_no
+  followups:
+  - preg_cond_detail
+- id: preg_scan
+  group: pregnancy
+  kind: gate
+  say: क्या किसी प्रेग्नेंसी के सोनोग्राफी स्कैन में कोई खराबी बताई गई थी?
+  stem: किसी प्रेग्नेंसी के सोनोग्राफी स्कैन में कोई खराबी बताई गई थी
+  need: a pregnancy scan showed a problem
+  tag: Antenatal
+  skip_if:
+  - unmarried
+  - about_to_marry
+  - ever_pregnant_no
+  followups:
+  - scan_detail
+- id: preg_transfusion
+  group: pregnancy
+  kind: gate
+  say: क्या किसी प्रेग्नेंसी के दौरान आपको खून चढ़ाना पड़ा था?
+  stem: किसी प्रेग्नेंसी के दौरान आपको खून चढ़ाना पड़ा था
+  need: blood transfusion during a pregnancy
+  tag: Antenatal
+  skip_if:
+  - unmarried
+  - about_to_marry
+  - ever_pregnant_no
+- id: preg_delivery
+  group: pregnancy
+  kind: gate
+  say: क्या किसी डिलीवरी के समय कोई बड़ी दिक्कत आई थी?
+  stem: किसी डिलीवरी के समय कोई बड़ी दिक्कत आई थी
+  need: major trouble at a delivery
+  tag: Antenatal
+  skip_if:
+  - unmarried
+  - about_to_marry
+  - ever_pregnant_no
+  followups:
+  - delivery_detail
+- id: preg_thalassemia
+  group: pregnancy
+  kind: gate
+  say: क्या आपकी या आपके पति की थैलेसीमिया खून जाँच में कभी माइनर या ट्रेट जैसी कोई दिक्कत बताई गई?
+  stem: आपकी या आपके पति की थैलेसीमिया खून जाँच में कभी माइनर या ट्रेट जैसी कोई दिक्कत बताई गई
+  need: thalassemia minor or trait on a blood test
+  tag: Antenatal
+  variants:
+  - when: about_to_marry
+    say: क्या आपकी या आपके होने वाले पति की थैलेसीमिया खून जाँच में कभी माइनर या ट्रेट जैसी कोई दिक्कत
+      बताई गई?
+  - when: unmarried
+    say: क्या आपकी थैलेसीमिया खून जाँच में कभी माइनर या ट्रेट जैसी कोई दिक्कत बताई गई?
+- id: fam_related
+  group: family
+  kind: gate
+  say: क्या आप और आपके पति शादी से पहले आपस में रिश्तेदार थे, जैसे कज़िन या एक ही खानदान से?
+  stem: आप और आपके पति शादी से पहले आपस में रिश्तेदार थे, जैसे कज़िन या एक ही खानदान से
+  need: she and her husband are related, such as cousins
+  tag: Q11
+  skip_if:
+  - unmarried
+  followups:
+  - related_how
+  variants:
+  - when: about_to_marry
+    say: क्या आप और आपके होने वाले पति पहले से आपस में रिश्तेदार हैं, जैसे कज़िन या एक ही खानदान से?
+- id: fam_miscarriage
+  group: family
+  kind: gate
+  say: क्या आपका कभी गर्भ गिरा है (मिसकैरेज), या गिरवाना पड़ा था?
+  stem: आपका कभी गर्भ गिरा है (मिसकैरेज), या गिरवाना पड़ा था
+  need: miscarriage or an ended pregnancy
+  tag: Q12
+  skip_if:
+  - unmarried
+  - about_to_marry
+  - ever_pregnant_no
+  followups:
+  - miscarriage_count
+  - miscarriage_month
+- id: fam_infant_death
+  group: family
+  kind: gate
+  say: क्या परिवार में किसी छोटे बच्चे की 1 साल से कम उम्र में मौत हुई है?
+  stem: परिवार में किसी छोटे बच्चे की 1 साल से कम उम्र में मौत हुई है
+  need: a baby in the family died before 1 year
+  tag: Q12
+  followups:
+  - infant_death_age
+  - infant_death_cause
+- id: fam_fits_delay
+  group: family
+  kind: gate
+  say: क्या परिवार में किसी बच्चे या बड़े को झटके (फ़िट्स), देर से सीखने, या सीखी बात भूलने की समस्या
+    है?
+  stem: परिवार में किसी बच्चे या बड़े को झटके (फ़िट्स), देर से सीखने, या सीखी बात भूलने की समस्या है
+  need: fits, late learning, or lost skills in the family
+  tag: Q11
+  followups:
+  - fam_who
+- id: fam_transfusion
+  group: family
+  kind: gate
+  say: क्या परिवार में किसी बच्चे या बड़े को बार-बार खून चढ़ाना पड़ता है?
+  stem: परिवार में किसी बच्चे या बड़े को बार-बार खून चढ़ाना पड़ता है
+  need: someone in the family needs blood again and again
+  tag: Q11
+  followups:
+  - fam_who
+- id: fam_bleeding
+  group: family
+  kind: gate
+  say: क्या परिवार में किसी बच्चे या बड़े को चोट पर ज़्यादा खून बहने की समस्या है?
+  stem: परिवार में किसी बच्चे या बड़े को चोट पर ज़्यादा खून बहने की समस्या है
+  need: someone in the family bleeds too much after injury
+  tag: Q11
+  followups:
+  - fam_who
+- id: fam_blind_deaf
+  group: family
+  kind: gate
+  say: क्या परिवार में किसी बच्चे या बड़े को बचपन या कम उम्र से अंधेपन या बहरेपन की समस्या है?
+  stem: परिवार में किसी बच्चे या बड़े को बचपन या कम उम्र से अंधेपन या बहरेपन की समस्या है
+  need: childhood blindness or deafness in the family
+  tag: Q11
+  followups:
+  - fam_who
+- id: fam_cancer
+  group: family
+  kind: gate
+  say: क्या परिवार में किसी बच्चे या बड़े को कैंसर हुआ है?
+  stem: परिवार में किसी बच्चे या बड़े को कैंसर हुआ है
+  need: cancer in the family
+  tag: Q11
+  followups:
+  - fam_who
+- id: fam_heart_kidney
+  group: family
+  kind: gate
+  say: क्या परिवार में किसी बच्चे या बड़े को दिल या गुर्दे (किडनी) की गंभीर बीमारी है?
+  stem: परिवार में किसी बच्चे या बड़े को दिल या गुर्दे (किडनी) की गंभीर बीमारी है
+  need: serious heart or kidney disease in the family
+  tag: Q11
+  followups:
+  - fam_who
+- id: fam_bp_stroke
+  group: family
+  kind: gate
+  say: क्या परिवार में 40-50 साल से कम उम्र के किसी व्यक्ति को बीपी, शुगर या लकवा हुआ है?
+  stem: परिवार में 40-50 साल से कम उम्र के किसी व्यक्ति को बीपी, शुगर या लकवा हुआ है
+  need: BP, sugar, or paralysis before age 40-50 in the family
+  tag: Q11
+  followups:
+  - bp_who
+  - bp_age
+- id: fam_maternal_bleeding
+  group: family
+  kind: gate
+  say: क्या आपके मायके की तरफ किसी बच्चे या बड़े को चोट पर ज़्यादा खून बहने की दिक्कत है?
+  stem: आपके मायके की तरफ किसी बच्चे या बड़े को चोट पर ज़्यादा खून बहने की दिक्कत है
+  need: 'on her parents'' side: heavy bleeding'
+  tag: Q11
+  followups:
+  - fam_who
+- id: fam_maternal_infections
+  group: family
+  kind: gate
+  say: क्या आपके मायके की तरफ किसी बच्चे या बड़े को बार-बार गंभीर इंफेक्शन की दिक्कत है?
+  stem: आपके मायके की तरफ किसी बच्चे या बड़े को बार-बार गंभीर इंफेक्शन की दिक्कत है
+  need: 'on her parents'' side: repeated serious infections'
+  tag: Q11
+  followups:
+  - fam_who
+- id: fam_maternal_eczema
+  group: family
+  kind: gate
+  say: क्या आपके मायके की तरफ किसी बच्चे या बड़े को त्वचा पर सूखे खुजली वाले धब्बों की दिक्कत है?
+  stem: आपके मायके की तरफ किसी बच्चे या बड़े को त्वचा पर सूखे खुजली वाले धब्बों की दिक्कत है
+  need: 'on her parents'' side: dry itchy skin patches'
+  tag: Q11
+  followups:
+  - fam_who
+- id: fam_lumps
+  group: family
+  kind: gate
+  say: क्या परिवार में किसी बच्चे या बड़े के शरीर पर सूजन या गाँठें हैं?
+  stem: परिवार में किसी बच्चे या बड़े के शरीर पर सूजन या गाँठें हैं
+  need: swellings or lumps on someone in the family
+  tag: Q11
+  followups:
+  - fam_who
+- id: fam_same_problem
+  group: family
+  kind: gate
+  say: क्या परिवार में किसी और को भी आपके बच्चे जैसी ही दिक्कत है?
+  stem: परिवार में किसी और को भी आपके बच्चे जैसी ही दिक्कत है
+  need: someone else in the family has the same problem as her child
+  tag: Q11
+  skip_if:
+  - no_children
+  - no_family_concern
+  followups:
+  - fam_who
+  shares_recorded_concerns: true
+- id: close_anything_else
+  group: close
+  kind: open_capture
+  say: क्या इसके अलावा डॉक्टर के लिए कुछ और बताना है जो आपके मन में हो?
+  stem: इसके अलावा डॉक्टर के लिए कुछ और बताना है जो आपके मन में हो
+  need: anything else she wants the doctor to know
+  followups:
+  - open_concern_detail
+  shares_recorded_concerns: true
+report:
+  routine_questions:
+  - क्या मेरे बच्चे का वज़न, कद और बैठना-चलना-बोलना उम्र के हिसाब से ठीक है?
+  - क्या टीके के कार्ड के सारे टीके पूरे हैं?
+  - घर पर खान-पान और किन चेतावनी की बातों पर ध्यान रखूँ?
+  routine_empty_roster_questions:
+  - आगे प्रेग्नेंसी या स्वास्थ्य योजना से पहले मुझे कौन सी ज़रूरी जाँच करवानी चाहिए?
+  - परिवार की सेहत को देखते हुए डॉक्टर से किन बातों पर सलाह लेनी चाहिए?
+  - खान-पान, आयरन-फोलिक एसिड और किन बातों का अभी से ध्यान रखूँ?
+  emergency_questions:
+  - इमरजेंसी डॉक्टर से अभी पूछूँ कि यह खतरे की निशानी कितनी गंभीर है और मुझे अस्पताल या 108 पर क्या करना
+    है?
+  - अभी साँस और हालत को स्थिर करने के लिए डॉक्टर कौन सी जाँच तुरंत करेंगे?
+  - अस्पताल पहुँचकर डॉक्टर को कौन सी चेतावनी की बातों और पहले की बीमारी बतानी चाहिए?
+  yes_header_hi: 'जो बातें हाँ में दर्ज हुईं:'
+  yes_empty_hi: इस बातचीत में कोई हाँ वाला बिंदु दर्ज नहीं हुआ।
+  question_header_hi: 'डॉक्टर से पूछने के सवाल:'
+  concern_question_scope_prefix_hi: '{child_scope} के लिए: '
+  concern_question_with_note_hi: '{prefix}मैंने बताया कि {note}। डॉक्टर, इसकी जाँच क्या होनी चाहिए?'
+  concern_question_open_hi: मैंने कॉल के अंत में एक और बात दर्ज करवाई थी। डॉक्टर, उस पर क्या सलाह है?
+  concern_question_stem_hi: मैंने हाँ कहा कि {head}। डॉक्टर, अब क्या जाँच करनी चाहिए?
+  yes_summary_open_hi: अन्य बात — {note}।
+  yes_summary_open_empty_hi: डॉक्टर को बताने के लिए एक अन्य बात दर्ज की गई।
+  yes_summary_stem_hi: '{head} — {note}।'
+  yes_summary_stem_no_note_hi: '{head}।'
+  universal_advice_title_hi: सभी के लिए एक जैसी सलाह
+  universal_advice_why_hi: यह इस माँ या बच्चे के बारे में नहीं है।
+  universal_advice_line_hi: अगली प्रेग्नेंसी से पहले माँ और पिता दोनों की थैलेसीमिया जाँच (स्क्रीनिंग)
+    करवा लें।
+  months_hi:
+  - ''
+  - जनवरी
+  - फ़रवरी
+  - मार्च
+  - अप्रैल
+  - मई
+  - जून
+  - जुलाई
+  - अगस्त
+  - सितम्बर
+  - अक्टूबर
+  - नवम्बर
+  - दिसम्बर
+  clinician_headings:
+    patient_profile: '### Patient Profile & Chief Complaint'
+    alerts: '### Positive Red Flags & NRROID Gate Alerts'
+    birth: '### Birth & Neonatal History'
+    development: '### Development, Growth & Physical Features'
+    systemic: '### Systemic, Infections & Hematology'
+    antenatal: '### Antenatal (Pregnancy) History'
+    family: '### Family & Pedigree History'
+    negatives: '### Pertinent Negatives'
+  nothing_reported_en: None reported in this call.
+  no_alerts_en: No positive gate alerts.
+  no_negatives_en: No confirmed negatives were recorded.
+  partial_call_en: Call ended before every applicable question was asked.
+  emergency_flag_en: 'emergency: active danger sign now; hospital or 108'
+  emergency_line_en: Active emergency. Caller was told to go to the nearest hospital or call 108.
+  minute_unit: मिनट
+  second_unit: सेकंड
+  am_label: पूर्वाह्न
+  pm_label: अपराह्न
+  incomplete_badge: अधूरी कॉल
+  complete_badge: पूर्ण कॉल

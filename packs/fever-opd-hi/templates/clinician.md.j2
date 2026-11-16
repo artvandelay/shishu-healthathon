@@ -1,0 +1,15 @@
+{# Context: profile_lines, alerts, sections, negatives, incomplete, red_flags. #}
+{%- macro block(heading, lines, empty) -%}
+{{ heading }}
+- {{ (lines or [empty]) | join("\n- ") }}
+{%- endmacro -%}
+{%- set nothing = "None reported in this call." -%}
+{%- set negative_lines = (negatives or ["No confirmed negatives were recorded."])
+    + (["Call ended before every applicable question was asked."] if incomplete else []) -%}
+{{ block("### Patient Profile & Chief Complaint", profile_lines, nothing) }}
+
+{{ block("### Positive Red Flags & Gate Alerts", alerts, "No positive gate alerts.") }}
+{% for sec in sections %}
+{{ block(sec.heading, sec.lines, nothing) }}
+{% endfor %}
+{{ block("### Pertinent Negatives", negative_lines, "No confirmed negatives were recorded.") }}

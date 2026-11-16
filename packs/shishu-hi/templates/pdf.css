@@ -1,0 +1,111 @@
+/* SHISHU Mother PDF: A4, one Devanagari face, navy ink on warm-white accent.
+   The font src placeholder is filled with the local NotoSansDevanagari file URI at render time. */
+
+@font-face {
+  font-family: "Body";
+  src: url("__FONT__") format("truetype");
+  font-weight: 100 900;
+}
+
+@page {
+  size: A4;
+  margin: 14mm 16mm 16mm;
+  @bottom-left {
+    content: "SHISHU";
+    font-family: "Body", sans-serif;
+    font-size: 8pt;
+    color: #8E95A3;
+  }
+  @bottom-right {
+    content: counter(page) " / " counter(pages);
+    font-family: "Body", sans-serif;
+    font-size: 8pt;
+    color: #8E95A3;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  font-family: "Body", sans-serif;
+  color: #1E2947;
+  font-size: 12pt;
+  line-height: 1.45;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+.top { display: flex; align-items: center; gap: 8px; }
+.top img { width: 26px; height: 26px; }
+
+.brand {
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-size: 12pt;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+.kind { margin-left: auto; font-size: 11pt; font-weight: 700; color: #DAA550; }
+.rule { height: 2px; background: #DAA550; margin: 6px 0 8px; }
+.who { margin: 0; font-size: 12pt; font-weight: 700; }
+.meta { margin: 1px 0 0; font-size: 10pt; color: #565F75; }
+
+.notice {
+  margin: 12px 0 0;
+  padding: 8px 12px;
+  border: 1.5px solid #1E2947;
+  border-left: 5px solid #DAA550;
+  font-size: 12pt;
+  font-weight: 700;
+}
+
+.notice span { display: block; font-weight: 400; font-size: 10.5pt; color: #565F75; margin-top: 2px; }
+
+.band {
+  margin: 10px 0 0;
+  padding: 8px 12px;
+  background: #FBF3E4;
+  border-left: 5px solid #DAA550;
+}
+
+h1 { margin: 18px 0 8px; font-size: 14pt; }
+ol { margin: 0; padding-left: 1.2em; }
+ol li { margin: 0 0 8px; }
+ol li::marker { color: #DAA550; font-weight: 700; }
+.note { margin: 4px 0 0; font-size: 10.5pt; color: #565F75; }
+
+h2 { margin: 16px 0 6px; font-size: 13pt; }
+.yes { margin: 0; padding: 0; list-style: none; }
+.yes li { margin: 0 0 6px; padding-left: 12px; border-left: 2px solid #DAA550; }
+.calm { margin: 0; color: #565F75; }
+
+.universal {
+  margin: 14px 0 0;
+  padding: 8px 12px;
+  border: 1px dashed #8E95A3;
+  background: #F4F6F8;
+  font-size: 11pt;
+  break-inside: avoid;
+}
+
+.universal b { display: block; font-size: 10pt; color: #565F75; margin-bottom: 2px; }
+.universal .why { display: block; font-size: 10pt; color: #565F75; margin-bottom: 4px; }
+
+.page2 { break-before: page; }
+.page2 h1 { margin-top: 0; }
+.group { margin: 8px 0 1px; font-size: 11pt; font-weight: 700; color: #DAA550; break-after: avoid; }
+
+.no-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 1px 0;
+  margin: 0;
+  border-bottom: 1px solid #E0E2E5;
+  break-inside: avoid;
+  line-height: 1.35;
+}
+
+.ans { flex: 0 0 auto; color: #565F75; }

@@ -1,0 +1,51 @@
+scenarios:
+- id: red_flags
+  pdf: SHISHU-sample-red-flags.pdf
+  caller_name: शिल्पा
+  marital_status: married
+  children:
+  - age_years: 7.0
+    tag: male
+    name: आरव
+  duration_sec: 420
+  answers:
+  - qid: birth_jaundice
+    say:
+    - हाँ, तीन दिन नीली लाइट में रखा था।
+  - qid: body_joint_swelling
+    say:
+    - हाँ, गिरने पर घुटने में सूजन 5 से 7 दिन रहती है।
+  - qid: preg_conditions
+    say:
+    - हाँ, हाई बीपी और थायरॉइड की दवा डिलीवरी के बाद भी चल रही है।
+  - qid: fam_infant_death
+    say:
+    - हाँ, 5 महीने का बेटा था।
+    - झटके आने से उसकी मौत हुई थी।
+  stop_after_gates: null
+- id: no_flags
+  pdf: SHISHU-sample-no-flags.pdf
+  caller_name: गीता
+  marital_status: married
+  children:
+  - age_years: 6.0
+    tag: female
+    name: अनन्या
+  duration_sec: 360
+  answers: []
+  stop_after_gates: null
+- id: incomplete
+  pdf: SHISHU-sample-incomplete.pdf
+  caller_name: सुनीता
+  marital_status: married
+  children:
+  - age_years: 4.0
+    tag: female
+    name: null
+  duration_sec: 95
+  answers:
+  - qid: birth_nicu
+    say:
+    - हाँ, दो दिन काँच के बक्से में रखा पड़ा था।
+    - दो दिन।
+  stop_after_gates: 3

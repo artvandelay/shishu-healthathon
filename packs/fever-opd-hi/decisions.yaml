@@ -1,0 +1,150 @@
+# packs/fever-opd-hi/decisions.yaml
+# `gemini-decision-1` head definitions and their start-up-gated thresholds.
+# All 17 keys in `intake.pack._REQUIRED_THRESHOLDS` must be present: a pack that omits
+# one fails to load. There is no default and no "0.5 will do".
+
+model: gemini-decision-1
+
+heads:
+  # ---- Group A: safety, endpointing, privacy, and the active answer ----------
+  danger_now:
+    type: noul
+    instructions: Is the caller describing an active life-threatening medical emergency happening RIGHT NOW in caller_utterance
+      (such as not breathing, severe fast breathing, blue lips now, unconsciousness, unstoppable seizures, unstoppable bleeding,
+      or explicitly stating an emergency right now)?
+    criteria:
+      true_description: Active life-threatening danger sign happening right now in caller_utterance, or explicit statement
+        of a medical emergency happening right now.
+      false_description: A fever answer, a reported symptom that is not happening right now, a past illness, a resolved
+        event, a routine yes/no answer, or no emergency happening right now.
+
+  caller_stop:
+    type: noul
+    instructions: Does the caller explicitly ask to end, stop, or disconnect the call now in caller_utterance?
+    criteria:
+      true_description: Caller explicitly asks to end, stop, or hang up the call now or continue another time.
+      false_description: Caller asks only to pause or wait briefly, asks a clarification question, or gives a normal reply.
+
+  mentions_profile:
+    type: noul
+    instructions: Does caller_utterance state, add, or correct the patient's own profile (the patient's name or the patient's
+      age), rather than merely answering a fever, symptom, or danger-sign question?
+    criteria:
+      true_description: Caller states or corrects the patient's name or the patient's age in years.
+      false_description: Caller only answers a fever, symptom, danger-sign, treatment, or travel question, asks for clarification,
+        or makes no statement or update about the patient's name or age.
+
+  redact_patient_note:
+    type: noul
+    instructions: Does caller_utterance name a specific confirmed diagnosis label the form has no slot for (such as a positive
+      malaria or dengue test report, typhoid, or a named laboratory finding) rather than plain everyday symptoms or ordinary
+      treatment?
+    criteria:
+      true_description: Names a specific confirmed diagnosis or a positive laboratory report in caller_utterance.
+      false_description: Describes only plain everyday symptoms, body parts, temperatures, medicines, or ordinary care without
+        naming a confirmed diagnosis.
+
+  active_outcome:
+    type: choice
+    instructions: How does caller_utterance respond to active_question? (If caller_utterance answers active_question AND also
+      mentions another topic, classify how it answers active_question.)
+    criteria:
+      clear: Denies, answers no, negative, normal, nothing further, or "कुछ नहीं" for active_question (even if also mentioning
+        a different topic in the same sentence).
+      concern: Affirms, answers yes, agrees, or provides the symptom, duration, or description that active_question asks for
+        (even if also mentioning a different topic).
+      unknown: States that they do not know, do not remember, or are unsure about active_question.
+      clarify: Asks what active_question itself or a term inside active_question means, or says they did not understand
+        active_question.
+      retract: Takes back or reverses a yes or an affirmative answer just given for active_question (or its parent_question
+        when active_question is a sub-question).
+      other: caller_utterance gives NO answer at all to active_question (for example when it talks ONLY about a different
+        topic without saying yes or no to active_question, only updates the patient's name or age, or is unrelated chatter).
+
+  detail_present:
+    type: noul
+    instructions: Does caller_utterance already include concrete factual or clinical detail answering followup_question,
+      rather than only a bare yes/no or acknowledgement?
+    criteria:
+      true_description: Includes concrete factual or clinical detail (such as a duration, a count, a medicine name, a breathing
+        description, or a place) answering followup_question.
+      false_description: Only a bare yes or no, bare acknowledgement, statement of not knowing, clarification question, or
+        no concrete detail.
+
+  turn_incomplete:
+    type: noul
+    instructions: Did the speaker pause mid-sentence, trail off, or leave an incomplete phrase in caller_utterance, rather
+      than finishing their reply?
+    criteria:
+      true_description: 'Caller_utterance breaks off mid-sentence or mid-thought: an unfinished phrase, a dangling connector
+        (और, तो, वो, मतलब), a cut-off word, or speech that stops before naming the thing they started to say.'
+      false_description: 'Caller_utterance is a finished reply, however short: a complete yes, no, पता नहीं, a whole sentence,
+        or a complete thought followed by silence.'
+
+  jump_topic:
+    type: noul
+    instructions: Does caller_utterance volunteer a specific clinical fact, a confirmed diagnosis, or a medicine taken outside
+      active_question (for example naming a positive malaria report, a course of antibiotics, or a hospital visit) that warrants
+      jumping directly to a related topic rather than continuing routine order?
+    criteria:
+      true_description: Volunteers a concrete clinical fact or a treatment that another catalog question or follow-up would
+        ask about and that is NOT what active_question asked (a positive test report, a named medicine, a hospital admission).
+      false_description: Answers only active_question, gives a bare yes/no or a symptom detail that belongs to active_question
+        or its follow-up, asks for clarification, or makes unrelated small talk.
+
+  stated_template:
+    type: choice
+    instructions: >-
+      OUTSIDE of active_question and parent_question, does caller_utterance ALSO explicitly state, revise, or ask about
+      THIS SEPARATE question: "{question_say}" ({need})? Choose unmentioned if caller_utterance only answers active_question.
+    criteria:
+      concern: 'Explicitly names or describes "{need}" as present outside active_question.'
+      clear: 'Explicitly denies or retracts "{need}" by topic outside active_question (never for a bare नहीं to active_question).'
+      clarify: 'Explicitly asks the meaning of "{need}" while on a different active_question.'
+      unmentioned: 'Only answers active_question, updates profile details, or does not explicitly mention "{need}".'
+
+  item_ref_template:
+    type: choice
+    # This pack is single-patient, so the roster head has no children to resolve. It is
+    # declared only so the head-group builder has a well-formed, always-other choice set.
+    instructions: Which patient does caller_utterance identify as affected? This pack has exactly one patient, so choose
+      other unless the caller explicitly denies the concern.
+    option_template: Patient {id} (age={age_label}) has or experienced the reported concern.
+    unnamed_label: unnamed
+    all_description: The patient and everyone mentioned experienced the reported concern.
+    other_description: The single patient in this pack is the only subject; the concern is denied, retracted, or not about
+      a selected person.
+
+  next_qid_template:
+    type: choice
+    instructions: Which open question is caller_utterance answering or volunteering information about, other than active_question
+      and parent_question?
+    option_template: '{question_say} ({need})'
+    other_description: The caller is not referring to any open question outside active_question and parent_question, or there
+      is not enough evidence to identify one.
+
+thresholds:
+  # Safety, endpointing, privacy. This pack asks closed, factual questions, so these
+  # sit slightly tighter than the reflective rare-disease screen: a fever history is
+  # rarely hedged, and an over-eager danger_now would stop a call for a bad cough.
+  danger_now_min_yes: 0.494
+  caller_stop_min_yes: 0.5739
+  turn_incomplete_min_yes: 0.55
+  mentions_profile_min_yes: 0.4914
+  redact_patient_note_min_yes: 0.5606
+  detail_present_min_yes: 0.5262
+  jump_topic_min_yes: 0.7
+  outcome_min_confidence: 0.5196
+  outcome_min_margin: 0.2297
+  # Short option sets ("3 दिन से कम / 3 से 7 दिन / 7 दिन से ज़्यादा") separate cleanly,
+  # so the choice gate can be a little stricter than the 58-option screening pack.
+  choice_min_confidence: 0.55
+  choice_min_margin: 0.22
+  multi_choice_min_yes: 0.55
+  # Severity is a 0..3 rubric read from a spoken description, not a tick, so it keeps
+  # the looser confidence used for ordered scales.
+  score_min_confidence: 0.45
+  stated_min_confidence: 0.8
+  stated_min_margin: 0.35
+  item_ref_min_confidence: 0.65
+  item_ref_min_margin: 0.05
