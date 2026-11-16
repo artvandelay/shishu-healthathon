@@ -291,7 +291,7 @@ def _followup(pack: PackConfig, st: CallState, cmd: TurnCommand, spec: QuestionS
     return _advance(pack, st, cmd)
 def _open_capture(pack: PackConfig, st: CallState, cmd: TurnCommand, spec: QuestionSpec, utt: str) -> CallState:
     rec = st.answers.get(spec.id)
-    if utt and cmd.outcome is TurnOutcome.CONCERN:
+    if utt and cmd.outcome in (TurnOutcome.CONCERN, TurnOutcome.ANSWERED, TurnOutcome.NOT_ABOUT_ACTIVE):
         base = rec or AnswerRecord(state=AnswerStatus.CONCERN)
         st.answers[spec.id], st.last_answered_qid = base.model_copy(update={"state": AnswerStatus.CONCERN, "note": base.note.append(utt, redacted=cmd.redacted)}), spec.id
         st.cursor = CursorStep(qid=spec.id, open_rounds=st.cursor.open_rounds + 1)
@@ -345,7 +345,8 @@ def reduce_turn(pack: PackConfig, state: CallState, cmd: TurnCommand) -> CallSta
     spec, step = pack.by_id.get(st.cursor.qid), st.cursor
     if spec is None or spec.kind is QuestionKind.PROFILE or cmd.outcome is TurnOutcome.CLARIFY: return st
     if (cur := st.answers.get(spec.id)) is not None and cur.state is _NA: return _advance(pack, st, cmd, record=False)
-    if cmd.outcome is TurnOutcome.NOT_ABOUT_ACTIVE and (profile_ran or cmd.stated or step.substep is SubStep.MAIN): return st
+    # A spontaneous remark at the closing open-capture is a finding, not a miss: it must reach `_open_capture`.
+    if cmd.outcome is TurnOutcome.NOT_ABOUT_ACTIVE and (profile_ran or cmd.stated or (step.substep is SubStep.MAIN and not (spec.kind is QuestionKind.OPEN_CAPTURE and utt))): return st
     if cmd.outcome is TurnOutcome.RETRACT or (step.substep is SubStep.WHICH_ITEM and cmd.outcome is TurnOutcome.CLEAR and not _ids(st, cmd.item_ref)):
         prior = st.answers.get(spec.id)
         if not (spec.kind is QuestionKind.OPEN_CAPTURE and prior is not None and prior.state is AnswerStatus.CONCERN and prior.verbatim_text): st.answers[spec.id] = AnswerRecord(state=AnswerStatus.CLEAR)

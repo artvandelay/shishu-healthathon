@@ -187,6 +187,29 @@ class EngineSyntheticTests(unittest.TestCase):
         st = play(pack, st, TurnOutcome.NOT_ABOUT_ACTIVE, utterance="उसकी तबीयत ठीक थी")
         self.assertEqual((st.answers["nicu"].followups["nicu_reason"].state, st.cursor.qid), (AnswerStatus.UNKNOWN, "next"))
 
+    def test_a_spontaneous_remark_at_the_closing_open_capture_is_kept_not_re_asked(self):
+        # Call 7: she explains why she came, the decision model reads it as not answering the open capture.
+        pack = make_pack([{"id": "close_anything_else", "kind": QuestionKind.OPEN_CAPTURE, "say": "कुछ और?"}],
+                         prompts={"open_capture_more": "मैंने यह बात नोट कर ली। इसके अलावा कुछ और बताना चाहेंगी?"})
+        remark = "मैं ना बच्चे का प्लानिंग कर रही हूं तो बस उसी सिलसिले में मैं आई थी तो यह मुझे पकड़ा दिया गया है।"
+        for outcome in (TurnOutcome.NOT_ABOUT_ACTIVE, TurnOutcome.ANSWERED):
+            with self.subTest(outcome=outcome.value):
+                noted = play(pack, new_state(pack), outcome, utterance=remark)
+                self.assertEqual(noted.answers["close_anything_else"].state, AnswerStatus.CONCERN)
+                self.assertEqual(noted.answers["close_anything_else"].verbatim_text, remark)
+                self.assertEqual((noted.cursor.qid, noted.cursor.open_rounds), ("close_anything_else", 1))
+                self.assertEqual(active_prompt(pack, noted), "मैंने यह बात नोट कर ली। इसके अलावा कुछ और बताना चाहेंगी?")
+                closed = play(pack, noted, TurnOutcome.CLEAR, utterance="नहीं।")
+                self.assertEqual((closed.phase, closed.close_reason), (Phase.CLOSING, CloseReason.COMPLETE))
+                self.assertEqual(closed.answers["close_anything_else"].verbatim_text, remark, "the remark survives the close")
+
+    def test_a_denial_at_the_closing_open_capture_still_closes_without_a_note(self):
+        pack = make_pack([{"id": "close_anything_else", "kind": QuestionKind.OPEN_CAPTURE, "say": "कुछ और?"}])
+        closed = play(pack, new_state(pack), TurnOutcome.CLEAR, utterance="नहीं।")
+        self.assertEqual((closed.phase, closed.close_reason), (Phase.CLOSING, CloseReason.COMPLETE))
+        self.assertEqual((closed.answers["close_anything_else"].state, closed.answers["close_anything_else"].verbatim_text),
+                         (AnswerStatus.CLEAR, ""))
+
 
 class RealPackIntegrationTests(unittest.TestCase):
     def test_shishu_pack_reactive_thalassemia_autofill_semantic_skip_and_topic_jump(self):

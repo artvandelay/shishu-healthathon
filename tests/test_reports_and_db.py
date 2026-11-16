@@ -17,7 +17,7 @@ from unittest import mock
 
 import tests  # noqa: F401 — ensure isolated TEST_DATA_DIR under `-s tests`
 from intake import db, engine, reports
-from intake.models import AnswerStatus, CallState, Phase, ProfilePatch, TurnCommand
+from intake.models import AnswerStatus, CallState, FollowupSlot, NoteText, Phase, ProfilePatch, TurnCommand
 from intake.pack import load_pack
 
 _SHISHU = "shishu-hi"
@@ -154,6 +154,22 @@ class ProjectionTests(unittest.TestCase):
                                   proj.patient_summary_text, proj.roster_patient]).lower()
                 for banned in _FORBIDDEN:
                     self.assertNotIn(banned.lower(), blob, f"{banned} in {pack_id}/{name}")
+
+    def test_a_denied_followup_never_trails_a_no_onto_the_patient_yes_item(self):
+        # Call 7: she reports the infant deaths, then answers the cause follow-up "नहीं।" (no cause known).
+        pack = load_pack(_SHISHU)
+        state = _replay(pack, "red_flags")
+        rec = state.answers["fam_infant_death"]
+        state.answers["fam_infant_death"] = rec.model_copy(update={"followups": {
+            **rec.followups,
+            "infant_death_cause": FollowupSlot(state=AnswerStatus.CLEAR, note=NoteText.from_text("नहीं।")),
+        }})
+        proj = reports.project_summary(pack, state)
+        positive = next(line for line in proj.yes_items if "1 साल से कम उम्र" in line)
+        self.assertTrue(positive.endswith("हाँ, 5 महीने का बेटा था।"), positive)
+        self.assertFalse(any("नहीं" in line for line in proj.patient_questions))
+        self.assertIn("नहीं।", state.answers["fam_infant_death"].verbatim_text,
+                      "the clinician audit trail keeps every spoken word")
 
     def test_emergency_band_replaces_routine_filler_with_emergency_questions(self):
         pack = load_pack(_FEVER)

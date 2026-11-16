@@ -32,8 +32,8 @@ def dedupe_clauses(clauses: Iterable[str]) -> str:
     seen: dict[str, str] = {}
     for text in filter(None, (" ".join(p.split()) for c in clauses for p in str(c or "").split(SEP))): seen.setdefault(text.casefold(), text)
     return SEP_SP.join(seen.values())
-def _joined(rec: AnswerRecord, attr: str) -> str:
-    return dedupe_clauses([getattr(rec.note, attr), *(getattr(s.note, attr) for s in rec.followups.values())])
+def _joined(rec: AnswerRecord, attr: str, *, skip_clear: bool = False) -> str:
+    return dedupe_clauses([getattr(rec.note, attr), *(getattr(s.note, attr) for s in rec.followups.values() if not (skip_clear and s.state in (AnswerStatus.CLEAR, AnswerStatus.UNKNOWN)))])
 class NoteText(_Frozen):
     verbatim: str = ""
     patient_safe: str = ""
@@ -50,7 +50,7 @@ FollowupSlot = _rec("FollowupSlot", Strict, state=(AnswerStatus, ...), note=(Not
 AnswerRecord = _rec("AnswerRecord", Strict, state=(AnswerStatus, ...), value=(Any, None), choice_label=(str, ""), item_ids=(list[str], Field(default_factory=list)),
                     note=(NoteText, Field(default_factory=NoteText)), followups=(dict[str, FollowupSlot], Field(default_factory=dict)))
 AnswerRecord.verbatim_text = property(lambda self: _joined(self, "verbatim"))
-AnswerRecord.patient_safe_text = property(lambda self: _joined(self, "patient_safe"))
+AnswerRecord.patient_safe_text = property(lambda self: _joined(self, "patient_safe", skip_clear=True))
 CursorStep = _rec("CursorStep", Strict, qid=(str, ""), substep=(SubStep, SubStep.MAIN), followup_idx=(int, Field(default=0, ge=0)),
                   hold_slot=(str | None, None), attempts=(int, Field(default=0, ge=0)), open_rounds=(int, Field(default=0, ge=0)))
 ProfilePatch = _rec("ProfilePatch", slots=(dict[str, Any], Field(default_factory=dict)), roster_count=(int | None, Field(default=None, ge=0)),

@@ -118,6 +118,12 @@ def _pick(a: Mapping[str, Any], key: str, t: Mapping[str, float], pair: str = ""
     (top, best), sec, name = ranked[0], (ranked[1][1] if len(ranked) > 1 else 0.0), pair or key
     need = max(t[f"{name}_min_confidence"], (floors or {}).get(top, 0.0))
     return top if best >= need and best - sec >= t[f"{name}_min_margin"] else ""
+def _quiet_split(a: Mapping[str, Any], t: Mapping[str, float]) -> str:
+    """`clear`/`unknown` are one quiet answer split across two labels, so neither can win alone: their PAIR is the read."""
+    ranked = _rank(a, "active_outcome")
+    if len(ranked) < 2 or {ranked[0][0], ranked[1][0]} != {"clear", "unknown"}: return ""
+    pair, third = ranked[0][1] + ranked[1][1], (ranked[2][1] if len(ranked) > 2 else 0.0)
+    return ranked[0][0] if pair >= t["outcome_min_confidence"] and pair - third >= t["outcome_min_margin"] else ""
 def _score_value(a: Mapping[str, Any], t: Mapping[str, float]) -> dict[str, Any] | None:
     """A rubric score plus its nearest level, accepted only when the head's own confidence clears the pack gate."""
     head = a.get("score_value")
@@ -159,7 +165,7 @@ def interpret_turn_decision(pack: PackConfig, state: CallState, raw_answers: Map
     closing = on["danger_now"] or on["caller_stop"]
     val = None if closing or kind != "main" else _active_value(spec, a, t)
     outcome = TurnOutcome.ANSWERED if val is not None else TurnOutcome.NOT_ABOUT_ACTIVE
-    if not closing and val is None and (w := _pick(a, "active_outcome", t, "outcome", allowed=_OUTCOMES)): outcome = TurnOutcome(w)
+    if not closing and val is None and (w := _pick(a, "active_outcome", t, "outcome", allowed=_OUTCOMES) or _quiet_split(a, t)): outcome = TurnOutcome(w)
     stated = {} if closing else _stated_writes(pack, state, a, t, kind=kind, outcome=outcome)
     next_probs = _next_qid_probs(a)
     flags = tuple(f for f, fs in pack.semantic_flags.items() if f not in state.semantic_flags and _yes(a, f"flag_{f}", fs.get("min_yes", 0.8)))

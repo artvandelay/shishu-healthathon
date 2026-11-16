@@ -273,6 +273,17 @@ class InterpretTests(unittest.TestCase):
         intent = self.interpret(self.fever, st, {"choice_value": choice(other=0.97, gt_7_days=0.01)})
         self.assertIs(intent.command.outcome, TurnOutcome.NOT_ABOUT_ACTIVE)
 
+    def test_a_quiet_answer_split_between_clear_and_unknown_is_read_as_the_pair(self):
+        st = state_at(self.fever, "fever_nature")
+        pair = self.interpret(self.fever, st, {"active_outcome": choice(clear=0.50, unknown=0.45, concern=0.03, other=0.02)})
+        self.assertIs(pair.command.outcome, TurnOutcome.CLEAR, "0.95 of the quiet pair beats the 0.2297 margin")
+        flipped = self.interpret(self.fever, st, {"active_outcome": choice(unknown=0.51, clear=0.44, concern=0.03, other=0.02)})
+        self.assertIs(flipped.command.outcome, TurnOutcome.UNKNOWN, "the pair's own winner is returned")
+        noisy = self.interpret(self.fever, st, {"active_outcome": choice(concern=0.50, clear=0.45, other=0.05)})
+        self.assertIs(noisy.command.outcome, TurnOutcome.NOT_ABOUT_ACTIVE, "only clear+unknown pool, never clear+concern")
+        thin = self.interpret(self.fever, st, {"active_outcome": choice(clear=0.24, unknown=0.22, concern=0.20, other=0.20)})
+        self.assertIs(thin.command.outcome, TurnOutcome.NOT_ABOUT_ACTIVE, "a pair under 0.5196 is still too weak to read")
+
     def test_multi_choice_collects_every_option_above_the_yes_gate(self):
         st = state_at(self.fever, "associated_symptoms")
         intent = self.interpret(self.fever, st, {
