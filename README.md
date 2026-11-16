@@ -1,118 +1,199 @@
-# SHISHU
+# SHISHU V3 — Moldable Voice Patient Intake
 
-SHISHU is a Hindi voice app for a pre-consultation call.
-A mother speaks with the app before she meets a doctor or a health worker.
-The live call uses Gemini Live for voice, the Gemini Decisions API for turn classification, and a schema-validated profile extractor for the four intro facts.
-`summary.project_summary` then projects one frozen `ScreeningSummary` from the finished call: the mother gets a 2–3 page Hindi PDF (`mother_report.py`; 2 pages for childless or short calls, 3 pages when all 56 child and family items render), and the doctor gets a deterministic English intake note (`summary.py`).
+SHISHU is an offline-renderable Hindi voice intake call. A caller speaks with the app
+before meeting a doctor or health worker; the app asks a pack-defined set of structured
+questions, records what was said verbatim, and then projects one finished call into two
+artifacts with **zero post-call LLM calls**: a Hindi Patient PDF and an English clinician
+note.
 
-## Architecture (`code/shishu-v2/`)
+V3 is an **engine**, not a rare-disease app. The clinical content — every question, every
+Hindi string, every template — lives in a declarative pack under `packs/`. Adding a second
+use case costs zero lines of Python.
 
-Fifteen modules, in the order a call touches them:
+Design of record: [`docs/v3-design-and-thinking-vad.md`](docs/v3-design-and-thinking-vad.md).
 
-- `models.py` — the one typed vocabulary: `CallState`, `Phase`, `TurnCommand`, `AnswerRecord`, `CallerProfile`, and the `Strict` base every model extends
-- `triage_catalog.py` — 56 atomic yes/no clinical questions, the follow-up sub-questions, and the per-question spec every other module reads instead of a hardcoded QID
-- `copy_hi.py` — every Hindi string: question wording by profile, the Gemini Live system prompt and speak cues, and the one Mother-summary layout
-- `engine.py` — deterministic FormBharo state engine: demographic skip matrix, multi-child roster, and the pure turn reducer
-- `decisions.py`, `decision_schema.json`, `decision_thresholds.json` — single-pass `gemini-decision-1` probability turn classifier and calibrated thresholds
-- `profile_extractor.py` — schema-validated 4-field demographic extractor (`gemini-3.5-flash-lite`)
-- `live_fsm.py` — pure synchronous turn machine: capture buffers, stale-turn shielding, playback clock, and watchdog timers
-- `gemini_live.py` — Gemini Live (`gemini-3.1-flash-live-preview`, `Kore` Hindi voice) WebSocket session, the single zero-argument `next_question` tool, and silence/reconnect watchdogs
-- `summary.py` — single-pass `ScreeningSummary` projection feeding both post-call artefacts
-- `mother_report.py`, `report_service.py` — 2–3 page Hindi WeasyPrint Mother PDF, plus the save/in-flight/serve path for it
-- `audio_recorder.py` — off-loop 16 kHz stereo wall-clock WAV recorder
-- `app.py`, `db.py`, `seed.py` — FastAPI routes, HMAC cookie auth, UUID `share_token` PDF access, SQLite persistence, and v4 clinical seed calls
+## The loop
 
-The mother PDF stays in Hindi, and the doctor intake note stays in English. Both are pure functions of the stored `CallState`, with zero post-call LLM calls.
+```
+passcode -> consent + first-time open-speech priming -> structured voice + quick-tap
+         -> deterministic Patient PDF + Clinician Summary
+```
 
-## Sample reports
+Three invariants hold for every pack:
 
-The sample files are in `docs/samples/`:
+- **Post-call is pure.** Both artifacts are functions of the stored `CallState`.
+- **Silence is never an answer.** `AnswerStatus.UNKNOWN` is a real, resolved state and the
+  caller's words survive verbatim.
+- **One forward pass per turn.** No sidecar pass, no uncached giant prompt.
 
-- `docs/samples/SHISHU-sample-red-flags.pdf` — Hindi Mother PDF with red flags
-- `docs/samples/SHISHU-sample-no-flags.pdf` — Hindi sample with no yes answers
-- `docs/samples/SHISHU-sample-incomplete.pdf` — short Hindi sample from a call that ended early
+## Layout
 
-The call consent is `code/shishu-v2/static/SHISHU-consent.pdf`.
+### `intake/` — the engine
+
+| Module | Role |
+|---|---|
+| `models.py` | The typed vocabulary: `CallState`, `TurnCommand`, `AnswerRecord`, `QuestionSpec`, `PackConfig` |
+| `pack.py` | `load_pack`, `list_pack_ids`, and the startup schema validator |
+| `engine.py` | Pure FormBharo reducer: eligibility, skip matrix, roster, re-ask policy |
+| `vad.py` | Silero ONNX endpointing plus per-caller `pace_factor` calibration |
+| `decisions.py` | Single-pass `gemini-decision-1` turn classifier and threshold gating |
+| `extractor.py` | Schema-validated profile extractor (slot values out of free speech) |
+| `live.py` | Gemini Live session, single play tool, silence and reconnect watchdogs |
+| `reports.py` | `project_summary` plus the Jinja → WeasyPrint Patient PDF and clinician markdown |
+| `db.py` | Atomic SQLite: calls, transcripts, events, bug reports, share tokens |
+| `app.py` | FastAPI routes, HMAC cookie auth, sliding-window rate limits, `/ws/live` |
+| `static/` | `login.html`, `call.html`, `admin.html`, `styles.css`, `call.js`, `admin.js` |
+| `assets/silero_vad.onnx` | The VAD model |
+
+`app.py` is deliberately thin: it resolves a pack, checks the signed cookie, and hands the
+work to `db`, `reports`, and `live`. One middleware, `_gate`, decides access for every
+request.
+
+### `packs/` — the clinical content
+
+Two complete packs ship today, and both run on the same engine, reducer, and templates:
+
+- **`packs/shishu-hi/`** — `SHISHU (शिशु)`: the mother-and-children screening call. 62
+  questions across child and family groups, a multi-child roster, and a red-flag band.
+- **`packs/fever-opd-hi/`** — `SHISHU OPD (बुखार जाँच)`: fever and acute-symptom triage
+  for one OPD patient. 14 questions covering duration, nature, severity, and danger signs.
+
+Each pack folder holds the whole surface:
+
+```
+packs/<pack_id>/
+  pack.yaml        title, subtitle, Gemini model + voice, VAD timings, every UI string
+  prompts.yaml     spoken copy and the live session's system prompt
+  form.yaml        questions, groups, followups, rules, implications, report config
+  decisions.yaml   calibrated thresholds for the eleven Decision API gates
+  seed.yaml        scripted regression calls, replayed through the real reducer
+  assets/          logo, Devanagari font, consent PDF
+  templates/       patient.html.j2, clinician.md.j2, pdf.css
+```
+
+`form.yaml` is the contract. `intake/pack.py` validates it at startup: every question's
+group, rule, variant, and followup must exist, every choice question needs two options,
+and every required threshold must be present. A malformed pack fails fast with the whole
+error list rather than at the first bad question.
 
 ## Requirements
 
 - Python 3.12 and `uv`
-- Node.js (`node`, used by the frontend VM tests)
 - A Gemini API key
-- System libraries required by WeasyPrint (`pango`, `harfbuzz`) (see `Dockerfile` for Linux packages; on macOS via Homebrew)
+- WeasyPrint's system libraries (`pango`, `harfbuzz`). The `Dockerfile` lists the Linux
+  packages; on macOS install them with Homebrew.
+- Node.js, only for the frontend VM tests in `tests/test_ui.py`
 - The Railway CLI, for deployment
 
-## Configure the app
+## Configure
 
-Put a file named `.env` in the root of the repo. The app reads this file at startup.
+Put a `.env` in the repo root. The app reads it at startup.
 
 ```
 GEMINI_API_KEY=
 APP_PASSCODE=
 ADMIN_PASSCODE=
-DATA_DIR=./storage
+DEFAULT_CLINIC_CODE=
+DATA_DIR=./intake/storage
 ```
 
-`DATA_DIR` is the folder for the SQLite database, call audio WAVs, and generated Mother PDFs.
+- `APP_PASSCODE` signs a caller in as `user`; `ADMIN_PASSCODE` signs in as `admin`.
+- `DEFAULT_CLINIC_CODE` tags a call when the URL carries no `?clinic=`.
+- `DATA_DIR` holds the SQLite database, call WAVs, and generated PDFs.
 
-CAUTION: Do not commit `.env`. It holds the API key and passcodes.
+Do not commit `.env`.
 
-## Run the app locally
+## Run locally
 
-From the root of the repo, create the virtual environment in `~/pyenv/shishu` and install dependencies with `uv` (using `requirements-dev.txt` for local dev and tests, which includes `pypdf`):
-
-```
-uv venv ~/pyenv/shishu --python 3.12 && uv pip install --python ~/pyenv/shishu/bin/python -r requirements-dev.txt
-```
-
-Start the server:
+Create the virtual environment in `~/pyenv/shishu` and install with `uv`:
 
 ```
-PYTHONPATH=code/shishu-v2 ~/pyenv/shishu/bin/uvicorn app:app --app-dir code/shishu-v2 --host 127.0.0.1 --port 8000
+uv venv ~/pyenv/shishu --python 3.12
+uv pip install --python ~/pyenv/shishu/bin/python -r requirements-dev.txt
 ```
 
-Open http://127.0.0.1:8000 and enter your configured `APP_PASSCODE` on the login page.
-The `/admin` page uses `ADMIN_PASSCODE`.
+Start the server from the repo root:
 
-## Unit tests & scripts
+```
+PYTHONPATH=. ~/pyenv/shishu/bin/uvicorn intake.app:app --host 127.0.0.1 --port 8000
+```
 
-Run the full offline test suite from the root of the repo (zero network calls, does not require live API keys):
+Open http://127.0.0.1:8000, or go straight to a pack:
+
+- `/?pack=shishu-hi` — the mother-and-children call
+- `/?pack=fever-opd-hi` — the OPD fever call
+- `/admin` — the clinician dashboard, which needs `ADMIN_PASSCODE`
+
+At startup the lifespan seeds both packs from their `seed.yaml` scenarios, so a fresh
+database is never empty. Seeding replays each scripted call through the real reducer and
+skips a pack that already has calls.
+
+## Tests
+
+Every test is offline: no network, no API keys.
+
+```
+~/pyenv/shishu/bin/python -m unittest tests/test_app.py
+```
+
+The full suite, from the repo root:
 
 ```
 ~/pyenv/shishu/bin/python -m unittest discover -s tests
 ```
 
-Calibration and live persona verification scripts live in `scripts/`:
+`tests/test_app.py` drives the real app through FastAPI's `TestClient`: the auth cookie and
+its tamper cases, each of the three rate limiters, `/api/pack` for both packs,
+`/api/pack-asset/{kind}` media types and traversal guards, the admin call list with its
+pack filter, the patient PDF by both id and share token, `/api/audio`, and `/api/bugs`
+ownership. `live.py` is imported lazily inside `/ws/live`, so the HTTP surface stays
+testable while the live session is still being built.
 
-- `scripts/calibrate_decisions.py` — sweep and calibrate `decision_thresholds.json` against `scripts/decision_calibration_cases.json` using `gemini-decision-1`
-- `scripts/run_personas.py` — end-to-end live Gemini persona suite (run inside `tmux`)
+## Calibration and persona scripts
+
+Both live in `scripts/` and are pack-aware.
+
+- `scripts/calibrate_decisions.py` rebuilds every case in
+  `scripts/decision_calibration_cases.json` into a real `CallState` through the pure
+  reducer, calls `intake.decisions` once per case, fits on the `dev` split only, and prints
+  `DEV` and `HOLDOUT` tables so overfitting stays visible. `--write` rewrites just the
+  `thresholds:` block of a pack's `decisions.yaml`; `--dry-check` builds all cases with no
+  network calls.
+- `scripts/run_personas.py` boots the app, logs in over `/api/login`, and drives one live
+  persona per call over `ws://.../ws/live?pack=<pack_id>`. A persona passes only when the
+  call ends with both summaries, the expected red-flag band, a valid Patient PDF, and no
+  spoken leak, tool error, or watchdog nudge. Run it inside `tmux`.
+
+```
+PYTHONPATH=. ~/pyenv/shishu/bin/python scripts/calibrate_decisions.py --dry-check
+PYTHONPATH=. ~/pyenv/shishu/bin/python scripts/calibrate_decisions.py --pack shishu-hi
+tmux new -s personas 'PYTHONPATH=. ~/pyenv/shishu/bin/python scripts/run_personas.py'
+```
 
 ## Deploy (Railway / Docker)
 
-The deploy uses `Dockerfile` and `railway.toml`. The container writes persistent data to `/data`.
+`Dockerfile` installs the WeasyPrint system libraries, copies `intake/` and `packs/`, sets
+`PYTHONPATH=/app`, and starts `uvicorn intake.app:app` on `${PORT:-8000}`.
+`railway.toml` builds that Dockerfile and restarts on failure.
 
-On the Railway service, complete these steps before the first deploy:
+Before the first deploy, on the Railway service:
 
 1. Set `GEMINI_API_KEY`, `APP_PASSCODE`, and `ADMIN_PASSCODE`.
 2. Set `DATA_DIR` to `/data`.
-3. Attach a volume at `/data`.
+3. Attach a volume at `/data`, so calls, WAVs, and PDFs survive a redeploy.
 
-From the root of the repo, deploy:
+Then, from the repo root:
 
 ```
 railway up --detach -m "short summary"
-```
-
-If this directory is not linked to the service, add `--project`, `--environment`, and `--service`.
-Check deployment status with:
-
-```
 railway deployment list --limit 1 --json
 ```
 
-A status of `SUCCESS` means the new version is live.
+`SUCCESS` means the new version is live. If the directory is not linked to the service,
+pass `--project`, `--environment`, and `--service`.
 
 ## Files that stay off GitHub
 
-This repo does not track private notes, call transcripts, medical source files, or runtime storage.
-`.gitignore` blocks accidental commits of those files. The sample reports in `docs/samples/` and `code/shishu-v2/static/SHISHU-consent.pdf` remain in the repo.
+`.gitignore` keeps private notes, call transcripts, medical source material, and runtime
+storage out of the repo. The packs' own assets and templates are tracked, because a pack
+is not runnable without them.
