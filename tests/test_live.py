@@ -736,6 +736,33 @@ class BoundaryEventTests(unittest.TestCase):
 
         asyncio.run(body())
 
+    def test_geminis_interrupt_ack_never_closes_the_callers_open_turn(self):
+        # Calls 8 and 9: she cut in over SHISHU, Gemini acked with `interrupted`, and the call went dead air.
+        async def body() -> None:
+            for after in (0.0, 0.9):  # she stops right after cutting in, or keeps talking through the ack
+                with self.subTest(after=after):
+                    built, _ws, session = build(probs=[0.9], call_id=None)
+                    passes: list[int] = []
+
+                    async def fake_evaluate(*_args: Any, **_kwargs: Any) -> live.Turn:
+                        passes.append(1)
+                        return TurnTests.turn(built.state)
+
+                    built._evaluate_turn_task = fake_evaluate  # type: ignore[method-assign]
+                    built.playback_ends_at = live.time.time() + 10.0
+                    await built.on_audio({"data": TurnTests.pcm(), "sample_rate": 16000})
+                    await built.on_message(live.types.LiveServerMessage(
+                        server_content=live.types.LiveServerContent(interrupted=True)))
+                    built.detector = FakeDetector([after] * 5 + [0.0])
+                    for _ in range(45):
+                        await built.on_audio({"data": TurnTests.pcm(), "sample_rate": 16000})
+                    await asyncio.sleep(0)
+                    self.assertEqual(len(session.realtime("activity_start")), 1, "one cut-in is one Gemini turn")
+                    self.assertEqual(len(session.realtime("activity_end")), 1, "the turn Gemini opened must be closed")
+                    self.assertEqual(len(passes), 1, "and judged exactly once")
+
+        asyncio.run(body())
+
     def test_a_late_chunk_that_lands_on_a_concern_reports_attached(self):
         async def body() -> None:
             for outcome, attached in ((TurnOutcome.CONCERN, True), (TurnOutcome.CLEAR, False)):

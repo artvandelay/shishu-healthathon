@@ -332,10 +332,9 @@ class LiveCallSession:
     async def on_message(self, response: Any) -> None:
         sc, calls = getattr(response, "server_content", None), []
         if sc is not None:
-            if sc.interrupted:
+            if sc.interrupted:  # Gemini's ack of our own activity_start: her turn is still open, so the VAD must keep it
                 self.telemetry["interruptions"] += 1
                 self.playback_ends_at, self.bot_started, self.bot_text = 0.0, False, ""
-                self.vad.on_bot_speaking()
                 await self._emit("barge_in", self.state.cursor.qid)
                 await self._send_json({"type": "clear"})
             for r, p in (("user", getattr(sc, "input_transcription", None)), ("assistant", getattr(sc, "output_transcription", None))):
