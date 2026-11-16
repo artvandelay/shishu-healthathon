@@ -5,10 +5,7 @@
 **/__pycache__
 **/storage
 **/*.mp4
-.git/*
-!.git/HEAD
-!.git/refs
-!.git/packed-refs
+.git
 .DS_Store
 .local-data
 .cursor

@@ -14,7 +14,6 @@ COPY intake/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY intake /app/intake
-COPY .git /app/.git
 COPY packs /app/packs
 COPY scripts /app/scripts
 
