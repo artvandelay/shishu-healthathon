@@ -1850,5 +1850,473 @@ class TurnEpochTests(unittest.TestCase):
         asyncio.run(body())
 
 
+class Wave2CueLifecycleAndResumeTelemetryTests(unittest.TestCase):
+    """Wave 2 invariants: one owner per prompt cue, one recovery per epoch, and a resume that keeps its numbers.
+
+    Call #21 spoke `ill_fasting` twice 2.2 s apart (the greeting's own cue plus a `_cue_if_silent` collision) and
+    Call #32 spoke it twice again on resume, while that resume also zeroed every counter the call had earned. Each
+    bug lived in one cell of an entrypoint x latency matrix, so these tests sweep the matrix instead of one path.
+    """
+
+    CUE = 0.04  # 40 ms: the real `_CUE_DELAY` is 2.2 s, and the whole sweep has to stay under half a second
+    FAST, COLLISION, SLOW = 0.005, 0.045, 0.065  # audio strictly before / just after / well after the cue delay
+
+    @staticmethod
+    def hold(qid: str = "fam_cancer") -> CallState:
+        """A resolved, bridged call parked on `qid`, so every entrypoint publishes a real step."""
+        state = live.engine.new_state(PACK)
+        state.profile.update({"caller_name": "मीरा", "num_children": 1, "marital_status": "married"})
+        state.roster = [RosterItem(id="item_1", age_years=2.0, age_label="2 साल", tag="female")]
+        state.roster_stated = True
+        state.answers["intro_married"] = AnswerRecord(state=AnswerStatus.CLEAR)
+        state.answers["intro_bridge"] = AnswerRecord(state=AnswerStatus.CLEAR)
+        state.cursor = CursorStep(qid=qid)
+        return state
+
+    @staticmethod
+    def audio() -> live.types.LiveServerMessage:
+        return OutputTranscriptionTests.audio()
+
+    @staticmethod
+    def interrupted() -> live.types.LiveServerMessage:
+        return OutputTranscriptionTests.interrupted()
+
+    @staticmethod
+    def complete() -> live.types.LiveServerMessage:
+        return OutputTranscriptionTests.complete()
+
+    @staticmethod
+    def heard(session: FakeSession) -> list[str]:
+        """Every text cue that reached the model, in wire order."""
+        return [str(text) for text in session.realtime("text")]
+
+    @staticmethod
+    async def run_cells(cells: list[Any]) -> list[Any]:
+        """Run every matrix cell on its own task: the sweep costs its slowest cell, not the sum of all of them."""
+        return await asyncio.gather(*(cell() for cell in cells), return_exceptions=True)
+
+    def replay(self, labels: list[dict[str, Any]], results: list[Any]) -> None:
+        """Re-raise each cell's failure under its own subTest, so every broken cell is named on its own."""
+        for label, result in zip(labels, results):
+            with self.subTest(**label):
+                if isinstance(result, BaseException):
+                    raise result
+
+    @staticmethod
+    async def opened(
+        built: live.LiveCallSession, session: FakeSession, *, timeout: float = 2.0
+    ) -> asyncio.Task:
+        """Drive the REAL `run()` and return once its opening cue is on the wire, so the code under test is the code."""
+        task = asyncio.ensure_future(built.run())
+        deadline = time.monotonic() + timeout
+        while not session.realtime("text") and time.monotonic() < deadline:
+            await asyncio.sleep(0.002)
+        return task
+
+    @staticmethod
+    async def stop_run(built: live.LiveCallSession, task: asyncio.Task) -> None:
+        built.stop.set()
+        built._cancel("fallback")
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    def test_single_owner_prompt_cues_across_entrypoints_and_response_latencies(self):
+        # Call #21 `[5]`->`[7]`: the greeting's own send went out at t=0 and the fallback timer fired a second
+        # `speak_cue` 2.2 s later, so Gemini said `ill_fasting` twice into a live line; Call #32 did it again on a
+        # resume. One step owns exactly one cue, and only a step whose cue nobody heard may rescue itself, once.
+        async def body() -> None:
+            with unittest.mock.patch.object(live, "_CUE_DELAY", self.CUE):
+                # --- immediate-cue entrypoints: fresh greeting, resumed call, idle quick reply -----------------
+                labels: list[dict[str, Any]] = []
+                cells = []
+
+                def immediate_cell(entry: str, resumed: bool, delay: float) -> Any:
+                    async def cell() -> None:
+                        built, _ws, session = build(call_id=None, state=self.hold())
+                        built.resumed = resumed
+                        run_task = None
+                        try:
+                            if entry == "quick_reply_idle":
+                                self.assertFalse(built.bot_generating, "no bot turn is open when the caller taps")
+                                await built.on_quick_reply({"value": "clear", "step": built.state.step_token})
+                            else:
+                                run_task = await self.opened(built, session)  # the real `run()`, not a copy of it
+
+                            self.assertEqual(len(self.heard(session)), 1,
+                                             f"{entry}: opening the step owns exactly one cue; no second `_speak` is owed")
+
+                            await asyncio.sleep(delay)  # the model's first audio, or its silence, arrives about here
+                            if delay < self.CUE:
+                                await built.on_message(self.audio())
+                            await asyncio.sleep(self.CUE + 0.02)  # well past `_CUE_DELAY`: every fallback has fired
+                            built._cancel("fallback")
+                            self.assertEqual(len(self.heard(session)), 1,
+                                             f"{entry} at {round(delay * 1000)} ms: an already-sent cue must never be "
+                                             f"spoken a second time ({self.heard(session)})")
+                        finally:
+                            if run_task is not None:
+                                await self.stop_run(built, run_task)
+                    return cell
+
+                for entry, resumed in (("fresh_greeting", False), ("resumed_call", True), ("quick_reply_idle", False)):
+                    for delay in (self.FAST, self.COLLISION, self.SLOW):
+                        labels.append({"entry": entry, "latency_ms": round(delay * 1000)})
+                        cells.append(immediate_cell(entry, resumed, delay))
+                self.replay(labels, await self.run_cells(cells))
+
+                # --- aborting quick-reply entrypoint: the tap lands while Turn A is still on the wire -----------
+                labels, cells = [], []
+
+                def aborting_cell(delay: float) -> Any:
+                    async def cell() -> None:
+                        built, _ws, session = build(call_id=None, state=self.hold())
+                        await built._publish_and_cue("speak", immediate=False)  # the step is published, no cue yet
+                        await built.on_message(self.audio())  # Turn A is speaking it: `bot_generating`
+                        self.assertTrue(built.bot_generating)
+                        self.assertIsNone(built.fallback, "her own audio cancelled the pre-turn fallback")
+
+                        await built.on_quick_reply({"value": "clear", "step": built.state.step_token})
+                        self.assertTrue(built.awaiting_abort_end, "the tap knows Turn A may still be dying")
+                        self.assertEqual(len(self.heard(session)), 1, "the tap's cue is the step's one cue")
+                        self.assertIsNone(built.fallback, "no timer may tick while Turn A is still dying")
+
+                        await asyncio.sleep(self.CUE + 0.015)  # > `_CUE_DELAY`, with Turn A still alive
+                        self.assertEqual(len(self.heard(session)), 1,
+                                         "not even `_CUE_DELAY` may speak over a turn that has not died yet")
+
+                        await built.on_message(self.interrupted())  # and now Turn A's death finally arrives
+                        await built.on_message(self.complete())
+                        self.assertFalse(built.awaiting_abort_end, "the abort is acknowledged")
+                        if delay < self.CUE:  # subcase A: Turn B's audio lands inside the rescue window
+                            await asyncio.sleep(delay)
+                            await built.on_message(self.audio())
+                        await asyncio.sleep(self.CUE + 0.02)
+                        built._cancel("fallback")
+                        heard = self.heard(session)
+                        if delay < self.CUE:
+                            self.assertEqual(len(heard), 1,
+                                             f"Turn B answered in {round(delay * 1000)} ms, so the cue was heard "
+                                             f"and the post-abort rescue must stand down ({heard})")
+                        else:  # subcase B: Gemini swallowed the cue with the abort and stayed silent
+                            self.assertEqual(len(heard), 2,
+                                             f"a model still silent {round(delay * 1000)} ms after the abort owes "
+                                             f"exactly one rescue cue, never zero and never two ({heard})")
+                    return cell
+
+                for delay in (self.FAST, self.SLOW):
+                    labels.append({"entry": "quick_reply_aborting_bot_turn", "latency_ms": round(delay * 1000)})
+                    cells.append(aborting_cell(delay))
+                self.replay(labels, await self.run_cells(cells))
+
+                # --- tool-response entrypoint: `immediate=False`, so only real silence may earn a cue -----------
+                labels, cells = [], []
+
+                def tool_cell(delay: float) -> Any:
+                    async def cell() -> None:
+                        built, _ws, session = build(call_id=None, state=self.hold("birth_cord_3weeks"))
+
+                        async def fake_pass(snapshot: CallState, spoken: str, pcm_bytes: bytes) -> live.Turn:
+                            return turn_with(snapshot, TurnOutcome.CLEAR, spoken)._replace(pcm_len=len(pcm_bytes))
+
+                        built._evaluate_turn_task = fake_pass  # type: ignore[method-assign]
+                        await built.on_text({"text": "नहीं"})  # her typed answer rides to Gemini as text
+                        tapped = len(self.heard(session))
+                        await built._answer_tools([live.types.FunctionCall(id="t1", name="next_question", args={})])
+                        self.assertEqual(len([kind for kind in session.kinds() if kind == "tool"]), 1,
+                                         "the FunctionResponse itself is what Gemini speaks the line from")
+                        self.assertEqual(self.heard(session)[tapped:], [],
+                                         "a tool turn never pre-empts its own FunctionResponse with a cue")
+
+                        if delay < self.CUE:
+                            await asyncio.sleep(delay)
+                            await built.on_message(self.audio())
+                        await asyncio.sleep(self.CUE + 0.02)
+                        built._cancel("fallback")
+                        heard = self.heard(session)[tapped:]
+                        if delay < self.CUE:
+                            self.assertEqual(heard, [],
+                                             f"audio in {round(delay * 1000)} ms spoke the turn: no cue is owed ({heard})")
+                        else:
+                            self.assertEqual(len(heard), 1,
+                                             f"a tool turn silent past `_CUE_DELAY` owes exactly one rescue cue ({heard})")
+                    return cell
+
+                for delay in (self.FAST, self.SLOW):
+                    labels.append({"entry": "tool_call_response", "latency_ms": round(delay * 1000)})
+                    cells.append(tool_cell(delay))
+                self.replay(labels, await self.run_cells(cells))
+
+        asyncio.run(body())
+
+    def test_self_interrupted_prompting_epoch_recues_once_without_stranding_in_dead_air(self):
+        # Call #21's staging wire: `sc.interrupted` arrived with NO caller turn open and NO `turn_complete` after
+        # it, because Gemini cancelled her own prompt echo. Nothing re-owed the step and the caller sat in dead air.
+        # The recovery is bounded: one cue per epoch, however many interrupts Gemini repeats in that epoch.
+        async def body() -> None:
+            with unittest.mock.patch.object(live, "_CUE_DELAY", self.CUE):
+                labels: list[dict[str, Any]] = []
+                cells = []
+
+                def epoch_cell(wire: str, entry: str) -> Any:
+                    async def cell() -> None:
+                        built, ws, session = build(call_id=None, state=self.hold())
+                        await built._publish_and_cue("speak", immediate=False)
+                        built._cancel("fallback")
+
+                        if entry == "quick_reply":
+                            await built.on_quick_reply({"value": "clear", "step": built.state.step_token})
+                        else:
+                            await built._publish_and_cue("speak", immediate=False)
+                        self.assertIs(built.turn_phase, live.TurnPhase.PROMPTING)
+                        sent, before, epoch = len(self.heard(session)), len(ws.of("bot_turn_complete")), built.epoch
+                        kind, cue = built.cue_kind, live.speak_cue(PACK, built.state, built.cue_kind)
+
+                        await built.on_message(self.interrupted())  # Gemini cancels her own prompt echo
+                        if wire == "interrupted_then_complete":
+                            await built.on_message(self.complete())
+                        await asyncio.sleep(0.01)
+
+                        self.assertEqual(self.heard(session)[sent:], [cue],
+                                         f"{wire}/{entry}: the aborted prompt owes ONE recovery cue, verbatim "
+                                         f"`speak_cue(PACK, state, {kind!r})`")
+                        # Her own echo dying is not the caller barging in: counting it inflates Call #32's
+                        # interruption numbers, and the event log must say what actually happened.
+                        self.assertEqual(built.telemetry["interruptions"], 0,
+                                         f"{wire}/{entry}: a self-interrupt is not a caller barge-in")
+                        self.assertEqual([e["type"] for e in (p["last_event"] for p in ws.of("telemetry"))
+                                          if e["type"] in ("barge_in", "prompt_recue")],
+                                         ["prompt_recue"],
+                                         f"{wire}/{entry}: the recovery is logged as `prompt_recue`, never `barge_in`")
+                        self.assertIs(built.turn_phase, live.TurnPhase.PROMPTING,
+                                      "the step is still owed: the mic stays shut until her echo starts")
+                        self.assertEqual(ws.of("bot_turn_complete")[before:], [],
+                                         "an aborted prompt is not a completed bot turn, even in wire order 2")
+                        self.assertEqual(built.epoch, epoch, "the recovery never bumps the epoch it rescues")
+
+                        await built.on_message(self.interrupted())  # Gemini repeats itself in the same epoch
+                        await asyncio.sleep(0.01)
+                        self.assertEqual(self.heard(session)[sent:], [cue],
+                                         "a second interrupt in the same epoch must not speak a second cue")
+
+                        # The next epoch resets the guard, so the new step can also rescue itself once.
+                        if entry == "quick_reply":
+                            await built.on_quick_reply({"value": "clear", "step": built.state.step_token})
+                        else:
+                            await built._publish_and_cue("speak", immediate=False)
+                        self.assertNotEqual(built.epoch, epoch, "the next step is a new epoch")
+                        sent2, epoch2 = len(self.heard(session)), built.epoch
+                        await built.on_message(self.interrupted())
+                        await asyncio.sleep(0.01)
+                        self.assertEqual(len(self.heard(session)), sent2 + 1,
+                                         "a new epoch earns its own single recovery")
+                        await built.on_message(self.interrupted())
+                        await asyncio.sleep(0.01)
+                        self.assertEqual(len(self.heard(session)), sent2 + 1,
+                                         "and only one, however many interrupts follow it")
+                        self.assertEqual(built.epoch, epoch2)
+
+                    return cell
+
+                for wire in ("interrupted_only", "interrupted_then_complete"):
+                    for entry in ("quick_reply", "_publish_and_cue"):
+                        labels.append({"wire": wire, "entry": entry})
+                        cells.append(epoch_cell(wire, entry))
+                self.replay(labels, await self.run_cells(cells))
+
+                # Control: an interrupt over a live caller turn is a barge-in, never a recovery.
+                labels, cells = [], []
+
+                def control_cell(control: str) -> Any:
+                    async def cell() -> None:
+                        built, _ws, session = build(call_id=None, state=self.hold())
+                        await built._publish_and_cue("speak", immediate=False)
+                        built._cancel("fallback")
+                        if control == "listening_phase":
+                            built.turn_phase = live.TurnPhase.LISTENING
+                        elif control == "caller_pcm":
+                            built.turn_phase = live.TurnPhase.LISTENING  # the caller owns the turn: the mic is open
+                            await built.on_audio({"data": pcm(), "sample_rate": 16000})
+                            self.assertTrue(built.pcm, "the caller's audio is banked")
+                            built.turn_phase = live.TurnPhase.PROMPTING
+                        elif control == "caller_text":
+                            await built._hear("user", "हाँ, मेरी बुआ को कैंसर हुआ था")
+                            self.assertTrue(built.text, "the caller's words are banked")
+                            built.turn_phase = live.TurnPhase.PROMPTING
+                        elif control == "bundled_input_transcription":
+                            # Soft speech sends no banked PCM, so `pcm` is empty and only the transcription in this
+                            # very message proves the caller spoke: the interrupt is hers, not her own echo's.
+                            self.assertEqual((built.pcm, built.text), (b"", ""), "nothing is banked yet")
+                            self.assertIs(built.turn_phase, live.TurnPhase.PROMPTING)
+                        else:
+                            built.awaiting_abort_end = True
+                        sent = len(self.heard(session))
+                        if control == "bundled_input_transcription":
+                            await built.on_message(live.types.LiveServerMessage(server_content=live.types.LiveServerContent(
+                                interrupted=True, input_transcription=live.types.Transcription(text="हाँ"))))
+                        else:
+                            await built.on_message(self.interrupted())
+                        await asyncio.sleep(0.01)
+                        self.assertEqual(len(self.heard(session)), sent,
+                                         f"{control}: she interrupted over an open caller turn, so no cue is owed")
+                        if control == "bundled_input_transcription":
+                            self.assertEqual(built.text, "हाँ",
+                                             "the caller's words in the same message are banked, never overwritten")
+
+                    return cell
+
+                for control in ("listening_phase", "caller_pcm", "caller_text", "bundled_input_transcription",
+                                "awaiting_abort_end"):
+                    labels.append({"control": control})
+                    cells.append(control_cell(control))
+                self.replay(labels, await self.run_cells(cells))
+
+        asyncio.run(body())
+
+    def test_ws_resume_preserves_telemetry_across_dropped_and_lingering_sockets_and_redacts_multi_topic_late_stt(self):
+        # Call #32: the browser rejoined mid-call and every counter the call had earned came back as 0 / [] / 0, so
+        # the finished call read like a call that never happened. The caller's audio was still on disk; only the
+        # numbers were lost. And the trailing chunk for a second topic came back as patient-safe words.
+        EARNED = {"user_turns": 3, "bot_turns": 4, "tool_calls": 3, "audio_chunks_in": 42, "audio_chunks_out": 18,
+                  "turn_latencies_ms": [680, 920], "avg_latency_ms": 800, "max_latency_ms": 920, "errors": ["minor"]}
+
+        async def body() -> None:
+            async def resume_case(lingering: bool) -> None:
+                label = "lingering half-open socket" if lingering else "dropped socket in grace"
+
+                class DummyAsyncCtx:
+                    async def __aenter__(self) -> Any:
+                        return FakeSession()
+
+                    async def __aexit__(self, *_exc: Any) -> bool:
+                        return False
+
+                async def fake_open(_client: Any, _pack: Any, _handle: str) -> Any:
+                    return DummyAsyncCtx(), FakeSession()
+
+                ws1, ws2 = FakeWebSocket(), FakeWebSocket()
+                first = second = None
+                created: list[int] = []
+                original = live._open_live
+                live._open_live = fake_open  # type: ignore[assignment]
+                try:
+                    with unittest.mock.patch.dict(live.os.environ, {"GEMINI_API_KEY": "k"}):
+                        first = asyncio.ensure_future(live.handle_live_ws(ws1, pack=PACK, caller_name="Tester"))
+                        self.assertTrue(await ResumeSessionTests.wait_until(lambda: bool(ws1.of("session_started"))),
+                                        f"{label}: the call must start")
+                        started = ws1.of("session_started")[0]
+                        cid, share_token = int(started["call_id"]), str(started["share_token"])
+                        created.append(cid)
+                        self.assertTrue(await ResumeSessionTests.wait_until(lambda: cid in live._ACTIVE_CALLS))
+
+                        active = live._ACTIVE_CALLS[cid]
+                        active.telemetry |= dict(EARNED)  # a real call's worth of turns, audio and latency
+                        active.state.cursor = active.state.cursor.model_copy(update={"qid": "ill_fasting"})
+                        await active._persist(active.state)
+                        await active._db(db.update_call_telemetry, dict(active.telemetry))
+
+                        # The socket dies without any `hangup` message: the line dropped, the browser did not leave.
+                        await ws1.queue.put(None)
+                        await asyncio.wait_for(first, timeout=3)
+                        first = None
+                        if lingering:
+                            # A session whose socket died unnoticed is still holding the call in the registry.
+                            if (pending := live._PENDING_FINALIZE.pop(cid, None)) is not None:
+                                pending.cancel()
+                                await asyncio.gather(pending, return_exceptions=True)
+                            live._ACTIVE_CALLS[cid] = live.LiveCallSession(
+                                ws=FakeWebSocket(), pack=PACK, session=FakeSession(), call_id=cid,
+                                state=active.state.model_copy(deep=True), recorder=FakeRecorder())
+                        else:
+                            self.assertIn(cid, live._PENDING_FINALIZE, f"{label}: the call waits in resume grace")
+
+                        second = asyncio.ensure_future(live.handle_live_ws(ws2, pack=PACK, resume_token=share_token))
+                        self.assertTrue(await ResumeSessionTests.wait_until(
+                            lambda: bool(ws2.of("session_started")) and bool(ws2.of("question_state"))),
+                            f"{label}: the rejoin must be handed its call and its next step")
+                        self.assertNotIn(cid, live._PENDING_FINALIZE, f"{label}: resuming cancels the grace timer")
+                        resumed = live._ACTIVE_CALLS[cid]
+                        self.assertEqual(ws2.of("session_started")[0]["call_id"], cid, "no second call row is minted")
+
+                        tele = resumed.telemetry
+                        self.assertEqual({k: tele[k] for k in ("user_turns", "bot_turns", "tool_calls",
+                                                               "audio_chunks_in", "audio_chunks_out")},
+                                         {k: EARNED[k] for k in ("user_turns", "bot_turns", "tool_calls",
+                                                                 "audio_chunks_in", "audio_chunks_out")},
+                                         f"{label}: a resume restores the counters the call already earned")
+                        self.assertEqual(tele["turn_latencies_ms"], [680, 920], f"{label}: the latency samples survive")
+                        self.assertEqual(tele["avg_latency_ms"], 800, f"{label}: and so does their average")
+                        self.assertEqual(tele["max_latency_ms"], 920, f"{label}: and the worst turn")
+                        self.assertEqual(tele["errors"], ["minor"], f"{label}: an error is never quietly forgiven")
+
+                        await resumed.on_message(self.audio())  # one more bot chunk, now on the new socket
+                        self.assertEqual(resumed.telemetry["audio_chunks_out"], 19,
+                                         f"{label}: new audio counts on top of the restored total")
+
+                        await ws2.push({"type": "hangup"})
+                        await asyncio.wait_for(second, timeout=3)
+                        second = None
+                        row = await asyncio.to_thread(db.get_call, cid)
+                        self.assertEqual(row["telemetry"]["audio_chunks_out"], 19,
+                                         f"{label}: the resumed total is what the finished call reports")
+                        self.assertEqual(row["telemetry"]["turn_latencies_ms"], [680, 920],
+                                         f"{label}: and the latency samples are on the finished row")
+                finally:
+                    live._open_live = original  # type: ignore[assignment]
+                    for task in (first, second):
+                        if task is not None and not task.done():
+                            task.cancel()
+                            await asyncio.gather(task, return_exceptions=True)
+                    for call_id in created:
+                        with db._LOCK:
+                            db.conn.execute("DELETE FROM calls WHERE id = ?", (call_id,))
+                            db.conn.commit()
+                        live._ACTIVE_CALLS.pop(call_id, None)
+                        if (pending := live._PENDING_FINALIZE.pop(call_id, None)) is not None:
+                            pending.cancel()
+                            await asyncio.gather(pending, return_exceptions=True)
+
+            async def late_stt_case() -> None:
+                built, ws, _session = build(call_id=None, state=self.hold())
+                utterance = "हां, बुआ को कैंसर हुआ था और मीरा को जन्म पर पीलिया हुआ था"
+
+                async def fake_pass(snapshot: CallState, spoken: str, pcm_bytes: bytes) -> live.Turn:
+                    intent = live.decisions.TurnIntent(
+                        command=TurnCommand(outcome=TurnOutcome.CONCERN, stated={"birth_jaundice": TurnOutcome.CONCERN},
+                                            followup_answered=True, utterance=utterance, redacted=False),
+                        needs_profile_extraction=False, diagnostics={})
+                    return live.Turn(TurnTests.result(answers(danger_now=0.01)), intent, None,
+                                     snapshot.model_copy(deep=True), spoken, len(pcm_bytes), None)
+
+                built._evaluate_turn_task = fake_pass  # type: ignore[method-assign]
+                await built.on_audio({"data": pcm(), "sample_rate": 16000})
+                await built._hear("user", utterance)
+                await built._next_question()
+                fam = built.state.answers["fam_cancer"]
+                self.assertIs(fam.state, AnswerStatus.CONCERN, "the family cancer question is answered")
+                self.assertIn(utterance, fam.verbatim_text, "and the doctor's record keeps her exact words")
+                self.assertEqual(fam.patient_safe_text, "", "a multi-topic sentence is nobody's patient-safe quote")
+                self.assertEqual(built.last_reduced[0], "fam_cancer", "the turn is booked against the question it answered")
+
+                await built._hear("user", "नीली लाइट में")  # the trailing `late_stt` chunk, about the jaundice topic
+                self.assertEqual(ws.of("telemetry")[-1]["last_event"]["type"], "late_stt",
+                                 "the trailing chunk is booked as late STT against the question it answered")
+                fam = built.state.answers["fam_cancer"]
+                self.assertIn("नीली लाइट में", fam.verbatim_text,
+                              "the late chunk must reach the doctor's record")
+                self.assertEqual(fam.patient_safe_text, "",
+                                 "but a chunk about another topic may never reach the mother's PDF as a quote")
+
+            with self.subTest(case="A: dropped socket finalized into grace before rejoin"):
+                await resume_case(lingering=False)
+            with self.subTest(case="B: lingering half-open socket still in _ACTIVE_CALLS on rejoin"):
+                await resume_case(lingering=True)
+
+            # --- Subtest C: a late chunk about another topic may never become patient-safe words -----------------
+            with self.subTest(case="C: multi-topic late_stt hygiene on fam_cancer"):
+                await late_stt_case()
+
+        asyncio.run(body())
+
+
 if __name__ == "__main__":
     unittest.main()
