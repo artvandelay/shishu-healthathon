@@ -38,7 +38,7 @@ Three invariants hold for every pack:
 | `pack.py` | `load_pack`, `list_pack_ids`, and the startup schema validator |
 | `engine.py` | Pure FormBharo reducer: eligibility, skip matrix, roster, re-ask policy |
 | `audio.py` | 16 kHz PCM resampling and resumable stereo 16 kHz call WAV recorder |
-| `decisions.py` | Two-tier `gemini-decision-1` turn classifier (full 4-group + slim Group-A fallback) |
+| `decisions.py` | Gate-first + hedged `gemini-decision-1` turn classifier (`mentions_other_topic` gate -> conditional `stated`/router fan-out) |
 | `extractor.py` | Schema-validated profile extractor (typed slot values and roster out of free speech) |
 | `live.py` | Gemini Live AAD voice puppet, `TurnPhase` + `epoch` state machine, `?resume=<share_token>` continuity |
 | `reports.py` | `project_summary` plus the Jinja → WeasyPrint Patient PDF and clinician markdown |

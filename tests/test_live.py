@@ -224,6 +224,16 @@ class ConfigTests(unittest.TestCase):
         self.assertIsNone(live.build_live_config(PACK).session_resumption.handle)
         self.assertEqual(live.build_live_config(PACK, "abc").session_resumption.handle, "abc")
 
+    def test_live_config_bounds_context_window_sliding_target(self):
+        # A 56-question call re-sends a `SYSTEM CUE` prompt on every step. With no trigger and no target the KV
+        # cache grows all call, so the late turns pay for every cue ever spoken in latency and drift. The window
+        # must be bounded: compress once the context passes 4096 tokens, keeping 2048 tokens of it.
+        cfg = live.build_live_config(PACK)
+        self.assertEqual(cfg.context_window_compression.trigger_tokens, 4096,
+                         "an unbounded trigger never compresses, which is the bug")
+        self.assertEqual(cfg.context_window_compression.sliding_window.target_tokens, 2048,
+                         "the sliding window needs an explicit retained-token target")
+
     def test_geminis_automatic_activity_detection_carries_the_packs_vad_defaults(self):
         aad = live.build_live_config(PACK).realtime_input_config.automatic_activity_detection
         self.assertIs(aad.disabled, False, "the model, not a local ONNX graph, owns the turn boundary")
@@ -1436,28 +1446,32 @@ class DecisionRecoveryTests(unittest.TestCase):
             self.assertEqual(built.consecutive_tool_errors, 0, "a turn that lands clears the strikes")
             self.assertNotEqual(built.state.cursor.qid, self.QID, "and the call really moved on")
 
-            # The slim retry request must ride along with every pass: it is what makes the second attempt fit
-            # inside the same 8.0 s budget as the first.
+            # The gate slice is the whole turn on an ordinary "नहीं": the 56 stated heads and the 53-option router
+            # are what blew the 4.0 s deadline on Call #15, so nothing may ask for them again.
             fresh, _fresh_ws, _fresh_session = build(call_id=None)
             fresh.state.cursor = fresh.state.cursor.model_copy(update={"qid": "birth_cord_3weeks"})
             seen: list[dict[str, Any]] = []
             original = live.decisions.evaluate_turn
 
-            async def spy(request: dict[str, Any], **kwargs: Any) -> live.decisions.DecisionCallResult:
-                seen.append({"request": request, "fallback": kwargs.get("fallback_request")})
-                return TurnTests.result(answers(danger_now=0.01))._replace(used_slim_fallback=True)
+            async def spy(request: dict[str, Any], **_kwargs: Any) -> live.decisions.DecisionCallResult:
+                seen.append(request)
+                return TurnTests.result(answers(danger_now=0.01, mentions_other_topic=0.02,
+                                                active_outcome={"clear": 0.95, "other": 0.05}))
 
             live.decisions.evaluate_turn = spy  # type: ignore[assignment]
             try:
                 turn = await fresh._evaluate_turn_task(fresh.state, "नहीं", b"")
             finally:
                 live.decisions.evaluate_turn = original  # type: ignore[assignment]
-            self.assertIsNotNone(seen[0]["fallback"], "the pass carries a fallback request, not only the full one")
-            self.assertLessEqual(len(seen[0]["fallback"]["questions"]), 10,
-                                 "the fallback is the slim request: Group A plus the semantic flags")
-            self.assertGreater(len(seen[0]["request"]["questions"]), len(seen[0]["fallback"]["questions"]))
+            self.assertEqual(len(seen), 1, "an ordinary नहीं is answered by the gate slice and nothing else")
+            self.assertLessEqual(len(seen[0]["questions"]), 10,
+                                 "the gate is the slim slice: Group A plus the semantic flags")
+            self.assertIn("mentions_other_topic", seen[0]["questions"], "and the one trigger it may fan out on")
+            self.assertEqual([k for k in seen[0]["questions"] if k.startswith("stated_")], [],
+                             "no stated_* revision head is paid for on a turn nobody routed")
             meta = fresh._turn_meta(turn, fresh.state.step_token, TurnCommand(), None)
-            self.assertIs(meta["slim"], True, "and a slim answer says so in the turn's meta row")
+            self.assertNotIn("slim", meta, "one clean gate pass is not a degraded retry")
+            self.assertNotIn("fanout", meta, "and no fan-out ran")
 
         asyncio.run(body())
 
@@ -1498,6 +1512,118 @@ class DecisionRecoveryTests(unittest.TestCase):
             self.assertIs(built.state.close_reason, CloseReason.TECHNICAL_FAILURE)
             self.assertEqual(built.consecutive_tool_errors, 1, "no strike budget is spent waiting for a key")
             self.assertIs(self.tool_body(session, "t1")["stop"], True)
+
+        asyncio.run(body())
+
+
+class GateFirstFanoutTests(unittest.TestCase):
+    """Pass 1 is the narrow gate slice; the 56-head fan-out is bought only by a caller who raised another topic."""
+
+    QID = "body_private_parts"  # a routable gate with 50+ open questions behind it
+
+    @staticmethod
+    def state() -> CallState:
+        """A call held on `body_private_parts` with the roster resolved, so no extractor call is owed."""
+        state = live.engine.new_state(PACK)
+        state.cursor = CursorStep(qid=GateFirstFanoutTests.QID)
+        state.roster = [RosterItem(id="item_1", age_years=2.0, age_label="2 साल", tag="male")]
+        state.roster_stated = True
+        return state
+
+    def test_an_ordinary_no_buys_one_gate_pass_and_no_fanout(self):
+        # Call #15: an ordinary "नहीं" paid for 56 stated heads and a 53-option router and missed its deadline.
+        async def body() -> None:
+            fresh, _ws, _session = build(call_id=None, state=self.state())
+            seen: list[dict[str, Any]] = []
+            original = live.decisions.evaluate_turn
+
+            async def spy(request: dict[str, Any], **_kwargs: Any) -> live.decisions.DecisionCallResult:
+                seen.append(request)
+                return TurnTests.result(answers(
+                    danger_now=0.01, mentions_other_topic=0.02,
+                    active_outcome={"clear": 0.95, "other": 0.05}))
+
+            live.decisions.evaluate_turn = spy  # type: ignore[assignment]
+            try:
+                turn = await fresh._evaluate_turn_task(fresh.state, "नहीं", b"")
+            finally:
+                live.decisions.evaluate_turn = original  # type: ignore[assignment]
+            self.assertEqual(len(seen), 1, "an ordinary नहीं stops after the gate")
+            self.assertLessEqual(len(seen[0]["questions"]), 10)
+            self.assertIn("mentions_other_topic", seen[0]["questions"], "the gate needs the one trigger it may fan out on")
+            self.assertEqual([k for k in seen[0]["questions"] if k.startswith("stated_")], [])
+            self.assertNotIn("next_qid", seen[0]["questions"])
+            self.assertIs(turn.result.ok, True)
+            self.assertIs(turn.result.fanout_ran, False)
+            meta = fresh._turn_meta(turn, fresh.state.step_token, TurnCommand(), None)
+            self.assertNotIn("fanout", meta, "no fan-out means no fanout stamp")
+
+        asyncio.run(body())
+
+    def test_a_hot_mentions_other_topic_buys_the_stated_and_router_pass(self):
+        # "नहीं, पर चाची को भी कैंसर हुआ था" revises another question and asks to jump: only Pass 2 can carry that.
+        async def body() -> None:
+            fresh, _ws, _session = build(call_id=None, state=self.state())
+            seen: list[dict[str, Any]] = []
+            original = live.decisions.evaluate_turn
+
+            async def spy(request: dict[str, Any], **_kwargs: Any) -> live.decisions.DecisionCallResult:
+                seen.append(request)
+                if len(seen) == 1:
+                    return TurnTests.result(answers(
+                        danger_now=0.02, mentions_other_topic=0.92,
+                        active_outcome={"clear": 0.93, "other": 0.07}))
+                return TurnTests.result(answers(
+                    stated_fam_cancer={"concern": 0.95, "unmentioned": 0.05}, jump_topic=0.85,
+                    next_qid={"fam_cancer": 0.91, "other": 0.09}))
+
+            live.decisions.evaluate_turn = spy  # type: ignore[assignment]
+            try:
+                turn = await fresh._evaluate_turn_task(fresh.state, "नहीं, पर चाची को भी कैंसर हुआ था", b"")
+            finally:
+                live.decisions.evaluate_turn = original  # type: ignore[assignment]
+            self.assertEqual(len(seen), 2, "a hot gate buys exactly one more pass")
+            self.assertIn("stated_fam_cancer", seen[1]["questions"], "Pass 2 carries the out-of-turn revision heads")
+            self.assertNotIn("stated_fam_cancer", seen[0]["questions"], "and Pass 1 never paid for them")
+            self.assertIn("next_qid", seen[1]["questions"], "and the router that lets the call jump to it")
+            self.assertNotIn("active_outcome", seen[1]["questions"], "Pass 2 never re-asks what Pass 1 already read")
+            self.assertIs(turn.result.ok, True)
+            self.assertIs(turn.result.fanout_ran, True)
+            self.assertIs(turn.intent.command.stated["fam_cancer"], TurnOutcome.CONCERN, "and the revision lands")
+            self.assertIs(turn.intent.command.jump_topic, True)
+            meta = fresh._turn_meta(turn, fresh.state.step_token, turn.intent.command, None)
+            self.assertIs(meta["fanout"], True, "the meta row says the turn paid for a fan-out")
+            self.assertNotIn("slim", meta, "a clean fan-out is not a degraded turn")
+
+        asyncio.run(body())
+
+    def test_a_dead_fanout_keeps_the_gate_read_and_stamps_both_flags(self):
+        # A fan-out that dies must never throw away the gate's complete, valid read: the caller still gets an answer.
+        async def body() -> None:
+            fresh, _ws, _session = build(call_id=None, state=self.state())
+            seen: list[dict[str, Any]] = []
+            original = live.decisions.evaluate_turn
+
+            async def spy(request: dict[str, Any], **_kwargs: Any) -> live.decisions.DecisionCallResult:
+                seen.append(request)
+                if len(seen) == 1:
+                    return TurnTests.result(answers(
+                        danger_now=0.02, mentions_other_topic=0.92,
+                        active_outcome={"clear": 0.93, "other": 0.07}))
+                return live.decisions.DecisionCallResult(False, "timeout", 1, 900, 100, 58, None, {})
+
+            live.decisions.evaluate_turn = spy  # type: ignore[assignment]
+            try:
+                turn = await fresh._evaluate_turn_task(fresh.state, "नहीं, पर चाची को भी कैंसर हुआ था", b"")
+            finally:
+                live.decisions.evaluate_turn = original  # type: ignore[assignment]
+            self.assertEqual(len(seen), 2)
+            self.assertIs(turn.result.ok, True, "the caller is not re-asked because Pass 2 timed out")
+            self.assertIs(turn.result.fanout_ran, True)
+            self.assertIs(turn.result.used_slim_fallback, True)
+            meta = fresh._turn_meta(turn, fresh.state.step_token, TurnCommand(), None)
+            self.assertIs(meta["fanout"], True)
+            self.assertIs(meta["slim"], True)
 
         asyncio.run(body())
 

@@ -113,6 +113,23 @@ heads:
       false_description: >-
         Answers only active_question, gives a bare yes/no or a symptom detail that belongs to active_question
         or its follow-up, asks for clarification, or makes unrelated small talk.
+  mentions_other_topic:
+    type: noul
+    instructions: >-
+      Does caller_utterance explicitly state, volunteer, retract/correct, or ask the meaning of ANY separate
+      health symptom, medical condition, test, or earlier screening question OUTSIDE of active_question and
+      parent_question (such as mentioning another relative's or child's illness in the same breath, taking back
+      or revising an answer to an earlier question, or asking what an earlier medical term like thalassemia
+      means while on a different active_question)?
+    criteria:
+      true_description: >-
+        Explicitly states, volunteers, retracts/corrects, or asks the meaning of a separate health symptom,
+        condition, medical test, or earlier question that is NOT what active_question or parent_question asked
+        about.
+      false_description: >-
+        Only answers active_question or its follow-up (including bare हाँ/नहीं/पता नहीं, details belonging to
+        active_question, asking what active_question itself means, or updating demographic profile like name,
+        marital status, or children's ages).
   stated_template:
     type: choice
     instructions: >-
@@ -163,6 +180,10 @@ thresholds:
   redact_patient_note_min_yes: 0.5606
   detail_present_min_yes: 0.5262
   jump_topic_min_yes: 0.7
+  # Empirically fitted on the real `gemini-decision-1` 50-case bench (DEV + HOLDOUT): 0.7467-0.9760 on all
+  # 5 positive multi-topic cases (5/5 recall), under 0.50 on 34/36 calm single-topic turns (0.06-0.44).
+  # The old 0.35 only bought fan-out on near-miss quiet turns, so the floor is the empirical midpoint.
+  mentions_other_topic_min_yes: 0.5
   outcome_min_confidence: 0.5196
   outcome_min_margin: 0.2297
   choice_min_confidence: 0.52

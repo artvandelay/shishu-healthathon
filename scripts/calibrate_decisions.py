@@ -35,7 +35,10 @@ OUTCOMES = frozenset({"clear", "concern", "unknown", "clarify", "retract"})
 STATED = frozenset({"concern", "clear", "clarify"})
 # (false-negative, false-positive) cost: missing an emergency is the most expensive mistake this pack can make.
 NOUL_COST = {"danger_now": (1000.0, 100.0), "caller_stop": (100.0, 1000.0), "mentions_profile": (10.0, 15.0),
-             "redact_patient_note": (200.0, 20.0), "detail_present": (10.0, 15.0)}
+             "redact_patient_note": (200.0, 20.0), "detail_present": (10.0, 15.0),
+             # The fan-out gate: a missed other-topic strands a volunteered complaint for the whole call, while a
+             # false yes only buys one extra routing call, so this is deliberately the loosest gate in the pack.
+             "mentions_other_topic": (200.0, 10.0)}
 CHOICE_COST = {"active_outcome": (12.0, 10.0, "outcome"), "stated_": (50.0, 10.0, "stated"),
                "item_ref": (100.0, 10.0, "item_ref")}
 FITTED = tuple(f"{k}_min_yes" for k in NOUL_COST) + tuple(
@@ -44,7 +47,7 @@ GRID = tuple(round(i / 40, 4) for i in range(1, 40))          # yes-gates 0.025 
 CONFIDENCE = tuple(round(i / 20, 4) for i in range(9, 17))    # 0.45 .. 0.80
 MARGIN = tuple(round(i / 20, 4) for i in range(7))            # 0.00 .. 0.30
 RATES = ("emergency_recall", "caller_stop_recall", "outcome_accuracy", "detail_accuracy", "profile_accuracy",
-         "redact_accuracy", "item_ref_accuracy", "stated_accuracy")
+         "redact_accuracy", "item_ref_accuracy", "stated_accuracy", "other_topic_gate_recall")
 COUNTS = ("calm_false_stop", "stated_false_writes")
 Row, Ev = Mapping[str, Any], dict[str, Any]
 
@@ -117,19 +120,70 @@ async def score_cases(pack: PackConfig, cases: Sequence[Row]) -> list[dict[str, 
     return rows
 
 
-def dry_check(pack: PackConfig, cases: Sequence[Row]) -> int:
-    """Every case must build to its expected cursor and a full request, with zero network calls."""
+_ROSTER_PROFILE_KEYS = frozenset({"children", "roster"})
+
+
+def _profile_keys(pack: PackConfig) -> set[str]:
+    """Every profile field this pack can actually store: declared slots plus the fields its rules read."""
+    return (set(pack.profile_slots) | {q.saves_to_profile for q in pack.questions if q.saves_to_profile}
+            | {str(rule["field"]) for rule in pack.rules.values() if rule.get("field")})
+
+
+def _owns(pack: PackConfig, case: Row) -> bool:
+    """Whether a calibration case was authored against this pack's form and profile fields.
+
+    `decision_calibration_cases.json` is one shared file with no pack column, so ownership is read off the two
+    things a case cannot fake: the question it lands on and the profile fields it fills. Replaying another pack's
+    cases proves nothing about this pack, and a green tick from them would be worse than a loud skip.
+    """
+    setup = case.get("cursor_setup") or {}
+    if str(setup.get("active_qid") or "") not in pack.by_id:
+        return False
+    return set(setup.get("profile") or {}) - _ROSTER_PROFILE_KEYS <= _profile_keys(pack)
+
+
+def _form_probe(pack: PackConfig) -> list[str]:
+    """Every question in the pack must build a real request at its own cursor, with no case file involved.
+
+    A pack with no cases of its own still has a Decision contract to hold: the gate head must travel on every step
+    that could route, and the full request must carry its Group A heads wherever it lands.
+    """
     bad = []
-    for case in cases:
+    for spec in pack.questions:
+        state = engine.new_state(pack)
+        state.cursor = state.cursor.model_copy(update={"qid": spec.id})
+        try:
+            request = decisions.build_turn_request(pack, state, utterance_text="नहीं")
+            assert request["model"] and request["input"], "empty request"
+            assert "active_outcome" in request["questions"], "missing active_outcome head"
+            routable = engine.step_kind(pack, state) != "profile"
+            assert not routable or "mentions_other_topic" in request["questions"], "gate head missing on a routing step"
+        except Exception as exc:  # noqa: BLE001 - every failure is data for this report
+            bad.append(f"{spec.id}: {type(exc).__name__}: {exc}")
+    print(f"{len(pack.questions) - len(bad)}/{len(pack.questions)} form questions built successfully (0 network calls)")
+    return bad
+
+
+def dry_check(pack: PackConfig, cases: Sequence[Row]) -> int:
+    """Every case this pack owns must build to its expected cursor and a full request, with zero network calls."""
+    missing = [] if "mentions_other_topic" in (pack.decisions.get("heads") or {}) else [
+        "decisions.yaml has no mentions_other_topic head, so every turn would short-circuit the fan-out"]
+    owned = [case for case in cases if _owns(pack, case)]
+    bad = []
+    for case in owned:
         try:
             request = _request(pack, case)
             assert request["model"] and request["input"], "empty request"
             assert "active_outcome" in request["questions"], "missing active_outcome head"
         except Exception as exc:  # noqa: BLE001 - every failure is data for this report
             bad.append(f"{case['id']}: {type(exc).__name__}: {exc}")
-    print(f"{len(cases) - len(bad)}/{len(cases)} cursor_setup cases built successfully (0 network calls)")
-    print("".join(f"\n  FAIL {line}" for line in bad))
-    return 0 if not bad else 1
+    print(f"{len(owned) - len(bad)}/{len(owned)} cursor_setup cases built successfully (0 network calls)")
+    if skipped := len(cases) - len(owned):
+        print(f"{skipped} case(s) in {CASES.name} belong to another pack's form and were not replayed here")
+    if not owned:
+        bad += _form_probe(pack)
+    print("".join(f"\n  FAIL {line}" for line in bad + missing))
+    return 0 if not bad and not missing else 1
 
 
 def _prob(row: Row, key: str) -> float | None:
@@ -182,11 +236,22 @@ def _plateau(scored: list[tuple[float, float, float]]) -> tuple[float, float]:
 
 def _sweep(pairs: list[tuple[float, bool]], fn_cost: float, fp_cost: float) -> float:
     """The yes-gate on GRID that minimises weighted misses, ties broken by the widest gap."""
-    return _plateau([(sum(fn_cost for p, gold in pairs if gold and p < cut)
-                      + sum(fp_cost for p, gold in pairs if not gold and p >= cut),
-                      -min(cut - max([p for p, _ in pairs if p < cut], default=0.0),
-                           min([p for p, _ in pairs if p >= cut], default=1.0) - cut), cut)
-                     for cut in GRID])[1]
+    scored = [
+        (
+            sum(fn_cost for p, gold in pairs if gold and p < cut)
+            + sum(fp_cost for p, gold in pairs if not gold and p >= cut),
+            min(
+                cut - max([p for p, _ in pairs if p < cut], default=0.0),
+                min([p for p, _ in pairs if p >= cut], default=1.0) - cut,
+            ),
+            cut,
+        )
+        for cut in GRID
+    ]
+    best = min(sc[0] for sc in scored)
+    best_gap = max(sc[1] for sc in scored if sc[0] == best)
+    tied = [sc[2] for sc in scored if sc[0] == best and round(sc[1], 6) == round(best_gap, 6)]
+    return round(tied[len(tied) // 2], 4)
 
 
 def _fit(items: list[tuple[str, float, float, str]], fp_cost: float, fn_cost: float) -> tuple[float, float]:
@@ -207,6 +272,16 @@ def fit_thresholds(pack: PackConfig, ev: list[Ev]) -> dict[str, float]:
         gold = "mentions_diagnosis" if key == "redact_patient_note" else key
         # A profile mention only exists off the calm path, and a follow-up step answers its own detail.
         scope = {"mentions_profile": calm, "detail_present": detail}.get(key, ev)
+        if key == "mentions_other_topic":
+            # The gate's own gold is "this turn also touched another topic": any named side question or any
+            # volunteered future question. Only calm turns matter, because a hot turn short-circuits anyway.
+            # A raw cache recorded before this head existed has no pair to fit on, and an absent gate must keep the
+            # pack's authored floor rather than be silently swept down to the grid's lowest cut.
+            pairs = [(p, bool(e["row"]["gold"].get("side_qid") or e["row"]["gold"].get("future_qid")))
+                     for e in calm if (p := _prob(e["row"], key)) is not None]
+            if pairs:
+                t[f"{key}_min_yes"] = _sweep(pairs, fn_cost, fp_cost)
+            continue
         t[f"{key}_min_yes"] = _sweep([(p, bool(e["row"]["gold"].get(gold)))
                                       for e in scope if (p := _prob(e["row"], key)) is not None], fn_cost, fp_cost)
     for family, (fp_cost, fn_cost, name) in CHOICE_COST.items():
@@ -236,6 +311,9 @@ def _checks(e: Ev, intent: Any) -> Iterable[tuple[str, bool]]:
         yield "item_ref_accuracy", command.item_ref == want["item_ref"]
     if side:
         yield "stated_accuracy", command.stated.get(side) == want.get(f"stated_{side}", "")
+    if (gold.get("side_qid") or gold.get("future_qid")) and "mentions_other_topic" in raw:
+        # Pass 2 only ever runs because this gate fired, so its recall is the ceiling on every routing gain.
+        yield "other_topic_gate_recall", bool(intent.diagnostics.get("heads", {}).get("mentions_other_topic"))
     yield "stated_false_writes", bool(command.stated) and not side
 
 

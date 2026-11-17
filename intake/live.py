@@ -53,7 +53,10 @@ def build_live_config(pack: PackConfig, resume_handle: str = "") -> types.LiveCo
                 disabled=False, prefix_padding_ms=int(vad.get("prefix_padding_ms") or 100), silence_duration_ms=int(vad.get("silence_duration_ms") or 1000),
                 start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH if loud_s else types.StartSensitivity.START_SENSITIVITY_LOW,
                 end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH if loud_e else types.EndSensitivity.END_SENSITIVITY_LOW)),
-        context_window_compression=types.ContextWindowCompressionConfig(sliding_window=types.SlidingWindow()),
+        context_window_compression=types.ContextWindowCompressionConfig(
+            trigger_tokens=4096,
+            sliding_window=types.SlidingWindow(target_tokens=2048),
+        ),
         session_resumption=types.SessionResumptionConfig(handle=resume_handle or None), thinking_config=types.ThinkingConfig(thinking_level="MINIMAL"))
 def _reask_say(pack: PackConfig, state: CallState) -> str:
     """The line to repeat after a glitched pass: the pack's own reask for this question, else the question itself."""
@@ -193,11 +196,11 @@ class LiveCallSession:
         self.stt_ready.clear()
     async def _evaluate_turn_task(self, snapshot: CallState, spoken: str, pcm: bytes) -> Turn:
         wav = audio.pcm16_to_wav_bytes(pcm, _IN) if pcm else None
-        primary_req = decisions.build_turn_request(self.pack, snapshot, utterance_text=spoken, audio_wav_bytes=wav)
-        # Attempt 2 swaps in the slim request: 56 stated heads and a 53-option router are what blew the 4.0 s
-        # deadline on Call #15, and a re-ask that never lands is no better than a hangup.
-        slim_req = decisions.build_turn_request(self.pack, snapshot, utterance_text=spoken, audio_wav_bytes=wav, slim=True)
-        jobs: list[Awaitable[Any]] = [decisions.evaluate_turn(primary_req, fallback_request=slim_req)]
+        # Gate first, fan out second: an ordinary "नहीं" is answered by the ~1.2k-token narrow slice, and only a
+        # caller who really raised another topic buys the 56 stated heads and the 53-option router that blew the
+        # 4.0 s deadline on Call #15. `evaluate_turn_gated` still calls `evaluate_turn`, so the retry/budget logic
+        # inside every pass is unchanged.
+        jobs: list[Awaitable[Any]] = [decisions.evaluate_turn_gated(self.pack, snapshot, utterance_text=spoken, audio_wav_bytes=wav)]
         if self._wants_extractor(snapshot): jobs.append(extractor.extract_profile_entities(self.pack, snapshot, utterance_text=spoken, audio_wav_bytes=wav))
         done = await asyncio.gather(*jobs)
         return Turn(done[0], decisions.interpret_turn_decision(self.pack, snapshot, done[0].raw_answers, utterance_text=spoken),
@@ -318,7 +321,8 @@ class LiveCallSession:
                 "flags": d.get("semantic_flags") or None, "decision_ms": turn.result.decision_ms, "audio_ms": round(turn.pcm_len / 32), "tokens": turn.result.total_input_tokens,
                 "value": json.dumps(val, ensure_ascii=False) if isinstance(val, (dict, list)) else (str(val) if val is not None else ""),
                 "attempts": turn.result.attempts if turn.result.attempts > 1 else None, "stt": turn.spoken[:120],
-                "ext_ms": ext.extractor_ms if ext is not None else None, "slim": True if turn.result.used_slim_fallback else None}
+                "ext_ms": ext.extractor_ms if ext is not None else None, "slim": True if turn.result.used_slim_fallback else None,
+                "fanout": True if turn.result.fanout_ran else None}
         return {k: v for k, v in meta.items() if v is not None and v != "" and v != {} and v != []}
     def _register_failure(self, turn: Turn | None, step_in: str, error_reason: str) -> bool:
         """Count one dead pass and answer whether it is terminal: no key at all, or the strike budget spent."""
