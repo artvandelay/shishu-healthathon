@@ -2058,6 +2058,124 @@ class Wave2CueLifecycleAndResumeTelemetryTests(unittest.TestCase):
 
         asyncio.run(body())
 
+    def test_ws_resume_deduplicates_re_spoken_assistant_question_in_transcript_and_flushes_telemetry_before_pop(self):
+        # Call #47 and #57: the socket dropped while `ill_fasting` was on the wire. The browser rejoined, SHISHU
+        # asked the same question again, and SQLite was handed the resumed line on top of the one the dropped
+        # session had already stored — `T[66]` read `"S S"`, the same 102-character question twice (205 chars).
+        # The resumed session knew nothing of the question it was re-speaking, and the latency sample the dropped
+        # session earned in `_bot_audio` but never `_persist`ed came back as a shorter list than the row's.
+        def fasting() -> CallState:
+            """Two children on record, so `ill_fasting` speaks its 102-character multi-child line."""
+            st = self.hold("ill_fasting")
+            st.roster = [RosterItem(id="item_1", age_years=6.0, age_label="6 साल", tag="male", name="अमन"),
+                         RosterItem(id="item_2", age_years=2.0, age_label="2 साल", tag="female", name="मीरा")]
+            st.profile["num_children"] = 2
+            return st
+
+        async def body() -> None:
+            async def resume_case(pre_drop: str, label: str) -> None:
+                class DummyAsyncCtx:
+                    async def __aenter__(self) -> Any:
+                        return FakeSession()
+
+                    async def __aexit__(self, *_exc: Any) -> bool:
+                        return False
+
+                async def fake_open(_client: Any, _pack: Any, _handle: str) -> Any:
+                    return DummyAsyncCtx(), FakeSession()
+
+                ws1, ws2 = FakeWebSocket(), FakeWebSocket()
+                first = second = None
+                created: list[int] = []
+                original = live._open_live
+                live._open_live = fake_open  # type: ignore[assignment]
+                try:
+                    with unittest.mock.patch.dict(live.os.environ, {"GEMINI_API_KEY": "k"}):
+                        first = asyncio.ensure_future(live.handle_live_ws(ws1, pack=PACK, caller_name="Tester"))
+                        self.assertTrue(await ResumeSessionTests.wait_until(lambda: bool(ws1.of("session_started"))),
+                                        f"{label}: the call must start")
+                        started = ws1.of("session_started")[0]
+                        cid, share_token = int(started["call_id"]), str(started["share_token"])
+                        created.append(cid)
+                        self.assertTrue(await ResumeSessionTests.wait_until(lambda: cid in live._ACTIVE_CALLS))
+
+                        active = live._ACTIVE_CALLS[cid]
+                        await active._persist(fasting())
+                        say = live.engine.say_text(PACK, active.state)
+                        self.assertEqual(len(say), 102, "the multi-child `ill_fasting` line this replay is pinned to")
+
+                        # The dropped session's own turn: the caption Gemini got as far as sending, then the first
+                        # bot audio chunk. `_bot_audio` appends its latency sample and NOBODY persists afterwards —
+                        # exactly the Call #47 wire order right before the socket dies.
+                        await active._hear("assistant", pre_drop)
+                        active.telemetry["turn_latencies_ms"] = [777]
+                        await active._persist(active.state)
+                        active.speech_ended_ts = time.time() - 0.4
+                        await active._bot_audio(b"\x00\x00" * 240, 24000)
+                        sample = active.telemetry["turn_latencies_ms"][-1]
+                        self.assertEqual(active.telemetry["turn_latencies_ms"], [777, sample],
+                                         f"{label}: the fresh sample is in memory only")
+                        row_now = await asyncio.to_thread(db.get_call, cid)
+                        self.assertEqual(row_now["telemetry"].get("turn_latencies_ms"), [777],
+                                         f"{label}: and the row still holds the pre-drop sample alone (never persisted)")
+
+                        await ws1.queue.put(None)  # the line drops: no `hangup` is ever sent
+                        await asyncio.wait_for(first, timeout=3)
+                        first = None
+
+                        second = asyncio.ensure_future(live.handle_live_ws(ws2, pack=PACK, resume_token=share_token))
+                        self.assertTrue(await ResumeSessionTests.wait_until(
+                            lambda: bool(ws2.of("session_started")) and bool(ws2.of("question_state"))),
+                            f"{label}: the rejoin must be handed its call and its next step")
+                        resumed = live._ACTIVE_CALLS[cid]
+                        self.assertIn(sample, resumed.telemetry["turn_latencies_ms"],
+                                      f"{label}: the sample the dropped session never persisted still reaches the "
+                                      f"resumed session ({resumed.telemetry['turn_latencies_ms']})")
+
+                        # Gemini re-speaks the SAME step through the new socket, transcription chunk by chunk.
+                        await resumed.on_message(OutputTranscriptionTests.said("क्या खाना"))
+                        await resumed.on_message(OutputTranscriptionTests.audio())
+                        await resumed.on_message(OutputTranscriptionTests.said(
+                            "छूटने या हल्की बीमारी में आपका कोई भी बच्चा बहुत सुस्त पड़ जाता है या बार-बार उल्टी करता है?"))
+                        await resumed.on_message(OutputTranscriptionTests.complete())
+
+                        await ws2.push({"type": "hangup"})
+                        await asyncio.wait_for(second, timeout=3)
+                        second = None
+                        row = await asyncio.to_thread(db.get_call, cid)
+                        said_rows = [t for t in row["transcript"]
+                                     if t.get("role") == "assistant" and (t.get("qid") or "") == "ill_fasting"]
+                        self.assertEqual(len(said_rows), 1,
+                                         f"{label}: one question is one transcript turn, never two "
+                                         f"({[(t['text'], len(t['text'])) for t in row['transcript']]})")
+                        self.assertEqual(said_rows[0]["text"], say,
+                                         f"{label}: the re-spoken line is deduplicated, never `S S` "
+                                         f"(got {len(said_rows[0]['text'])} chars: {said_rows[0]['text']!r})")
+                        self.assertIn(sample, row["telemetry"].get("turn_latencies_ms") or [],
+                                      f"{label}: and the dropped session's sample is on the finished row "
+                                      f"({row['telemetry'].get('turn_latencies_ms')})")
+                finally:
+                    live._open_live = original  # type: ignore[assignment]
+                    for task in (first, second):
+                        if task is not None and not task.done():
+                            task.cancel()
+                            await asyncio.gather(task, return_exceptions=True)
+                    for call_id in created:
+                        with db._LOCK:
+                            db.conn.execute("DELETE FROM calls WHERE id = ?", (call_id,))
+                            db.conn.commit()
+                        live._ACTIVE_CALLS.pop(call_id, None)
+                        if (pending := live._PENDING_FINALIZE.pop(call_id, None)) is not None:
+                            pending.cancel()
+                            await asyncio.gather(pending, return_exceptions=True)
+
+            with self.subTest(case="A: partial pre-drop caption, the resumed tail completes it"):
+                await resume_case("क्या खाना छूटने या", "A")
+            with self.subTest(case="B: complete pre-drop caption, the resume repeats it whole"):
+                await resume_case(live.engine.say_text(PACK, fasting()), "B")
+
+        asyncio.run(body())
+
     def test_self_interrupted_prompting_epoch_recues_once_without_stranding_in_dead_air(self):
         # Call #21's staging wire: `sc.interrupted` arrived with NO caller turn open and NO `turn_complete` after
         # it, because Gemini cancelled her own prompt echo. Nothing re-owed the step and the caller sat in dead air.

@@ -20,9 +20,6 @@ _CORE = ("danger_now", "caller_stop", "mentions_profile", "redact_patient_note")
 _NOUL = (*_CORE, "detail_present", "jump_topic")
 _STATED_KINDS = (QuestionKind.GATE, QuestionKind.ROUTING_GATE)
 _OUTCOMES, _STATED_OUTCOMES = frozenset({"clear", "concern", "unknown", "clarify", "retract"}), frozenset({"concern", "clear", "clarify"})
-# Out-of-turn CONCERN on an already-CLEAR question is a revision of a closed answer, not a first read: it must clear
-# this floor on top of the pack's stated gate (the bench's 0.82 audio-only flip must never be enough).
-_REVISED_CONCERN_MIN = 0.92
 _SAFETY, _RETRY_CODES = frozenset({"safety", "prohibited_content", "blocklist", "image_safety", "content_blocked"}), {408, 429}
 
 class DecisionCallResult(NamedTuple):
@@ -220,13 +217,12 @@ def _rank(a: Mapping[str, Any], key: str) -> list[tuple[str, float]]:
     raw = a[key].get("probabilities") if isinstance(a.get(key), Mapping) else None
     return sorted(((str(k), p) for k, v in (raw or {}).items() if (p := _num(v)) is not None), key=lambda x: (-x[1], x[0]))
 def _pick(a: Mapping[str, Any], key: str, t: Mapping[str, float], pair: str = "", catchall: str = "other",
-          allowed: frozenset[str] | None = None, floors: Mapping[str, float] | None = None) -> str:
-    """The head's winner, accepted only when it clears its own confidence gate (optionally raised per option) and margin."""
+          allowed: frozenset[str] | None = None) -> str:
+    """The head's winner, accepted only when it clears its own confidence gate and margin."""
     ranked = _rank(a, key)
     if not ranked or ranked[0][0] == catchall or (allowed and ranked[0][0] not in allowed): return ""
     (top, best), sec, name = ranked[0], (ranked[1][1] if len(ranked) > 1 else 0.0), pair or key
-    need = max(t[f"{name}_min_confidence"], (floors or {}).get(top, 0.0))
-    return top if best >= need and best - sec >= t[f"{name}_min_margin"] else ""
+    return top if best >= t[f"{name}_min_confidence"] and best - sec >= t[f"{name}_min_margin"] else ""
 def _quiet_split(a: Mapping[str, Any], t: Mapping[str, float]) -> str:
     """`clear`/`unknown` are one quiet answer split across two labels, so neither can win alone: their PAIR is the read."""
     ranked = _rank(a, "active_outcome")
@@ -247,19 +243,24 @@ def _active_value(spec: QuestionSpec | None, a: Mapping[str, Any], t: Mapping[st
     if spec.kind is QuestionKind.SINGLE_CHOICE: return _pick(a, "choice_value", t, "choice", allowed=frozenset(spec.options)) or None
     if spec.kind is QuestionKind.MULTI_CHOICE: return [k for k in spec.options if _yes(a, f"opt_{k}", t["multi_choice_min_yes"])] or None
     return _score_value(a, t) if spec.kind is QuestionKind.SCORE else None
-def _stated_writes(pack: PackConfig, state: CallState, a: Mapping[str, Any], t: Mapping[str, float]) -> dict[str, TurnOutcome]:
+def _stated_writes(pack: PackConfig, state: CallState, a: Mapping[str, Any], t: Mapping[str, float],
+                   *, active_outcome: TurnOutcome = TurnOutcome.NOT_ABOUT_ACTIVE) -> dict[str, TurnOutcome]:
     """Out-of-turn revisions of the other routable questions, each gated by its own stated thresholds."""
     out: dict[str, TurnOutcome] = {}
     for key in (k for k in a if str(k).startswith("stated_")):
         spec = pack.by_id.get(str(key).removeprefix("stated_"))
         if spec is None or not spec.is_routable or spec.kind not in _STATED_KINDS or spec.id == state.cursor.qid: continue
-        # An out-of-turn concern on a question she already denied needs near-certain evidence: the pack's own stated
-        # gate passes 0.80, which a noisy audio turn can clear while it is really talking about another symptom.
-        # Revising UNKNOWN, retracting CONCERN to CLEAR, and asking what a term means keep the normal stated gate.
-        prior = state.answers.get(spec.id)
-        raised = {"concern": _REVISED_CONCERN_MIN} if prior is not None and prior.state is AnswerStatus.CLEAR else None
-        if w := _pick(a, key, t, "stated", "unmentioned", _STATED_OUTCOMES, raised): out[spec.id] = TurnOutcome(w)
-    return out
+        # Revising CLEAR, retracting CONCERN to CLEAR, and asking what a term means all ride the pack's stated gate.
+        if w := _pick(a, key, t, "stated", "unmentioned", _STATED_OUTCOMES): out[spec.id] = TurnOutcome(w)
+    if active_outcome is not TurnOutcome.CLARIFY: return out
+    # One active clarify means one question is being asked about, and every `stated_` head reads that same
+    # clarification back as its own answer: Call #47/#57 scattered `clarify` onto unasked future questions
+    # (`prior is None`), settled CLEAR/CONCERN answers, and two-or-more heads at once whenever ASR garbled
+    # "थैलेसीमिया". A clarify can only name the question she JUST LEFT — the one that came back UNKNOWN.
+    fired = [q for q, o in out.items() if o is TurnOutcome.CLARIFY]
+    named = next((q for q in fired if q == state.last_answered_qid
+                  or ((r := state.answers.get(q)) is not None and r.state is AnswerStatus.UNKNOWN)), "") if len(fired) == 1 else ""
+    return {q: o for q, o in out.items() if o is not TurnOutcome.CLARIFY or q == named}
 def _next_qid_probs(a: Mapping[str, Any]) -> dict[str, float]:
     """The router head's candidate questions, minus the catchall and any non-finite probability."""
     head = a.get("next_qid")
@@ -274,7 +275,7 @@ def interpret_turn_decision(pack: PackConfig, state: CallState, raw_answers: Map
     val = None if closing or kind != "main" else _active_value(spec, a, t)
     outcome = TurnOutcome.ANSWERED if val is not None else TurnOutcome.NOT_ABOUT_ACTIVE
     if not closing and val is None and (w := _pick(a, "active_outcome", t, "outcome", allowed=_OUTCOMES) or _quiet_split(a, t)): outcome = TurnOutcome(w)
-    stated = {} if closing else _stated_writes(pack, state, a, t)
+    stated = {} if closing else _stated_writes(pack, state, a, t, active_outcome=outcome)
     next_probs = _next_qid_probs(a)
     flags = tuple(f for f, fs in pack.semantic_flags.items() if f not in state.semantic_flags and _yes(a, f"flag_{f}", fs.get("min_yes", 0.8)))
     cmd = TurnCommand(

@@ -272,8 +272,13 @@ def _read_answer(spec: QuestionSpec, cmd: TurnCommand) -> tuple[AnswerStatus, An
     lvl, floor = (int(val.get("level", round(score))) if isinstance(val, dict) else int(round(score))), spec.concern_if.get("min_score")
     return (AnswerStatus.CONCERN if floor is not None and score >= float(floor) else AnswerStatus.ANSWERED), round(score, 2), spec.score_rubric[max(0, min(len(spec.score_rubric) - 1, lvl))]
 def _redact_note(cmd: TurnCommand, qid: str, *, stated: bool = False) -> bool:
-    """A sentence that reported anything besides the active question is nobody's patient-safe quote."""
-    return cmd.redacted or stated or any(t != qid for t in cmd.stated)
+    """A sentence that reported anything besides the active question is nobody's patient-safe quote.
+
+    `jump_topic` belongs here for the same reason a revision does: the router only fires when the turn held more
+    than what was asked, so Call #57's "हां, बुआ को कैंसर हुआ था और पहले नीली लाइट वाले सवाल में गलती हो गई थी" must
+    stay in the doctor's verbatim without being quoted onto the mother's PDF.
+    """
+    return cmd.redacted or stated or cmd.jump_topic or any(t != qid for t in cmd.stated)
 def _note_concern(st: CallState, spec: QuestionSpec, cmd: TurnCommand, rec: AnswerRecord, utt: str, *, stated: bool = False) -> dict[str, Any]:
     extra: dict[str, Any] = {}
     red = _redact_note(cmd, spec.id, stated=stated)
@@ -302,6 +307,13 @@ def _apply_stated(pack: PackConfig, st: CallState, cmd: TurnCommand, utt: str, *
         reopened = (out is TurnOutcome.CONCERN and roster_resolved(pack, st)
                     and any("group_no_concern" in (pack.rules.get(r) or {}) for r in spec.skip_if))
         if existing is not None and existing.state is _NA and not reopened: continue
+        # One active clarify means one question is being asked about. A `stated_` clarify may only name the
+        # question she JUST LEFT and came back UNKNOWN on, and only when exactly one head fired it: an unasked
+        # future question (`existing is None`), a settled CLEAR/CONCERN answer, or a scatter of two-or-more
+        # clarify heads (Call #47/#57's ASR garble of "थैलेसीमिया") names nobody and must never move the call.
+        if out is TurnOutcome.CLARIFY and cmd.outcome is TurnOutcome.CLARIFY:
+            if sum(o is TurnOutcome.CLARIFY for o in cmd.stated.values()) != 1: continue
+            if target != st.last_answered_qid and not (existing is not None and existing.state is AnswerStatus.UNKNOWN): continue
         if out is TurnOutcome.CLARIFY:
             st.answers.pop(target, None)
             _resync(pack, st)

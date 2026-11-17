@@ -787,7 +787,8 @@ async def handle_live_ws(ws: WebSocket, *, pack: PackConfig, caller_name: str = 
                 if old.recorder is not None: await _try_call(asyncio.to_thread, old.recorder.save)
             restored = saved_state.model_copy(deep=True)
             restored.phase, restored.close_reason = Phase.ASKING, None
-            await asyncio.to_thread(db.reopen_call, cid)
+            # The step this rejoin will re-speak is the one whose caption the dropped socket already wrote down.
+            await asyncio.to_thread(db.reopen_call, cid, restored.cursor.qid)
             # The row and the session that lost the call each hold part of what this call has already earned: take
             # the higher count, the longer latency list, and every error either of them saw (Call #32 lost all of it).
             row_tel, old_tel = row.get("telemetry") or {}, old.telemetry if old is not None else {}
@@ -821,18 +822,24 @@ async def handle_live_ws(ws: WebSocket, *, pack: PackConfig, caller_name: str = 
     finally:
         if ctx is not None: await _ignore(ctx.__aexit__(None, None, None))
         if live_sess is not None and cid is not None:
+            # A dropped socket is very likely to be resumed FROM THE ROW, so the numbers this session earned must be
+            # on that row before the call is let go. `_bot_audio` appends a latency sample and nothing persists after
+            # it, so flushing only on the way into grace raced the rejoin and lost the sample (Call #47). An evicted
+            # session is excluded: it must never overwrite the telemetry of the session that now owns the call.
+            dropped = (not live_sess.superseded and not live_sess.client_hung_up
+                       and live_sess.state.phase is Phase.ASKING and _RESUME_GRACE_SEC > 0)
+            if dropped: await live_sess._db(db.update_call_telemetry, dict(live_sess.telemetry))
             if _ACTIVE_CALLS.get(cid) is live_sess:
                 _ACTIVE_CALLS.pop(cid, None)
             if live_sess.superseded:
                 if live_sess.recorder is not None: await _try_call(asyncio.to_thread, live_sess.recorder.save)
-            elif not live_sess.client_hung_up and live_sess.state.phase is Phase.ASKING and _RESUME_GRACE_SEC > 0:
+            elif dropped:
                 # An unexpected socket death is a dropped line, never a hangup: hold the call, then resume or finalize.
                 if live_sess.recorder is not None:
                     saved = await _try_call(asyncio.to_thread, live_sess.recorder.save)
                     if saved and saved[0]:
                         # The frames so far must survive the gap: the resumed recorder appends to this same file.
                         await _try_call(asyncio.to_thread, functools.partial(db._write, cid, audio_path=saved[0], duration_sec=int(saved[1])))
-                await live_sess._db(db.update_call_telemetry, dict(live_sess.telemetry))
                 _schedule_delayed_finalize(cid, live_sess)
             else:
                 if await _try_call(live_sess.finalize, default=_BROKE) is _BROKE: await _reject(ws, "Could not finish the call")

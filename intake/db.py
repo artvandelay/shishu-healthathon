@@ -94,8 +94,20 @@ def save_report_text(call_id: int, summary_doctor: str = "", summary_patient: st
            patient_name=patient_name, roster_summary=roster_summary)
 def complete_call(call_id: int, duration_sec: int, audio_path: str = "") -> None:
     _write(call_id, status="completed", duration_sec=int(duration_sec), audio_path=audio_path, ended_at=time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()))
-def reopen_call(call_id: int) -> None:
-    """Put a completed call back in progress after the caller reconnects, keeping its audio path."""
+def reopen_call(call_id: int, active_qid: str = "") -> None:
+    """Put a completed call back in progress after the caller reconnects, keeping its audio path.
+
+    `active_qid` is the step the browser will be handed. A rejoin re-speaks that step's line, and the dropped
+    session had already appended its caption, so the assistant turn sitting on the row's tail for exactly this
+    question is the one the resume is about to say again: it is dropped here, in the same atomic write, so the
+    resumed caption extends one turn instead of doubling it (Call #57 `T[66]` read the 102-character question
+    twice, 205 characters).
+    """
+    if active_qid and (raw := _read(call_id, "transcript_json")) is not None:
+        turns = _json(raw, list)
+        if (turns and turns[-1].get("role") == "assistant" and (turns[-1].get("qid") or "") == active_qid):
+            _write(call_id, status="active", ended_at=None, transcript_json=json.dumps(turns[:-1], ensure_ascii=False))
+            return
     _write(call_id, status="active", ended_at=None)
 def create_bug_report(call_id: int = 0, reporter: str = "", category: str = "", note: str = "", call_elapsed_sec: int = 0,
                       extra_snapshot: dict | None = None, include_call_body: bool = False) -> dict:

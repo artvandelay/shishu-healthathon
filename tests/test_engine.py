@@ -762,6 +762,82 @@ class Wave1ReducerAndReportInvariantTests(unittest.TestCase):
         self.assertIs(out.answers["close_anything_else"].state, AnswerStatus.CLEAR,
                       "her own answer to the closing capture is still on the record")
 
+    def test_active_clarify_never_loses_cursor_to_stated_clarify_and_jump_topic_withholds_patient_safe(self):
+        # Call #47 & #57: one clarify turn carried `stated_` clarify revisions for two questions that had already
+        # been answered CLEAR. `_apply_stated` popped both answers and handed back the first as `clarify_qid`, so
+        # the call asked again about a question she had answered, and the answer she gave was erased from the record.
+        # --- Subtest A: the reducer's own guard, independent of whatever Decisions decides ------------------
+        two = self.past_bridge((AMAN, MEERA))
+        st = self.at(two, "preg_thalassemia")
+        st.answers["body_regression"] = AnswerRecord(state=AnswerStatus.CLEAR)
+        out = reduce_turn(self.shishu, st, TurnCommand(
+            outcome=TurnOutcome.CLARIFY,
+            stated={"body_regression": TurnOutcome.CLARIFY, "fam_lumps": TurnOutcome.CLARIFY},
+            utterance="थैलेसीमिया का मतलब क्या है?"))
+        rec = out.answers.get("body_regression")
+        self._assert_all({
+            "a clarify of the ACTIVE question never moves the cursor to a sibling": out.cursor.qid == "preg_thalassemia",
+            "and an already-answered CLEAR question is never popped back to unanswered":
+                rec is not None and rec.state is AnswerStatus.CLEAR,
+        }, f"cursor={out.cursor.qid} body_regression={rec and rec.state.value} "
+           f"answers={sorted(out.answers)}")
+
+        # --- Subtest B: a two-topic sentence is nobody's patient-safe quote, even with an empty `stated` ----
+        # Call #57 Step 5: `jump_topic` fired on a sentence that answered the active question AND corrected an
+        # earlier one. Decisions put both topics in `utterance` but filled no `stated_` head, so `_redact_note`
+        # saw `stated == {}` and let the whole sentence through as patient-safe words — onto the mother's PDF.
+        utt = "हां, बुआ को कैंसर हुआ था और पहले नीली लाइट वाले सवाल में गलती हो गई थी"
+        fam = reduce_turn(self.shishu, self.at(two, "fam_cancer"), TurnCommand(
+            outcome=TurnOutcome.CONCERN, followup_answered=True, jump_topic=True, stated={}, utterance=utt)).answers["fam_cancer"]
+        self._assert_all({
+            "the doctor's record keeps her exact words": utt in fam.verbatim_text,
+            "a mid-sentence topic change is never patient-safe": fam.patient_safe_text == "",
+        }, f"verbatim={fam.verbatim_text!r} patient_safe={fam.patient_safe_text!r}")
+
+        # --- Subtest C: the only clarify a clarify turn may hand the call is the question she just left -------
+        # A blanket "drop every stated clarify while clarifying" also drops the legitimate one: she said she did
+        # not know what thalassemia is (UNKNOWN), moved on, and asked what the term means. That ONE clarify names
+        # the question she just left; an unasked future question, a settled CLEAR/CONCERN answer, or two-or-more
+        # heads scatter-firing `clarify` at once (Call #47's ASR garble) name nobody and must never move the call.
+        def clarify_turn(**stated: TurnOutcome) -> CallState:
+            base = self.past_bridge((AMAN, MEERA))
+            base = self.at(base, "fam_related")
+            base.last_answered_qid = "preg_thalassemia"
+            base.answers["preg_thalassemia"] = AnswerRecord(state=AnswerStatus.UNKNOWN)
+            base.answers["body_regression"] = AnswerRecord(state=AnswerStatus.CLEAR)
+            base.answers["fam_lumps"] = AnswerRecord(state=AnswerStatus.CONCERN)
+            return reduce_turn(self.shishu, base, TurnCommand(
+                outcome=TurnOutcome.CLARIFY, stated=dict(stated), utterance="थैलेसीमिया का कतलब होता है?"))
+
+        kept = clarify_turn(preg_thalassemia=TurnOutcome.CLARIFY)
+        self._assert_all({
+            "the UNKNOWN question she just left may be asked again":
+                (kept.cursor.qid, kept.answers["preg_thalassemia"].state if kept.answers.get("preg_thalassemia") else None)
+                == ("preg_thalassemia", None),
+        }, f"cursor={kept.cursor.qid} preg_thalassemia={kept.answers.get('preg_thalassemia')}")
+
+        blocked = {
+            "an unasked future question (Call #47 `fam_bleeding`) never hijacks the cursor":
+                ({"fam_bleeding": TurnOutcome.CLARIFY}, {"fam_bleeding": None}),
+            "a settled CLEAR answer is never popped back to unanswered":
+                ({"body_regression": TurnOutcome.CLARIFY}, {"body_regression": AnswerStatus.CLEAR}),
+            "a settled CONCERN answer is never popped back to unanswered":
+                ({"fam_lumps": TurnOutcome.CLARIFY}, {"fam_lumps": AnswerStatus.CONCERN}),
+            "a scatter of clarify heads (Call #47/#57) names nobody":
+                ({"preg_thalassemia": TurnOutcome.CLARIFY, "fam_bleeding": TurnOutcome.CLARIFY,
+                  "fam_transfusion": TurnOutcome.CLARIFY},
+                 {"preg_thalassemia": AnswerStatus.UNKNOWN, "fam_bleeding": None, "fam_transfusion": None}),
+        }
+        for label, (stated, want) in blocked.items():
+            with self.subTest(subtest="C", invariant=label):
+                out_c = clarify_turn(**stated)
+                kept_states = {q: (r.state if (r := out_c.answers.get(q)) is not None else None) for q in stated}
+                self._assert_all({
+                    "the cursor stays on the question she was asked": out_c.cursor.qid == "fam_related",
+                    "and every sibling answer is exactly as it was": kept_states == want,
+                }, f"{label}: stated={ {k: v.value for k, v in stated.items()} } cursor={out_c.cursor.qid} "
+                   f"answers={ {k: (v.value if v else None) for k, v in kept_states.items()} }")
+
     @staticmethod
     def _leak_context(proj: reports.ProjectedReport, utterance: str, qids) -> str:
         """The patient-facing lines that quote the whole sentence onto every item it mentions."""

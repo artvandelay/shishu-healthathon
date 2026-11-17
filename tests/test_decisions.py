@@ -365,6 +365,148 @@ class InterpretTests(unittest.TestCase):
         self.assertEqual(intent.command.stated, {"body_blue": TurnOutcome.CONCERN})
 
 
+class Wave4StagingGapTests(unittest.TestCase):
+    """The three live-voice gaps Calls #47 and #57 exposed on deployed staging, as invariants.
+
+    1. a `stated_<qid>` head that reads `clarify` while the ACTIVE question is already being clarified is not a
+       revision of anything: it is the same clarification spilling onto every sibling question, and acting on it
+       moves the cursor off the question the caller actually asked about;
+    2. an out-of-turn CONCERN on a question already answered CLEAR must be read on the pack's own stated gate, not
+       on a second, undocumented 0.92 floor that even a 0.8559 / 0.7318-margin multimodal read cannot clear.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.shishu = load_pack("shishu-hi")
+
+    def two_children(self) -> CallState:
+        """Sunita's call: married, two children on record, so roster-scoped questions are all live."""
+        st = engine.new_state(self.shishu)
+        st.profile.update({"caller_name": "सुनीता", "marital_status": "married"})
+        st.roster = [RosterItem(id="item_1", age_years=6.0, age_label="6 साल", tag="male", name="अमन"),
+                     RosterItem(id="item_2", age_years=2.0, age_label="2 साल", tag="female", name="मीरा")]
+        st.roster_stated = True
+        for qid in ("intro_name", "intro_married", "intro_children", "intro_bridge"):
+            st.answers[qid] = AnswerRecord(state=AnswerStatus.CLEAR)
+        return st
+
+    def at(self, qid: str) -> CallState:
+        st = self.two_children()
+        st.cursor = CursorStep(qid=qid)
+        return st
+
+    def test_active_clarify_suppresses_spurious_stated_clarify_and_multimodal_revision_honors_pack_stated_gate(self):
+        # --- Subtest A: Call #57 `preg_thalassemia` replay ------------------------------------------------
+        # "थैलेसीमिया का मतलब क्या है?" is a clarify of the ACTIVE question. The same audio also won `clarify` on
+        # `stated_body_regression` (0.88) and `stated_fam_bleeding` (0.91) — questions she had already answered
+        # CLEAR — and `_apply_stated` popped both of those answers and moved the cursor onto one of them.
+        st = self.at("preg_thalassemia")
+        st.answers["body_regression"] = AnswerRecord(state=AnswerStatus.CLEAR)
+        st.answers["fam_bleeding"] = AnswerRecord(state=AnswerStatus.CLEAR)
+        intent = decisions.interpret_turn_decision(self.shishu, st, {
+            "active_outcome": choice(clarify=0.793, other=0.164, unknown=0.043),
+            "stated_body_regression": choice(clarify=0.88, unmentioned=0.10),
+            "stated_fam_bleeding": choice(clarify=0.91, unmentioned=0.06),
+            "stated_body_transfusion": choice(concern=0.93, unmentioned=0.04),
+        }, utterance_text="मतलब क्या है थैलेसीमिया")
+        observed_a = {
+            "the active question is the one being clarified": intent.command.outcome is TurnOutcome.CLARIFY,
+            "a stated clarify on an already-CLEAR question is spurious": "body_regression" not in intent.command.stated,
+            "and so is the sibling family question": "fam_bleeding" not in intent.command.stated,
+            "a real out-of-turn CONCERN still lands": intent.command.stated == {"body_transfusion": TurnOutcome.CONCERN},
+        }
+        for label, ok in observed_a.items():
+            with self.subTest(subtest="A", invariant=label):
+                self.assertTrue(ok, f"{label}: outcome={intent.command.outcome.value} "
+                                    f"stated={ {k: v.value for k, v in intent.command.stated.items()} } "
+                                    f"active_outcome={intent.diagnostics.get('top2')}")
+
+        # Control: with NO active clarify the same head is a genuine clarify, and must keep working.
+        control = self.at("body_transfusion")
+        control.answers["body_regression"] = AnswerRecord(state=AnswerStatus.CLEAR)
+        live_read = decisions.interpret_turn_decision(self.shishu, control, {
+            "active_outcome": choice(clear=0.92, other=0.05),
+            "stated_preg_thalassemia": choice(clarify=0.88, unmentioned=0.08),
+        }, utterance_text="नहीं, खून नहीं चढ़ाया। थैलेसीमिया का मतलब क्या है?")
+        with self.subTest(subtest="A control", invariant="a lone stated clarify still lands and still moves the call"):
+            self.assertEqual(live_read.command.stated, {"preg_thalassemia": TurnOutcome.CLARIFY},
+                             f"a clarify of another question is a real revision: "
+                             f"outcome={live_read.command.outcome.value} "
+                             f"stated={ {k: v.value for k, v in live_read.command.stated.items()} }")
+
+        # --- Subtest B: Call #57 `fam_cancer` multimodal `birth_jaundice` revision ------------------------
+        # The caller corrected herself out loud ("पहले नीली लाइट वाले सवाल में गलती हो गई थी"). The multimodal read
+        # came back concern=0.8559 on `stated_birth_jaundice` over clear=0.1241: past the pack's 0.80 gate and
+        # past its 0.35 margin by a mile, yet `_REVISED_CONCERN_MIN = 0.92` silently threw the correction away and
+        # `birth_jaundice` stayed CLEAR for the rest of the call.
+        correction = self.at("fam_cancer")
+        correction.answers["birth_jaundice"] = AnswerRecord(state=AnswerStatus.CLEAR)
+        heads = {"active_outcome": choice(concern=0.936, other=0.031), "detail_present": noul(0.55),
+                 "jump_topic": noul(0.78),
+                 "item_ref": choice(item_2=0.9975, other=0.0018, all=0.0004, item_1=0.0003)}
+        intent_b = decisions.interpret_turn_decision(self.shishu, correction, heads | {
+            "stated_birth_jaundice": choice(concern=0.8559, clear=0.1241, unmentioned=0.0173, clarify=0.0027)})
+        observed_b = {
+            "0.8559 over the pack's 0.80 gate revises CLEAR -> CONCERN":
+                intent_b.command.stated == {"birth_jaundice": TurnOutcome.CONCERN},
+            "no second, higher concern floor survives beside the pack's own gate":
+                not hasattr(decisions, "_REVISED_CONCERN_MIN"),
+        }
+        for label, ok in observed_b.items():
+            with self.subTest(subtest="B", invariant=label):
+                self.assertTrue(ok, f"{label}: stated={ {k: v.value for k, v in intent_b.command.stated.items()} } "
+                                    f"floor={getattr(decisions, '_REVISED_CONCERN_MIN', None)!r} "
+                                    f"stated_min_confidence={self.shishu.decisions['thresholds']['stated_min_confidence']}")
+
+        # ...and a sub-threshold read is still refused: the pack's gate is the only gate, not no gate at all.
+        weak = decisions.interpret_turn_decision(self.shishu, correction, heads | {
+            "stated_birth_jaundice": choice(concern=0.78, clear=0.12, unmentioned=0.08, clarify=0.02)})
+        with self.subTest(subtest="B control", invariant="a 0.78 concern is still under the pack's 0.80 stated gate"):
+            self.assertEqual(weak.command.stated, {},
+                             f"a sub-threshold revision is refused: "
+                             f"stated={ {k: v.value for k, v in weak.command.stated.items()} }")
+
+        # --- Subtest C: a clarify can only name the question she JUST LEFT ---------------------------------
+        # Suppressing every `clarify` under an active clarify is too blunt: `route_clarify_preg_thalassemia` is the
+        # legitimate shape — she said she did not know what thalassemia is (UNKNOWN), moved on to `fam_related`, and
+        # then asked what the term means. That ONE head is the question she just left, named again. Everything else
+        # is the ASR garble of Call #47/#57: an unasked future question (`prior is None`), a settled CLEAR/CONCERN
+        # answer she already closed, or two-or-more heads scatter-firing `clarify` at once with nobody named.
+        def clarify_read(**stated: float):
+            """One active clarify on `fam_related`, with `stated_` heads given as clarify-only distributions."""
+            base = self.at("fam_related")
+            base.last_answered_qid = "preg_thalassemia"
+            base.answers["preg_thalassemia"] = AnswerRecord(state=AnswerStatus.UNKNOWN)
+            base.answers["body_regression"] = AnswerRecord(state=AnswerStatus.CLEAR)
+            base.answers["fam_lumps"] = AnswerRecord(state=AnswerStatus.CONCERN)
+            return decisions.interpret_turn_decision(
+                self.shishu, base,
+                {"active_outcome": choice(clarify=0.929, other=0.048, unknown=0.013)}
+                | {f"stated_{q}": choice(clarify=p, unmentioned=round(1.0 - p, 4)) for q, p in stated.items()},
+                utterance_text="थैलेसीमिया का क्या मतलब होता है?")
+
+        legit = clarify_read(preg_thalassemia=0.911)
+        with self.subTest(subtest="C", invariant="the question she just left may still be named by one clarify head"):
+            self.assertEqual(legit.command.stated, {"preg_thalassemia": TurnOutcome.CLARIFY},
+                             f"a lone clarify on the UNKNOWN question she just left is a real request: "
+                             f"stated={ {k: v.value for k, v in legit.command.stated.items()} } "
+                             f"last_answered_qid=preq_thalassemia prior=unknown")
+
+        cases = {
+            "an unasked future question (prior is None) is never a clarify": {"fam_bleeding": 0.91},
+            "a settled CLEAR answer is never re-clarified": {"body_regression": 0.93},
+            "a settled CONCERN answer is never re-clarified": {"fam_lumps": 0.93},
+            "two-or-more clarify heads scatter-firing name nobody": {"preg_thalassemia": 0.911, "fam_bleeding": 0.90,
+                                                                    "fam_transfusion": 0.88},
+        }
+        for label, stated in cases.items():
+            with self.subTest(subtest="C", invariant=label):
+                intent_c = clarify_read(**stated)
+                self.assertEqual(intent_c.command.stated, {},
+                                 f"{label}: stated={ {k: v.value for k, v in intent_c.command.stated.items()} } "
+                                 f"heads={stated}")
+
+
 class ExtractorTests(unittest.TestCase):
     """Schema construction, strict validation, and failure mapping — no live client."""
 
