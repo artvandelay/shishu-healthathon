@@ -264,6 +264,25 @@ class LiveSocketTests(AppTestCase):
                 pass
             self.assertEqual(seen["clinic_code"], "opd_2")
 
+    def test_ws_live_forwards_resume_query_param(self):
+        # A dropped call is picked up again by opening the socket with `?resume=<share_token>`: the token
+        # must reach the server-side session intact, and a plain socket must say plainly that it resumes nothing.
+        self.sign_in()
+        seen = {}
+
+        async def capture(ws, **kwargs):
+            seen.clear()
+            seen.update(kwargs)
+
+        with mock.patch.object(live, "handle_live_ws", capture):
+            with self.client.websocket_connect("/ws/live?pack=shishu-hi&resume=tok123"):
+                pass
+            self.assertEqual(seen["resume_token"], "tok123")
+
+            with self.client.websocket_connect("/ws/live?pack=shishu-hi"):
+                pass
+            self.assertEqual(seen["resume_token"], "")
+
 
 if __name__ == "__main__":
     unittest.main()

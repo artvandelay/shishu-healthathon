@@ -258,6 +258,21 @@ class StorageTests(_TempDataDir):
         self.assertEqual(len(listed["snapshot"]["last_transcript"]), 1)
         self.assertEqual(db.get_call(call_id)["events"][-1]["type"], "bug_reported")
 
+    def test_reopen_call_marks_completed_call_active_and_clears_ended_at(self):
+        """A caller who comes back on the same call id must get a live call row, kept audio path and all."""
+        call_id = db.create_call(pack_id=_SHISHU)
+        db.complete_call(call_id, 12, "call_1.wav")
+        finished = db.get_call(call_id)
+        self.assertEqual(finished["status"], "completed")
+        self.assertIsNotNone(finished["ended_at"])
+
+        db.reopen_call(call_id)
+
+        row = db.get_call(call_id)
+        self.assertEqual(row["status"], "active")
+        self.assertIsNone(row["ended_at"])
+        self.assertEqual(row["audio_path"], "call_1.wav")
+
     def test_ready_pdf_ignores_a_truncated_file(self):
         call_id = db.create_call()
         path = reports.patient_pdf_path(call_id)

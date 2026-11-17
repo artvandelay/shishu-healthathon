@@ -416,6 +416,21 @@ class RealPackIntegrationTests(unittest.TestCase):
                 self.assertLess(len(bridge.say), 100)
                 self.assertLess(len(bridge.stem), 100)
 
+    def test_both_packs_define_transient_retry_speak_cue_and_protocol(self):
+        # A dropped line must be re-asked by the server with a spoken apology, not by a silent re-send of
+        # the same words, so every pack needs a retry cue and a turn-protocol line that names it.
+        for pack_id in ("shishu-hi", "fever-opd-hi"):
+            with self.subTest(pack=pack_id):
+                prompts = load_pack(pack_id).prompts
+                cues = prompts["speak_cues"]
+                self.assertIn("retry", cues)
+                retry = cues["retry"]
+                self.assertTrue(retry.startswith("SYSTEM CUE"), retry)
+                self.assertTrue(retry.rstrip().endswith("{prompt}"), retry)
+                self.assertIn("Do not call a tool.", retry)
+                self.assertIn("retry", prompts["system_prompt"])
+                self.assertIn("result is retry", prompts["system_prompt"])
+
     def test_extractor_prompt_handles_mid_call_twins_and_two_pairs_of_twins(self):
         # Bug (Call #11): mid-call "मेरे ट्विंस बच्चे हैं, मुझे लगता नहीं आप वो सुन पाए" returned null/null so the
         # missed twins never reached the roster, and "दो-दो के दो ट्विंस" (four children) was capped at three.

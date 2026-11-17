@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio, base64, inspect, json, logging, os, time
+import asyncio, base64, functools, inspect, json, logging, os, time
 from collections import deque
 from collections.abc import Awaitable, Callable
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -20,9 +21,24 @@ logger = logging.getLogger(__name__)
 _IN, _OUT, _TICK, _MUTE_SEC, _CUE_DELAY, _STT_WAIT, _MAX_RECONNECTS, _MAX_TURN = 16000, 24000, 0.5, 0.1, 2.2, 0.5, 5, 960_000
 _GRACE, _MODEL, _BROKE = 12.0, "gemini-3.1-flash-live-preview", object()
 _VOICE_RMS, _TAIL_CHUNKS, _SILENCE_100MS = 0.015, 8, b"\x00\x00" * 1600  # 100 ms digital silence keeps Gemini AAD warm in half-duplex
+_PROMPT_MUTE_MAX_SEC = 5.0  # the most a step may hold the mic shut waiting for audio that never comes
+_MAX_CONSECUTIVE_TOOL_ERRORS = 3  # a Decision pass that dies this many times in a row is a technical failure, not a glitch
 _COUNTERS = ("user_turns", "bot_turns", "tool_calls", "tool_errors", "audio_chunks_in", "audio_chunks_out", "interruptions", "reconnects")
+_RESUME_GRACE_SEC = 90.0  # how long a call whose socket died waits for the browser to rejoin before it is finalized
+_ACTIVE_CALLS: dict[int, "LiveCallSession"] = {}  # call id -> the session that currently owns it
+_PENDING_FINALIZE: dict[int, asyncio.Task] = {}  # call id -> the grace timer that will finalize it if nobody rejoins
 _NEXT_QUESTION = {"name": "next_question", "parameters": {"type": "OBJECT", "properties": {}}, "description":
                   "Call this on every caller utterance with no arguments to fetch the exact line to speak next. Never speak to the caller before calling next_question."}
+
+
+class TurnPhase(StrEnum):
+    """Where the server thinks the turn is, so one predicate can answer "may the mic be open?"."""
+    PROMPTING = "prompting"  # a step was just published; her echo owns the channel until audio starts
+    LISTENING = "listening"  # the caller owns the turn
+    DECIDING = "deciding"  # a Decision pass is in flight: neither her echo nor a new turn is wanted
+    CLOSING = "closing"  # the call is ending; only the closing line is owed
+
+
 def build_live_config(pack: PackConfig, resume_handle: str = "") -> types.LiveConnectConfig:
     lang, voice, vad = str(pack.meta.get("language_code") or "hi-IN"), str(pack.meta.get("gemini_voice") or "Kore"), pack.meta.get("vad") or {}
     loud_s, loud_e = str(vad.get("start_sensitivity") or "LOW").upper() != "LOW", str(vad.get("end_sensitivity") or "LOW").upper() != "LOW"
@@ -39,18 +55,26 @@ def build_live_config(pack: PackConfig, resume_handle: str = "") -> types.LiveCo
                 end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH if loud_e else types.EndSensitivity.END_SENSITIVITY_LOW)),
         context_window_compression=types.ContextWindowCompressionConfig(sliding_window=types.SlidingWindow()),
         session_resumption=types.SessionResumptionConfig(handle=resume_handle or None), thinking_config=types.ThinkingConfig(thinking_level="MINIMAL"))
+def _reask_say(pack: PackConfig, state: CallState) -> str:
+    """The line to repeat after a glitched pass: the pack's own reask for this question, else the question itself."""
+    if state.phase is Phase.ASKING and state.cursor.substep is SubStep.MAIN and not state.cursor.hold_slot:
+        spec = pack.by_id.get(state.cursor.qid)
+        if spec is not None and spec.reask:
+            return spec.reask
+    return engine.say_text(pack, state)
 def speak_cue(pack: PackConfig, state: CallState, kind: str = "speak") -> str:
     key = "closing" if state.phase is not Phase.ASKING else kind
-    return str((pack.prompts.get("speak_cues") or {}).get(key) or "{prompt}").replace("{prompt}", engine.say_text(pack, state))
+    prompt = _reask_say(pack, state) if key == "retry" else engine.say_text(pack, state)
+    return str((pack.prompts.get("speak_cues") or {}).get(key) or "{prompt}").replace("{prompt}", prompt)
 def tool_body(pack: PackConfig, state: CallState, *, clarify: bool = False) -> dict[str, Any]:
     spec, body = pack.by_id.get(state.cursor.qid), {"result": "ok", "say": engine.say_text(pack, state)}
     if state.phase is Phase.CLOSING: body["stop"] = True
     if clarify or (spec is not None and spec.shares_recorded_concerns): body["recorded_concerns"] = engine.recorded_concerns_summary(pack, state)
     return body | {"clarify": True} if clarify else body
-def question_state_payload(pack: PackConfig, state: CallState) -> dict[str, Any]:
+def question_state_payload(pack: PackConfig, state: CallState, epoch: int = 0) -> dict[str, Any]:
     spec, (is_yn, replies) = pack.by_id.get(state.cursor.qid), engine.quick_replies(pack, state)
     return {"type": "question_state", "step": state.step_token, "qid": state.cursor.qid, "group": spec.group if spec else "", "is_yes_no": is_yn,
-            "quick_replies": replies, "prompt_chars": len(engine.say_text(pack, state))}
+            "quick_replies": replies, "prompt_chars": len(engine.say_text(pack, state)), "epoch": int(epoch)}
 def _pcm_from_part(part: types.Part) -> tuple[bytes, int] | None:
     blob, mime = part.inline_data, str(getattr(part.inline_data, "mime_type", "") or "")
     pcm = audio.pcm_bytes(blob.data) if (blob is not None and blob.data is not None) else None
@@ -77,18 +101,21 @@ Reduced = tuple[str, SubStep, int, bool]  # (answered qid, substep, followup ind
 class LiveCallSession:
     def __init__(self, *, ws: WebSocket, pack: PackConfig, session: Any, call_id: int | None = None, state: CallState | None = None,
                  recorder: audio.CallAudioRecorder | None = None, connect: Callable[[str], Awaitable[Any]] | None = None,
-                 on_call_completed: Callable[[int], Awaitable[bool] | bool] | None = None) -> None:
+                 on_call_completed: Callable[[int], Awaitable[bool] | bool] | None = None, resumed: bool = False) -> None:
         timers = pack.meta.get("timers") or {}
         now = time.time()
         self.__dict__.update(
             ws=ws, pack=pack, session=session, call_id=call_id, state=state or engine.new_state(pack), recorder=recorder, connect=connect, on_call_completed=on_call_completed,
+            resumed=bool(resumed), client_hung_up=False, superseded=False,
             started_at=now, last_voice_ts=now, closing_at=0.0, playback_ends_at=0.0, speech_ended_ts=0.0, resume_handle="", reconnects=0,
             hard_limit_sec=float(timers.get("hard_limit_sec") or 1200.0), soft_limit_sec=float(timers.get("soft_limit_sec") or 1140.0),
             silence_close_sec=float(timers.get("silence_close_sec") or 30.0), check_in_sec=float(timers.get("check_in_sec") or 15.0),
             stop=asyncio.Event(), ws_lock=asyncio.Lock(), send_lock=asyncio.Lock(), resume_requested=False, reconnecting=False,
-            ending_sent=False, bot_started=False, discard_bot_turn=False, bot_text="", clarify_step=False, checked_in=False, seen=set(), cancelled=set(),
-            pcm=b"", text="", snapshot=None, preroll=deque(maxlen=4), tail_chunks=0, evaluating=False,
-            stt_ready=asyncio.Event(), tool_task=None, fallback=None, last_reduced=None)
+            ending_sent=False, bot_text="", clarify_step=False, checked_in=False, seen=set(), cancelled=set(),
+            pcm=b"", text="", snapshot=None, preroll=deque(maxlen=4), tail_chunks=0,
+            stt_ready=asyncio.Event(), tool_task=None, fallback=None, last_reduced=None,
+            epoch=0, turn_phase=TurnPhase.LISTENING, prompted_at=0.0, bot_generating=False, awaiting_abort_end=False,
+            closing_spoken=False, consecutive_tool_errors=0)
         self.last_turn_meta: dict[str, Any] = {}  # the meta row for the turn just reduced, waiting for its `tool_call` event
         self.telemetry: dict[str, Any] = dict.fromkeys(_COUNTERS, 0) | {
             "build": reports.build_info()["tag"], "model": str(pack.meta.get("gemini_model") or _MODEL), "voice": str(pack.meta.get("gemini_voice") or "Kore"),
@@ -113,12 +140,29 @@ class LiveCallSession:
         self.stop.set()
         return False
     def _cue_kind(self, clarify: bool = False) -> str: return "closing" if self.state.phase is not Phase.ASKING else ("clarify" if clarify else "speak")
+    def _enter_prompting(self) -> None:
+        """A new step is on the wire: bump the epoch, hold the mic, and forget the turn we just left."""
+        self.epoch += 1
+        self.turn_phase = TurnPhase.CLOSING if self.state.phase is not Phase.ASKING else TurnPhase.PROMPTING
+        self.prompted_at = time.time()
+        self.bot_generating = False
+        self.bot_text = ""
+    def _mic_muted(self, now: float) -> bool:
+        """The one answer to "could this frame be her own echo?": every reason to shut the mic lives here."""
+        if self.turn_phase in (TurnPhase.DECIDING, TurnPhase.CLOSING):
+            return True
+        if self.bot_generating or self.awaiting_abort_end or now < self.playback_ends_at:
+            return True
+        if self.turn_phase is TurnPhase.PROMPTING and (now - self.prompted_at) < _PROMPT_MUTE_MAX_SEC:
+            return True
+        return False
     async def _publish_and_cue(self, kind: str = "speak", *, immediate: bool = True) -> bool:
-        self.bot_text, self.clarify_step = "", kind == "clarify"
-        await self._send_json(question_state_payload(self.pack, self.state))
+        self._enter_prompting()
+        self.clarify_step = kind == "clarify"
+        await self._send_json(question_state_payload(self.pack, self.state, self.epoch))
         self._cancel("fallback")
         if immediate: return await self._speak(kind)
-        self.fallback = asyncio.ensure_future(self._cue_if_silent(self.state.step_token, kind))
+        self.fallback = asyncio.ensure_future(self._cue_if_silent(self.state.step_token, self.epoch, kind))
         self.fallback.add_done_callback(consume_task_error)
         return True
     async def _db(self, fn: Any, *args: Any) -> Any: return await _try_call(asyncio.to_thread, fn, self.call_id, *args) if self.call_id is not None else None
@@ -149,20 +193,24 @@ class LiveCallSession:
         self.stt_ready.clear()
     async def _evaluate_turn_task(self, snapshot: CallState, spoken: str, pcm: bytes) -> Turn:
         wav = audio.pcm16_to_wav_bytes(pcm, _IN) if pcm else None
-        jobs: list[Awaitable[Any]] = [decisions.evaluate_turn(decisions.build_turn_request(self.pack, snapshot, utterance_text=spoken, audio_wav_bytes=wav))]
+        primary_req = decisions.build_turn_request(self.pack, snapshot, utterance_text=spoken, audio_wav_bytes=wav)
+        # Attempt 2 swaps in the slim request: 56 stated heads and a 53-option router are what blew the 4.0 s
+        # deadline on Call #15, and a re-ask that never lands is no better than a hangup.
+        slim_req = decisions.build_turn_request(self.pack, snapshot, utterance_text=spoken, audio_wav_bytes=wav, slim=True)
+        jobs: list[Awaitable[Any]] = [decisions.evaluate_turn(primary_req, fallback_request=slim_req)]
         if self._wants_extractor(snapshot): jobs.append(extractor.extract_profile_entities(self.pack, snapshot, utterance_text=spoken, audio_wav_bytes=wav))
         done = await asyncio.gather(*jobs)
         return Turn(done[0], decisions.interpret_turn_decision(self.pack, snapshot, done[0].raw_answers, utterance_text=spoken),
                     done[1] if len(done) > 1 else None, snapshot, spoken, len(pcm), wav)
-    def _bot_speaking(self, now: float) -> bool:
-        return self.bot_started or self.discard_bot_turn or now < self.playback_ends_at
     async def on_audio(self, payload: dict[str, Any]) -> bool:
         if not (pcm := audio.pcm_bytes(payload.get("data") or "")) or self.state.phase is not Phase.ASKING: return True
         raw = str(payload.get("sample_rate") or "")
         rate = int(raw) if (raw.isdigit() and int(raw) > 0) else _IN
-        if self._bot_speaking(time.time()):
+        now = time.time()
+        if self._mic_muted(now):
             self.preroll.clear()  # she can tap over SHISHU but never talk over her: her own voice is not a caller turn
             return True
+        if self.turn_phase is TurnPhase.PROMPTING: self.turn_phase = TurnPhase.LISTENING  # the 5 s valve elapsed with no audio
         self.telemetry["audio_chunks_in"] += 1
         if self.recorder is not None: self.recorder.add_user_pcm(pcm, rate)
         pcm_16k = pcm if rate == _IN else audio.resample_int16_mono(pcm, rate, _IN)
@@ -184,7 +232,8 @@ class LiveCallSession:
         await self._emit("error", "Could not forward audio to Gemini")
         return False
     async def _hear(self, role: str, text: str) -> None:
-        late = role == "user" and not self.pcm and not self.text and not self.evaluating and self.last_reduced is not None
+        late = (role == "user" and not self.pcm and not self.text and self.turn_phase is not TurnPhase.DECIDING
+                and self.last_reduced is not None)
         if role == "user" and not late:
             self.last_voice_ts, self.checked_in = time.time(), False
             if not self.pcm and not self.text:  # soft speech under the RMS gate still counts as her turn
@@ -194,7 +243,7 @@ class LiveCallSession:
             self.text = engine.merge_transcript_chunk(self.text, text)
             self.stt_ready.set()
         if role == "assistant":
-            if self.discard_bot_turn or self.text: return  # a caption from an aborted or un-tooled turn must not linger
+            if self.awaiting_abort_end or self.text: return  # a caption from an aborted or un-tooled turn must not linger
             self.bot_text = engine.merge_transcript_chunk(self.bot_text, text)
         await self._send_json({"type": "transcript", "role": role, "text": text})
         await self._db(db.append_transcript, role, text, self.last_reduced[0] if late else self.state.cursor.qid)
@@ -215,22 +264,29 @@ class LiveCallSession:
         if not (text := " ".join(str(payload.get("text") or "").split())) or self.state.phase is not Phase.ASKING: return True
         self._reset_turn()
         self.snapshot, self.text, self.speech_ended_ts, self.last_reduced = self.state.model_copy(deep=True), text, time.time(), None
-        self.last_voice_ts, self.checked_in, self.bot_started = self.speech_ended_ts, False, False
+        self.last_voice_ts, self.checked_in, self.bot_generating = self.speech_ended_ts, False, False
+        if self.turn_phase is TurnPhase.PROMPTING: self.turn_phase = TurnPhase.LISTENING  # the caller typed, so the prompt is over
         self.telemetry["user_turns"] += 1
         await self._hear("user", text)
         return await self._send_realtime(text=text)
     async def on_quick_reply(self, payload: dict[str, Any]) -> bool:
         val = str(payload.get("value") or payload.get("outcome") or "").strip()
+        if payload.get("epoch") is not None:  # a tap stamped with an older step is a double-tap, not an answer
+            try: stale = int(payload["epoch"]) != self.epoch
+            except (TypeError, ValueError):
+                await self._emit("error", f"Invalid epoch {payload.get('epoch')!r}")
+                return True
+            if stale: return True
         if not val or self.state.phase is not Phase.ASKING or str(payload.get("step") or "") != self.state.step_token: return True
         try: cmd = engine.quick_reply_command(self.pack, self.state, val)
         except ValueError:
             await self._emit("error", f"Invalid quick reply {val!r}")
             return True
-        self.discard_bot_turn = self.bot_started  # the tap already flushed the browser queue; Gemini may still be mid-Turn-A
+        self.awaiting_abort_end = self.bot_generating  # the tap flushed the browser queue; Gemini may still be mid-Turn-A
         self._cancel("fallback")
         if self.tool_task is not None and not self.tool_task.done(): self.stt_ready.set()
         self._reset_turn()
-        self.checked_in, self.bot_started, self.last_voice_ts, self.speech_ended_ts = False, False, time.time(), time.time()
+        self.checked_in, self.bot_generating, self.last_voice_ts, self.speech_ended_ts = False, False, time.time(), time.time()
         self.playback_ends_at, self.last_reduced = 0.0, None
         _yn, btns = engine.quick_replies(self.pack, self.state)
         spoken = next((b.get("hi") or b.get("en") or val for b in btns if b.get("value") == val), val)
@@ -239,15 +295,18 @@ class LiveCallSession:
         await self._persist(engine.reduce_turn(self.pack, self.state, cmd))
         self._reset_turn()  # and its label must never ride into the next Decision pass
         await self._emit("user_transcript", f"quick_reply_{val}")
-        await self._send_json({"type": "clear"})
-        ok = await self._publish_and_cue()
-        if ok:
-            # Aborting Turn A can swallow the cue itself: keep the silent-model safety net armed behind the step.
-            self.fallback = asyncio.ensure_future(self._cue_if_silent(self.state.step_token, self._cue_kind()))
-            self.fallback.add_done_callback(consume_task_error)
-        return ok
+        # `clear` flushes the epoch we are leaving; `_publish_and_cue` then stamps the new step with the next one.
+        await self._send_json({"type": "clear", "epoch": self.epoch})
+        kind = self._cue_kind()
+        if not await self._publish_and_cue(kind): return False
+        # Aborting Turn A can swallow the cue itself: keep the silent-model safety net armed behind the step.
+        self.fallback = asyncio.ensure_future(self._cue_if_silent(self.state.step_token, self.epoch, kind))
+        self.fallback.add_done_callback(consume_task_error)
+        return True
     async def on_nudge(self, _payload: dict[str, Any]) -> bool:
-        self.bot_started = False
+        if self.turn_phase in (TurnPhase.DECIDING, TurnPhase.CLOSING) or self.state.phase is not Phase.ASKING:
+            return True  # a pass is already in flight, or the call is ending: a nudge would race the answer
+        self.bot_generating = False
         if not await self._speak(): return await self._fail()
         await self._emit("manual_nudge")
         return True
@@ -259,8 +318,29 @@ class LiveCallSession:
                 "flags": d.get("semantic_flags") or None, "decision_ms": turn.result.decision_ms, "audio_ms": round(turn.pcm_len / 32), "tokens": turn.result.total_input_tokens,
                 "value": json.dumps(val, ensure_ascii=False) if isinstance(val, (dict, list)) else (str(val) if val is not None else ""),
                 "attempts": turn.result.attempts if turn.result.attempts > 1 else None, "stt": turn.spoken[:120],
-                "ext_ms": ext.extractor_ms if ext is not None else None}
+                "ext_ms": ext.extractor_ms if ext is not None else None, "slim": True if turn.result.used_slim_fallback else None}
         return {k: v for k, v in meta.items() if v is not None and v != "" and v != {} and v != []}
+    def _register_failure(self, turn: Turn | None, step_in: str, error_reason: str) -> bool:
+        """Count one dead pass and answer whether it is terminal: no key at all, or the strike budget spent."""
+        self.telemetry["tool_errors"] += 1
+        self.consecutive_tool_errors += 1
+        meta = {"step_in": step_in, "error": error_reason}
+        if turn is not None:
+            meta |= {"attempts": turn.result.attempts if turn.result.attempts > 1 else None, "decision_ms": turn.result.decision_ms}
+        terminal = error_reason == "missing_api_key" or self.consecutive_tool_errors >= _MAX_CONSECUTIVE_TOOL_ERRORS
+        if terminal:
+            self.turn_phase = TurnPhase.CLOSING
+            self.last_turn_meta = {k: v for k, v in meta.items() if v is not None}
+            return True
+        self.last_turn_meta = {k: v for k, v in (meta | {"recovered": "reask", "strike": self.consecutive_tool_errors}).items() if v is not None}
+        return False
+    async def _failed_turn(self, turn: Turn | None, step_in: str, error_reason: str) -> tuple[dict[str, Any], bool]:
+        """A pass that produced nothing: the same question is re-asked, or the call is closed for real."""
+        if self._register_failure(turn, step_in, error_reason):
+            await self._persist(engine.close_technical_failure(self.state))
+            return tool_body(self.pack, self.state), False
+        await self._db(db.update_call_telemetry, dict(self.telemetry))
+        return {"result": "retry", "say": _reask_say(self.pack, self.state)}, False
     async def _next_question(self) -> tuple[dict[str, Any], bool]:
         self.last_turn_meta = {}
         if self.state.phase is not Phase.ASKING or not (self.pcm or self.text): return tool_body(self.pack, self.state), False
@@ -268,36 +348,41 @@ class LiveCallSession:
         spoken, pcm = self.text, self.pcm
         self._reset_turn()
         if not self.speech_ended_ts: self.speech_ended_ts = time.time()
-        self.evaluating = True
-        try: turn = await self._evaluate_turn_task(snapshot, spoken, pcm)
-        except Exception:  # noqa: BLE001 — a pass that never returned is a technical failure, never a dead call
-            logger.exception("decision turn failed")
-            self.telemetry["tool_errors"] += 1
-            self.last_turn_meta = {"step_in": snapshot.step_token, "error": "exception"}
-            await self._persist(engine.close_technical_failure(self.state))
-            return tool_body(self.pack, self.state), False
-        finally: self.evaluating = False
-        if not turn.result.ok:
-            self.telemetry["tool_errors"] += 1
-            self.last_turn_meta = {"step_in": turn.snapshot.step_token, "error": turn.result.error_reason, "decision_ms": turn.result.decision_ms, "attempts": turn.result.attempts}
-            await self._persist(engine.close_technical_failure(self.state))
-            return tool_body(self.pack, self.state), False
-        if turn.snapshot.step_token != self.state.step_token:
-            self.last_turn_meta = {"step_in": turn.snapshot.step_token, "step_out": self.state.step_token, "reason": "stale_turn"}
-            return {**tool_body(self.pack, self.state), "result": "held", "reason": "stale_turn"}, False
-        cmd, ext, step_in = turn.intent.command, turn.extraction, turn.snapshot.step_token
-        if turn.intent.needs_profile_extraction and ext is None: ext = await extractor.extract_profile_entities(self.pack, turn.snapshot, utterance_text=turn.spoken, audio_wav_bytes=turn.wav)
-        if ext is not None and ext.ok and not (cmd.emergency or cmd.caller_stop): cmd = cmd.model_copy(update={"profile_patch": ext.patch, "profile_turn_attempted": True})
-        self.last_reduced = (self.state.cursor.qid, self.state.cursor.substep, self.state.cursor.followup_idx, cmd.redacted)
-        await self._persist(engine.reduce_turn(self.pack, self.state, cmd))
-        self.last_turn_meta = self._turn_meta(turn, step_in, cmd, ext)
-        clarify = not (cmd.emergency or cmd.caller_stop) and cmd.outcome is TurnOutcome.CLARIFY
-        return tool_body(self.pack, self.state, clarify=clarify), clarify
+        self.turn_phase = TurnPhase.DECIDING
+        await self._send_json({"type": "thinking", "epoch": self.epoch, "step": self.state.step_token})
+        try:
+            try:
+                turn = await self._evaluate_turn_task(snapshot, spoken, pcm)
+            except Exception:  # noqa: BLE001 — a pass that never returned is a glitch to recover from, never a dead call
+                logger.exception("decision turn failed")
+                self.last_turn_meta = {}
+                return await self._failed_turn(None, snapshot.step_token, "exception")
+            if not turn.result.ok: return await self._failed_turn(turn, turn.snapshot.step_token, turn.result.error_reason)
+            self.consecutive_tool_errors = 0
+            if turn.snapshot.step_token != self.state.step_token:
+                self.last_turn_meta = {"step_in": turn.snapshot.step_token, "step_out": self.state.step_token, "reason": "stale_turn"}
+                return {**tool_body(self.pack, self.state), "result": "held", "reason": "stale_turn"}, False
+            cmd, ext, step_in = turn.intent.command, turn.extraction, turn.snapshot.step_token
+            if turn.intent.needs_profile_extraction and ext is None:
+                ext = await extractor.extract_profile_entities(self.pack, turn.snapshot, utterance_text=turn.spoken, audio_wav_bytes=turn.wav)
+            if ext is not None and ext.ok and not (cmd.emergency or cmd.caller_stop):
+                cmd = cmd.model_copy(update={"profile_patch": ext.patch, "profile_turn_attempted": True})
+            self.last_reduced = (self.state.cursor.qid, self.state.cursor.substep, self.state.cursor.followup_idx, cmd.redacted)
+            await self._persist(engine.reduce_turn(self.pack, self.state, cmd))
+            self.last_turn_meta = self._turn_meta(turn, step_in, cmd, ext)
+            clarify = not (cmd.emergency or cmd.caller_stop) and cmd.outcome is TurnOutcome.CLARIFY
+            return tool_body(self.pack, self.state, clarify=clarify), clarify
+        finally:
+            if self.turn_phase is TurnPhase.DECIDING:
+                # A standalone caller (`_next_question` then `_hear`) must never stay wedged in DECIDING; the mic
+                # stays shut on its own until `_publish_and_cue` opens the step that replaced this one.
+                self.turn_phase = TurnPhase.CLOSING if self.state.phase is not Phase.ASKING else TurnPhase.PROMPTING
+                self.prompted_at = time.time()
     async def _answer_tools(self, calls: list[Any], *, wait_stt: bool = False) -> None:
         step_in = self.state.step_token
         if wait_stt and self.pcm and not self.text: await _ignore(asyncio.wait_for(self.stt_ready.wait(), timeout=_STT_WAIT))
         stale = self.state.step_token != step_in
-        responses, details, clarify, held = [], [], False, stale
+        responses, details, clarify, held, retry = [], [], False, stale, False
         for c in calls:
             cid, name = str(getattr(c, "id", "") or ""), str(getattr(c, "name", "") or "") or "next_question"
             if cid and (cid in self.seen or cid in self.cancelled): continue
@@ -305,6 +390,7 @@ class LiveCallSession:
             body, asked = ({**tool_body(self.pack, self.state), "result": "held", "reason": "stale_turn"}, False) if (stale and name == "next_question") else (
                 (await self._next_question()) if name == "next_question" else ({"result": "ignored", "say": engine.say_text(self.pack, self.state)}, False))
             clarify, held = clarify or asked, held or body.get("result") == "held"
+            retry = retry or body.get("result") == "retry"
             details.append(f"{name}_{body.get('result') or 'ok'}")
             responses.append(types.FunctionResponse(id=cid, name=name, response=body))
         if not responses: return  # every call was already seen or cancelled: nothing is owed to Gemini
@@ -312,37 +398,41 @@ class LiveCallSession:
         self.telemetry["tool_calls" if sent else "tool_errors"] += 1
         if not sent: await self._emit("error", "Could not send the tool response to Gemini")
         await self._emit("tool_call", ",".join(details), self.last_turn_meta or None)
-        if not held: await self._publish_and_cue(self._cue_kind(clarify), immediate=False)
+        if not held: await self._publish_and_cue("retry" if retry else self._cue_kind(clarify), immediate=False)
     async def _send_tools(self, responses: list[Any]) -> None:
         async with self.send_lock: await self.session.send_tool_response(function_responses=responses)
-    async def _cue_if_silent(self, step: str, kind: str) -> None:
+    async def _cue_if_silent(self, step: str, epoch: int, kind: str) -> None:
         try: await asyncio.wait_for(self.stop.wait(), timeout=_CUE_DELAY)
         except asyncio.TimeoutError:
-            if not self.bot_started and not self.discard_bot_turn and self.state.step_token == step and not self.stop.is_set(): await self._speak(kind)
+            # The step and the epoch are the cue's identity: a cue owed to a step we have left must never speak.
+            if (not self.bot_generating and not self.awaiting_abort_end and self.state.step_token == step
+                    and self.epoch == epoch and not self.stop.is_set()):
+                await self._speak(kind)
     async def _bot_audio(self, pcm: bytes, rate: int) -> None:
-        if self.discard_bot_turn or self.text: return  # an aborted tail or un-tooled reply cannot hide an open caller turn
+        if self.awaiting_abort_end or self.text: return  # an aborted tail or un-tooled reply cannot hide an open caller turn
+        if self.state.phase is not Phase.ASKING: self.closing_spoken = True
         self.telemetry["audio_chunks_out"] += 1
         if self.recorder is not None: self.recorder.add_bot_pcm(pcm, rate)
         now = time.time()
         self.playback_ends_at = max(now, self.playback_ends_at) + len(pcm) / (2 * rate)
-        if not self.bot_started:
-            self.bot_started, self.telemetry["bot_turns"] = True, self.telemetry["bot_turns"] + 1
+        if not self.bot_generating:
+            self.bot_generating, self.telemetry["bot_turns"] = True, self.telemetry["bot_turns"] + 1
             self._cancel("fallback")
             if self.speech_ended_ts:
                 samples = [*self.telemetry["turn_latencies_ms"], int((now - self.speech_ended_ts) * 1000)]
                 self.telemetry |= {"turn_latencies_ms": samples, "avg_latency_ms": int(round(sum(samples) / len(samples))), "max_latency_ms": max(samples)}
                 self.speech_ended_ts = 0.0
                 await self._emit("bot_first_audio", f"{samples[-1]}ms")
-        await self._send_json({"type": "audio", "sample_rate": rate, "data": base64.b64encode(pcm).decode("ascii")})
+        await self._send_json({"type": "audio", "sample_rate": rate, "data": base64.b64encode(pcm).decode("ascii"), "epoch": self.epoch})
     async def on_message(self, response: Any) -> None:
         sc, calls = getattr(response, "server_content", None), []
         if sc is not None:
             if sc.interrupted:  # Gemini aborted her turn: its tail and captions belong to a step we have left
-                self.playback_ends_at, self.bot_started, self.bot_text = 0.0, False, ""
-                if not self.discard_bot_turn:
+                self.playback_ends_at, self.bot_generating, self.bot_text = 0.0, False, ""
+                if not self.awaiting_abort_end:
                     self.telemetry["interruptions"] += 1
                     await self._emit("barge_in", self.state.cursor.qid)
-                    await self._send_json({"type": "clear"})
+                    await self._send_json({"type": "clear", "epoch": self.epoch})
             for r, p in (("user", getattr(sc, "input_transcription", None)), ("assistant", getattr(sc, "output_transcription", None))):
                 if txt := " ".join(str(getattr(p, "text", "") or "").split()): await self._hear(r, txt)
             for p in (sc.model_turn.parts if sc.model_turn else None) or []:
@@ -364,28 +454,31 @@ class LiveCallSession:
         if self.tool_task is not None and not self.tool_task.done():
             self.stt_ready.set()
             return
-        if self.discard_bot_turn:  # the aborted turn's death: it may never unlock or cancel the step that replaced it
-            self.discard_bot_turn, self.bot_text = False, ""
+        if self.awaiting_abort_end:  # the aborted turn's death: it may never unlock or cancel the step that replaced it
+            self.awaiting_abort_end, self.bot_text = False, ""
             await self._emit("turn_complete")
             return
+        # `bot_generating` is the honest answer to "did we hear a bot turn this `turn_complete` can close?": a tap on
+        # A's quick reply and `sc.interrupted` both clear it, so A's death never stamps B's token into B's pills.
+        heard_bot_turn = self.bot_generating
         # Gemini may skip the `next_question` call for a spoken turn; the caller's words are still owed a Decision pass.
-        recovered = not self.bot_started and (self.pcm or self.text) and self.state.phase is Phase.ASKING
+        recovered = not heard_bot_turn and (self.pcm or self.text) and self.state.phase is Phase.ASKING
         if recovered:
-            _body, clarify = await self._next_question()
+            body, clarify = await self._next_question()
             await self._emit("tool_call", "missed_tool", self.last_turn_meta or None)
-            self.bot_started = False
-            if not await self._publish_and_cue(self._cue_kind(clarify)): return await self._fail()
-        # `bot_started` is the honest answer to "did we hear a bot turn this `turn_complete` can close?": a tap on A's
-        # quick reply and `sc.interrupted` both clear it, so A's death never stamps B's token into B's pills.
-        if self.bot_started or recovered:
-            if self.bot_started and not self.clarify_step:  # the voice puppet's line is known verbatim, yet Gemini drops its transcription tail
+            kind = "retry" if body.get("result") == "retry" else self._cue_kind(clarify)
+            if not await self._publish_and_cue(kind): return await self._fail()
+        if heard_bot_turn:
+            if not self.clarify_step:  # the voice puppet's line is known verbatim, yet Gemini drops its transcription tail
                 expected = " ".join(engine.say_text(self.pack, self.state).split())
                 if expected and (not self.bot_text or (expected.startswith(self.bot_text.rstrip("।?!., ")) and len(self.bot_text) < len(expected))):
                     await self._hear("assistant", expected)
-            self.bot_started, self.last_reduced = False, None  # the turn is closed: a repeat must not re-merge or re-unlock
+            self.bot_generating, self.last_reduced = False, None  # the turn is closed: a repeat must not re-merge or re-unlock
+            self.turn_phase = TurnPhase.CLOSING if self.state.phase is not Phase.ASKING else TurnPhase.LISTENING
             self._reset_turn()
             self._cancel("fallback")
-            await self._send_json({"type": "bot_turn_complete", "step": self.state.step_token})
+        if heard_bot_turn or recovered:
+            await self._send_json({"type": "bot_turn_complete", "step": self.state.step_token, "epoch": self.epoch})
         self.playback_ends_at = max(self.playback_ends_at, time.time())
         await self._emit("turn_complete")
     async def _close(self, reason: CloseReason) -> None:
@@ -393,15 +486,17 @@ class LiveCallSession:
         st = self.state.model_copy(deep=True)
         st.phase, st.close_reason = Phase.CLOSING, reason
         self._reset_turn()
-        self.bot_started = False
+        self.bot_generating = False
         await self._persist(st)
-        await self._send_json({"type": "clear"})
+        await self._send_json({"type": "clear", "epoch": self.epoch})
         await self._publish_and_cue("closing")
         await self._emit("auto_close", reason.value)
     async def tick(self, now: float) -> bool:
         if self.resume_requested and not self.reconnecting and not await self._reconnect(): return False
         if self.state.phase is not Phase.ASKING:
-            if self.ending_sent or now < self.playback_ends_at or not (self.bot_started or now - self.closing_at >= _GRACE): return True
+            if (self.ending_sent or self.bot_generating or now < self.playback_ends_at
+                    or (not self.closing_spoken and now - self.closing_at < _GRACE)):
+                return True
             self.ending_sent = True
             await self._send_json({"type": "ending"})
             self.stop.set()
@@ -410,7 +505,10 @@ class LiveCallSession:
         if elapsed >= self.soft_limit_sec:
             await self._close(CloseReason.TIME_LIMIT)
             return elapsed < self.hard_limit_sec
-        if self.evaluating or self._bot_speaking(now): return True
+        if self.turn_phase is TurnPhase.PROMPTING and (now - self.prompted_at) >= _PROMPT_MUTE_MAX_SEC and now >= self.playback_ends_at:
+            self.turn_phase = TurnPhase.LISTENING  # a silent model: the step is hers now, mic and all
+        # The silence timers count only while she owns an open turn: never over her own voice, never during a pass.
+        if self.turn_phase is not TurnPhase.LISTENING or self._mic_muted(now): return True
         quiet = now - max(self.last_voice_ts, self.playback_ends_at)
         if quiet >= self.silence_close_sec: await self._close(CloseReason.SILENCE)
         elif quiet >= self.check_in_sec and not self.checked_in:
@@ -429,7 +527,7 @@ class LiveCallSession:
         self.cancelled.clear()
         await self._send_json({"type": "reconnected", "attempt": self.reconnects})
         await self._emit("reconnected", str(self.reconnects))
-        self.bot_started = False
+        self._enter_prompting()
         return await self._speak()
     async def _pump(self) -> None:
         async for resp in self.session.receive():
@@ -447,7 +545,7 @@ class LiveCallSession:
         last_tick = time.time()
         while not self.stop.is_set():
             now = time.time()
-            speaking = self.state.phase is Phase.ASKING and self._bot_speaking(now)
+            speaking = self.state.phase is Phase.ASKING and self._mic_muted(now) and self.turn_phase is not TurnPhase.DECIDING
             if speaking and not self.reconnecting:
                 await self._send_realtime(audio=types.Blob(data=_SILENCE_100MS, mime_type=f"audio/pcm;rate={_IN}"))
             if now - last_tick >= _TICK - 0.02:
@@ -472,6 +570,7 @@ class LiveCallSession:
                 await self._emit("error", "Expected a JSON object")
                 continue
             if payload.get("type") == "hangup":
+                self.client_hung_up = True
                 self.stop.set()
                 return
             if (h := handlers.get(str(payload.get("type") or ""))) is not None and not await h(payload): return
@@ -495,11 +594,18 @@ class LiveCallSession:
         tasks = [asyncio.ensure_future(self._gemini_loop()), asyncio.ensure_future(self._watchdog())]
         try:
             await self._persist(self.state)
-            await self._emit("session_started", str(self.call_id or ""), {"pack": self.pack.id})
-            cue, said = str(self.pack.prompts.get("greeting_cue") or "").rstrip("\n"), engine.say_text(self.pack, self.state)
-            self.bot_started, self.speech_ended_ts = False, time.time()
-            await self._send_realtime(text="\n".join(b for b in (cue, said) if b).strip())
-            await self._publish_and_cue(immediate=False)
+            if self.resumed:
+                # A rejoin asks for the question the call paused on: the greeting belongs to a brand-new call.
+                await self._emit("session_resumed", str(self.call_id or ""), {"pack": self.pack.id, "qid": self.state.cursor.qid})
+                await self._publish_and_cue("speak", immediate=False)
+                self.speech_ended_ts = time.time()
+                await self._speak("speak")
+            else:
+                await self._emit("session_started", str(self.call_id or ""), {"pack": self.pack.id})
+                cue, said = str(self.pack.prompts.get("greeting_cue") or "").rstrip("\n"), engine.say_text(self.pack, self.state)
+                await self._publish_and_cue(immediate=False)
+                self.speech_ended_ts = time.time()
+                await self._send_realtime(text="\n".join(b for b in (cue, said) if b).strip())
             tasks.append(asyncio.ensure_future(self._browser_loop()))
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             if not self.stop.is_set():  # a loop that dies on its own is a bug, never a quiet hangup
@@ -527,31 +633,91 @@ async def _open_live(client: genai.Client, pack: PackConfig, handle: str) -> tup
             if attempt == 2: raise
             await asyncio.sleep(0.4 * (attempt + 1))
     raise RuntimeError("Gemini Live setup did not complete")
+def _schedule_delayed_finalize(cid: int, session_obj: LiveCallSession) -> None:
+    """Hold a dropped call open for the resume grace, then finalize it if no browser rejoins."""
+    if (prior := _PENDING_FINALIZE.pop(cid, None)) is not None:
+        prior.cancel()
+
+    async def _finalize_after_grace() -> None:
+        await asyncio.sleep(_RESUME_GRACE_SEC)
+        if _PENDING_FINALIZE.get(cid) is not asyncio.current_task():
+            return  # a rejoin or a newer grace timer already took this call over
+        if cid in _ACTIVE_CALLS:
+            return  # somebody is driving the call again
+        _PENDING_FINALIZE.pop(cid, None)
+        await _try_call(session_obj.finalize)
+
+    task = asyncio.ensure_future(_finalize_after_grace())
+    task.add_done_callback(consume_task_error)
+    _PENDING_FINALIZE[cid] = task
+
+
 async def handle_live_ws(ws: WebSocket, *, pack: PackConfig, caller_name: str = "", user_role: str = "user", clinic_code: str = "",
-                         on_call_completed: Callable[[int], Awaitable[bool] | bool] | None = None) -> None:
+                         resume_token: str = "", on_call_completed: Callable[[int], Awaitable[bool] | bool] | None = None) -> None:
     if ws.client_state == WebSocketState.CONNECTING: await ws.accept()
     key = str(os.environ.get("GEMINI_API_KEY") or "").strip()
-    client, ctx, live = genai.Client(api_key=key, http_options={"api_version": "v1beta"}) if key else None, None, None
+    client, ctx, live_sess = genai.Client(api_key=key, http_options={"api_version": "v1beta"}) if key else None, None, None
+    cid: int | None = None
     try:
         if not key: return await _reject(ws, "GEMINI_API_KEY is not set")
         try: ctx, session = await _open_live(client, pack, "")
         except Exception: return await _reject(ws, "Gemini Live connection failed")  # noqa: BLE001
-        cid = await asyncio.to_thread(db.create_call, pack_id=pack.id, caller_name=caller_name or "", user_role=user_role or "user", clinic_code=clinic_code or "",
-                                      model_used=str(pack.meta.get("gemini_model") or ""), voice_used=str(pack.meta.get("gemini_voice") or ""))
-        live = LiveCallSession(ws=ws, pack=pack, session=session, call_id=cid, recorder=audio.CallAudioRecorder(cid, Path(db.DATA_DIR) / "audio"), on_call_completed=on_call_completed)
+        tok = (resume_token or "").strip()
+        row = await asyncio.to_thread(db.get_call_by_token, tok) if tok else None
+        saved_state = db.call_state_from_row(row) if row is not None else CallState()
+        still_open = saved_state.close_reason not in (CloseReason.COMPLETE, CloseReason.EMERGENCY)
+        if row is not None and row.get("pack_id") == pack.id and still_open:
+            # The browser came back on a call we still hold: the row, the cursor, and the audio file are reused.
+            cid = int(row["id"])
+            if (pending := _PENDING_FINALIZE.pop(cid, None)) is not None: pending.cancel()
+            if (old := _ACTIVE_CALLS.pop(cid, None)) is not None:
+                # A half-open session whose socket died unnoticed: it must never finalize the call it lost.
+                old.superseded = True
+                old.stop.set()
+                if old.recorder is not None: await _try_call(asyncio.to_thread, old.recorder.save)
+            restored = saved_state.model_copy(deep=True)
+            restored.phase, restored.close_reason = Phase.ASKING, None
+            await asyncio.to_thread(db.reopen_call, cid)
+            live_sess = LiveCallSession(ws=ws, pack=pack, session=session, call_id=cid, state=restored,
+                                        recorder=audio.CallAudioRecorder(cid, Path(db.DATA_DIR) / "audio", append_existing=True),
+                                        on_call_completed=on_call_completed, resumed=True)
+        else:
+            cid = await asyncio.to_thread(db.create_call, pack_id=pack.id, caller_name=caller_name or "", user_role=user_role or "user",
+                                          clinic_code=clinic_code or "", model_used=str(pack.meta.get("gemini_model") or ""),
+                                          voice_used=str(pack.meta.get("gemini_voice") or ""))
+            live_sess = LiveCallSession(ws=ws, pack=pack, session=session, call_id=cid, recorder=audio.CallAudioRecorder(cid, Path(db.DATA_DIR) / "audio"),
+                                        on_call_completed=on_call_completed)
+        _ACTIVE_CALLS[cid] = live_sess
+
         async def reconnect(handle: str) -> Any:
             nonlocal ctx, session
             new_ctx, session = await _open_live(client, pack, handle)
             old, ctx = ctx, new_ctx
             await _ignore(old.__aexit__(None, None, None))
             return session
-        live.connect = reconnect
+        live_sess.connect = reconnect
         call = await asyncio.to_thread(db.get_call, cid) or {}
-        await live._send_json({"type": "session_started", "call_id": cid, "caller_name": caller_name or "", "model": str(pack.meta.get("gemini_model") or ""),
-                               "user_role": user_role or "user", "voice": str(pack.meta.get("gemini_voice") or ""), "out_sample_rate": _OUT,
-                               "share_token": str(call.get("share_token") or "")})
-        await live.run()
+        await live_sess._send_json({"type": "session_started", "call_id": cid, "caller_name": str(call.get("caller_name") or caller_name or ""),
+                                    "model": str(pack.meta.get("gemini_model") or ""), "user_role": user_role or "user",
+                                    "voice": str(pack.meta.get("gemini_voice") or ""), "out_sample_rate": _OUT,
+                                    "share_token": str(call.get("share_token") or "")})
+        await live_sess.run()
     finally:
         if ctx is not None: await _ignore(ctx.__aexit__(None, None, None))
-        if live is not None and await _try_call(live.finalize, default=_BROKE) is _BROKE: await _reject(ws, "Could not finish the call")
+        if live_sess is not None and cid is not None:
+            if _ACTIVE_CALLS.get(cid) is live_sess:
+                _ACTIVE_CALLS.pop(cid, None)
+            if live_sess.superseded:
+                if live_sess.recorder is not None: await _try_call(asyncio.to_thread, live_sess.recorder.save)
+            elif not live_sess.client_hung_up and live_sess.state.phase is Phase.ASKING and _RESUME_GRACE_SEC > 0:
+                # An unexpected socket death is a dropped line, never a hangup: hold the call, then resume or finalize.
+                if live_sess.recorder is not None:
+                    saved = await _try_call(asyncio.to_thread, live_sess.recorder.save)
+                    if saved and saved[0]:
+                        # The frames so far must survive the gap: the resumed recorder appends to this same file.
+                        await _try_call(asyncio.to_thread, functools.partial(db._write, cid, audio_path=saved[0], duration_sec=int(saved[1])))
+                await live_sess._db(db.update_call_telemetry, dict(live_sess.telemetry))
+                _schedule_delayed_finalize(cid, live_sess)
+            else:
+                if await _try_call(live_sess.finalize, default=_BROKE) is _BROKE: await _reject(ws, "Could not finish the call")
         if ws.client_state == WebSocketState.CONNECTED: await _ignore(ws.close())

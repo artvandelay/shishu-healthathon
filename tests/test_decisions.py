@@ -72,6 +72,51 @@ class EvaluateTurnTests(unittest.TestCase):
         result = self.run_turn(boom, max_attempts=2)
         self.assertEqual((result.error_reason, result.attempts), ("timeout", 2))
 
+    def test_evaluate_turn_switches_to_fallback_request_after_primary_timeout(self):
+        # Call #15: turn 29 on body_private_parts hit two 4.0s tail spikes against the full 64-head request and
+        # the call hung up. Attempt 1 must carry the full primary request; the retry must carry only the slim
+        # fallback (Group A + semantic flags) so the turn survives inside the same 8.0s budget.
+        shishu = load_pack("shishu-hi")
+        state = state_at(shishu, "body_private_parts")
+        request = decisions.build_turn_request(shishu, state, utterance_text="पता नहीं।")
+        fallback_request = decisions.build_turn_request(shishu, state, utterance_text="पता नहीं।", slim=True)
+        seen_bodies: list[bytes] = []
+
+        def send(url, payload, headers, timeout):
+            seen_bodies.append(payload)
+            if len(seen_bodies) == 1:
+                raise TimeoutError("primary timed out")
+            body = {"answers": {"active_outcome": {"probabilities": {"unknown": 0.95, "clear": 0.05}}},
+                    "usage": {"total_input_tokens": 1180}}
+            return 200, json.dumps(body).encode("utf-8")
+
+        result = asyncio.run(decisions.evaluate_turn(
+            request, api_key="k", transport=send, fallback_request=fallback_request))
+
+        self.assertEqual(len(seen_bodies), 2)
+        self.assertGreater(len(json.loads(seen_bodies[0])["questions"]), 40,
+                           "attempt 1 is the full primary request")
+        self.assertLessEqual(len(json.loads(seen_bodies[1])["questions"]), 10,
+                             "attempt 2 is the slim fallback request")
+        self.assertTrue(result.ok)
+        self.assertEqual(result.attempts, 2)
+        self.assertIs(result.used_slim_fallback, True)
+        self.assertEqual(result.question_count, len(fallback_request["questions"]))
+        self.assertEqual(result.total_input_tokens, 1180)
+
+        direct_bodies: list[bytes] = []
+
+        def direct(url, payload, headers, timeout):
+            direct_bodies.append(payload)
+            return transport_returning(200, OK_BODY)(url, payload, headers, timeout)
+
+        direct_result = asyncio.run(decisions.evaluate_turn(
+            request, api_key="k", transport=direct, fallback_request=fallback_request))
+        self.assertEqual(len(direct_bodies), 1)
+        self.assertTrue(direct_result.ok)
+        self.assertIs(direct_result.used_slim_fallback, False,
+                      "a primary request that succeeds never reports the slim fallback")
+
 
 class BuildRequestTests(unittest.TestCase):
     """The four head groups, the multimodal input, and the compact context."""
@@ -139,6 +184,33 @@ class BuildRequestTests(unittest.TestCase):
         blank.profile = {"caller_name": "", "marital_status": None}
         self.assertNotIn("profile", json.loads(decisions.build_turn_request(self.shishu, blank)["input"]),
                          "an all-blank profile is not a stored fact")
+
+    def test_slim_turn_request_keeps_group_a_and_flags_while_dropping_stated_and_router(self):
+        # Call #15: the 56 `stated_<qid>` heads plus the 53-option `next_qid` head are what pushed every spoken
+        # turn to ~21.7k tokens. A slim request keeps only the heads a turn cannot be read without: the always-on
+        # core, the active outcome, the active typed value, and the semantic flags.
+        state = state_at(self.shishu, "body_private_parts")
+        req = decisions.build_turn_request(self.shishu, state, utterance_text="पता नहीं।", slim=True)
+        heads = req["questions"]
+        always_on = (
+            "active_outcome",
+            "danger_now",
+            "caller_stop",
+            "mentions_profile",
+            "redact_patient_note",
+            "flag_confirmed_hemoglobinopathy",
+        )
+        for head in always_on:
+            self.assertIn(head, heads)
+        self.assertEqual([k for k in heads if k.startswith("stated_")], [])
+        self.assertNotIn("jump_topic", heads)
+        self.assertNotIn("next_qid", heads)
+        self.assertLessEqual(len(heads), 10)
+
+        full = decisions.build_turn_request(self.shishu, state, utterance_text="पता नहीं।")
+        self.assertTrue([k for k in full["questions"] if k.startswith("stated_")],
+                        "the default request still pays for the stated heads")
+        self.assertIn("next_qid", full["questions"])
 
     def test_the_pack_names_the_roster_key_the_context_actually_sends(self):
         # Bug: decisions.yaml told the model "children_roster" while ctx sent "roster", and its mentions_profile

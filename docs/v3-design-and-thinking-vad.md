@@ -1,7 +1,7 @@
-# SHISHU V3 — Moldable Voice Patient Intake & Thinking VAD
+# SHISHU V3 — Moldable Voice Patient Intake: Architecture & Field Evolution
 
-**Status:** design of record for branch `v3`. **Scope:** `intake/`, `packs/<pack_id>/`, `docs/`.
-**Companion code:** `intake/models.py` (typed vocabulary), `intake/pack.py` (pack loader + startup validator).
+**Status:** design of record for branch `v3` (updated Nov 17, 2026 after staging Calls `#7`–`#15` postmortem). **Scope:** `intake/`, `packs/<pack_id>/`, `docs/`.
+**Companion code:** `intake/models.py` (typed vocabulary), `intake/pack.py` (pack loader + startup validator), `intake/engine.py` (pure reducer), `intake/live.py` (Turn-Epoch live session), `intake/decisions.py` (two-tier `gemini-decision-1` router).
 
 ---
 
@@ -37,11 +37,11 @@ under 1,950 LOC**, clinical content at zero lines of Python.
 | `intake/models.py` | typed vocabulary: `CallState`, `TurnCommand`, `AnswerRecord`, `QuestionSpec`, `PackConfig` | 105 |
 | `intake/pack.py` | `load_pack`, `list_pack_ids`, startup validation | 61 |
 | `intake/engine.py` | pure reactive reducer, eligibility set `E`, rules/skip/reopen evaluation | 350 |
-| `intake/decisions.py` + `extractor.py` | 4-group multimodal `gemini-decision-1` router + schema extractor | 220 |
-| `intake/vad.py` + `audio.py` | Silero ONNX Thinking VAD (`base_ms * pace_factor`) + stereo 16 kHz WAV | 147 |
-| `intake/live.py` | Gemini Live session, `ActivityStart`/`ActivityEnd`, speculative turns, watchdogs | 453 |
+| `intake/decisions.py` + `extractor.py` | Two-tier multimodal `gemini-decision-1` router (full 4-group + slim Group-A fallback) + schema extractor | ~240 |
+| `intake/audio.py` | 16 kHz PCM resampling + resumable stereo 16 kHz WAV recorder (`append_existing`) | ~85 |
+| `intake/live.py` | Gemini Live AAD voice puppet, explicit `TurnPhase` + `epoch` state machine, `?resume=<share_token>` continuity | ~580 |
 | `intake/reports.py` | Jinja2 → WeasyPrint PDF + clinician markdown projection | 202 |
-| `intake/app.py` + `intake/db.py` | passcode auth, pack routes, bug drawer API, atomic SQLite | 300 |
+| `intake/app.py` + `intake/db.py` | passcode auth, pack routes, bug drawer API, atomic SQLite | ~305 |
 | **Python Engine Subtotal (`intake/*.py`)** | | **1,839** |
 | **Web Client + Admin (`intake/static/*.{js,html}`)** | `login.html` (82), `call.html` (71), `call.js` (281), `admin.html` (90), `admin.js` (190) | **714** |
 | **Total Runtime Code** | *(vs `10,112` LOC in V2 — a **4.0x** overall and **3.3x** Python / **5.8x** JS+HTML reduction)* | **2,553** |
@@ -74,11 +74,11 @@ designed against.
 
 | # | Layer | Job | V3 module |
 |---|---|---|---|
-| 1 | **Orchestrator & Thinking VAD** | decide when a turn ended, and whether it ended at all | `vad.py`, `live.py` |
-| 2 | **Voice Puppet & narrow open extractor** | say exactly what the form says; pull free text without inventing structure | `live.py` tool, `engine.py` |
-| 3 | **Multimodal decision layer** | one pass over audio + draft → typed `TurnCommand` | `decisions.py` |
+| 1 | **Turn-Epoch Orchestrator & Gemini AAD** | own `TurnPhase` (`PROMPTING`/`LISTENING`/`DECIDING`/`CLOSING`) + `epoch`, half-duplex mic gate, and WS resume | `live.py`, `static/call.js` |
+| 2 | **Voice Puppet & narrow open extractor** | say exactly what the form says; pull free text without inventing structure | `live.py` tool, `extractor.py` |
+| 3 | **Two-tier multimodal decision layer** | full 4-group pass over audio + draft → typed `TurnCommand`, with slim Group-A fallback on timeout | `decisions.py` |
 | 4 | **Reactive policy & form reducer** | skip matrix, re-asks, follow-ups, cursor — pure | `engine.py` |
-| 5 | **Atomic persistence & template artifacts** | commit then speak; render from committed state | `db.py`, `report.py` |
+| 5 | **Atomic persistence & template artifacts** | commit then speak; render from committed state | `db.py`, `reports.py` |
 
 Each boundary is where a documented FormBharo defect becomes *structurally* impossible, not merely unlikely.
 
@@ -143,11 +143,11 @@ head groups below run in one forward pass with no chaining.
 | Head | Type | Lands in `TurnCommand` |
 |---|---|---|
 | `danger_now`, `caller_stop` | `noul` | `emergency`, `caller_stop` |
-| `turn_incomplete`, `redact_patient_note` | `noul` | `turn_incomplete`, `redacted` |
+| `redact_patient_note` | `noul` | `redacted` |
 | `mentions_profile`, `detail_present` | `noul` | `profile_turn_attempted` + `profile_patch`, `followup_answered` |
 | `active_outcome` | `choice` over `TurnOutcome` | `outcome` |
-| `choice_value` / `opt_<k>` / `score_value` | `choice` / `noul` per option / `noul` `0..K` | `value` |
-| `item_ref` | `choice` over the roster (only `roster_scoped`) | `item_ref` |
+| `choice_value` / `opt_<k>` / `score_value` | `choice` / `noul` per option / `score` `0..K` | `value` |
+| `item_ref` | `choice` over the roster (only `≥2` children) | `item_ref` |
 
 `noul` heads are a single logit with no choice set; `choice` heads are a softmax over pack-rendered options. Group A
 is the only group whose heads change identity per turn — the request builder emits `choice_value` *or* `opt_<k>` *or*
@@ -184,133 +184,60 @@ and comes back" defect: the model proposes, the reducer disposes.
 
 ### 3.3 Gating
 
-Every head is thresholded by `packs/<pack_id>/decisions.yaml → thresholds`, validated at startup against the 17 keys in
-`pack._REQUIRED_THRESHOLDS`: `*_min_confidence`/`*_min_margin` pairs for the `choice` heads (`outcome`, `choice`,
+Every head is thresholded by `packs/<pack_id>/decisions.yaml → thresholds`, validated at startup against the 16 keys in
+`pack._THRESHOLDS`: `*_min_confidence`/`*_min_margin` pairs for the `choice` heads (`outcome`, `choice`,
 `stated`, `item_ref`, plus `score_min_confidence`), and `*_min_yes` cut-offs for the `noul` heads (`danger_now`,
-`caller_stop`, `turn_incomplete`, `mentions_profile`, `redact_patient_note`, `detail_present`, `jump_topic`,
+`caller_stop`, `mentions_profile`, `redact_patient_note`, `detail_present`, `jump_topic`,
 `multi_choice`). Safety heads are evaluated **first and unconditionally**; a `danger_now` above threshold returns a
 `CloseReason.EMERGENCY` path regardless of what the answer heads said. A pack that omits any required threshold fails to
 load — there is no default and no "0.5 will do".
 
 ---
 
-## 4. Adaptive "Thinking VAD" & Per-Caller Pace Calibration
+## 4. Endpointing & Turn Ownership: What We Aimed For, Why It Broke, and What Replaced It
 
-### 4.1 Why the built-in detector cannot be used
+This section records both what V3 originally tried ("Adaptive Thinking VAD + 280 ms speculation") and why real human calls forced us to retire it in favor of **Gemini AAD + Half-Duplex Tap-Over + an Explicit Turn-Epoch State Machine**. Future agents: **do not re-introduce speculative audio-only passes, full-duplex unmuted mic streaming, or loose boolean turn flags.**
 
-Gemini Live's `AutomaticActivityDetection` is configured once, at `connect()`. V2 pins it at
-`silence_duration_ms=1000`, `prefix_padding_ms=300` (`code/shishu-v2/gemini_live.py`), frozen for the whole call — a
-single guess about a caller who has not said a word yet, against a clinic whose acoustics change mid-call (a ceiling
-fan, a hallway conversation, a child in the room). One number cannot serve both ends: a gate answer of "नहीं" wants
-~350 ms, and a mother telling the story of her son's transfusions wants 1,500 ms or more.
+### 4.1 What V3.0 aimed for — and why it failed in staging (`Calls #7–#12`)
 
-V3 sets `AutomaticActivityDetection(disabled=True)` and drives turn boundaries itself from a `32 ms` frame clock
-running Silero ONNX (`intake/assets/silero_vad.onnx`) on a `512`-sample window plus `64`-sample left context at
-`16 kHz`. On confirmed onset the client sends `ActivityStart()`; when the endpoint timer expires it sends
-`ActivityEnd()`. Both are server-driven, so the gate is recomputed every turn from the caller's own behaviour.
+V3.0 disabled Gemini Live's `AutomaticActivityDetection` and ran a custom Silero ONNX frame clock (`intake/vad.py`, retired in `4e831f3`) with two clever ideas on paper:
+1. **Per-caller `pace_factor` endpointing** (`350–850 ms * pace_factor`) driving manual `ActivityStart()` / `ActivityEnd()`.
+2. **280 ms speculative `gemini-decision-1` passes** firing mid-pause on raw waveform audio *before* Gemini's `input_transcription` arrived, gated by a `turn_incomplete` head.
 
-### 4.2 The two-factor formula
+In real human calls, three things went wrong:
+- **Decisions ran blind before the words existed.** At `280 ms` into a pause, `gemini-decision-1` saw only a clipped waveform with empty `utterance_text`. It misclassified short Hindi replies, child age attributions, and mid-call corrections that the *exact same model* classified accurately once `input_transcription` arrived ~300 ms later. That spawned a web of cache-invalidation patches (`_needs_stt_pass`, `_fold_stt`, `_banked`, `reheard`) where every fix opened a new cancellation race.
+- **Full-duplex speaker bleed caused 24–26 interruptions per call.** Streaming unmuted browser mic frames while SHISHU was speaking fed speaker echo and breath noise into VAD, firing `ActivityStart` mid-question and triggering `sc.interrupted` storms or causing Gemini to read multiple queued `SYSTEM CUE` prompts in one breath (`Call #11`).
+- **Endpoint waits polluted `pace_factor`.** Sampling silence windows entangled the detector's own endpoint wait with the caller's natural speech cadence.
 
-```
-wait_ms = base_ms(question_kind, voiced_ms) * pace_factor(caller)
-```
+### 4.2 Why the first cut (`4e831f3`) still leaked races (`Calls #13–#15` & live human probes)
 
-**`base_ms` — how long this *kind* of question deserves.** Reflective steps (`profile`, `followup`, `multi_choice`,
-`open_capture`) get a flat **850 ms**: a story is never a fixed length, so a ramp buys nothing. Closed steps (`gate`,
-`bridge`, `single_choice`) get a smooth ramp so a two-syllable answer is not punished for being short and a long,
-hedged answer is not cut. `QuestionSpec.is_reflective_vad` covers the kinds (`profile`, `multi_choice`, `open_capture`);
-a follow-up substep is reflective because `SubStep.FOLLOWUP` outranks the kind. `routing_gate` follows `bridge`, and
-`score` follows `multi_choice`:
+Commit `4e831f3` deleted `intake/vad.py` / `silero_vad.onnx` / `turn_incomplete` and moved to **Gemini Live `AutomaticActivityDetection`** (`prefix_padding_ms=100`, `silence_duration_ms=1000`, `LOW` sensitivity) plus **half-duplex tap-over** ("she can tap over SHISHU at any time, never talk over her"). That fixed speculative misfires and echo, **but** staging Calls `#13`–`#15` and live human-timing probes immediately exposed four deeper structural flaws:
 
-```
-base_ms = 350 + 500 * clamp((voiced_ms - 600) / 1200, 0, 1)
-```
+1. **Boolean soup across four concurrent actors (no turn identity).** `LiveCallSession` and `call.js` tracked turn state across ~25 uncoordinated flags (`bot_started`, `discard_bot_turn`, `evaluating`, `stt_ready`, `busy`, `ready`, `waitingSince`).
+   - *Post-tap pre-audio speech leak:* `call.js` cleared `busy = false` on `question_state` — ~600 ms *before* Question B's first audio chunk arrived. If a caller tapped `हाँ` on `intro_bridge` and simultaneously said *"हाँ जी, पूछिए"* in that 600 ms silence gap, her mic opened early and falsely answered Question B (`birth_mode_detail` -> C-section `हाँ`) before she heard a word of it.
+   - *3-second nudge race during normal thinking:* `call.js` popped up `nudge-btn` after `3.0s` of silence while normal `decisions + extractor` turns take `2.9s–3.3s`. Tapping nudge while the server was deciding sent `speak_cue(Question A)` into Gemini milliseconds before the server committed `Question B`, so the caller heard Question A aloud while the server judged her answer against Question B.
+2. **64-head tail-latency cliff + single-strike call death (`Call #15`).** Every non-profile spoken turn sent all 56 `stated_<qid>` heads + a 53-option `next_qid` head (~139 KB / ~21.7k tokens + WAV) under a `4.0s` `asyncio.wait_for` that harshly cancelled pooled `httpx` sockets. When turn 29 (*"पता नहीं।"* on `body_private_parts`) hit two `4.0s` tail spikes (`8001 ms`), `_next_question()` treated a single `ok=False` as fatal `CloseReason.TECHNICAL_FAILURE` and hung up on a 3-minute call.
+3. **Zero client WebSocket reconnect + DOM-only consent (`Calls #13 -> #14 -> #15`).** Even though SQLite saved `cursor_json` + `share_token` on every turn, a 1-second browser `/ws/live` drop at `+10.8s` of `Call #13` left the server socket half-open for 18s, threw away the client session, re-displayed `#consent-row` via `paint("error")`, and wiped `#consent-check` on page reload.
 
-0 ms voiced → 350 ms wait. 600 ms → 350 ms. 1,800 ms → 850 ms. The ramp is continuous, so no caller hears the detector
-change its mind.
+### 4.3 Current Design of Record (V3.2): Turn-Epoch Machine, Two-Tier Decisions & Resumable Calls
 
-**`pace_factor(caller)` — how this caller pauses *inside* a turn.** Measured from `V → _ → V` boundaries: a voiced run, a
-silence of `150–850 ms`, then more voicing, counted within one turn; `n` is how many such boundaries this call has seen.
+Borrowed directly from the right systems boundaries in FormBharo (`3rdparty/form-bharo-main/server/src/{user_mute,pause_control,conversation_tokens}.py`) while keeping SHISHU's pure reducer and multimodal audio router:
 
-```
-pace_factor = clamp(1.0 + min(1.0, n / 8) * (median(pauses_ms) / 260 - 1.0), 0.80, 1.45)
-```
-
-`median(pauses_ms) / 260` is the caller's pause length against the population median of 260 ms; `min(1.0, n / 8)` is
-trust — after eight boundaries the measurement is fully believed, before that it is shrunk toward 1.0 so an early fluke
-cannot reshape the call. The clamp bounds the worst case: at 1.45 the longest reflective wait is 1,232 ms, at 0.80 the
-shortest closed wait is 280 ms.
-
-| Caller | `n` | `median(pauses_ms)` | raw | `pace_factor` | reflective `wait_ms` |
-|---|---:|---:|---:|---:|---:|
-| Slow, deliberating | 8 | 390 | 1.50 | 1.45 (clamped) | 1,232 ms |
-| Median | 8 | 260 | 1.00 | 1.00 | 850 ms |
-| Brisk | 8 | 170 | 0.65 | 0.80 (clamped) | 680 ms |
-| Early call | 2 | 500 | 1.18 | 1.05 | 893 ms |
-
-**Pre-reply continuation self-healing.** A caller can resume *before* the bot's audio starts. Because `ActivityEnd()` has
-already fired and the decision pass is in flight, that audio would otherwise be attributed to the next turn and the
-half-sentence lost. V3 treats pre-audio caller voice as a **continuation of the same turn**: the endpoint re-opens, the
-in-flight draft is superseded, and the new pass sees the full turn WAV. Nothing is re-asked; nothing is spoken over her.
-
-### 4.3 `V -> _ -> V` in the time domain
-
-```
-amplitude      ActivityEnd()                 ActivityStart() (resume)
-   ^               |                                 |
-1.0|  ▁▂▄█▇▅▃▂▁    |      ▁▃▅█▆▄▂▁               ▁▂▄▆█▇▅▃▁
-   | ▁▃▅███████▅▃▁▁ |    ▁▄▆█████▆▄▁            ▁▃▅███████▅▂▁
-0.0+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━▶ t
-    V (first run) |←  _  →|  V (second run)     ...
- 0 ms        voiced_ms  silence: 150-850 ms
-                  |       |<-- V -> _ -> V boundary -->|  (pace_factor sample)
-            decision pass starts (WAV + draft)   continuation self-heal: draft
-                                                 superseded, same turn re-opened
-```
-
-### 4.4 Sequence: short closed answer versus reflective turn
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant C as Caller
-    participant V as Thinking VAD (32 ms Silero frames)
-    participant D as gemini-decision-1
-    participant E as engine.py (pure reducer)
-    participant T as Gemini Live (voice puppet)
-
-    Note over C,T: CASE A - closed step, short "nahin"
-    C->>V: "nahin" (voiced 380 ms)
-    V->>T: ActivityStart()
-    Note over V: base_ms = 350 + 500 * clamp((380-600)/1200) = 350 ms
-    V->>T: ActivityEnd() at t = 350 ms
-    V->>D: turn WAV + STT draft (parallel fan-out, no wait)
-    D-->>E: active_outcome=CLEAR, choice_value=no (457-469 ms with audio)
-    E-->>T: fold answers, recompute E, then next_qid + speak cue
-    T-->>C: ack audio at t ~ 1.10 s (perceived), next question at ~1.45 s (actual)
-
-    Note over C,T: CASE B - reflective step, mid-thought pause
-    C->>V: story of the son's transfusions, pauses at 400 ms
-    V->>D: speculative pass at t = 400 ms (63 heads incl. turn_incomplete)
-    D-->>E: turn_incomplete = 0.81, stated_thal_major = 0.94, ...
-    E-->>V: hold the endpoint - do not close at 850 ms (cap 2,000 ms)
-    C->>V: resumes at t = 1,530 ms
-    V->>D: pre-reply continuation - re-open turn, supersede draft, new pass on full WAV
-    D-->>E: one TurnCommand, four stated_<qid> answers from one sentence
-```
-
-### 4.5 Latency budget
-
-| Stage | V2 (`silence_duration_ms=1000`, frozen) | V3 Case A | V3 Case B |
-|---|---:|---:|---:|
-| Endpoint detection | 1,000 ms | 350 ms | 400 ms speculative, held to ≤2,000 ms |
-| Decision pass + reducer + cue | ~1,500 ms | ~650 ms | ~650 ms per pass |
-| First audio chunk | ~220 ms | ~450 ms (ack starts earlier) | ~450 ms |
-| **Actual** | **2,720 ms** | **~1,450 ms** | bounded by her own turn |
-| **Perceived** | 2,720 ms | **~1,100 ms** | — |
-
-Perceived drops further than actual because the acknowledgement cue is emitted at `ActivityEnd()` in parallel with the
-decision pass, instead of after a second model call.
+1. **One Explicit Turn-Epoch State Machine (`TurnPhase` + monotonic `epoch: int`):**
+   - Every prompt delivery increments `epoch` (`1, 2, 3, ...`), carried on `question_state`, `audio`, `bot_turn_complete`, `thinking`, `clear`, and `quick_reply`. Stale packets from `epoch - 1` drop by integer comparison.
+   - Four mutually exclusive server-owned phases:
+     - **`PROMPTING(epoch)`**: Entered at call start, after every reduced turn, after every quick-reply tap, and on resume. Following FormBharo's `MuteUntilReplyPlayedStrategy`, **caller mic audio is gated from turn transition all the way until Question B's audio finishes playing** (with a `5.0s` `_PROMPT_MUTE_MAX_SEC` safety valve if Gemini produces no audio, plus the `2.2s` silent-model cue retry). While SHISHU speaks, `_watchdog` streams `100 ms` digital-zero PCM so Gemini's AAD stays warm.
+     - **`LISTENING(epoch)`**: Mic is open; quick-tap pills unlock once ≥50% of queued step audio has played or `bot_turn_complete` arrives; `15s` check-in and `30s` silence-close timers count *only* in `LISTENING`.
+     - **`DECIDING(epoch)`**: Entered when Gemini calls `next_question` (waiting up to `0.5s` on `stt_ready` if `tool_call` leads `input_transcription` by a frame). Server emits `{"type": "thinking", "epoch": epoch}` so the client shows `"सोच रही हूँ… / Thinking"`, suppresses `nudge-btn`, and ignores `on_nudge`.
+     - **`CLOSING(epoch)`**: Speaks the closing line once, waits for `playback_ends_at`, and emits `ending`.
+2. **Two-Tier Resilient Decision Pass + 3-Strike Non-Fatal Recovery (`intake/decisions.py` + `intake/live.py`):**
+   - **Tier 1 (Primary, `4.5s` `httpx.Timeout`):** Full 4-group multimodal request (`stated_<qid>`, `jump_topic`, `next_qid`, `semantic_flags`, WAV + STT) preserving 100% of out-of-turn multi-symptom capture and 50/50 calibration cases.
+   - **Tier 2 (Automatic slim fallback on timeout/408/429/5xx, `slim=True`):** Sends **only Group A + `semantic_flags`** (~7 heads, ~1.2k tokens instead of 64 heads / ~21.7k tokens) within the remaining `8.0s` turn budget.
+   - **Tier 3 (Graceful re-ask before hangup):** If both tiers fail on a transient outage, `LiveCallSession` stays in `Phase.ASKING` on the current cursor, increments `consecutive_tool_errors`, and cues a brief Hindi glitch apology + re-ask (`result: "retry"`). `consecutive_tool_errors` resets to `0` on the next good turn; `CloseReason.TECHNICAL_FAILURE` fires only on `missing_api_key` or **3 consecutive** failed turns.
+3. **Token-Addressed WebSocket Resume + Session-Scoped Consent (`intake/live.py` + `intake/audio.py` + `call.js`):**
+   - Unexpected `/ws/live` drops during `Phase.ASKING` keep the call resumable for `90s` instead of stamping `CALLER_STOP` immediately.
+   - `call.js` keeps `AudioContext` and mic alive across blips and retries `/ws/live?...&resume=<share_token>` (`600 ms`, `1500 ms`, `3000 ms`). Server-side resume evicts any lingering half-open old session for that `call_id`, restores `CallState` from SQLite, appends stereo WAV segments (`CallAudioRecorder(..., append_existing=True)`), and immediately re-speaks the active question.
+   - Consent is stored in `sessionStorage` for the tab session (cleared on **Log out**): manual page refresh starts a fresh call with consent still checked, and `paint("error")` never flashes `#consent-row` once consent is given.
 
 ---
 
@@ -385,5 +312,8 @@ names, and clinical readings go to the verbatim note.
 | A skipped question is never reported as "no" | `AnswerStatus.NOT_APPLICABLE` is not `is_resolved` |
 | Pruning is pack-scoped | `flag_<id>` skip rules declared in `form.yaml` only |
 | Emergency outranks every other head | Group A evaluated first, `CloseReason.EMERGENCY` |
+| Transient API timeouts never kill a call on first strike | Tier 2 slim Group-A fallback (`decisions.py`) + 3-strike re-ask (`live.py`) |
+| Pre-audio post-tap speech cannot answer an unheard question | `TurnPhase.PROMPTING` mic gate (`_PROMPT_MUTE_MAX_SEC = 5.0`) + monotonic `epoch` |
+| Network WS blips resume the same `call_id` and WAV | `/ws/live?resume=<share_token>` + `CallAudioRecorder(append_existing=True)` |
 
-All 208 offline unit tests (`python -m unittest discover -s tests`), the 50-case calibration dry-check (`scripts/calibrate_decisions.py --dry-check`), and the 3-persona live Gemini verification suite (`scripts/run_personas.py` — 3/3 PASS) verify these invariants end to end.
+All 170 offline unit tests (`python -m unittest discover -s tests`), the 50-case calibration dry-check (`scripts/calibrate_decisions.py --dry-check`), and the 3-persona live Gemini verification suite (`scripts/run_personas.py` — 3/3 PASS) verify these invariants end to end.

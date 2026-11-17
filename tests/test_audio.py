@@ -76,6 +76,49 @@ class CallAudioRecorderTests(unittest.TestCase):
         self.assertIn(1, placed)
         self.assertIn(2, placed)
 
+    def test_save_with_append_existing_concatenates_prior_call_wav_segments(self):
+        """A resumed call keeps the audio already on disk as segment one, not just segment two.
+
+        Regression: a dropped socket reopened the call on the same id, so the second recorder
+        overwrote `call_7.wav` and the first minute of the conversation vanished from the file.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            first = CallAudioRecorder(7, folder)
+            first.add_user_pcm(np.full(16000, 1000, dtype=np.int16).tobytes(), 16000)
+            first.add_bot_pcm(np.full(24000, 2000, dtype=np.int16).tobytes(), 24000)
+            first._started = time.monotonic() - 1.0
+            name_one, duration_one = first.save()
+            self.assertEqual(name_one, "call_7.wav")
+            self.assertEqual(duration_one, 1)
+
+            second = CallAudioRecorder(7, folder, append_existing=True)
+            second.add_user_pcm(np.full(16000, 3000, dtype=np.int16).tobytes(), 16000)
+            second.add_bot_pcm(np.full(24000, 4000, dtype=np.int16).tobytes(), 24000)
+            second._started = time.monotonic() - 1.0
+            name_two, duration_two = second.save()
+            self.assertEqual(name_two, "call_7.wav")
+            self.assertGreaterEqual(duration_two, 2)
+
+            self.assertEqual(second.save(), (name_two, duration_two),
+                             "a repeated save on one recorder must not append segment two twice")
+
+            with wave.open(str(folder / "call_7.wav"), "rb") as wf:
+                self.assertEqual(wf.getnchannels(), 2)
+                self.assertEqual(wf.getsampwidth(), 2)
+                self.assertEqual(wf.getframerate(), 16000)
+                self.assertGreaterEqual(wf.getnframes(), 32000)
+                raw = wf.readframes(wf.getnframes())
+
+        stereo = np.frombuffer(raw, dtype=np.int16).reshape(-1, 2)
+        self.assertLess(stereo.shape[0], 34000, "segment two is appended exactly once")
+        for frame in (100, 15000):
+            np.testing.assert_allclose(stereo[frame], [1000, 2000], atol=2,
+                                       err_msg=f"segment one survives at frame {frame}")
+        for frame in (16100, 31800):
+            np.testing.assert_allclose(stereo[frame], [3000, 4000], atol=2,
+                                       err_msg=f"segment two lands after segment one at frame {frame}")
+
 
 if __name__ == "__main__":
     unittest.main()

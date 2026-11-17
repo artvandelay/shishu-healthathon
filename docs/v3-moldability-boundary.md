@@ -60,7 +60,7 @@ environment variable, or by `DEFAULT_PACK_ID`.
 | Every closing line by reason (complete-clear, complete-concern, caller stop, silence, time limit, emergency, technical failure) | `prompts.yaml → closings{reason}` |
 | The honorific appended to a name | `prompts.yaml → honorific` |
 | The live model's whole system prompt | `prompts.yaml → system_prompt` |
-| Cue wrappers around spoken lines | `prompts.yaml → speak_cues.{speak,clarify,closing}`, `greeting_cue`, `silence_check_in_cue` |
+| Cue wrappers around spoken lines | `prompts.yaml → speak_cues.{speak,clarify,retry,closing}`, `greeting_cue`, `silence_check_in_cue` |
 | STT vocabulary hints | `prompts.yaml → vocab[]` |
 | Report group headings, patient-side and clinician-side | `form.yaml → groups{}` |
 
@@ -109,22 +109,22 @@ environment variable, or by `DEFAULT_PACK_ID`.
 
 ### 2.5 Voice-activity tuning
 
-`pack.yaml → vad{}` sets ten numbers consumed by `intake/vad.py::ThinkingVad`: the closed
-and reflective wait, the ramp start and end, speculation lead time, the incomplete-sentence
-hold, the population pause baseline, and the pace-factor clamp. `pack.yaml → timers{}` sets
-the watchdog, check-in, silence-close, soft limit and hard limit.
+`pack.yaml → vad{}` sets the Gemini Live `AutomaticActivityDetection` configuration consumed
+by `intake/live.py::build_live_config` (`start_sensitivity`, `end_sensitivity`,
+`prefix_padding_ms`, `silence_duration_ms`). `pack.yaml → timers{}` sets the check-in,
+silence-close, soft limit, and hard limit timers.
 
 ### 2.6 Decision layer
 
 | Thing | Where |
 |---|---|
 | Which model scores the turn | `decisions.yaml → model` |
-| The wording of every `noul` head's question (`danger_now`, `caller_stop`, `mentions_profile`, `redact_patient_note`, `detail_present`, `turn_incomplete`, `jump_topic`) | `decisions.yaml → heads.<name>.instructions / criteria` |
+| The wording of every `noul` head's question (`danger_now`, `caller_stop`, `mentions_profile`, `redact_patient_note`, `detail_present`, `jump_topic`) | `decisions.yaml → heads.<name>.instructions / criteria` |
 | The `active_outcome` class definitions (what counts as clear / concern / unknown / clarify / retract) | `decisions.yaml → heads.active_outcome.criteria` |
 | How out-of-turn answers are phrased to the model | `decisions.yaml → heads.stated_template` |
 | How the topic router is phrased | `decisions.yaml → heads.next_qid_template` |
 | How per-child attribution is phrased | `decisions.yaml → heads.item_ref_template` |
-| Every confidence gate | `decisions.yaml → thresholds{}` (all 17 keys are mandatory; a pack that omits one fails to load) |
+| Every confidence gate | `decisions.yaml → thresholds{}` (all 16 keys are mandatory; a pack that omits one fails to load) |
 
 ### 2.7 Reports
 
@@ -206,14 +206,15 @@ head, change a head's *type*, or change what its result does:
   `flag_<id>`, `next_qid`).
 - The instructions for `choice_value`, `opt_<k>` and `score_value` are **generated in
   Python**; only the per-option `criteria` text is config.
-- Out-of-turn auto-fill (`stated_<qid>` heads) exists **only** for `gate`, `routing_gate` and
-  `open_capture` questions. A `single_choice`, `multi_choice` or `score` question cannot be
-  answered out of turn.
+- Out-of-turn auto-fill (`stated_<qid>` heads) exists **only** for `gate` and `routing_gate`
+  questions. A `single_choice`, `multi_choice` or `score` question cannot be answered out of
+  turn.
 - `danger_now` above threshold always means `CloseReason.EMERGENCY` and an immediate
   hangup with the `emergency` closing line. A pack can redefine what the model *looks for*
   but not what happens next.
-- The audio-plus-text request shape, the retry budget, the 4 s attempt timeout and the 8 s
-  total budget are constants.
+- The two-tier audio-plus-text request shape (full 4-group primary pass + slim Group-A
+  fallback on timeout), the retry budget, the 4.5 s primary timeout and the 8 s total budget
+  are constants.
 
 ### 3.6 The UI is skinned, not composed
 
@@ -260,8 +261,7 @@ if changed. Listed so a future pack author does not lose an afternoon.
 | `pack.yaml → version` | never read |
 | `pack.yaml → domain`, `setting`, `patient_scope` | human-readable comments only; no engine module reads them |
 | `pack.yaml → ui.choice_buttons` (present in `fever-opd-hi`) | never read — single-choice pills come from `questions[].options` |
-| `pack.yaml → ui.call.start_prompt / listening / speaking / thinking / reconnecting` | never read — `call.js` keeps its own hardcoded `T` copy for the status line, and `#status` carries no `data-ui` hook |
-| `profile_slots[].type` | ignored; every slot extracts as a string |
+| `pack.yaml → timers.watchdog_timeout_sec` | never read — `live.py` drives a fixed `0.5 s` tick (`0.1 s` silence keepalive while speaking) |
 
 Anything else in the packs is live. If you add a key and want it honoured, add it to a
 loader *and* to a test.

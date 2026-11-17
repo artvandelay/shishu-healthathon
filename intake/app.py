@@ -173,4 +173,5 @@ async def ws_live(ws: WebSocket) -> None:
         return
     await ws.accept()
     from intake import live
-    await live.handle_live_ws(ws, pack=pack, caller_name=username, user_role=role, clinic_code=_clinic_code(ws.query_params.get("clinic")), on_call_completed=_prepare_pdf)
+    await live.handle_live_ws(ws, pack=pack, caller_name=username, user_role=role, clinic_code=_clinic_code(ws.query_params.get("clinic")),
+                              resume_token=str(ws.query_params.get("resume") or "").strip(), on_call_completed=_prepare_pdf)

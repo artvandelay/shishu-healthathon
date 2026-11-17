@@ -34,44 +34,96 @@ class DecisionCallResult(NamedTuple):
     question_count: int
     total_input_tokens: int | None
     raw_answers: dict[str, Any]
+    used_slim_fallback: bool = False
 class TurnIntent(Strict, frozen=True):
     command: TurnCommand
     needs_profile_extraction: bool
     diagnostics: dict[str, Any]
 async def _post(url: str, body: bytes, headers: dict[str, str], budget: float) -> tuple[int, bytes]:
+    """One pooled POST whose read budget belongs to THIS attempt, never to the client's lifetime.
+
+    Call #15's 4.0s cliff was made worse by the first `httpx.AsyncClient(..., timeout=budget)` baking that
+    attempt's budget onto every later call on the same loop; the timeout now travels with the request.
+    """
     loop = asyncio.get_running_loop()
-    if (client := _CLIENTS.get(loop)) is None or client.is_closed: client = _CLIENTS[loop] = httpx.AsyncClient(http2=False, timeout=budget)
-    reply = await client.post(url, content=body, headers=headers, timeout=budget)
+    client = _CLIENTS.get(loop)
+    if client is None or client.is_closed:
+        client = _CLIENTS[loop] = httpx.AsyncClient(http2=False)
+    timeout = httpx.Timeout(connect=2.0, read=budget, write=2.0, pool=2.0)
+    reply = await client.post(url, content=body, headers=headers, timeout=timeout)
     return reply.status_code, reply.content
-async def evaluate_turn(request: dict[str, Any], *, api_key: str | None = None, endpoint: str = DECISIONS_ENDPOINT, max_attempts: int = 2,
-                        attempt_timeout_sec: float = 4.0, total_budget_sec: float = 8.0, transport: Transport | None = None) -> DecisionCallResult:
-    started, body = time.perf_counter(), json.dumps(request, ensure_ascii=False).encode("utf-8")
+async def evaluate_turn(request: dict[str, Any], *, api_key: str | None = None, endpoint: str = DECISIONS_ENDPOINT,
+                        max_attempts: int = 2, attempt_timeout_sec: float = 4.5, total_budget_sec: float = 8.0,
+                        transport: Transport | None = None,
+                        fallback_request: dict[str, Any] | None = None) -> DecisionCallResult:
+    """Two tiers inside one turn budget: the full request first, the slim request on any retryable failure.
+
+    Call #15 died because a 4.0s tail spike on the 64-head request was the only thing between a caller and a
+    hangup. Attempt 1 still pays for every stated and router head; attempt 2+ downgrades to `fallback_request`
+    (Group A plus semantic flags) so the answer still lands before the 8.0s budget expires.
+    """
+    started = time.perf_counter()
+    primary_body = json.dumps(request, ensure_ascii=False).encode("utf-8")
+    fallback_body = json.dumps(fallback_request, ensure_ascii=False).encode("utf-8") if fallback_request is not None else None
     key = str(api_key if api_key is not None else os.environ.get("GEMINI_API_KEY") or "").strip()
     headers = {"Content-Type": "application/json", "x-goog-api-key": key}
-    send, deadline, payload, attempts, reason = transport or _post, started + float(total_budget_sec), None, 0, "missing_api_key"
+    send = transport or _post
+    deadline = started + float(total_budget_sec)
+    active_request, active_body = request, primary_body
+    payload: dict[str, Any] | None = None
+    attempts, reason, used_slim = 0, "missing_api_key", False
     while (key or (transport and api_key is None)) and attempts < max(1, int(max_attempts)):
-        if (budget := min(float(attempt_timeout_sec), deadline - time.perf_counter())) <= 0:
+        budget = min(float(attempt_timeout_sec), deadline - time.perf_counter())
+        if budget <= 0:
             reason = "timeout"
             break
         attempts += 1
         try:
-            sent = send(endpoint, body, headers, budget)
-            st, raw = await asyncio.wait_for(sent, budget) if inspect.isawaitable(sent) else sent
+            sent = send(endpoint, active_body, headers, budget)
+            if transport is None:
+                status, raw = await asyncio.wait_for(sent, budget + 0.25)
+            elif inspect.isawaitable(sent):
+                status, raw = await asyncio.wait_for(sent, budget)
+            else:
+                status, raw = sent
             obj = json.loads(bytes(raw).decode("utf-8"))
             err = obj.get("error") if isinstance(obj, dict) else None
             code = str(err.get("code") or "").lower() if isinstance(err, dict) else ""
-            if 200 <= int(st) <= 299: payload, reason, retry = (obj, "", False) if isinstance(obj, dict) and obj.get("answers") else (None, "empty_answers", False)
-            elif code in _SAFETY and int(st) < 500: payload, reason, retry = None, "safety_block", False
-            else: payload, reason, retry = None, f"http_{int(st)}", int(st) in _RETRY_CODES or int(st) >= 500
-        except (TimeoutError, httpx.TimeoutException): payload, reason, retry = None, "timeout", True
-        except httpx.TransportError: payload, reason, retry = None, "connection_error", True
-        except Exception: payload, reason, retry = None, "response_invalid", False  # noqa: BLE001
-        if payload is not None or not retry: break
+            if 200 <= int(status) <= 299:
+                if isinstance(obj, dict) and obj.get("answers"):
+                    payload, reason, retry = obj, "", False
+                else:
+                    payload, reason, retry = None, "empty_answers", False
+            elif code in _SAFETY and int(status) < 500:
+                payload, reason, retry = None, "safety_block", False
+            else:
+                payload, reason, retry = None, f"http_{int(status)}", int(status) in _RETRY_CODES or int(status) >= 500
+        except (TimeoutError, httpx.TimeoutException):
+            payload, reason, retry = None, "timeout", True
+        except httpx.TransportError:
+            payload, reason, retry = None, "connection_error", True
+        except Exception:  # noqa: BLE001
+            payload, reason, retry = None, "response_invalid", False
+        if payload is not None:
+            used_slim = fallback_body is not None and active_body is fallback_body
+            break
+        if not retry:
+            break
+        if fallback_body is not None:
+            active_request, active_body = fallback_request, fallback_body
     toks = ((payload or {}).get("usage") or {}).get("total_input_tokens")
     return DecisionCallResult(payload is not None, "" if payload is not None else reason, attempts, max(0, int((time.perf_counter() - started) * 1000)),
-                              len(body), len(request.get("questions") or {}), toks if type(toks) is int else None, (payload or {}).get("answers") or {})
+                              len(active_body), len(active_request.get("questions") or {}), toks if type(toks) is int else None,
+                              (payload or {}).get("answers") or {}, used_slim)
 def build_turn_request(pack: PackConfig, state: CallState, *, utterance_text: str = "", audio_wav_bytes: bytes | None = None,
-                       audio_mime_type: str = "audio/wav") -> dict[str, Any]:
+                       audio_mime_type: str = "audio/wav", slim: bool = False) -> dict[str, Any]:
+    """One request for one turn. `slim` drops the two groups a fallback pass can no longer afford.
+
+    The default request carries everything: the `stated_<qid>` revisions and the `next_qid` router are what make
+    an out-of-turn "मेरे बच्चे के सीने में दर्द है" land without a re-ask. They are also 56 heads and a 53-option
+    choice, which is exactly what blew the 4.0s deadline on `Call #15`, so the slim request keeps only the heads
+    a turn cannot be read without (Group A, the active typed value, the flags) and fits a fallback attempt.
+    """
     heads, kind = pack.decisions.get("heads") or {}, engine.step_kind(pack, state)
     spec, rows, audio = pack.by_id.get(state.cursor.qid), engine.roster_rows(state), bytes(audio_wav_bytes or b"")
     router, said, follow = kind != "profile", partial(engine.question_say, pack, state), engine.followup_prompt(pack, state)
@@ -87,13 +139,15 @@ def build_turn_request(pack: PackConfig, state: CallState, *, utterance_text: st
     if len(rows) >= 2 and (tpl := heads.get("item_ref_template")):
         named = {r["id"]: tpl["option_template"].format(**{**r, "name_or_unnamed": r["name"] or tpl["unnamed_label"]}) for r in rows}
         qs["item_ref"] = {"type": "choice", "instructions": tpl["instructions"], "criteria": named | {"all": tpl["all_description"], "other": tpl["other_description"]}}
-    if (router or answered) and (tpl := heads.get("stated_template")):
+    if not slim and (router or answered) and (tpl := heads.get("stated_template")):
         qs |= {f"stated_{q.id}": {"type": "choice", "instructions": tpl["instructions"].format(question_say=said(q), need=q.need, group=q.group), "criteria": tpl["criteria"]} for q in pack.questions if q.is_routable and q.id != state.cursor.qid and q.kind in _STATED_KINDS}
     qs |= {f"flag_{f}": {"type": "noul", "instructions": fs["instructions"], "criteria": {k: fs[k] for k in ("true_description", "false_description") if k in fs}} for f, fs in pack.semantic_flags.items() if f not in state.semantic_flags}
-    open_q = [q for q in pack.questions if q.is_routable and q.kind is not QuestionKind.OPEN_CAPTURE and q.id != state.cursor.qid and state.answers.get(q.id) is None]
-    if router and len(open_q) >= 2 and (tpl := heads.get("next_qid_template")):
-        if "jump_topic" in heads: qs["jump_topic"] = heads["jump_topic"]
-        qs["next_qid"] = {"type": "choice", "instructions": tpl["instructions"], "criteria": {q.id: tpl["option_template"].format(question_say=said(q), need=q.need) for q in open_q} | {"other": tpl["other_description"]}}
+    if not slim and router and (tpl := heads.get("next_qid_template")):
+        open_q = [q for q in pack.questions if q.is_routable and q.kind is not QuestionKind.OPEN_CAPTURE and q.id != state.cursor.qid and state.answers.get(q.id) is None]
+        if len(open_q) >= 2:
+            if "jump_topic" in heads:
+                qs["jump_topic"] = heads["jump_topic"]
+            qs["next_qid"] = {"type": "choice", "instructions": tpl["instructions"], "criteria": {q.id: tpl["option_template"].format(question_say=said(q), need=q.need) for q in open_q} | {"other": tpl["other_description"]}}
     utt = " ".join(utterance_text.split()) or ("[spoken audio attached]" if audio else "")
     ctx: dict[str, Any] = {"active_question": engine.active_prompt(pack, state), "caller_utterance": utt, "followup_question": follow,
                            "last_answered_question": engine.last_answered_prompt(pack, state)[1]}

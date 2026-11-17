@@ -37,15 +37,14 @@ Three invariants hold for every pack:
 | `models.py` | The typed vocabulary: `CallState`, `TurnCommand`, `AnswerRecord`, `QuestionSpec`, `PackConfig` |
 | `pack.py` | `load_pack`, `list_pack_ids`, and the startup schema validator |
 | `engine.py` | Pure FormBharo reducer: eligibility, skip matrix, roster, re-ask policy |
-| `vad.py` | Silero ONNX endpointing plus per-caller `pace_factor` calibration |
-| `decisions.py` | Single-pass `gemini-decision-1` turn classifier and threshold gating |
-| `extractor.py` | Schema-validated profile extractor (slot values out of free speech) |
-| `live.py` | Gemini Live session, single play tool, silence and reconnect watchdogs |
+| `audio.py` | 16 kHz PCM resampling and resumable stereo 16 kHz call WAV recorder |
+| `decisions.py` | Two-tier `gemini-decision-1` turn classifier (full 4-group + slim Group-A fallback) |
+| `extractor.py` | Schema-validated profile extractor (typed slot values and roster out of free speech) |
+| `live.py` | Gemini Live AAD voice puppet, `TurnPhase` + `epoch` state machine, `?resume=<share_token>` continuity |
 | `reports.py` | `project_summary` plus the Jinja → WeasyPrint Patient PDF and clinician markdown |
 | `db.py` | Atomic SQLite: calls, transcripts, events, bug reports, share tokens |
 | `app.py` | FastAPI routes, HMAC cookie auth, sliding-window rate limits, `/ws/live` |
 | `static/` | `login.html`, `call.html`, `admin.html`, `styles.css`, `call.js`, `admin.js` |
-| `assets/silero_vad.onnx` | The VAD model |
 
 `app.py` is deliberately thin: it resolves a pack, checks the signed cookie, and hands the
 work to `db`, `reports`, and `live`. One middleware, `_gate`, decides access for every

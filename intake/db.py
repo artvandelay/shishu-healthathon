@@ -94,6 +94,9 @@ def save_report_text(call_id: int, summary_doctor: str = "", summary_patient: st
            patient_name=patient_name, roster_summary=roster_summary)
 def complete_call(call_id: int, duration_sec: int, audio_path: str = "") -> None:
     _write(call_id, status="completed", duration_sec=int(duration_sec), audio_path=audio_path, ended_at=time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()))
+def reopen_call(call_id: int) -> None:
+    """Put a completed call back in progress after the caller reconnects, keeping its audio path."""
+    _write(call_id, status="active", ended_at=None)
 def create_bug_report(call_id: int = 0, reporter: str = "", category: str = "", note: str = "", call_elapsed_sec: int = 0,
                       extra_snapshot: dict | None = None, include_call_body: bool = False) -> dict:
     call = (get_call(call_id) if (owned := bool(include_call_body and call_id > 0)) else None) or {}
