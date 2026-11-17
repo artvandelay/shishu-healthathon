@@ -12,6 +12,7 @@ const CONSENT_KEY = "shishu_consent";
 const RECONNECT_DELAYS = [600, 1500, 3000];
 const NUDGE_AFTER_MS = 3000;
 const PROMPT_UNLOCK_MS = 5000;
+const PLAYBACK_TAIL_SEC = 0.35; /* the last 350 ms of a completed turn: she may answer over it, it is not an echo */
 
 const NAMES = (
   "status timer caption wait stage avatar-wrap thanks error thanks-sub call-btn no-btn yes-btn nudge-btn " +
@@ -97,6 +98,8 @@ const send = (m) => {
   if (open()) ws.send(JSON.stringify(m));
 };
 const playing = () => live.size > 0 || (ctx != null && ctx.currentTime < queueFrom);
+/* The server closed this turn, so the browser already holds the whole line: its last 350 ms is hers to answer over. */
+const tailOpen = () => stepDone && ctx != null && queueFrom - ctx.currentTime <= PLAYBACK_TAIL_SEC;
 const unraf = () => {
   if (raf) cancelAnimationFrame(raf);
   raf = 0;
@@ -264,8 +267,13 @@ function rateFor(samples, from) {
 
 function onMicFrame(samples) {
   const rms = samples && samples.length ? Math.hypot(...samples) / Math.sqrt(samples.length) : 0;
+  /* The turn is closed and only its tail is left: that window is hers, so the mic must be open in it. */
+  if (phase === "live" && turnPhase === "prompting" && tailOpen()) {
+    turnPhase = "listening";
+    say(T.listen);
+  }
   /* Half-duplex: she can be tapped over, never talked over. A muted frame never arms the nudge clock. */
-  const micAllowed = phase === "live" && turnPhase === "listening" && !playing();
+  const micAllowed = phase === "live" && turnPhase === "listening" && (!playing() || tailOpen());
   micSmooth = micAllowed && rms ? micSmooth * 0.5 + rms * 0.5 : 0;
   const pct = Math.min(100, Math.round((micSmooth / 0.12) * 100));
   micLevel.style.width = `${pct}%`;
@@ -409,7 +417,7 @@ function botTurnComplete(m) {
   if (staleEpoch(m)) return;
   if (m.step && m.step !== step) return;
   stepDone = true;
-  if (!playing() && phase === "live") {
+  if ((!playing() || tailOpen()) && phase === "live") {
     turnPhase = "listening";
     say(T.listen);
   }

@@ -235,10 +235,20 @@ class ConfigTests(unittest.TestCase):
                          "the sliding window needs an explicit retained-token target")
 
     def test_geminis_automatic_activity_detection_carries_the_packs_vad_defaults(self):
-        aad = live.build_live_config(PACK).realtime_input_config.automatic_activity_detection
-        self.assertIs(aad.disabled, False, "the model, not a local ONNX graph, owns the turn boundary")
-        self.assertEqual(aad.silence_duration_ms, 1000)
-        self.assertEqual(aad.prefix_padding_ms, 100)  # 300 ms dropped brisk 400 ms "नहीं" replies (`u3_no_16k.wav`)
+        # A 1000 ms end-of-speech window cut Hindi mid-sentence: Call #44's 1.4–1.5 s pauses closed the turn
+        # early, so the model answered half a sentence and the `DECIDING` mute swallowed the rest of it. The same
+        # 100 ms prefix dropped the consonants in front of a first syllable. Both packs must carry the widened
+        # window, so this sweeps every real pack instead of trusting the one the suite happens to import.
+        for pack_id in ("shishu-hi", "fever-opd-hi"):
+            with self.subTest(pack=pack_id):
+                aad = live.build_live_config(load_pack(pack_id)).realtime_input_config.automatic_activity_detection
+                self.assertIs(aad.disabled, False, "the model, not a local ONNX graph, owns the turn boundary")
+                self.assertEqual(aad.silence_duration_ms, 1600,
+                                 f"{pack_id}: 1.4 s–1.5 s Hindi mid-sentence pauses must finish inside the window "
+                                 "instead of buying a premature DECIDING mute (Call #44)")
+                self.assertEqual(aad.prefix_padding_ms, 200,
+                                 f"{pack_id}: the onset padding keeps the consonants before the first vowel "
+                                 "(300 ms dropped brisk 400 ms \"नहीं\" replies, `u3_no_16k.wav`)")
 
     def test_tool_body_carries_the_line_and_clarify_flag(self):
         state = live.engine.new_state(PACK)
@@ -2314,6 +2324,243 @@ class Wave2CueLifecycleAndResumeTelemetryTests(unittest.TestCase):
             # --- Subtest C: a late chunk about another topic may never become patient-safe words -----------------
             with self.subTest(case="C: multi-topic late_stt hygiene on fam_cancer"):
                 await late_stt_case()
+
+        asyncio.run(body())
+
+
+class Wave3AcousticAndPlaybackTailTests(unittest.TestCase):
+    """Wave 3 invariants: the voice gate must follow the room, and her playback tail must end where her queue ends.
+
+    Two shapes of the same failure. In Call #30 a soft speakerphone (`rms` 0.006–0.014) never crossed the fixed
+    0.015 gate, so a whole spoken turn reached the pass as text with `pcm_len == 0`, and the frames before and
+    after its one vowel were never banked at all. In Call #36 a steady clinic fan (`rms` 0.022) crossed that same
+    gate on every frame, so 36 s of silence counted as one endless caller turn: no check-in, no silence close, and
+    a `pcm` full of fan. And in Calls #33/#34/#41 an eager `"नहीं"` landed in the last 300 ms of her line, in the
+    one window where the browser already knows the turn is over, yet the server still called it her voice.
+
+    Each regime is a real recorded envelope, and each cell of the matrix is its own session, so one broken regime
+    names itself instead of hiding behind the first failure.
+    """
+
+    TAIL_MS = 350  # the last 350 ms of a completed bot turn: the browser has the whole line, she may be eager
+
+    class Clock:
+        """A simulated `time.time`: 40 s of acoustic regime costs microseconds, never 40 real seconds."""
+
+        def __init__(self, now: float = 100.0) -> None:
+            self.now = now
+
+        def __call__(self) -> float:
+            return self.now
+
+    @staticmethod
+    def rms_frame(target_rms: float, samples: int = 1024) -> bytes:
+        """One 64 ms frame of 16 kHz int16 mono whose `audio.pcm_rms` IS `target_rms`, to within 0.0005."""
+        frame = round(target_rms * 32768).to_bytes(2, "little", signed=True) * samples
+        assert abs(live.audio.pcm_rms(frame) - target_rms) <= 0.0005, (target_rms, live.audio.pcm_rms(frame))
+        assert len(frame) == samples * 2, "16-bit mono: two bytes per sample"
+        return frame
+
+    @staticmethod
+    async def stream(built: live.LiveCallSession, frame: bytes, count: int = 1) -> None:
+        """Hand `built` `count` identical mic frames, exactly as the browser sends them."""
+        payload = base64.b64encode(frame).decode()
+        for _ in range(count):
+            await built.on_audio({"data": payload, "sample_rate": 16000})
+
+    @staticmethod
+    def spy_decision_pass(built: live.LiveCallSession) -> list[int]:
+        """Replace the one Decision pass with a recorder, so the test measures the audio it was really handed."""
+        captured: list[int] = []
+
+        async def fake_pass(snapshot: CallState, spoken: str, pcm_bytes: bytes) -> live.Turn:
+            captured.append(len(pcm_bytes))
+            intent = live.decisions.TurnIntent(command=TurnCommand(outcome=TurnOutcome.CLEAR, utterance=spoken),
+                                               needs_profile_extraction=False, diagnostics={})
+            return live.Turn(TurnTests.result(answers(danger_now=0.01)), intent, None,
+                             snapshot.model_copy(deep=True), spoken, len(pcm_bytes), None)
+
+        built._evaluate_turn_task = fake_pass  # type: ignore[method-assign]
+        return captured
+
+    class Timeline:
+        """Every telemetry event the socket reported, stamped with the second of the simulated regime it landed on."""
+
+        def __init__(self) -> None:
+            self.stamped: list[tuple[float, str]] = []
+            self.seen = 0
+
+        def capture(self, ws: FakeWebSocket, now: float) -> None:
+            reported = [p["last_event"] for p in ws.of("telemetry") if p.get("last_event")]
+            self.stamped.extend((now, str(e.get("type") or "")) for e in reported[self.seen:])
+            self.seen = len(reported)
+
+        def kinds(self) -> list[str]:
+            return [kind for _t, kind in self.stamped]
+
+        def at(self, kind: str) -> float:
+            return next(t for t, seen in self.stamped if seen == kind)
+
+    async def regime_a_soft_speakerphone(self) -> None:
+        # Call #30, `soft_speakerphone_006`: 1.6 s of real speech at `rms` 0.006, a fifth of the fixed gate.
+        built, _ws, _session = build(call_id=None)
+        clock = self.Clock(100.0)
+        captured = self.spy_decision_pass(built)
+        frame = self.rms_frame(0.006)
+        self.assertLess(live.audio.pcm_rms(frame), live._ONSET_MIN, "this regime IS under the onset floor: that is the bug")
+        with unittest.mock.patch.object(live.time, "time", clock):
+            await self.stream(built, frame, 25)  # 25 x 64 ms = 1600 ms
+            await built._hear("user", "मेरा नाम कविता है")
+            await built._next_question()
+        self.assertEqual(built.telemetry["user_turns"], 1, "one soft utterance is still one caller turn")
+        self.assertEqual(captured, [25 * len(frame)],
+                         "every one of the 25 contiguous frames must reach the pass; a text-only turn has no audio "
+                         "for the model to hear and `audio_ms` reads 0 in the meta row")
+        self.assertEqual(built.last_turn_meta.get("audio_ms"), 1600,
+                         "and the turn is booked as the 1600 ms she actually spoke")
+
+    async def regime_b_soft_speakerphone_single_peak(self) -> None:
+        # Call #30 again: one vowel peaking at 0.014 is the ONLY landmark in an otherwise sub-onset phrase, and the
+        # 20 frames of 0.007 speech that follow it are quieter than any tail the floor had learned to expect. A
+        # floor that creeps up on frames it can never gate against raises `tail_rms` above 0.007, so those frames
+        # fall to the 8-chunk tail budget and the last 12 are chopped — and `bool(self.pcm)` then blocks the
+        # `_next_question` ring fallback, so the loss is silent.
+        built, _ws, _session = build(call_id=None)
+        clock = self.Clock(100.0)
+        captured = self.spy_decision_pass(built)
+        with unittest.mock.patch.object(live.time, "time", clock):
+            await self.stream(built, self.rms_frame(0.002), 4)    # quiet room, before anything is said
+            await self.stream(built, self.rms_frame(0.008), 10)   # soft speech before the peak
+            await self.stream(built, self.rms_frame(0.014), 1)    # the one vowel: the turn's only onset
+            await self.stream(built, self.rms_frame(0.007), 20)   # soft speech after it, quieter than the lead-in
+            self.assertGreaterEqual(len(built.pcm), 31 * 2048,
+                                    "the peak must open `pcm` through `_soft_lead`, and every one of the 20 trailing "
+                                    "0.007 frames must survive: 31 speech frames, before any ring fallback can help")
+            await built._hear("user", "छोटी बेटी मीरा")
+            await built._next_question()
+        self.assertEqual(len(captured), 1, "the turn really reached a Decision pass")
+        self.assertGreaterEqual(captured[0], 31 * 2048,
+                                "neither the soft frames before the peak nor the 20 after it may be chopped off: "
+                                "the vowel alone is not the word")
+
+    async def regime_c_continuous_fan(self) -> None:
+        # Call #36, `continuous_clinic_fan_022`: the fan never stops and nobody speaks for 36 s.
+        built, ws, _session = build(call_id=None)
+        clock = self.Clock(100.0)
+        built.started_at = built.last_voice_ts = 100.0
+        fan = self.rms_frame(0.022)
+        timeline = self.Timeline()
+        with unittest.mock.patch.object(live.time, "time", clock):
+            now = 100.0
+            while now <= 136.0 + 1e-9:
+                clock.now = now
+                await self.stream(built, fan, 8)  # 512 ms of steady 64 ms frames per half-second tick
+                await built.tick(now)
+                timeline.capture(ws, now)
+                now = round(now + 0.5, 3)
+        self.assertEqual(built.telemetry["user_turns"], 0,
+                         "a steady fan is the room, not a caller: 36 s of it is never one endless turn")
+        self.assertEqual(built.pcm, b"", "and none of it may be banked as her turn audio")
+        self.assertIn("silence_check_in", timeline.kinds(), "the 15 s check-in still owes this call a line")
+        check_in = timeline.at("silence_check_in")
+        self.assertGreaterEqual(check_in, 114.5, "the check-in fires on the 15 s of real silence, not before")
+        self.assertLessEqual(check_in, 116.0, "and not late: the fan was never mistaken for her voice")
+        self.assertIs(built.state.phase, Phase.CLOSING, "30 s of a quiet room closes the call by 130 s")
+        self.assertIs(built.state.close_reason, CloseReason.SILENCE, "and it says why: silence, not a technical failure")
+
+    async def regime_d_fan_onset(self) -> None:
+        # `mid_call_fan_onset_022`: the room is quiet, then somebody switches the clinic fan on mid-call.
+        built, ws, _session = build(call_id=None)
+        clock = self.Clock(100.0)
+        built.started_at = built.last_voice_ts = 100.0
+        timeline = self.Timeline()
+        with unittest.mock.patch.object(live.time, "time", clock):
+            clock.now = 100.0
+            await self.stream(built, self.rms_frame(0.002), 6)  # t = 100.0 .. 100.4, nothing said
+            clock.now = 100.4
+            await built.tick(100.4)
+            timeline.capture(ws, 100.4)
+            now = 100.9
+            while now <= 140.0 + 1e-9:
+                clock.now = now
+                await self.stream(built, self.rms_frame(0.022), 8)  # the fan, and nothing else, from here on
+                await built.tick(now)
+                timeline.capture(ws, now)
+                now = round(now + 0.5, 3)
+        # The onset is allowed to buy a turn for as long as the floor takes to climb over it, but no longer: an
+        # onset that never settles banks 39 s of fan, starves every timer below of a quiet second, and closes the
+        # call on the wrong reason entirely.
+        self.assertLessEqual(len(built.pcm), 33 * 2048,
+                             "the floor settles over the fan within ~1 s, so the onset can never bank 39 s of it")
+        self.assertLessEqual(built.telemetry["user_turns"], 1,
+                             "the onset is at most one caller turn; a fan that re-arms it every frame is a room")
+        kinds = timeline.kinds()
+        self.assertIn("silence_check_in", kinds,
+                      "the floor must climb above the new fan within ~1 s, or the check-in is never owed")
+        self.assertLessEqual(timeline.at("silence_check_in"), 117.5,
+                             "a floor that settles ~1 s after the onset still checks in by ~116.5 s")
+        self.assertIn("auto_close", kinds, "and the 30 s silence close still fires")
+        self.assertLessEqual(timeline.at("auto_close"), 140.0,
+                             "both the check-in AND the silence close land before the sweep ends")
+        self.assertIs(built.state.close_reason, CloseReason.SILENCE, "the call is closed for silence it can prove")
+
+    async def regime_e_speech_over_noise(self) -> None:
+        # Calls #29/#31, `speech_over_clinic_noise_022`: 1.28 s of speech buried in a fan at `rms` 0.022.
+        built, _ws, _session = build(call_id=None)
+        clock = self.Clock(100.0)
+        with unittest.mock.patch.object(live.time, "time", clock):
+            await self.stream(built, self.rms_frame(0.022), 15)   # the room: 0.96 s of fan before she starts
+            await self.stream(built, self.rms_frame(0.085), 20)   # her voice, 1.28 s
+            await self.stream(built, self.rms_frame(0.022), 40)   # 2.56 s of fan after she stops
+        self.assertGreaterEqual(len(built.pcm), 20 * 2048,
+                                "her speech must reach the pass, even though the room around it is loud")
+        self.assertLessEqual(len(built.pcm), 33 * 2048,
+                             "and the trailing 2 s of room noise is released, not banked: speech plus a bounded "
+                             "preroll and tail, never the 60+ frames of fan this regime really sends")
+
+    def test_adaptive_noise_floor_and_contiguous_turn_audio_across_acoustic_regimes(self):
+        async def body() -> None:
+            with self.subTest(regime="A: soft_speakerphone_006 (Call #30)"):
+                await self.regime_a_soft_speakerphone()
+            with self.subTest(regime="B: soft_speakerphone_single_peak (Call #30)"):
+                await self.regime_b_soft_speakerphone_single_peak()
+            with self.subTest(regime="C: continuous_clinic_fan_022 (Call #36)"):
+                await self.regime_c_continuous_fan()
+            with self.subTest(regime="D: mid_call_fan_onset_022"):
+                await self.regime_d_fan_onset()
+            with self.subTest(regime="E: speech_over_clinic_noise_022 (Calls #29, #31)"):
+                await self.regime_e_speech_over_noise()
+
+        asyncio.run(body())
+
+    def test_server_playback_tail_unmutes_only_in_final_350ms_after_turn_complete(self):
+        # Calls #33/#34/#41: she answered "नहीं" 300 ms before her line finished playing. The browser had the whole
+        # line and the model had already closed its turn, yet the server still called that frame her echo and threw
+        # it away. The tail is not a guess: it is the last 350 ms of a turn the model itself declared complete.
+        tail = self.TAIL_MS
+        cases = [
+            (True, live.TurnPhase.PROMPTING, 200, False),            # mid-generation: `turn_complete` has not arrived
+            (False, live.TurnPhase.LISTENING, 2000, False),           # turn closed, but 2 s of her line is still queued
+            (False, live.TurnPhase.LISTENING, tail + 150, False),     # 500 ms left is still more than the tail
+            (False, live.TurnPhase.LISTENING, tail - 50, True),       # inside the tail: the eager "नहीं" is her voice
+            (False, live.TurnPhase.LISTENING, tail - 250, True),      # and so is the last 100 ms of it
+        ]
+
+        async def body() -> None:
+            for bot_generating, phase, remaining_ms, want in cases:
+                with self.subTest(bot_generating=bot_generating, turn_phase=str(phase), remaining_ms=remaining_ms,
+                                  want_accepted=want):
+                    built, _ws, session = build(call_id=None)
+                    clock = self.Clock(100.0)
+                    with unittest.mock.patch.object(live.time, "time", clock):
+                        built.bot_generating, built.turn_phase = bot_generating, phase
+                        built.playback_ends_at = clock.now + remaining_ms / 1000
+                        await built.on_audio({"data": pcm(), "sample_rate": 16000})
+                    self.assertEqual(len(session.realtime("audio")), 1 if want else 0,
+                                     f"{remaining_ms} ms of playback left with bot_generating={bot_generating}: "
+                                     f"the mic is {'open' if want else 'shut'} here")
+                    self.assertIs(bool(built.pcm), want,
+                                  "and the frame is banked for the pass exactly when it was forwarded")
 
         asyncio.run(body())
 

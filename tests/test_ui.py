@@ -672,6 +672,64 @@ return {
         self.assertTrue(out["nudgeHidden"], "the nudge never surfaces while the server is deciding")
         self.assertEqual(out["thinkingFrames"], 0, "and the mic stays shut while she thinks")
 
+    def test_playback_tail_allows_eager_reply_only_after_bot_turn_complete_inside_350ms(self):
+        # Calls #33/#34/#41: she said "नहीं" 300 ms before SHISHU's line finished playing. `playing()` stayed true
+        # until the very last sample, so her first word was never sent, and the model heard silence where the
+        # answer was. By `bot_turn_complete` the browser holds the whole line and the server has closed the turn,
+        # so the last 350 ms of the queue is a window where a voice is hers, never an echo.
+        out = self.run_js(r"""
+api.boot(JSON.parse(process.env.PACK));
+await api.settle();
+await api.start();
+api.push({ type: "session_started", call_id: 44, share_token: "tok44", out_sample_rate: 24000 });
+await api.settle();
+api.push({ type: "question_state", step: "intro_married", epoch: 1, is_yes_no: false, quick_replies: [] });
+/* 96 000 PCM bytes at 24 kHz = 48 000 samples = 2.0 s of her line, all of it still queued. */
+api.push({ type: "audio", data: api.pcm(96000), sample_rate: 24000, epoch: 1 });
+await api.settle();
+const sent = () => api.sent.filter((m) => m.type === "audio").length;
+
+/* 1) 200 ms left, but the model has not closed the turn: this is still her own voice. */
+api.ctx().currentTime = 1.80;
+api.mic(0.2);
+await api.settle();
+const beforeComplete = sent();
+
+api.push({ type: "bot_turn_complete", step: "intro_married", epoch: 1 });
+await api.settle();
+
+/* 2) 1500 ms left: the turn is closed, but most of the line is still unheard. */
+api.ctx().currentTime = 0.50;
+api.mic(0.2);
+await api.settle();
+const midLine = sent();
+
+/* 3) 500 ms left: outside the 350 ms tail, still muted. */
+api.ctx().currentTime = 1.50;
+api.mic(0.2);
+await api.settle();
+const outsideTail = sent();
+
+/* 4) 300 ms left: inside the tail, so the eager "नहीं" is sent and the page shows it is listening. */
+api.ctx().currentTime = 1.70;
+api.mic(0.2);
+await api.settle();
+const insideTail = sent();
+const turnPhase = vm.runInContext("turnPhase", sandbox);
+const statusText = api.nodes["status"].children.map((c) => c.textContent).join("|");
+
+return { beforeComplete, midLine, outsideTail, insideTail, turnPhase, statusText };
+""")
+
+        self.assertEqual(out["beforeComplete"], 0,
+                         "no frame is sent while the model is still generating: turn_complete has not arrived")
+        self.assertEqual(out["midLine"], 0, "1500 ms of her line still queued is not the tail")
+        self.assertEqual(out["outsideTail"], 0, "500 ms left is still more than the 350 ms tail")
+        self.assertEqual(out["insideTail"], 1,
+                         "300 ms left, after turn_complete: the eager \"नहीं\" is her voice, not an echo")
+        self.assertEqual(out["turnPhase"], "listening", "inside the tail the client is already listening")
+        self.assertIn("सुन रही हूँ…", out["statusText"], "and it says so on screen")
+
 
 if __name__ == "__main__":
     unittest.main()

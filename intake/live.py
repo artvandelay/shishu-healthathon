@@ -20,7 +20,9 @@ from intake.models import AnswerStatus, CallState, CloseReason, FollowupSlot, Pa
 logger = logging.getLogger(__name__)
 _IN, _OUT, _TICK, _MUTE_SEC, _CUE_DELAY, _STT_WAIT, _MAX_RECONNECTS, _MAX_TURN = 16000, 24000, 0.5, 0.1, 2.2, 0.5, 5, 960_000
 _GRACE, _MODEL, _BROKE = 12.0, "gemini-3.1-flash-live-preview", object()
-_VOICE_RMS, _TAIL_CHUNKS, _SILENCE_100MS = 0.015, 8, b"\x00\x00" * 1600  # 100 ms digital silence keeps Gemini AAD warm in half-duplex
+_NOISE_MIN, _NOISE_MAX, _ONSET_MIN = 0.003, 0.035, 0.012  # the adaptive room floor and the quietest onset it will accept
+_RING_MAX, _PLAYBACK_TAIL_SEC = 48, 0.35  # ~3.0 s of 64 ms frames, and the last 350 ms of a turn the model already closed
+_TAIL_CHUNKS, _SILENCE_100MS = 8, b"\x00\x00" * 1600  # 100 ms digital silence keeps Gemini AAD warm in half-duplex
 _PROMPT_MUTE_MAX_SEC = 5.0  # the most a step may hold the mic shut waiting for audio that never comes
 _MAX_CONSECUTIVE_TOOL_ERRORS = 3  # a Decision pass that dies this many times in a row is a technical failure, not a glitch
 _COUNTERS = ("user_turns", "bot_turns", "tool_calls", "tool_errors", "audio_chunks_in", "audio_chunks_out", "interruptions", "reconnects")
@@ -50,7 +52,7 @@ def build_live_config(pack: PackConfig, resume_handle: str = "") -> types.LiveCo
         realtime_input_config=types.RealtimeInputConfig(
             turn_coverage=types.TurnCoverage.TURN_INCLUDES_ONLY_ACTIVITY,
             automatic_activity_detection=types.AutomaticActivityDetection(
-                disabled=False, prefix_padding_ms=int(vad.get("prefix_padding_ms") or 100), silence_duration_ms=int(vad.get("silence_duration_ms") or 1000),
+                disabled=False, prefix_padding_ms=int(vad.get("prefix_padding_ms") or 200), silence_duration_ms=int(vad.get("silence_duration_ms") or 1600),
                 start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH if loud_s else types.StartSensitivity.START_SENSITIVITY_LOW,
                 end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH if loud_e else types.EndSensitivity.END_SENSITIVITY_LOW)),
         context_window_compression=types.ContextWindowCompressionConfig(
@@ -117,6 +119,7 @@ class LiveCallSession:
             stop=asyncio.Event(), ws_lock=asyncio.Lock(), send_lock=asyncio.Lock(), resume_requested=False, reconnecting=False,
             ending_sent=False, bot_text="", cue_kind="speak", checked_in=False, seen=set(), cancelled=set(),
             pcm=b"", text="", snapshot=None, preroll=deque(maxlen=4), tail_chunks=0,
+            noise_rms=0.005, noise_seeded=False, listening_ring=deque(maxlen=_RING_MAX),
             stt_ready=asyncio.Event(), tool_task=None, fallback=None, last_reduced=None,
             epoch=0, turn_phase=TurnPhase.LISTENING, prompted_at=0.0, bot_generating=False, awaiting_abort_end=False,
             closing_spoken=False, consecutive_tool_errors=0, prompt_recued=False)
@@ -161,7 +164,11 @@ class LiveCallSession:
         """The one answer to "could this frame be her own echo?": every reason to shut the mic lives here."""
         if self.turn_phase in (TurnPhase.DECIDING, TurnPhase.CLOSING):
             return True
-        if self.bot_generating or self.awaiting_abort_end or now < self.playback_ends_at:
+        if self.bot_generating or self.awaiting_abort_end:
+            return True
+        # The browser holds the whole line once the model closed the turn: the last 350 ms of it is her voice.
+        tail = _PLAYBACK_TAIL_SEC if self.turn_phase is TurnPhase.LISTENING else 0.0
+        if now < self.playback_ends_at - tail:
             return True
         if self.turn_phase is TurnPhase.PROMPTING and (now - self.prompted_at) < _PROMPT_MUTE_MAX_SEC:
             return True
@@ -201,6 +208,7 @@ class LiveCallSession:
     def _reset_turn(self) -> None:
         self.pcm, self.text, self.snapshot, self.tail_chunks = b"", "", None, 0
         self.preroll.clear()  # a reset abandons the banked onset, so no stale chunk can seed the next turn
+        self.listening_ring.clear()
         self.stt_ready.clear()
     async def _evaluate_turn_task(self, snapshot: CallState, spoken: str, pcm: bytes) -> Turn:
         wav = audio.pcm16_to_wav_bytes(pcm, _IN) if pcm else None
@@ -215,6 +223,26 @@ class LiveCallSession:
         done = await asyncio.gather(*jobs)
         return Turn(done[0], decisions.interpret_turn_decision(self.pack, snapshot, done[0].raw_answers, utterance_text=spoken),
                     done[1] if len(done) > 1 else None, snapshot, spoken, len(pcm), wav)
+    def _learn_noise(self, rms: float) -> None:
+        """Follow the room, never the caller: a fan must become the floor, and a soft turn must never become it.
+
+        A frame under `_ONSET_MIN` can never cross `onset_rms` — which is floored at `_ONSET_MIN` itself — so
+        learning from it buys nothing and costs everything: creeping the floor toward 0.008 lifts `tail_rms` over
+        the 0.007 speech that follows a single vowel, and the turn's last 12 frames die in the 8-chunk tail budget.
+        """
+        if not self.noise_seeded:
+            self.noise_seeded = True
+            if rms <= 0.03: self.noise_rms = _NOISE_MIN if rms < _ONSET_MIN else min(_NOISE_MAX, rms)
+        elif rms <= self.noise_rms:  # quiet: track it down, so the floor falls back when the fan stops
+            self.noise_rms = max(_NOISE_MIN, 0.85 * self.noise_rms + 0.15 * rms)
+        elif rms >= _ONSET_MIN and not (self.pcm and self.text):  # loud enough to gate: the room really changed
+            self.noise_rms = min(_NOISE_MAX, 0.94 * self.noise_rms + 0.06 * min(rms, _NOISE_MAX))
+    def _soft_lead(self, tail_rms: float) -> bytes:
+        """The contiguous soft speech before an onset, plus the quiet consonants right in front of it."""
+        ring = list(self.listening_ring)
+        i = len(ring)
+        while i > 0 and ring[i - 1][1] >= tail_rms: i -= 1
+        return b"".join(c for c, _ in ring[max(0, i - 4):]) if i < len(ring) else b"".join(self.preroll)
     async def on_audio(self, payload: dict[str, Any]) -> bool:
         if not (pcm := audio.pcm_bytes(payload.get("data") or "")) or self.state.phase is not Phase.ASKING: return True
         raw = str(payload.get("sample_rate") or "")
@@ -222,25 +250,35 @@ class LiveCallSession:
         now = time.time()
         if self._mic_muted(now):
             self.preroll.clear()  # she can tap over SHISHU but never talk over her: her own voice is not a caller turn
+            self.listening_ring.clear()
             return True
         if self.turn_phase is TurnPhase.PROMPTING: self.turn_phase = TurnPhase.LISTENING  # the 5 s valve elapsed with no audio
         self.telemetry["audio_chunks_in"] += 1
         if self.recorder is not None: self.recorder.add_user_pcm(pcm, rate)
         pcm_16k = pcm if rate == _IN else audio.resample_int16_mono(pcm, rate, _IN)
-        if audio.pcm_rms(pcm_16k) >= _VOICE_RMS:
+        rms = audio.pcm_rms(pcm_16k)
+        self._learn_noise(rms)
+        onset_rms, tail_rms = max(_ONSET_MIN, self.noise_rms * 2.5), max(0.005, self.noise_rms * 1.4)
+        if rms >= onset_rms:
             self.last_voice_ts, self.checked_in = time.time(), False
             if not self.pcm:
                 self._cancel("fallback")  # caller started speaking; never talk over her with a delayed cue
                 if self.snapshot is None: self.snapshot = self.state.model_copy(deep=True)
                 self.last_reduced = None
-                self.pcm = (b"".join(self.preroll) + pcm_16k)[-_MAX_TURN:]  # the consonants before the vowel are hers too
+                self.pcm = (self._soft_lead(tail_rms) + pcm_16k)[-_MAX_TURN:]  # the consonants before the vowel are hers too
                 self.preroll.clear()
                 self.telemetry["user_turns"] += 1
-            else: self.pcm = (self.pcm + pcm_16k)[-_MAX_TURN:]
+            else:
+                lead = b"".join(self.preroll) if self.tail_chunks == 0 else b""
+                self.preroll.clear()
+                self.pcm = (self.pcm + lead + pcm_16k)[-_MAX_TURN:]
             self.tail_chunks = _TAIL_CHUNKS
+        elif self.pcm and rms >= tail_rms:
+            self.pcm, self.tail_chunks = (self.pcm + pcm_16k)[-_MAX_TURN:], _TAIL_CHUNKS
         elif self.pcm and self.tail_chunks > 0:
             self.pcm, self.tail_chunks = (self.pcm + pcm_16k)[-_MAX_TURN:], self.tail_chunks - 1
-        elif not self.pcm: self.preroll.append(pcm_16k)  # a silent frame never moves `last_voice_ts`
+        else: self.preroll.append(pcm_16k)  # a frame at the room's own floor never moves `last_voice_ts`
+        self.listening_ring.append((pcm_16k, rms))
         if await self._send_realtime(audio=types.Blob(data=pcm, mime_type=f"audio/pcm;rate={rate}")): return True
         await self._emit("error", "Could not forward audio to Gemini")
         return False
@@ -380,6 +418,10 @@ class LiveCallSession:
     async def _next_question(self) -> tuple[dict[str, Any], bool]:
         self.last_turn_meta = {}
         if self.state.phase is not Phase.ASKING or not (self.pcm or self.text): return tool_body(self.pack, self.state), False
+        if not self.pcm and self.text and self.listening_ring:
+            # Soft speakerphone speech never crossed any threshold, so its only trace is the ring: the words arrived,
+            # the audio did not, and a pass handed `pcm_len == 0` is a pass that cannot hear her (Call #30).
+            self.pcm = b"".join(chunk for chunk, _rms in self.listening_ring)[-_MAX_TURN:]
         snapshot = self.snapshot or self.state.model_copy(deep=True)
         spoken, pcm = self.text, self.pcm
         self._reset_turn()

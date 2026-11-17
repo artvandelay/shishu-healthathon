@@ -20,8 +20,8 @@ chief_complaint: "बुखार"
 vad:
   start_sensitivity: LOW
   end_sensitivity: LOW
-  prefix_padding_ms: 100
-  silence_duration_ms: 1000
+  prefix_padding_ms: 200
+  silence_duration_ms: 1600
 
 timers:
   watchdog_timeout_sec: 8.0
