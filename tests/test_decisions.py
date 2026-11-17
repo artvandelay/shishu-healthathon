@@ -6,13 +6,14 @@ import asyncio
 import inspect
 import json
 import unittest
+from unittest import mock
 
 from google.genai import types
 
 from intake import decisions, engine, extractor
 from intake.models import (
     AnswerRecord, AnswerStatus, CallState, CursorStep, PackConfig,
-    RosterItem, TurnOutcome,
+    RosterItem, SubStep, TurnOutcome,
 )
 from intake.pack import load_pack
 
@@ -518,6 +519,89 @@ class ExtractorTests(unittest.TestCase):
         cut = cal._sweep(pairs, 200.0, 10.0)
         self.assertGreater(cut, 0.43, "a zero-loss valley between 0.43 and 0.75 must never collapse to 0.025")
         self.assertLess(cut, 0.75)
+
+
+class Wave1DetailPresentAndExtractorTimeoutTests(unittest.TestCase):
+    """Wave 1: the detail the caller already spoke must be readable on every step that carries a followup."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.shishu = load_pack("shishu-hi")
+
+    def test_detail_present_travels_and_interprets_on_which_item_when_followup_exists(self):
+        # `detail_present` was offered only on "main"/"close", so at SubStep.WHICH_ITEM the model had no head to
+        # say "she already answered the followup in the same breath" and Call #32 re-asked a settled question.
+        steps = (
+            ("gate_bones_fractures", SubStep.MAIN, 0, "main"),
+            ("gate_bones_fractures", SubStep.WHICH_ITEM, 0, "which_item"),
+            ("gate_bones_fractures", SubStep.FOLLOWUP, 0, "followup"),
+            ("birth_nicu", SubStep.WHICH_ITEM, 0, "which_item"),
+            ("birth_cord_3weeks", SubStep.MAIN, 0, "main"),
+            ("birth_cord_3weeks", SubStep.WHICH_ITEM, 0, "which_item"),
+            ("intro_children", SubStep.MAIN, 0, "profile"),
+            ("intro_bridge", SubStep.MAIN, 0, "bridge"),
+            ("close_anything_else", SubStep.MAIN, 0, "close"),
+        )
+        for qid, substep, fidx, kind in steps:
+            with self.subTest(qid=qid, substep=substep.value, followup_idx=fidx):
+                st = state_at(self.shishu, qid, substep=substep, followup_idx=fidx)
+                self.assertEqual(engine.step_kind(self.shishu, st), kind)
+                pending = bool(engine.followup_prompt(self.shishu, st))
+                heads = decisions.build_turn_request(self.shishu, st)["questions"]
+                self.assertEqual("detail_present" in heads, pending and kind in ("main", "which_item", "close"),
+                                 f"detail_present follows the pending followup on a {kind} step (pending={pending})")
+
+        # A which-item turn whose own question has no followup must not pay for a detail_present head.
+        with self.subTest(qid="birth_cord_3weeks", case="followup-less which_item"):
+            bare = state_at(self.shishu, "birth_cord_3weeks", substep=SubStep.WHICH_ITEM)
+            self.assertEqual(engine.step_kind(self.shishu, bare), "which_item")
+            self.assertNotIn("detail_present", decisions.build_turn_request(self.shishu, bare)["questions"])
+
+        which_item = state_at(self.shishu, "gate_bones_fractures", substep=SubStep.WHICH_ITEM)
+        self.assertEqual(engine.step_kind(self.shishu, which_item), "which_item")
+        outcomes = {
+            "detail + concern wins": (0.85, dict(concern=0.86, clear=0.06, other=0.05), True),
+            "no detail + concern wins": (0.10, dict(concern=0.86, clear=0.06, other=0.05), False),
+            "detail + clear wins": (0.85, dict(clear=0.86, concern=0.06, other=0.05), False),
+        }
+        for label, (detail, outcome, want) in outcomes.items():
+            with self.subTest(case=label):
+                intent = decisions.interpret_turn_decision(
+                    self.shishu, which_item, {"detail_present": noul(detail), "active_outcome": choice(**outcome)})
+                self.assertEqual(intent.diagnostics["step_kind"], "which_item")
+                self.assertIs(intent.command.followup_answered, want,
+                              f"followup_answered is detail_present AND a concern on the active question: {label} "
+                              f"(detail_present={detail}, outcome={intent.command.outcome.value})")
+
+    def test_extractor_default_timeout_is_patient_8s_for_spoken_rosters(self):
+        # Call #25: the extractor cliffed at 3.001s on a spoken roster and reported "timeout", so "मेरे ट्विंस
+        # बच्चे हैं" reached the reducer as nothing at all.
+        seen: list[float] = []
+        real_wait_for = asyncio.wait_for
+
+        async def recording_wait_for(fut, timeout):  # noqa: ANN001 - mirrors asyncio.wait_for's signature
+            seen.append(float(timeout))
+            return await real_wait_for(fut, timeout)
+
+        async def gen(**_kwargs):
+            return {"roster_complete": True, "roster": [{"age_years": 5.0, "tag": "male", "name": "आरव"}]}
+
+        async def run() -> extractor.ProfileExtractionResult:
+            with mock.patch.object(extractor.asyncio, "wait_for", recording_wait_for):
+                return await extractor.extract_profile_entities(
+                    self.shishu, state_at(self.shishu, "intro_children"),
+                    utterance_text="एक बेटा है 5 साल का आरव", generator=gen)
+
+        result = asyncio.run(run())
+        default = inspect.signature(extractor.extract_profile_entities).parameters["attempt_timeout_sec"].default
+        self.assertTrue(result.ok)
+        self.assertEqual([r.age_years for r in result.patch.roster], [5.0])
+        for label, ok in {
+            "the declared default is a patient 8.0s, not a 3.0s cliff": float(default) == 8.0,
+            "the default budget is what asyncio.wait_for actually gets": seen == [8.0],
+        }.items():
+            with self.subTest(invariant=label):
+                self.assertTrue(ok, f"{label}: declared default={default!r} recorded wait_for budgets={seen!r}")
 
 
 if __name__ == "__main__":

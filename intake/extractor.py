@@ -69,7 +69,7 @@ def validate_payload(pack: PackConfig, raw: Any) -> ProfilePatch:
     if entries is not None and not isinstance(entries, list): raise ValueError("invalid roster")
     return ProfilePatch(slots=slots, roster_complete=complete, roster=tuple(_roster_input(i, e) for i, e in enumerate(entries)) if entries is not None else None)
 async def extract_profile_entities(pack: PackConfig, state: CallState | None = None, utterance_text: str = "", audio_wav_bytes: bytes | None = None,
-                                   *, model: str | None = None, api_key: str | None = None, attempt_timeout_sec: float = 3.0,
+                                   *, model: str | None = None, api_key: str | None = None, attempt_timeout_sec: float = 8.0,
                                    generator: Callable[..., Any] | None = None) -> ProfileExtractionResult:
     started = time.perf_counter()
     fail = lambda r: ProfileExtractionResult(False, error_reason=r, extractor_ms=max(0, int((time.perf_counter() - started) * 1000)))

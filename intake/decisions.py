@@ -197,7 +197,7 @@ def build_turn_request(pack: PackConfig, state: CallState, *, utterance_text: st
         elif spec.kind is QuestionKind.MULTI_CHOICE:
             qs |= {f"opt_{k}": {"type": "noul", "instructions": f"Did the caller select or report '{o.label}' ({o.criteria or o.en or k}) in response to active_question?"} for k, o in spec.options.items()}
         elif spec.kind is QuestionKind.SCORE: qs["score_value"] = {"type": "score", "instructions": f"Rate caller's answer to active_question ({spec.say}):", "criteria": list(spec.score_rubric)}
-    if follow and kind in ("main", "close") and "detail_present" in heads: qs["detail_present"] = heads["detail_present"]
+    if follow and kind in ("main", "which_item", "close") and "detail_present" in heads: qs["detail_present"] = heads["detail_present"]
     if len(rows) >= 2 and (tpl := heads.get("item_ref_template")):
         named = {r["id"]: tpl["option_template"].format(**{**r, "name_or_unnamed": r["name"] or tpl["unnamed_label"]}) for r in rows}
         qs["item_ref"] = {"type": "choice", "instructions": tpl["instructions"], "criteria": named | {"all": tpl["all_description"], "other": tpl["other_description"]}}
@@ -280,7 +280,8 @@ def interpret_turn_decision(pack: PackConfig, state: CallState, raw_answers: Map
     cmd = TurnCommand(
         emergency=on["danger_now"], caller_stop=not on["danger_now"] and on["caller_stop"], outcome=outcome, value=val,
         item_ref=_pick(a, "item_ref", t, "item_ref", allowed=frozenset({i.id for i in state.roster}) | {"all"}) if len(state.roster) >= 2 else "",
-        followup_answered=bool(on["detail_present"] and kind in ("main", "close") and outcome is TurnOutcome.CONCERN),
+        followup_answered=bool(on["detail_present"] and ((kind in ("main", "close") and outcome is TurnOutcome.CONCERN)
+                                                          or (kind == "which_item" and outcome in (TurnOutcome.CONCERN, TurnOutcome.ANSWERED)))),
         stated=stated, semantic_flags=flags, jump_topic=bool(not closing and kind != "profile" and on["jump_topic"]),
         next_qid_probs=next_probs, utterance=" ".join(utterance_text.split()), redacted=on["redact_patient_note"])
     diag = {"active_qid": state.cursor.qid, "step_kind": kind, "outcome": outcome.value, "stated": {q: o.value for q, o in stated.items()}, "next_qid_probs": next_probs,

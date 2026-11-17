@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from intake import engine
+from intake import engine, reports
 from intake.engine import (
     MAX_STEP_ATTEMPTS, active_prompt, eval_rule, format_age_label,
     merge_transcript_chunk, new_state, quick_replies, quick_reply_command,
@@ -452,6 +452,321 @@ class RealPackIntegrationTests(unittest.TestCase):
         st = reduce_turn(shishu, st, TurnCommand(profile_patch=ProfilePatch(slots={"marital_status": "married"})))
         self.assertEqual(st.cursor.qid, "intro_children")
         self.assertIsNone(st.profile.get("ever_pregnant"))
+
+
+KABIR = RosterInput(age_years=4.0, tag="male", name="Kabir")
+AMAN = RosterInput(age_years=6.0, tag="male", name="अमन")
+MEERA = RosterInput(age_years=2.0, tag="female", name="मीरा")
+
+
+def _said(utterance: str) -> str:
+    """The clinician note's own `_note()` shape: whitespace collapsed, trailing danda or full stop cut."""
+    return " ".join(utterance.split()).rstrip("।. ")
+
+
+class Wave1ReducerAndReportInvariantTests(unittest.TestCase):
+    """Wave 1 failure classes, each a matrix so every broken dimension names itself.
+
+    1. a mid-call profile patch must never discard the answer the same turn just gave;
+    2. a NOT_APPLICABLE must not be resurrected into a clinical yes/no by an out-of-turn `stated_` head;
+    3. `jump_topic` must never be hijacked by a softmax crumb under the pack's own confidence floor;
+    4. a which-item turn that already carries the followup detail must settle that slot, not re-ask it;
+    5. a multi-topic sentence must stay in the clinician's verbatim and out of the patient's PDF.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.shishu = load_pack("shishu-hi")
+        cls.fever = load_pack("fever-opd-hi")
+
+    def shishu_call(self, roster, *, complete: bool = True) -> CallState:
+        """A named, married caller whose children are on record, sitting on the intro bridge."""
+        st = reduce_turn(self.shishu, new_state(self.shishu), TurnCommand(profile_patch=ProfilePatch(slots={"caller_name": "कविता"})))
+        st = reduce_turn(self.shishu, st, TurnCommand(outcome=TurnOutcome.ANSWERED, value="married"))
+        return reduce_turn(self.shishu, st, TurnCommand(profile_patch=ProfilePatch(roster=tuple(roster), roster_complete=complete)))
+
+    def past_bridge(self, roster=(), **kw) -> CallState:
+        return reduce_turn(self.shishu, self.shishu_call(roster, **kw), TurnCommand(outcome=TurnOutcome.ANSWERED))
+
+    @staticmethod
+    def at(state: CallState, qid: str, *, substep=SubStep.MAIN, followup_idx: int = 0) -> CallState:
+        st = state.model_copy(deep=True)
+        st.cursor = CursorStep(qid=qid, substep=substep, followup_idx=followup_idx)
+        return st
+
+    def _assert_all(self, observed: dict[str, bool], context: str) -> None:
+        """Every dimension of one case reports itself, so a RED run names each broken invariant at once."""
+        for label, ok in observed.items():
+            if ok:
+                continue
+            with self.subTest(invariant=label):
+                self.fail(f"{label}: {context}")
+
+    def test_reduce_turn_preserves_active_answer_across_mid_call_profile_matrices(self):
+        # Call #21 (t=1794927089): "मेरे ट्विंस बच्चे हैं" landed on birth_mode_detail. The profile patch was an
+        # incomplete roster (one 4y child, roster_complete=False), so the children reask owned the turn and the
+        # caller's own birth_mode_detail answer was never written — her yes simply vanished from the record.
+        one = self.past_bridge((KABIR,), complete=True)
+        self.assertEqual([c.id for c in one.roster], ["item_1"])
+        self.assertEqual(one.cursor.qid, "birth_mode_detail")
+        twins_added = (RosterInput(id="item_1", age_years=4.0, tag="male", name="Kabir"),
+                       RosterInput(age_years=1.0, tag="male", name="Ruhaan"),
+                       RosterInput(age_years=1.0, tag="female", name="Ruhi"))
+        incomplete = (RosterInput(id="item_1", age_years=4.0, tag="male"),)
+        reask = CursorStep(qid="intro_children", hold_slot="roster")
+        cases = (
+            ("complete twins added in the same breath", TurnOutcome.CONCERN, twins_added, True, False,
+             AnswerStatus.CONCERN, ["item_1", "item_2", "item_3"], [],
+             CursorStep(qid="birth_mode_detail", substep=SubStep.WHICH_ITEM)),
+            ("incomplete twins reask (Call #21)", TurnOutcome.CONCERN, incomplete, False, True,
+             AnswerStatus.CONCERN, ["item_1"], [], reask),
+            ("incomplete twins on a quiet answer", TurnOutcome.CLEAR, incomplete, False, True,
+             AnswerStatus.CLEAR, ["item_1"], [], reask),
+            ("incomplete twins on an unknown answer", TurnOutcome.UNKNOWN, incomplete, False, True,
+             AnswerStatus.UNKNOWN, ["item_1"], [], reask),
+        )
+        for label, outcome, patch_roster, complete, attempted, want_state, want_roster, want_ids, want_cursor in cases:
+            with self.subTest(case=label, outcome=outcome.value):
+                st = reduce_turn(self.shishu, self.at(one, "birth_mode_detail"), TurnCommand(
+                    outcome=outcome, item_ref="", profile_patch=ProfilePatch(roster=patch_roster, roster_complete=complete),
+                    profile_turn_attempted=attempted))
+                rec = st.answers.get("birth_mode_detail")
+                self._assert_all({
+                    "the patch decides the roster, not the answer": [c.id for c in st.roster] == want_roster,
+                    "the answer this very turn gave survives the profile patch": rec is not None,
+                    "the active answer keeps its own state": rec is not None and rec.state is want_state,
+                    "a lone child is never auto-pinned as the affected child":
+                        rec is not None and rec.item_ids == want_ids,
+                    "the cursor lands where the roster left it": st.cursor == want_cursor,
+                }, f"case={label} outcome={outcome.value} roster={[c.id for c in st.roster]} "
+                   f"answer={rec and rec.state.value} item_ids={rec and rec.item_ids} cursor={st.cursor}")
+
+    def test_not_applicable_dominates_stated_across_pruning_and_skip_matrices(self):
+        # Call #25: a `stated_` head won on a question the pack had already pruned (known hemoglobinopathy), so a
+        # skipped question came back as a clinical yes/no and could even capture the cursor on a clarify.
+        outs = (TurnOutcome.CONCERN, TurnOutcome.CLEAR, TurnOutcome.CLARIFY)
+        two = self.past_bridge((AMAN, MEERA))
+        for out in outs:
+            with self.subTest(case="shishu semantic-flag prune (Call #25)", stated=out.value):
+                st = reduce_turn(self.shishu, self.at(two, "birth_nicu"), TurnCommand(
+                    outcome=TurnOutcome.CONCERN, item_ref="item_1",
+                    stated={"body_transfusion": TurnOutcome.CONCERN, "body_blood_count": out},
+                    semantic_flags=("confirmed_hemoglobinopathy",),
+                    utterance="उसे खून चढ़ाया गया था और खून की कमी बताई गई है"))
+                rec = st.answers.get("body_blood_count")
+                self._assert_all({
+                    "a stated concern still lands on an applicable sibling":
+                        st.answers["body_transfusion"].state is AnswerStatus.CONCERN,
+                    "the pruned question keeps its NOT_APPLICABLE record": rec is not None,
+                    "a pack-pruned question is never answered by a stated_ head":
+                        rec is not None and rec.state is AnswerStatus.NOT_APPLICABLE,
+                    "the cursor never travels to a pruned question": st.cursor.qid != "body_blood_count",
+                }, f"stated={out.value} blood_count={rec and rec.state.value} cursor={st.cursor.qid}")
+
+        fever_state = new_state(self.fever)
+        fever_state.profile = {"patient_name": "रीटा", "patient_age": 4}
+        for out in outs:
+            with self.subTest(case="fever semantic-flag prune", stated=out.value):
+                st = reduce_turn(self.fever, self.at(fever_state, "received_treatment"), TurnCommand(
+                    outcome=TurnOutcome.CLEAR, stated={"recent_travel": out},
+                    semantic_flags=("confirmed_malaria_or_dengue",), utterance="डेंगू की रिपोर्ट पॉजिटिव आई है"))
+                rec = st.answers.get("recent_travel")
+                self._assert_all({
+                    "the pruned travel question keeps its NOT_APPLICABLE record": rec is not None,
+                    "a confirmed malaria/dengue report keeps travel pruned":
+                        rec is not None and rec.state is AnswerStatus.NOT_APPLICABLE,
+                }, f"stated={out.value} recent_travel={rec and rec.state.value}")
+
+        childless = self.past_bridge(())
+        self.assertIs(childless.answers["birth_nicu"].state, AnswerStatus.NOT_APPLICABLE)
+        for out in outs:
+            with self.subTest(case="demographic skip (no children)", stated=out.value):
+                st = reduce_turn(self.shishu, childless, TurnCommand(outcome=TurnOutcome.ANSWERED, stated={"birth_nicu": out}))
+                rec = st.answers.get("birth_nicu")
+                self._assert_all({
+                    "a child question keeps its NOT_APPLICABLE record for a mother with no children": rec is not None,
+                    "a mother with no children cannot answer a birth-history question":
+                        rec is not None and rec.state is AnswerStatus.NOT_APPLICABLE,
+                }, f"stated={out.value} birth_nicu={rec and rec.state.value}")
+
+        frozen = reduce_turn(self.shishu, self.past_bridge((RosterInput(age_years=2.0, tag="male"),
+                                                            RosterInput(age_years=4.0, tag="male"))), TurnCommand(
+            outcome=TurnOutcome.NOT_ABOUT_ACTIVE, profile_turn_attempted=True,
+            profile_patch=ProfilePatch(roster=(RosterInput(id="item_1", age_years=2.0, tag="male"),
+                                               RosterInput(id="item_2", age_years=4.0, tag="male")), roster_complete=False)))
+        self.assertTrue(frozen.roster_incomplete)
+        self.assertEqual((frozen.cursor.qid, frozen.cursor.hold_slot), ("intro_children", "roster"))
+        self.assertIs(frozen.answers["mod_heavy_periods"].state, AnswerStatus.NOT_APPLICABLE)
+        for out in outs:
+            with self.subTest(case="frozen age gate under an open roster", stated=out.value):
+                st = reduce_turn(self.shishu, frozen, TurnCommand(outcome=TurnOutcome.NOT_ABOUT_ACTIVE,
+                                                                  stated={"mod_heavy_periods": out}))
+                rec = st.answers.get("mod_heavy_periods")
+                self._assert_all({
+                    "the frozen age-gate NOT_APPLICABLE is never deleted": rec is not None,
+                    "an unresolved roster cannot prove a 2y/4y girl's periods question applies":
+                        rec is not None and rec.state is AnswerStatus.NOT_APPLICABLE,
+                }, f"stated={out.value} mod_heavy_periods={rec and rec.state.value} cursor={st.cursor}")
+
+        # Positive control: a stated concern that CONTRADICTS the group skip it was pruned by must still be heard.
+        control = self.at(self.past_bridge((AMAN, MEERA)), "preg_heart")
+        concerned = reduce_turn(self.shishu, control, TurnCommand(outcome=TurnOutcome.CLEAR,
+                                                                  stated={"fam_same_problem": TurnOutcome.CONCERN}))
+        cleared = reduce_turn(self.shishu, control, TurnCommand(outcome=TurnOutcome.CLEAR,
+                                                                stated={"fam_same_problem": TurnOutcome.CLEAR}))
+        self._assert_all({
+            "a relative with the same problem is exactly the concern the group skip stood on":
+                concerned.answers["fam_same_problem"].state is AnswerStatus.CONCERN,
+            "a stated clear never resurrects a question the pack itself skipped":
+                cleared.answers["fam_same_problem"].state is AnswerStatus.NOT_APPLICABLE,
+        }, f"fam_same_problem concern={concerned.answers['fam_same_problem'].state.value} "
+           f"clear={cleared.answers['fam_same_problem'].state.value}")
+
+    def test_jump_topic_ignores_softmax_dust_below_choice_confidence_floor(self):
+        # Sunita Step 7: `jump_topic` fired on a router crumb while another child's question was merely 0.02 of the
+        # softmax, and the call abandoned the sequential order for a topic nobody had raised.
+        st = self.past_bridge((AMAN, MEERA))
+        upto = [q.id for q in self.shishu.questions].index("birth_jaundice")
+        for q in self.shishu.questions[:upto]:
+            rec = st.answers.get(q.id)
+            if rec is None or rec.state is not AnswerStatus.CLEAR:
+                st.answers[q.id] = AnswerRecord(state=AnswerStatus.CLEAR)
+        floor = float(self.shishu.decisions["thresholds"]["choice_min_confidence"])
+        self.assertEqual(floor, 0.52, "the shishu-hi choice gate this matrix is pinned to")
+        for prob in (0.01, 0.02, 0.15, 0.51, 0.52, 0.85):
+            with self.subTest(fam_transfusion_prob=prob):
+                out = reduce_turn(self.shishu, self.at(st, "birth_jaundice"), TurnCommand(
+                    outcome=TurnOutcome.CLEAR, stated={"body_transfusion": TurnOutcome.CONCERN}, jump_topic=True,
+                    next_qid_probs={"fam_transfusion": prob, "body_transfusion": 0.94}, utterance="नहीं, खून नहीं चढ़ाया"))
+                expected = "fam_transfusion" if prob >= floor else "birth_sudden"
+                self._assert_all({
+                    f"a router read of {prob} lands on {expected}":
+                        out.cursor.qid == expected,
+                }, f"fam_transfusion={prob} body_transfusion=0.94 floor={floor} cursor={out.cursor}")
+
+    def test_which_item_settles_first_followup_when_detail_present(self):
+        # Call #32: "छोटी बेटी मीरा की एक बार हाथ की हड्डी टूटी थी" answered the which-child AND the followup in one
+        # breath, yet the call re-asked "हड्डी कितनी बार टूटी…?" and stored the detail nowhere it could be read.
+        two = self.past_bridge((AMAN, MEERA))
+        named = reduce_turn(self.shishu, self.at(two, "gate_bones_fractures"), TurnCommand(outcome=TurnOutcome.CONCERN))
+        self.assertEqual((named.cursor.qid, named.cursor.substep), ("gate_bones_fractures", SubStep.WHICH_ITEM))
+        replay = "छोटी बेटी मीरा की एक बार हाथ की हड्डी टूटी थी"
+        with self.subTest(question="gate_bones_fractures", detail_present=True):
+            settled = reduce_turn(self.shishu, named, TurnCommand(outcome=TurnOutcome.CONCERN, item_ref="item_2",
+                                                                 followup_answered=True, utterance=replay))
+            rec = settled.answers["gate_bones_fractures"]
+            slot = rec.followups.get("fracture_count_or_bowing")
+            self._assert_all({
+                "the child she named is the child on record": rec.item_ids == ["item_2"],
+                "the spoken detail reaches the followup slot it answers": slot is not None,
+                "that followup slot is settled as a concern": slot is not None and slot.state is AnswerStatus.CONCERN,
+                "the slot keeps her exact words": slot is not None and replay in slot.note.verbatim,
+                "an answered followup is never asked again": settled.cursor.substep is not SubStep.FOLLOWUP,
+                "the call moves past the question": settled.cursor.qid != "gate_bones_fractures",
+            }, f"cursor={settled.cursor} item_ids={rec.item_ids} followups="
+               f"{ {k: v.state.value for k, v in rec.followups.items()} }")
+        with self.subTest(question="gate_bones_fractures", detail_present=False):
+            asked = reduce_turn(self.shishu, named, TurnCommand(outcome=TurnOutcome.CONCERN, item_ref="item_2"))
+            self.assertEqual(asked.cursor, CursorStep(qid="gate_bones_fractures", substep=SubStep.FOLLOWUP, followup_idx=0),
+                             "a bare which-child answer still earns the followup question")
+
+        nicu = reduce_turn(self.shishu, self.at(two, "birth_nicu"), TurnCommand(outcome=TurnOutcome.CONCERN))
+        self.assertEqual((nicu.cursor.qid, nicu.cursor.substep), ("birth_nicu", SubStep.WHICH_ITEM))
+        with self.subTest(question="birth_nicu", detail_present=True):
+            out = reduce_turn(self.shishu, nicu, TurnCommand(outcome=TurnOutcome.CONCERN, item_ref="item_2",
+                                                            followup_answered=True, utterance="मीरा को साँस तेज़ थी"))
+            slots = out.answers["birth_nicu"].followups
+            reason = slots.get("nicu_reason")
+            self._assert_all({
+                "the reason she gave settles the first followup slot": reason is not None,
+                "that slot is a concern": reason is not None and reason.state is AnswerStatus.CONCERN,
+                "the slot keeps her exact words": reason is not None and "मीरा को साँस तेज़ थी" in reason.note.verbatim,
+                "the second slot (nicu_days) is the only thing left to ask":
+                    out.cursor == CursorStep(qid="birth_nicu", substep=SubStep.FOLLOWUP, followup_idx=1),
+            }, f"cursor={out.cursor} followups={ {k: v.state.value for k, v in slots.items()} }")
+
+    def test_multi_topic_utterances_stay_in_verbatim_and_never_contaminate_patient_pdf(self):
+        # Call #32 in full: one sentence held a denial, three of Aman's findings, and later a family cancer plus a
+        # correction about Meera's jaundice. Every record kept the WHOLE sentence as patient-safe words, so Aman's
+        # page said "नीली लाइट" and the family question said "पीलिया".
+        two = self.past_bridge((AMAN, MEERA))
+        utt_a = ("नहीं, नीली लाइट में तो नहीं रखा था पर मेरे बड़े बेटे अमन को तीन बार खून चढ़ाना पड़ा है "
+                 "और उसका पेट भी धीरे-धीरे बड़ा हो रहा है।")
+        turn_a = reduce_turn(self.shishu, self.at(two, "birth_jaundice"), TurnCommand(
+            outcome=TurnOutcome.CLEAR, item_ref="item_1",
+            stated={"body_transfusion": TurnOutcome.CONCERN, "body_blood_count": TurnOutcome.CONCERN,
+                    "body_tummy": TurnOutcome.CONCERN}, utterance=utt_a))
+        proj_a = reports.project_summary(self.shishu, turn_a)
+        said_a = _said(utt_a)
+        stated_a = ("body_transfusion", "body_blood_count", "body_tummy")
+        observed = {
+            **{f"A {qid} verbatim": utt_a in turn_a.answers[qid].verbatim_text for qid in stated_a},
+            **{f"A {qid} doctor_markdown": said_a in proj_a.doctor_markdown for qid in stated_a},
+            **{f"A {qid} patient_safe": turn_a.answers[qid].patient_safe_text == "" for qid in stated_a},
+            **{f"A {qid} no_prefilled_followup": turn_a.answers[qid].followups == {} for qid in stated_a},
+            "A no phototherapy leak": not [line for line in (*proj_a.yes_items, *proj_a.patient_questions,
+                                                             *engine.recorded_concerns_summary(self.shishu, turn_a))
+                                            if "नीली लाइट" in line],
+        }
+        for label, ok in observed.items():
+            with self.subTest(turn="A", invariant=label):
+                self.assertTrue(ok, f"{label}: {self._leak_context(proj_a, utt_a, stated_a)}")
+
+        utt_b = ("हां, बुआ को कैंसर हुआ था और एक बात पहले नीली लाइट वाले सवाल में गलती से मना कर दिया था। "
+                 "मीरा को जन्म पर पीलिया हुआ था।")
+        turn_b = reduce_turn(self.shishu, self.at(turn_a, "fam_cancer"), TurnCommand(
+            outcome=TurnOutcome.CONCERN, item_ref="item_2", followup_answered=True,
+            stated={"birth_jaundice": TurnOutcome.CONCERN}, utterance=utt_b))
+        proj_b = reports.project_summary(self.shishu, turn_b)
+        said_b = _said(utt_b)
+        both_b = ("fam_cancer", "birth_jaundice")
+        jaundice_stem, cancer_stem = self.shishu.by_id["birth_jaundice"].stem, self.shishu.by_id["fam_cancer"].stem
+        jaundice_lines = [x for x in (*proj_b.yes_items, *proj_b.patient_questions) if jaundice_stem in x]
+        cancer_lines = [x for x in (*proj_b.yes_items, *proj_b.patient_questions) if cancer_stem in x]
+        observed_b = {
+            **{f"B {qid} verbatim": utt_b in turn_b.answers[qid].verbatim_text for qid in both_b},
+            **{f"B {qid} doctor_markdown": said_b in proj_b.doctor_markdown for qid in both_b},
+            **{f"B {qid} patient_safe": turn_b.answers[qid].patient_safe_text == "" for qid in both_b},
+            "B fam_who settled": turn_b.cursor.qid != "fam_cancer",
+            "B jaundice_days not pre-filled": turn_b.answers["birth_jaundice"].followups == {},
+            "B jaundice line reaches the PDF": bool(jaundice_lines),
+            "B jaundice line has no बुआ/कैंसर": bool(jaundice_lines) and not [x for x in jaundice_lines if "बुआ" in x or "कैंसर" in x],
+            "B cancer line reaches the PDF": bool(cancer_lines),
+            "B cancer line has no नीली लाइट/पीलिया": bool(cancer_lines) and not [x for x in cancer_lines if "नीली लाइट" in x or "पीलिया" in x],
+            "B patient questions stay distinct": len(proj_b.patient_questions) == len(set(proj_b.patient_questions)),
+            "B items never share a question": not (set(jaundice_lines) & set(cancer_lines)),
+        }
+        for label, ok in observed_b.items():
+            with self.subTest(turn="B", invariant=label):
+                self.assertTrue(ok, f"{label}: {self._leak_context(proj_b, utt_b, both_b)}")
+
+    def test_a_clarify_at_the_closing_open_capture_never_hangs_up_the_call(self):
+        # Bug (Wave 1 review): at `close_anything_else` — the LAST open question — "नहीं, बस थैलेसीमिया का मतलब
+        # बता दीजिए" cleared the open capture, which advanced the call with `free == []` because the CLARIFY
+        # revision of `preg_thalassemia` had not been applied yet. The call closed COMPLETE with its cursor on a
+        # question it had just decided to ask.
+        st = self.past_bridge((AMAN, MEERA))
+        for q in self.shishu.questions:
+            if q.id != "close_anything_else":
+                rec = st.answers.get(q.id)
+                if rec is None or rec.state is not AnswerStatus.CLEAR:
+                    st.answers[q.id] = AnswerRecord(state=AnswerStatus.CLEAR)
+        st = self.at(st, "close_anything_else")
+        self.assertEqual([q.id for q in self.shishu.questions if engine._is_unsatisfied(self.shishu, st, q)],
+                         ["close_anything_else"], "the closing capture is genuinely the last open question")
+        out = reduce_turn(self.shishu, st, TurnCommand(
+            outcome=TurnOutcome.CLEAR, stated={"preg_thalassemia": TurnOutcome.CLARIFY},
+            utterance="नहीं, बस थैलेसीमिया का मतलब बता दीजिए"))
+        self.assertEqual((out.phase, out.close_reason, out.cursor.qid), (Phase.ASKING, None, "preg_thalassemia"),
+                         "a clarify she asked for is a question to answer, never a reason to hang up")
+        self.assertIs(out.answers["close_anything_else"].state, AnswerStatus.CLEAR,
+                      "her own answer to the closing capture is still on the record")
+
+    @staticmethod
+    def _leak_context(proj: reports.ProjectedReport, utterance: str, qids) -> str:
+        """The patient-facing lines that quote the whole sentence onto every item it mentions."""
+        return (f"utterance={utterance!r} qids={tuple(qids)} "
+                f"yes_items={list(proj.yes_items)} patient_questions={list(proj.patient_questions)}")
 
 
 if __name__ == "__main__":
