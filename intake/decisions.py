@@ -17,7 +17,7 @@ DECISIONS_ENDPOINT, DEFAULT_MODEL = "https://generativelanguage.googleapis.com/v
 Transport = Callable[..., tuple[int, bytes] | Awaitable[tuple[int, bytes]]]
 _CLIENTS: WeakKeyDictionary[asyncio.AbstractEventLoop, httpx.AsyncClient] = WeakKeyDictionary()
 _CORE = ("danger_now", "caller_stop", "mentions_profile", "redact_patient_note")
-_NOUL = (*_CORE, "mentions_other_topic", "detail_present", "jump_topic")
+_NOUL = (*_CORE, "detail_present", "jump_topic")
 _STATED_KINDS = (QuestionKind.GATE, QuestionKind.ROUTING_GATE)
 _OUTCOMES, _STATED_OUTCOMES = frozenset({"clear", "concern", "unknown", "clarify", "retract"}), frozenset({"concern", "clear", "clarify"})
 # Out-of-turn CONCERN on an already-CLEAR question is a revision of a closed answer, not a first read: it must clear
@@ -35,7 +35,6 @@ class DecisionCallResult(NamedTuple):
     total_input_tokens: int | None
     raw_answers: dict[str, Any]
     used_slim_fallback: bool = False
-    fanout_ran: bool = False
 class TurnIntent(Strict, frozen=True):
     command: TurnCommand
     needs_profile_extraction: bool
@@ -50,157 +49,88 @@ async def _post(url: str, body: bytes, headers: dict[str, str], budget: float) -
     client = _CLIENTS.get(loop)
     if client is None or client.is_closed:
         client = _CLIENTS[loop] = httpx.AsyncClient(http2=False)
-    timeout = httpx.Timeout(connect=2.0, read=budget, write=2.0, pool=2.0)
+    timeout = httpx.Timeout(connect=3.0, read=budget, write=3.0, pool=3.0)
     reply = await client.post(url, content=body, headers=headers, timeout=timeout)
     return reply.status_code, reply.content
-class _Attempt(NamedTuple):
-    """One attempt's verdict, classified where it landed so a race never has to re-raise a sibling's exception."""
-    payload: dict[str, Any] | None
-    reason: str
-    retry: bool
-    body: bytes
-    request: dict[str, Any]
+def _verdict(status: int, raw: bytes) -> tuple[dict[str, Any] | None, str, bool]:
+    """One reply's read: its payload, or a reason plus whether another call could still rescue the turn."""
+    try:
+        obj = json.loads(bytes(raw).decode("utf-8"))
+    except Exception:  # noqa: BLE001 - a body that is not JSON is a bad reply, not a bad day
+        return None, "response_invalid", False
+    err = obj.get("error") if isinstance(obj, dict) else None
+    code = str(err.get("code") or "").lower() if isinstance(err, dict) else ""
+    if 200 <= int(status) <= 299:
+        return ((obj, "", False) if isinstance(obj, dict) and obj.get("answers")
+                else (None, "empty_answers", False))
+    if code in _SAFETY and int(status) < 500:
+        return None, "safety_block", False
+    return None, f"http_{int(status)}", int(status) in _RETRY_CODES or int(status) >= 500
 
 
-async def _attempt(send: Transport, endpoint: str, body: bytes, request: dict[str, Any], headers: dict[str, str],
-                   budget: float, wrap: bool) -> _Attempt:
-    """One POST, its own deadline, and a verdict: `payload`, or a reason plus whether it is worth another call."""
+async def _send(send: Transport, endpoint: str, body: bytes, headers: dict[str, str],
+                budget: float) -> tuple[dict[str, Any] | None, str, bool]:
+    """One POST on its own read budget, classified where it landed."""
     try:
         sent = send(endpoint, body, headers, budget)
-        if not inspect.isawaitable(sent):
-            status, raw = sent
-        else:
-            status, raw = await asyncio.wait_for(sent, budget + (0.25 if wrap else 0.0))
-        obj = json.loads(bytes(raw).decode("utf-8"))
-        err = obj.get("error") if isinstance(obj, dict) else None
-        code = str(err.get("code") or "").lower() if isinstance(err, dict) else ""
-        if 200 <= int(status) <= 299:
-            return (_Attempt(obj, "", False, body, request) if isinstance(obj, dict) and obj.get("answers")
-                    else _Attempt(None, "empty_answers", False, body, request))
-        if code in _SAFETY and int(status) < 500:
-            return _Attempt(None, "safety_block", False, body, request)
-        return _Attempt(None, f"http_{int(status)}", int(status) in _RETRY_CODES or int(status) >= 500, body, request)
+        status, raw = (await asyncio.wait_for(sent, budget + 0.25) if inspect.isawaitable(sent) else sent)
     except (TimeoutError, httpx.TimeoutException):
-        return _Attempt(None, "timeout", True, body, request)
+        return None, "timeout", True
     except httpx.TransportError:
-        return _Attempt(None, "connection_error", True, body, request)
+        return None, "connection_error", True
     except Exception:  # noqa: BLE001
-        return _Attempt(None, "response_invalid", False, body, request)
+        return None, "response_invalid", False
+    return _verdict(int(status), raw)
 
 
 async def evaluate_turn(request: dict[str, Any], *, api_key: str | None = None, endpoint: str = DECISIONS_ENDPOINT,
-                        max_attempts: int = 2, attempt_timeout_sec: float = 7.5, total_budget_sec: float = 9.0,
+                        max_attempts: int = 2, attempt_timeout_sec: float = 12.0, total_budget_sec: float = 18.0,
                         transport: Transport | None = None,
-                        fallback_request: dict[str, Any] | None = None,
-                        hedge_after_sec: float | None = 2.5) -> DecisionCallResult:
-    """Hedged two tiers inside one turn budget: the full request, then the slim request beside it.
+                        fallback_request: dict[str, Any] | None = None) -> DecisionCallResult:
+    """One sequential call, waited out patiently, with a single retry only when the call itself failed.
 
-    Call #15 died because a 4.0s tail spike on the 64-head request was the only thing between a caller and a
-    hangup. But the `gemini-decision-1` 50-case bench showed the spike is often Google's per-request queue, not a
-    doomed call: even 7-head `slim=True` requests sat 5.4-6.5s while a concurrent identical request returned 200
-    in 0.7-1.1s. Aborting Attempt 1 to start Attempt 2 therefore killed healthy `200 OK`s one moment before they
-    landed. So after `hedge_after_sec` the first attempt is left ALIVE and a second one (`fallback_request` when
-    given) races it; the first clean read wins whichever side it comes from. A turn that answers inside
-    `hedge_after_sec` — more than nine in ten — pays exactly one call, and a fast retryable failure (429, instant
-    `TransportError`, fast timeout) still retries immediately rather than waiting out a hedge.
+    Call #16 (`5fce012`) paid for this twice: `hedge_after_sec = 2.5` launched a second 92 KB audio request beside
+    a healthy first one, and `min(6.5, total_budget_sec)` killed slow-but-alive turns at 6.5s. A 5-7s reply from
+    `gemini-decision-1` is Google's queue, not a dead attempt, so Attempt 1 now owns the whole 12.0s of its own
+    read budget inside an 18.0s turn and nothing races it. Attempt 2 exists only for a real failure — timeout,
+    connection error, 408/429, 5xx — and then carries the slim `fallback_request` so a retry is cheaper than the
+    request that just failed. A safety block, an empty `answers`, an unparseable body, or any other 4xx is final:
+    repeating it only spends the caller's patience on the same answer.
     """
     started = time.perf_counter()
     primary_body = json.dumps(request, ensure_ascii=False).encode("utf-8")
-    fallback_body = json.dumps(fallback_request, ensure_ascii=False).encode("utf-8") if fallback_request is not None else None
+    fallback_body = (json.dumps(fallback_request, ensure_ascii=False).encode("utf-8")
+                     if fallback_request is not None else None)
     key = str(api_key if api_key is not None else os.environ.get("GEMINI_API_KEY") or "").strip()
     headers = {"Content-Type": "application/json", "x-goog-api-key": key}
-    send, wrap = transport or _post, transport is None
-    deadline = started + float(total_budget_sec)
-    limit = max(1, int(max_attempts))
-    attempts, done, last = 0, None, None
-    reason, in_flight = "missing_api_key", set()
-
-    def launch(n: int) -> asyncio.Task | None:
-        """Attempt `n`: attempt 1 carries the full request, every retry the slim fallback. None if no budget is left."""
+    send, deadline, limit = transport or _post, started + float(total_budget_sec), max(1, int(max_attempts))
+    attempts, payload, reason = 0, None, "missing_api_key"
+    body, sent_request = primary_body, request
+    while payload is None and (key or (transport and api_key is None)) and attempts < limit:
         budget = min(float(attempt_timeout_sec), deadline - time.perf_counter())
         if budget <= 0:
-            return None
-        body, req = ((fallback_body, fallback_request) if (fallback_body is not None and n >= 2)
-                     else (primary_body, request))
-        task = asyncio.ensure_future(_attempt(send, endpoint, body, req, headers, budget, wrap))
-        in_flight.add(task)
-        return task
-
-    async def stop(*tasks: asyncio.Task) -> None:
-        """Cancel and await, so no attempt outlives the turn that abandoned it."""
-        live = [t for t in tasks if not t.done()]
-        for t in live:
-            t.cancel()
-        await asyncio.gather(*live, return_exceptions=True)
-        for t in (*tasks, *live):
-            in_flight.discard(t)
-
-    try:
-        while (key or (transport and api_key is None)) and attempts < limit:
-            task = launch(attempts + 1)
-            if task is None:
-                reason = "timeout"
-                break
-            attempts += 1
-            hedge = (min(float(hedge_after_sec), max(0.0, deadline - time.perf_counter()))
-                     if hedge_after_sec is not None and attempts < limit else None)
-            finished: set[asyncio.Task] = set()
-            if hedge is None:
-                finished, _ = await asyncio.wait({task})
-            elif hedge > 0:
-                finished, _ = await asyncio.wait({task}, timeout=hedge)
-            if finished:  # inside the hedge window: never a second call on a healthy turn
-                got = task.result()
-                in_flight.discard(task)
-                if got.payload is None and got.retry:
-                    last = got
-                    continue
-                done = got
-                break
-            sibling = launch(attempts + 1)  # Attempt 1 stays alive: a queue spike is not a dead attempt
-            if sibling is None:
-                done = (await task)
-                in_flight.discard(task)
-                break
-            attempts += 1
-            finished, still = await asyncio.wait({task, sibling}, return_when=asyncio.FIRST_COMPLETED)
-            winner = next((t for t in (task, sibling) if t in finished and t.result().payload is not None), None)
-            if winner is None:
-                # No clean read yet. The half still in flight keeps its chance: it may be a healthy 5.4s response.
-                for t in still:
-                    left = deadline - time.perf_counter()
-                    if left <= 0:
-                        break
-                    late, _ = await asyncio.wait({t}, timeout=left)
-                    if late and t.result().payload is not None:
-                        winner = t
-                if winner is None:
-                    failed = [t.result() for t in (task, sibling) if t.done()]
-                    last = next((f for f in failed if not f.retry), failed[0])
-                    await stop(task, sibling)
-                    continue
-            done = winner.result()
-            await stop(*[t for t in (task, sibling) if t is not winner])
+            reason = "timeout"
             break
-    finally:
-        if in_flight:
-            await stop(*list(in_flight))
-
-    win = done if done is not None else last
-    payload = win.payload if win is not None else None
-    reason = "" if payload is not None else (win.reason if win is not None else reason)
-    body, sent_request = (win.body, win.request) if win is not None else (primary_body, request)
-    used_slim = payload is not None and fallback_body is not None and body is fallback_body
+        attempts += 1
+        payload, reason, retry = await _send(send, endpoint, body, headers, budget)
+        if payload is not None or not retry:
+            break
+        body, sent_request = ((fallback_body, fallback_request) if fallback_body is not None
+                             else (primary_body, request))
     toks = ((payload or {}).get("usage") or {}).get("total_input_tokens")
-    return DecisionCallResult(payload is not None, reason, attempts, max(0, int((time.perf_counter() - started) * 1000)),
-                              len(body), len(sent_request.get("questions") or {}), toks if type(toks) is int else None,
-                              (payload or {}).get("answers") or {}, used_slim)
+    return DecisionCallResult(payload is not None, "" if payload is not None else reason, attempts,
+                              max(0, int((time.perf_counter() - started) * 1000)), len(body),
+                              len(sent_request.get("questions") or {}), toks if type(toks) is int else None,
+                              (payload or {}).get("answers") or {},
+                              payload is not None and fallback_body is not None and body is fallback_body)
+
+
 def _build_input(pack: PackConfig, state: CallState, *, utterance_text: str, audio_wav_bytes: bytes | None,
                  audio_mime_type: str) -> Any:
     """The context document plus the optional spoken audio that every Decision request carries.
 
-    Both the gate pass and the routing pass are read against the same turn, so this payload is built exactly once
-    and shared: a Pass 2 that described the turn differently from Pass 1 could not be merged onto its answers.
+    It is built exactly once per request because the model reads every head against this one document: an input
+    assembled twice could describe the same turn two different ways, and the answers would no longer line up.
     """
     kind = engine.step_kind(pack, state)
     spec, rows, audio = pack.by_id.get(state.cursor.qid), engine.roster_rows(state), bytes(audio_wav_bytes or b"")
@@ -249,13 +179,12 @@ def _router_heads(pack: PackConfig, state: CallState, heads: Mapping[str, Any]) 
 
 def build_turn_request(pack: PackConfig, state: CallState, *, utterance_text: str = "", audio_wav_bytes: bytes | None = None,
                        audio_mime_type: str = "audio/wav", slim: bool = False) -> dict[str, Any]:
-    """One request for one turn. `slim` drops the two groups a fan-out pass can no longer afford.
+    """One request for one turn. `slim` drops the two groups a retry can no longer afford.
 
     The default request carries everything: the `stated_<qid>` revisions and the `next_qid` router are what make
     an out-of-turn "मेरे बच्चे के सीने में दर्द है" land without a re-ask. They are also 56 heads and a 53-option
     choice, which is exactly what blew the 4.0s deadline on `Call #15`, so the slim request keeps only the heads
-    a turn cannot be read without (Group A, the active typed value, the flags) plus the one narrow semantic logic
-    gate — `mentions_other_topic` — that decides whether this turn is worth fanning out at all.
+    a turn cannot be read without: Group A, the active typed value, and the semantic flags.
     """
     heads, kind = pack.decisions.get("heads") or {}, engine.step_kind(pack, state)
     spec, rows = pack.by_id.get(state.cursor.qid), engine.roster_rows(state)
@@ -272,10 +201,6 @@ def build_turn_request(pack: PackConfig, state: CallState, *, utterance_text: st
     if len(rows) >= 2 and (tpl := heads.get("item_ref_template")):
         named = {r["id"]: tpl["option_template"].format(**{**r, "name_or_unnamed": r["name"] or tpl["unnamed_label"]}) for r in rows}
         qs["item_ref"] = {"type": "choice", "instructions": tpl["instructions"], "criteria": named | {"all": tpl["all_description"], "other": tpl["other_description"]}}
-    # The Pass-2 trigger travels with every request that could route: the slim gate slice needs it to decide whether
-    # to fan out, and the full request needs it so offline calibration scores the gate beside every other head.
-    if (router or answered) and "mentions_other_topic" in heads:
-        qs["mentions_other_topic"] = heads["mentions_other_topic"]
     if not slim and (router or answered):
         qs |= _stated_heads(pack, state, heads)
     qs |= {f"flag_{f}": {"type": "noul", "instructions": fs["instructions"], "criteria": {k: fs[k] for k in ("true_description", "false_description") if k in fs}} for f, fs in pack.semantic_flags.items() if f not in state.semantic_flags}
@@ -286,70 +211,6 @@ def build_turn_request(pack: PackConfig, state: CallState, *, utterance_text: st
             "questions": qs}
 
 
-def build_routing_request(pack: PackConfig, state: CallState, *, utterance_text: str = "", audio_wav_bytes: bytes | None = None,
-                          audio_mime_type: str = "audio/wav") -> dict[str, Any]:
-    """Pass 2 only: the out-of-turn revisions (Group B) and the topic router (Group D).
-
-    Group A and the active typed value are deliberately absent. Pass 1 has already read them, and asking a second,
-    thinner pass the same question would only give it a chance to overwrite a verdict the gate just reached.
-    """
-    heads, kind = pack.decisions.get("heads") or {}, engine.step_kind(pack, state)
-    router = kind != "profile"
-    answered = any(r.state.is_resolved for q, r in state.answers.items() if pack.by_id[q].is_routable)
-    qs: dict[str, Any] = {}
-    if router or answered:
-        qs |= _stated_heads(pack, state, heads)
-    if router:
-        qs |= _router_heads(pack, state, heads)
-    return {"model": str(pack.decisions.get("model") or DEFAULT_MODEL),
-            "input": _build_input(pack, state, utterance_text=utterance_text, audio_wav_bytes=audio_wav_bytes, audio_mime_type=audio_mime_type),
-            "questions": qs}
-
-
-async def evaluate_turn_gated(pack: PackConfig, state: CallState, *, utterance_text: str = "", audio_wav_bytes: bytes | None = None,
-                              audio_mime_type: str = "audio/wav", api_key: str | None = None, endpoint: str = DECISIONS_ENDPOINT,
-                              transport: Transport | None = None, gate_timeout_sec: float = 7.5,
-                              total_budget_sec: float = 9.0) -> DecisionCallResult:
-    """Gate first, fan out second: the narrow slice answers every ordinary turn on its own.
-
-    Pass 1 is ~1.2k tokens and one call. An ordinary "नहीं" / "पता नहीं" clears no `mentions_other_topic`, so the
-    turn ends there instead of paying 21.7k tokens and a 4.5s timeout for 56 stated heads nobody needed. Only a
-    caller who really did raise another topic (or revise an earlier answer, or ask what a term meant) buys Pass 2,
-    and an active emergency never does — latency is the last thing an emergency needs spent.
-    """
-    started = time.perf_counter()
-    gate_request = build_turn_request(pack, state, utterance_text=utterance_text, audio_wav_bytes=audio_wav_bytes,
-                                      audio_mime_type=audio_mime_type, slim=True)
-    gate = await evaluate_turn(gate_request, api_key=api_key, endpoint=endpoint, max_attempts=2,
-                               attempt_timeout_sec=float(gate_timeout_sec),
-                               total_budget_sec=min(6.5, float(total_budget_sec)), transport=transport)
-    if not gate.ok:
-        return gate
-    thresholds = {k: float(v) for k, v in (pack.decisions.get("thresholds") or {}).items()}
-    answers = gate.raw_answers
-    if _yes(answers, "danger_now", thresholds["danger_now_min_yes"]) or _yes(answers, "caller_stop", thresholds["caller_stop_min_yes"]):
-        return gate
-    if not _yes(answers, "mentions_other_topic", thresholds["mentions_other_topic_min_yes"]):
-        return gate
-    routing_request = build_routing_request(pack, state, utterance_text=utterance_text, audio_wav_bytes=audio_wav_bytes,
-                                            audio_mime_type=audio_mime_type)
-    if not routing_request.get("questions"):
-        return gate
-    remaining = max(1.5, float(total_budget_sec) - (time.perf_counter() - started))
-    routing = await evaluate_turn(routing_request, api_key=api_key, endpoint=endpoint, max_attempts=1,
-                                  attempt_timeout_sec=remaining, total_budget_sec=remaining, transport=transport)
-    total_ms = max(0, int((time.perf_counter() - started) * 1000))
-    if not routing.ok:
-        # The gate's own read is a complete, valid turn: a dead fan-out must never throw it away.
-        return gate._replace(attempts=gate.attempts + routing.attempts, decision_ms=total_ms,
-                             used_slim_fallback=True, fanout_ran=True)
-    tokens = (gate.total_input_tokens + routing.total_input_tokens
-              if isinstance(gate.total_input_tokens, int) and isinstance(routing.total_input_tokens, int)
-              else gate.total_input_tokens)
-    return DecisionCallResult(True, "", gate.attempts + routing.attempts, total_ms,
-                              gate.request_bytes + routing.request_bytes, gate.question_count + routing.question_count,
-                              tokens, {**gate.raw_answers, **routing.raw_answers},
-                              used_slim_fallback=False, fanout_ran=True)
 def _num(v: Any) -> float | None: return float(v) if type(v) in (int, float) and math.isfinite(v) else None
 def _yes(a: Mapping[str, Any], key: str, floor: Any) -> bool:
     p = _num(a[key].get("noul")) if isinstance(a.get(key), Mapping) else None

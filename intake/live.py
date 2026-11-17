@@ -114,7 +114,7 @@ class LiveCallSession:
             hard_limit_sec=float(timers.get("hard_limit_sec") or 1200.0), soft_limit_sec=float(timers.get("soft_limit_sec") or 1140.0),
             silence_close_sec=float(timers.get("silence_close_sec") or 30.0), check_in_sec=float(timers.get("check_in_sec") or 15.0),
             stop=asyncio.Event(), ws_lock=asyncio.Lock(), send_lock=asyncio.Lock(), resume_requested=False, reconnecting=False,
-            ending_sent=False, bot_text="", clarify_step=False, checked_in=False, seen=set(), cancelled=set(),
+            ending_sent=False, bot_text="", cue_kind="speak", checked_in=False, seen=set(), cancelled=set(),
             pcm=b"", text="", snapshot=None, preroll=deque(maxlen=4), tail_chunks=0,
             stt_ready=asyncio.Event(), tool_task=None, fallback=None, last_reduced=None,
             epoch=0, turn_phase=TurnPhase.LISTENING, prompted_at=0.0, bot_generating=False, awaiting_abort_end=False,
@@ -161,7 +161,7 @@ class LiveCallSession:
         return False
     async def _publish_and_cue(self, kind: str = "speak", *, immediate: bool = True) -> bool:
         self._enter_prompting()
-        self.clarify_step = kind == "clarify"
+        self.cue_kind = kind
         await self._send_json(question_state_payload(self.pack, self.state, self.epoch))
         self._cancel("fallback")
         if immediate: return await self._speak(kind)
@@ -196,11 +196,13 @@ class LiveCallSession:
         self.stt_ready.clear()
     async def _evaluate_turn_task(self, snapshot: CallState, spoken: str, pcm: bytes) -> Turn:
         wav = audio.pcm16_to_wav_bytes(pcm, _IN) if pcm else None
-        # Gate first, fan out second: an ordinary "नहीं" is answered by the ~1.2k-token narrow slice, and only a
-        # caller who really raised another topic buys the 56 stated heads and the 53-option router that blew the
-        # 4.0 s deadline on Call #15. `evaluate_turn_gated` still calls `evaluate_turn`, so the retry/budget logic
-        # inside every pass is unchanged.
-        jobs: list[Awaitable[Any]] = [decisions.evaluate_turn_gated(self.pack, snapshot, utterance_text=spoken, audio_wav_bytes=wav)]
+        # One patient pass owns the turn: the full request is the caller's only chance, and the slim slice rides
+        # beside it purely as the retry body `evaluate_turn` sends after a call that really failed. Call #16 paid
+        # for a 1.2k-token gate pass and then threw the whole turn away when the 4.0 s deadline hit, so the gate
+        # bought nothing but the same timeout twice.
+        req = decisions.build_turn_request(self.pack, snapshot, utterance_text=spoken, audio_wav_bytes=wav)
+        slim = decisions.build_turn_request(self.pack, snapshot, utterance_text=spoken, audio_wav_bytes=wav, slim=True)
+        jobs: list[Awaitable[Any]] = [decisions.evaluate_turn(req, fallback_request=slim)]
         if self._wants_extractor(snapshot): jobs.append(extractor.extract_profile_entities(self.pack, snapshot, utterance_text=spoken, audio_wav_bytes=wav))
         done = await asyncio.gather(*jobs)
         return Turn(done[0], decisions.interpret_turn_decision(self.pack, snapshot, done[0].raw_answers, utterance_text=spoken),
@@ -321,8 +323,7 @@ class LiveCallSession:
                 "flags": d.get("semantic_flags") or None, "decision_ms": turn.result.decision_ms, "audio_ms": round(turn.pcm_len / 32), "tokens": turn.result.total_input_tokens,
                 "value": json.dumps(val, ensure_ascii=False) if isinstance(val, (dict, list)) else (str(val) if val is not None else ""),
                 "attempts": turn.result.attempts if turn.result.attempts > 1 else None, "stt": turn.spoken[:120],
-                "ext_ms": ext.extractor_ms if ext is not None else None, "slim": True if turn.result.used_slim_fallback else None,
-                "fanout": True if turn.result.fanout_ran else None}
+                "ext_ms": ext.extractor_ms if ext is not None else None, "slim": True if turn.result.used_slim_fallback else None}
         return {k: v for k, v in meta.items() if v is not None and v != "" and v != {} and v != []}
     def _register_failure(self, turn: Turn | None, step_in: str, error_reason: str) -> bool:
         """Count one dead pass and answer whether it is terminal: no key at all, or the strike budget spent."""
@@ -338,11 +339,39 @@ class LiveCallSession:
             return True
         self.last_turn_meta = {k: v for k, v in (meta | {"recovered": "reask", "strike": self.consecutive_tool_errors}).items() if v is not None}
         return False
+    async def _recover_from_extraction(self, turn: Turn) -> tuple[dict[str, Any], bool] | None:
+        """The extractor's own read of a turn Decisions could not finish: `None` when it saved nothing.
+
+        `extractor.py` and `decisions` are two independent reads of the same utterance, and on Call #16 the
+        extractor won twice (अमन 6yo male, मीरा 2yo female in ~1.5 s) while Decisions timed out. `_next_question`
+        then re-asked the question the mother had already answered, in full, through the microphone.
+        """
+        ext = turn.extraction
+        if (turn.result.error_reason == "missing_api_key" or turn.snapshot.step_token != self.state.step_token
+                or ext is None or not ext.ok or (ext.patch.is_empty and ext.patch.roster_complete is None)):
+            return None  # nothing was extracted, or the call has already moved on without it
+        on_profile = engine.step_kind(self.pack, turn.snapshot) == "profile"
+        patched = engine.apply_profile_patch(self.pack, self.state, ext.patch, attempted_on_profile=on_profile)
+        if patched.step_token != self.state.step_token:
+            # The patch resolved or advanced the active step: the caller's answer is in, so no re-ask is owed.
+            self.consecutive_tool_errors = 0
+            await self._persist(patched)
+            self.last_turn_meta = {k: v for k, v in {"step_in": turn.snapshot.step_token, "step_out": self.state.step_token,
+                                                     "advanced": True, "recovered": "extractor", "decision_error": turn.result.error_reason,
+                                                     "decision_ms": turn.result.decision_ms, "ext_ms": ext.extractor_ms,
+                                                     "stt": turn.spoken[:120]}.items() if v is not None and v != ""}
+            return tool_body(self.pack, self.state), False
+        if patched != self.state:
+            await self._persist(patched)  # a mid-call profile write still belongs on the record before anything else
+        return None
+
     async def _failed_turn(self, turn: Turn | None, step_in: str, error_reason: str) -> tuple[dict[str, Any], bool]:
         """A pass that produced nothing: the same question is re-asked, or the call is closed for real."""
         if self._register_failure(turn, step_in, error_reason):
             await self._persist(engine.close_technical_failure(self.state))
-            return tool_body(self.pack, self.state), False
+            # The call is being closed for real: a `next_question_ok` here told every dumpster dive the turn that
+            # ended the call had answered the question (Call #16 event `[51]`), while `stop` said otherwise.
+            return {**tool_body(self.pack, self.state), "result": "failed"}, False
         await self._db(db.update_call_telemetry, dict(self.telemetry))
         return {"result": "retry", "say": _reask_say(self.pack, self.state)}, False
     async def _next_question(self) -> tuple[dict[str, Any], bool]:
@@ -361,7 +390,13 @@ class LiveCallSession:
                 logger.exception("decision turn failed")
                 self.last_turn_meta = {}
                 return await self._failed_turn(None, snapshot.step_token, "exception")
-            if not turn.result.ok: return await self._failed_turn(turn, turn.snapshot.step_token, turn.result.error_reason)
+            if not turn.result.ok:
+                # A dead Decision pass is not a dead turn: when the extractor read this same utterance cleanly, its
+                # profile/roster patch is the caller's answer and must not be thrown away to re-ask what she just
+                # said. Call #16 did exactly that twice, losing अमन and मीरा both times.
+                recovered = await self._recover_from_extraction(turn)
+                if recovered is not None: return recovered
+                return await self._failed_turn(turn, turn.snapshot.step_token, turn.result.error_reason)
             self.consecutive_tool_errors = 0
             if turn.snapshot.step_token != self.state.step_token:
                 self.last_turn_meta = {"step_in": turn.snapshot.step_token, "step_out": self.state.step_token, "reason": "stale_turn"}
@@ -473,8 +508,12 @@ class LiveCallSession:
             kind = "retry" if body.get("result") == "retry" else self._cue_kind(clarify)
             if not await self._publish_and_cue(kind): return await self._fail()
         if heard_bot_turn:
-            if not self.clarify_step:  # the voice puppet's line is known verbatim, yet Gemini drops its transcription tail
-                expected = " ".join(engine.say_text(self.pack, self.state).split())
+            # The voice puppet's line is known verbatim, yet Gemini drops its transcription tail. On a `retry` cue
+            # that line is the pack's reask, not `say_text`: comparing the reask against the question left Call #16
+            # transcript `[2]` stuck at "जी, आराम".
+            if self.cue_kind != "clarify":
+                raw_expected = _reask_say(self.pack, self.state) if self.cue_kind == "retry" else engine.say_text(self.pack, self.state)
+                expected = " ".join(raw_expected.split())
                 if expected and (not self.bot_text or (expected.startswith(self.bot_text.rstrip("।?!., ")) and len(self.bot_text) < len(expected))):
                     await self._hear("assistant", expected)
             self.bot_generating, self.last_reduced = False, None  # the turn is closed: a repeat must not re-merge or re-unlock

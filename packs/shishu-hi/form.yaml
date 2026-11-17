@@ -391,7 +391,7 @@ questions:
   kind: gate
   say: क्या बच्चे के होंठ या उंगलियाँ कभी नीली पड़ती हैं?
   stem: बच्चे के होंठ या उंगलियाँ कभी नीली पड़ती हैं
-  need: lips or fingers turn blue
+  need: child's lips or fingers turning blue/cyanotic (never blue light / नीली लाइट phototherapy for newborn jaundice)
   tag: Q02
   roster_scoped: true
   skip_if:

@@ -119,12 +119,12 @@ silence-close, soft limit, and hard limit timers.
 | Thing | Where |
 |---|---|
 | Which model scores the turn | `decisions.yaml → model` |
-| The wording of every `noul` head's question (`danger_now`, `caller_stop`, `mentions_profile`, `redact_patient_note`, `detail_present`, `jump_topic`, `mentions_other_topic`) | `decisions.yaml → heads.<name>.instructions / criteria` |
+| The wording of every `noul` head's question (`danger_now`, `caller_stop`, `mentions_profile`, `redact_patient_note`, `detail_present`, `jump_topic`) | `decisions.yaml → heads.<name>.instructions / criteria` |
 | The `active_outcome` class definitions (what counts as clear / concern / unknown / clarify / retract) | `decisions.yaml → heads.active_outcome.criteria` |
 | How out-of-turn answers are phrased to the model | `decisions.yaml → heads.stated_template` |
 | How the topic router is phrased | `decisions.yaml → heads.next_qid_template` |
 | How per-child attribution is phrased | `decisions.yaml → heads.item_ref_template` |
-| Every confidence gate | `decisions.yaml → thresholds{}` (all 17 keys are mandatory; a pack that omits one fails to load) |
+| Every confidence gate | `decisions.yaml → thresholds{}` (all 16 keys are mandatory; a pack that omits one fails to load) |
 
 ### 2.7 Reports
 
@@ -212,9 +212,9 @@ head, change a head's *type*, or change what its result does:
 - `danger_now` above threshold always means `CloseReason.EMERGENCY` and an immediate
   hangup with the `emergency` closing line. A pack can redefine what the model *looks for*
   but not what happens next.
-- The gate-first audio-plus-text request shape (narrow ~8-head `mentions_other_topic`
-  gate pass first, conditional Group B + D fan-out only when hot, hedged retry at 2.5 s,
-  7.5 s attempt timeout, 9.0 s total budget) is code.
+- The single-pass audio-plus-text request shape (full 4-group primary pass with `12.0 s`
+  patient read timeout, sequential slim Group-A + semantic-flags retry on timeout/5xx within
+  an `18.0 s` turn budget) is code.
 
 ### 3.6 The UI is skinned, not composed
 

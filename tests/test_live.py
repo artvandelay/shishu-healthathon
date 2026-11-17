@@ -14,7 +14,7 @@ import tests  # noqa: F401 — ensure isolated TEST_DATA_DIR under `-s tests`
 from intake import db, live
 from intake.models import (
     AnswerRecord, AnswerStatus, CallState, CloseReason, CursorStep, Phase,
-    RosterItem, SubStep, TurnCommand, TurnOutcome,
+    ProfilePatch, RosterItem, RosterInput, SubStep, TurnCommand, TurnOutcome,
 )
 from intake.pack import load_pack
 from starlette.websockets import WebSocketState
@@ -1453,9 +1453,9 @@ class DecisionRecoveryTests(unittest.TestCase):
             seen: list[dict[str, Any]] = []
             original = live.decisions.evaluate_turn
 
-            async def spy(request: dict[str, Any], **_kwargs: Any) -> live.decisions.DecisionCallResult:
-                seen.append(request)
-                return TurnTests.result(answers(danger_now=0.01, mentions_other_topic=0.02,
+            async def spy(request: dict[str, Any], **kwargs: Any) -> live.decisions.DecisionCallResult:
+                seen.append({"request": request, **kwargs})
+                return TurnTests.result(answers(danger_now=0.01,
                                                 active_outcome={"clear": 0.95, "other": 0.05}))
 
             live.decisions.evaluate_turn = spy  # type: ignore[assignment]
@@ -1463,15 +1463,14 @@ class DecisionRecoveryTests(unittest.TestCase):
                 turn = await fresh._evaluate_turn_task(fresh.state, "नहीं", b"")
             finally:
                 live.decisions.evaluate_turn = original  # type: ignore[assignment]
-            self.assertEqual(len(seen), 1, "an ordinary नहीं is answered by the gate slice and nothing else")
-            self.assertLessEqual(len(seen[0]["questions"]), 10,
-                                 "the gate is the slim slice: Group A plus the semantic flags")
-            self.assertIn("mentions_other_topic", seen[0]["questions"], "and the one trigger it may fan out on")
-            self.assertEqual([k for k in seen[0]["questions"] if k.startswith("stated_")], [],
-                             "no stated_* revision head is paid for on a turn nobody routed")
+            self.assertEqual(len(seen), 1, "a turn is one patient call, never a gate pass plus a fan-out")
+            self.assertIn("next_qid", seen[0]["request"]["questions"],
+                          "the one pass carries the router, so an ordinary नहीं never pays for a second one")
+            self.assertNotIn("next_qid", seen[0]["fallback_request"]["questions"],
+                             "and the slim retry body is the narrow slice")
             meta = fresh._turn_meta(turn, fresh.state.step_token, TurnCommand(), None)
-            self.assertNotIn("slim", meta, "one clean gate pass is not a degraded retry")
-            self.assertNotIn("fanout", meta, "and no fan-out ran")
+            self.assertNotIn("slim", meta, "one clean pass is not a degraded retry")
+            self.assertNotIn("fanout", meta, "and there is no fan-out to stamp")
 
         asyncio.run(body())
 
@@ -1516,114 +1515,206 @@ class DecisionRecoveryTests(unittest.TestCase):
         asyncio.run(body())
 
 
-class GateFirstFanoutTests(unittest.TestCase):
-    """Pass 1 is the narrow gate slice; the 56-head fan-out is bought only by a caller who raised another topic."""
+class OnePassDecisionTests(unittest.TestCase):
+    """Staging Call #16: one patient pass per turn, a slim retry inside it, and an extractor read that still lands."""
 
     QID = "body_private_parts"  # a routable gate with 50+ open questions behind it
+
+    # Call #16, event `[51]`: the mother answered the roster hold with both children named.
+    ROSTER_UTTERANCE = "एक बच्चे की उम्र अमन है जो 6 साल का है और छोटी बेटी मीरा जो 2 साल की है।"
 
     @staticmethod
     def state() -> CallState:
         """A call held on `body_private_parts` with the roster resolved, so no extractor call is owed."""
         state = live.engine.new_state(PACK)
-        state.cursor = CursorStep(qid=GateFirstFanoutTests.QID)
+        state.cursor = CursorStep(qid=OnePassDecisionTests.QID)
         state.roster = [RosterItem(id="item_1", age_years=2.0, age_label="2 साल", tag="male")]
         state.roster_stated = True
         return state
 
-    def test_an_ordinary_no_buys_one_gate_pass_and_no_fanout(self):
-        # Call #15: an ordinary "नहीं" paid for 56 stated heads and a 53-option router and missed its deadline.
+    @staticmethod
+    def roster_hold_state() -> CallState:
+        """Call #16 turn `[11]`: married and named, held on the ages reask with the roster still unknown."""
+        state = live.engine.new_state(PACK)
+        state.profile["caller_name"] = "कविता"
+        state.answers["intro_married"] = AnswerRecord(state=AnswerStatus.ANSWERED, value="married")
+        state.cursor = CursorStep(qid="intro_children", hold_slot="roster")
+        return state
+
+    @staticmethod
+    def aman_and_meera() -> ProfilePatch:
+        """The patch `extractor.py` really returned in Call #16, in ~1.5 s, while Decisions timed out."""
+        return ProfilePatch(roster_complete=True, roster=(RosterInput(age_years=6.0, tag="male", name="अमन"),
+                                                          RosterInput(age_years=2.0, tag="female", name="मीरा")))
+
+    def test_evaluate_turn_task_sends_full_primary_with_slim_fallback_in_single_call(self):
+        # Call #16: the two-pass gate paid 1.2k tokens for Pass 1 and then threw the whole turn away when the
+        # 4.0 s deadline hit. One pass now owns the full request, and the slim slice is only its retry body.
         async def body() -> None:
             fresh, _ws, _session = build(call_id=None, state=self.state())
-            seen: list[dict[str, Any]] = []
+            calls: list[dict[str, Any]] = []
             original = live.decisions.evaluate_turn
 
-            async def spy(request: dict[str, Any], **_kwargs: Any) -> live.decisions.DecisionCallResult:
-                seen.append(request)
-                return TurnTests.result(answers(
-                    danger_now=0.01, mentions_other_topic=0.02,
-                    active_outcome={"clear": 0.95, "other": 0.05}))
+            async def spy(request: dict[str, Any], **kwargs: Any) -> live.decisions.DecisionCallResult:
+                calls.append({"request": request, **kwargs})
+                return TurnTests.result(answers(danger_now=0.01,
+                                                active_outcome={"clear": 0.95, "other": 0.05}))
 
             live.decisions.evaluate_turn = spy  # type: ignore[assignment]
             try:
                 turn = await fresh._evaluate_turn_task(fresh.state, "नहीं", b"")
             finally:
                 live.decisions.evaluate_turn = original  # type: ignore[assignment]
-            self.assertEqual(len(seen), 1, "an ordinary नहीं stops after the gate")
-            self.assertLessEqual(len(seen[0]["questions"]), 10)
-            self.assertIn("mentions_other_topic", seen[0]["questions"], "the gate needs the one trigger it may fan out on")
-            self.assertEqual([k for k in seen[0]["questions"] if k.startswith("stated_")], [])
-            self.assertNotIn("next_qid", seen[0]["questions"])
+
+            self.assertEqual(len(calls), 1, "one turn is one call, not a gate plus a fan-out")
+            request, fallback = calls[0]["request"], calls[0].get("fallback_request")
+            self.assertIsNotNone(fallback, "the retry body must ride beside the primary in the same call")
+            self.assertEqual(request, live.decisions.build_turn_request(PACK, fresh.state, utterance_text="नहीं", slim=False),
+                             "the primary is the full request, revision heads and router included")
+            self.assertEqual(fallback, live.decisions.build_turn_request(PACK, fresh.state, utterance_text="नहीं", slim=True),
+                             "and the fallback is exactly the slim slice")
+            self.assertIn("next_qid", request["questions"], "a full pass may still route the call")
+            self.assertIn("stated_fam_cancer", request["questions"], "and revise an earlier answer")
+            self.assertNotIn("next_qid", fallback["questions"], "the retry slice carries no router")
+            self.assertIn("active_outcome", fallback["questions"], "but keeps the heads a turn cannot be read without")
+            self.assertLess(len(fallback["questions"]), len(request["questions"]) * 0.25,
+                            "the retry is a fraction of the primary's heads, that is the point of it")
             self.assertIs(turn.result.ok, True)
-            self.assertIs(turn.result.fanout_ran, False)
-            meta = fresh._turn_meta(turn, fresh.state.step_token, TurnCommand(), None)
-            self.assertNotIn("fanout", meta, "no fan-out means no fanout stamp")
 
         asyncio.run(body())
 
-    def test_a_hot_mentions_other_topic_buys_the_stated_and_router_pass(self):
-        # "नहीं, पर चाची को भी कैंसर हुआ था" revises another question and asks to jump: only Pass 2 can carry that.
+    def test_call16_profile_extractor_advances_step_when_decision_times_out(self):
+        # Call #16 turns `[11]` and `[13]`: the extractor returned अमन 6yo male and मीरा 2yo female in 1.5 s while
+        # Decisions timed out, and `_next_question` threw the extraction away to re-ask the same question — twice.
         async def body() -> None:
-            fresh, _ws, _session = build(call_id=None, state=self.state())
-            seen: list[dict[str, Any]] = []
-            original = live.decisions.evaluate_turn
+            built, _ws, _session = build(call_id=None, state=self.roster_hold_state())
+            self.assertEqual(built.state.step_token, "intro_children:hold:roster")
+            original_decisions, original_extractor = live.decisions.evaluate_turn, live.extractor.extract_profile_entities
 
-            async def spy(request: dict[str, Any], **_kwargs: Any) -> live.decisions.DecisionCallResult:
-                seen.append(request)
-                if len(seen) == 1:
-                    return TurnTests.result(answers(
-                        danger_now=0.02, mentions_other_topic=0.92,
-                        active_outcome={"clear": 0.93, "other": 0.07}))
-                return TurnTests.result(answers(
-                    stated_fam_cancer={"concern": 0.95, "unmentioned": 0.05}, jump_topic=0.85,
-                    next_qid={"fam_cancer": 0.91, "other": 0.09}))
+            async def timed_out(*_args: Any, **_kwargs: Any) -> live.decisions.DecisionCallResult:
+                return live.decisions.DecisionCallResult(False, "timeout", 2, 8_100, 92_000, 64, None, {})
 
-            live.decisions.evaluate_turn = spy  # type: ignore[assignment]
+            async def extracted(*_args: Any, **_kwargs: Any) -> live.extractor.ProfileExtractionResult:
+                return live.extractor.ProfileExtractionResult(True, self.aman_and_meera(), extractor_ms=1_500)
+
+            live.decisions.evaluate_turn = timed_out  # type: ignore[assignment]
+            live.extractor.extract_profile_entities = extracted  # type: ignore[assignment]
             try:
-                turn = await fresh._evaluate_turn_task(fresh.state, "नहीं, पर चाची को भी कैंसर हुआ था", b"")
+                await built.on_text({"text": self.ROSTER_UTTERANCE})
+                payload, _clarify = await built._next_question()
             finally:
-                live.decisions.evaluate_turn = original  # type: ignore[assignment]
-            self.assertEqual(len(seen), 2, "a hot gate buys exactly one more pass")
-            self.assertIn("stated_fam_cancer", seen[1]["questions"], "Pass 2 carries the out-of-turn revision heads")
-            self.assertNotIn("stated_fam_cancer", seen[0]["questions"], "and Pass 1 never paid for them")
-            self.assertIn("next_qid", seen[1]["questions"], "and the router that lets the call jump to it")
-            self.assertNotIn("active_outcome", seen[1]["questions"], "Pass 2 never re-asks what Pass 1 already read")
-            self.assertIs(turn.result.ok, True)
-            self.assertIs(turn.result.fanout_ran, True)
-            self.assertIs(turn.intent.command.stated["fam_cancer"], TurnOutcome.CONCERN, "and the revision lands")
-            self.assertIs(turn.intent.command.jump_topic, True)
-            meta = fresh._turn_meta(turn, fresh.state.step_token, turn.intent.command, None)
-            self.assertIs(meta["fanout"], True, "the meta row says the turn paid for a fan-out")
-            self.assertNotIn("slim", meta, "a clean fan-out is not a degraded turn")
+                live.decisions.evaluate_turn = original_decisions  # type: ignore[assignment]
+                live.extractor.extract_profile_entities = original_extractor  # type: ignore[assignment]
+
+            self.assertEqual(payload["result"], "ok",
+                             "a dead Decision pass must not re-ask a question the extractor just answered")
+            self.assertEqual(built.state.cursor.qid, "intro_bridge", "the resolved roster carried the call forward")
+            self.assertEqual([(c.name, c.age_years, c.tag) for c in built.state.roster],
+                             [("अमन", 6.0, "male"), ("मीरा", 2.0, "female")], "both children survive, named and tagged")
+            self.assertEqual(built.consecutive_tool_errors, 0, "a recovered turn is not a strike")
+            self.assertEqual(built.last_turn_meta["recovered"], "extractor", "and the recovery says who saved it")
+            self.assertEqual(built.last_turn_meta["decision_error"], "timeout")
+            self.assertEqual(built.last_turn_meta["ext_ms"], 1_500)
+            self.assertEqual(payload["say"], live.engine.say_text(PACK, built.state),
+                             "she speaks the step the extraction landed on, not the one that timed out")
 
         asyncio.run(body())
 
-    def test_a_dead_fanout_keeps_the_gate_read_and_stamps_both_flags(self):
-        # A fan-out that dies must never throw away the gate's complete, valid read: the caller still gets an answer.
+    def test_a_mid_call_profile_patch_is_preserved_even_when_the_pass_still_fails(self):
+        # Not every extraction read moves the step: "दो बच्चे हैं" gives the count but no ages, so the roster hold
+        # stays put and a re-ask is still owed. The entities she just gave must not be dropped with the dead pass.
         async def body() -> None:
-            fresh, _ws, _session = build(call_id=None, state=self.state())
-            seen: list[dict[str, Any]] = []
-            original = live.decisions.evaluate_turn
+            built, _ws, _session = build(call_id=None, state=self.roster_hold_state())
+            step_in = built.state.step_token
+            patch = ProfilePatch(slots={"num_children": 2})
 
-            async def spy(request: dict[str, Any], **_kwargs: Any) -> live.decisions.DecisionCallResult:
-                seen.append(request)
-                if len(seen) == 1:
-                    return TurnTests.result(answers(
-                        danger_now=0.02, mentions_other_topic=0.92,
-                        active_outcome={"clear": 0.93, "other": 0.07}))
-                return live.decisions.DecisionCallResult(False, "timeout", 1, 900, 100, 58, None, {})
+            async def failed_with_patch(snapshot: CallState, spoken: str, pcm: bytes) -> live.Turn:
+                turn = turn_with(snapshot, TurnOutcome.UNKNOWN, spoken)
+                return turn._replace(result=turn.result._replace(ok=False, error_reason="timeout"),
+                                     extraction=live.extractor.ProfileExtractionResult(True, patch, extractor_ms=600))
 
-            live.decisions.evaluate_turn = spy  # type: ignore[assignment]
-            try:
-                turn = await fresh._evaluate_turn_task(fresh.state, "नहीं, पर चाची को भी कैंसर हुआ था", b"")
-            finally:
-                live.decisions.evaluate_turn = original  # type: ignore[assignment]
-            self.assertEqual(len(seen), 2)
-            self.assertIs(turn.result.ok, True, "the caller is not re-asked because Pass 2 timed out")
-            self.assertIs(turn.result.fanout_ran, True)
-            self.assertIs(turn.result.used_slim_fallback, True)
-            meta = fresh._turn_meta(turn, fresh.state.step_token, TurnCommand(), None)
-            self.assertIs(meta["fanout"], True)
-            self.assertIs(meta["slim"], True)
+            built._evaluate_turn_task = failed_with_patch  # type: ignore[method-assign]
+            await built.on_text({"text": "दो बच्चे हैं"})
+            payload, _clarify = await built._next_question()
+            self.assertEqual(payload["result"], "retry", "a patch that moves no step still leaves the turn unanswered")
+            self.assertEqual(built.state.step_token, step_in, "the ages reask is still owed")
+            self.assertEqual(built.state.profile.get("num_children"), 2,
+                             "but the count she just gave is on the record, not thrown away with the dead pass")
+            self.assertEqual(built.consecutive_tool_errors, 1, "an unanswered turn is still a strike")
+            self.assertEqual(built.last_turn_meta.get("recovered"), "reask",
+                             "the dead pass is recovered by a re-ask, not by the extraction")
+
+        asyncio.run(body())
+
+    def test_no_extraction_recovery_when_the_key_is_missing(self):
+        # `missing_api_key` means nothing was read at all: an offline extractor returning `ok` must not fake a
+        # recovery here, or a keyless server would advance call state it never actually consulted a model for.
+        async def body() -> None:
+            built, _ws, _session = build(call_id=None, state=self.roster_hold_state())
+
+            async def no_key(snapshot: CallState, spoken: str, pcm: bytes) -> live.Turn:
+                turn = turn_with(snapshot, TurnOutcome.UNKNOWN, spoken)
+                return turn._replace(result=turn.result._replace(ok=False, error_reason="missing_api_key", attempts=1),
+                                     extraction=live.extractor.ProfileExtractionResult(True, self.aman_and_meera()))
+
+            built._evaluate_turn_task = no_key  # type: ignore[method-assign]
+            await built.on_text({"text": self.ROSTER_UTTERANCE})
+            payload, _clarify = await built._next_question()
+            self.assertEqual(payload["result"], "failed", "a keyless server closes the call, it does not advance it")
+            self.assertIs(built.state.close_reason, CloseReason.TECHNICAL_FAILURE)
+            self.assertEqual(built.state.cursor.qid, "intro_children", "and the roster hold is untouched")
+
+        asyncio.run(body())
+
+    def test_call16_retry_turn_completes_truncated_reask_transcript_and_strike3_emits_failed(self):
+        # Call #16 transcript `[2]`: Gemini spoke the reask, wrote only "जी, आराम", and the completion check
+        # compared against `say_text` — so the truncated caption stuck. And event `[51]`: the third strike's
+        # `tool_call` still read `next_question_ok` while the call was being closed for real.
+        async def body() -> None:
+            retry_session, retry_ws, _retry_sock = build(call_id=None)
+            state = retry_session.state
+            reask = live._reask_say(PACK, state)
+            self.assertTrue(reask.startswith("जी, आराम से"), f"this step's reask is the line Gemini speaks: {reask!r}")
+            self.assertNotEqual(reask, live.engine.say_text(PACK, state), "the retry cue says something else entirely")
+
+            await retry_session._publish_and_cue("retry", immediate=False)
+            await retry_session.on_message(OutputTranscriptionTests.said("जी, आराम"))
+            await retry_session.on_message(OutputTranscriptionTests.audio())
+            await retry_session.on_message(OutputTranscriptionTests.complete())
+
+            self.assertEqual(retry_session.bot_text, reask, "the truncated reask caption is completed to the real line")
+            self.assertEqual([p["text"] for p in retry_ws.of("transcript") if p["role"] == "assistant"],
+                             ["जी, आराम", reask], "and the browser is handed the whole sentence")
+
+            # Strike 3 on a step that has nothing to extract: the call closes, and the tool_call must say so.
+            failed_session, failed_ws, failed_sock = build(call_id=None)
+            failed_state = live.engine.new_state(PACK)
+            failed_state.roster = [RosterItem(id="item_1", age_years=2.0, age_label="2 साल", tag="male"),
+                                   RosterItem(id="item_2", age_years=6.0, age_label="6 साल", tag="female")]
+            failed_state.roster_stated = True
+            failed_state.cursor = CursorStep(qid="birth_nicu", substep=SubStep.WHICH_ITEM)
+            failed_session.state = failed_state
+
+            async def always_timeout(snapshot: CallState, spoken: str, pcm: bytes) -> live.Turn:
+                turn = turn_with(snapshot, TurnOutcome.UNKNOWN, spoken)
+                return turn._replace(result=turn.result._replace(ok=False, error_reason="timeout", attempts=2))
+
+            failed_session._evaluate_turn_task = always_timeout  # type: ignore[method-assign]
+            for attempt in (1, 2, 3):
+                await failed_session.on_text({"text": "नहीं"})
+                await failed_session._answer_tools(
+                    [live.types.FunctionCall(id=f"t{attempt}", name="next_question", args={})])
+
+            details = [p["last_event"]["detail"] for p in failed_ws.of("telemetry")
+                       if p["last_event"]["type"] == "tool_call"]
+            self.assertEqual(details[-3:], ["next_question_retry", "next_question_retry", "next_question_failed"],
+                             "the closing turn is reported as a failure, never as a healthy answer")
+            closing = {r.id: r.response for kind, payload in failed_sock.sent if kind == "tool"
+                       for r in payload}["t3"]
+            self.assertEqual(closing["result"], "failed")
+            self.assertIs(closing["stop"], True, "the caller is still owed the closing line")
+            self.assertIs(failed_session.state.close_reason, CloseReason.TECHNICAL_FAILURE)
+            self.assertTrue(closing["say"], "and that closing line is not empty")
 
         asyncio.run(body())
 

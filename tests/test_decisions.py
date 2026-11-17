@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import unittest
 
@@ -117,56 +118,32 @@ class EvaluateTurnTests(unittest.TestCase):
         self.assertIs(direct_result.used_slim_fallback, False,
                       "a primary request that succeeds never reports the slim fallback")
 
-    def hedged(self, coro) -> tuple[decisions.DecisionCallResult, list]:
-        """Run one `evaluate_turn` and report every `asyncio.Task` still alive the moment it returned."""
-        async def wrapper():
-            result = await coro
-            return result, [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-        return asyncio.run(wrapper())
+    def test_evaluate_turn_waits_patiently_for_slow_single_attempt_without_hedging(self):
+        # Call #16 (`5fce012`): `hedge_after_sec=2.5` fired a second 92 KB WAV request beside a healthy first one,
+        # and `min(6.5, total_budget_sec)` killed slow-but-alive turns at 6.5s. A slow primary call is not a dead
+        # one: this turn must wait it out on one sequential call with the patient 12.0s / 18.0s defaults.
+        params = inspect.signature(decisions.evaluate_turn).parameters
+        self.assertNotIn("hedge_after_sec", params, "a hedged retry duplicates the WAV and doubles the bill")
+        self.assertEqual(params["attempt_timeout_sec"].default, 12.0)
+        self.assertEqual(params["total_budget_sec"].default, 18.0)
 
-    def test_hedged_retry_races_second_attempt_without_killing_in_flight_first_attempt(self):
-        # Real `gemini-decision-1` 50-case bench: even 7-head `slim=True` calls sometimes sat 5.4s-6.5s in Google's
-        # per-request queue while a concurrent identical call returned 200 in 0.7s-1.1s. Aborting Attempt 1 at
-        # 3.5s/4.5s threw away healthy 5.5s `200 OK`s, so Attempt 2 must start *beside* Attempt 1 (hedge) and the
-        # first clean read wins — whichever attempt it comes from.
         request = {"model": "gemini-decision-1", "input": "x", "questions": {"a": {}, "b": {}}}
+        in_flight, peak = 0, 0
 
-        # Subcase 1: Attempt 2 rescues a stalled Attempt 1 long before Attempt 1's own timeout.
-        seen: list[int] = []
-
-        async def racing(url, payload, headers, timeout):
-            seen.append(len(seen) + 1)
-            await asyncio.sleep(0.30 if seen[-1] == 1 else 0.03)
+        async def slow(url, payload, headers, timeout):
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            await asyncio.sleep(0.08)
+            in_flight -= 1
             return 200, json.dumps(OK_BODY).encode()
 
-        result, leaked = self.hedged(decisions.evaluate_turn(
-            request, api_key="k", transport=racing,
-            hedge_after_sec=0.05, attempt_timeout_sec=0.50, total_budget_sec=0.60))
-        self.assertEqual(len(seen), 2, "the hedge launched Attempt 2 while Attempt 1 was still in flight")
+        result = asyncio.run(decisions.evaluate_turn(
+            request, api_key="k", transport=slow, attempt_timeout_sec=0.50, total_budget_sec=0.60))
         self.assertTrue(result.ok)
-        self.assertEqual(result.attempts, 2)
-        self.assertLess(result.decision_ms, 200,
-                        "Attempt 2 answered in 30ms: nothing may wait out Attempt 1's 500ms timeout")
-        self.assertEqual(leaked, [], "every hedged task is cancelled and awaited before returning")
-
-        # Subcase 2: the hedge must NOT kill Attempt 1 — it can still be the attempt that lands.
-        order: list[int] = []
-
-        async def slow_primary(url, payload, headers, timeout):
-            order.append(len(order) + 1)
-            if order[-1] == 1:
-                await asyncio.sleep(0.12)
-                return 200, json.dumps(OK_BODY).encode()
-            return 503, b"{}"
-
-        result2, leaked2 = self.hedged(decisions.evaluate_turn(
-            request, api_key="k", transport=slow_primary, max_attempts=2,
-            hedge_after_sec=0.04, attempt_timeout_sec=0.50, total_budget_sec=0.60))
-        self.assertEqual(len(order), 2, "the 503 hedge fires 40ms in, while Attempt 1 is still pending")
-        self.assertTrue(result2.ok, "Attempt 1 still finished cleanly at 120ms after the hedge fired")
-        self.assertEqual(result2.attempts, 2)
-        self.assertIs(result2.used_slim_fallback, False, "the full primary read, not the hedge, won")
-        self.assertEqual(leaked2, [])
+        self.assertEqual(result.attempts, 1, "an answered turn pays exactly one call")
+        self.assertEqual(peak, 1, "never a second request racing the one already in flight")
+        self.assertIs(result.used_slim_fallback, False)
 
 
 class BuildRequestTests(unittest.TestCase):
@@ -239,8 +216,7 @@ class BuildRequestTests(unittest.TestCase):
     def test_slim_turn_request_keeps_group_a_and_flags_while_dropping_stated_and_router(self):
         # Call #15: the 56 `stated_<qid>` heads plus the 53-option `next_qid` head are what pushed every spoken
         # turn to ~21.7k tokens. A slim request keeps only the heads a turn cannot be read without: the always-on
-        # core, the active outcome, the active typed value, the semantic flags, and the one narrow gate
-        # (`mentions_other_topic`) that decides whether Pass 2's routing heads are worth a second call at all.
+        # core, the active outcome, the active typed value, and the semantic flags.
         state = state_at(self.shishu, "body_private_parts")
         req = decisions.build_turn_request(self.shishu, state, utterance_text="पता नहीं।", slim=True)
         heads = req["questions"]
@@ -250,7 +226,6 @@ class BuildRequestTests(unittest.TestCase):
             "caller_stop",
             "mentions_profile",
             "redact_patient_note",
-            "mentions_other_topic",
             "flag_confirmed_hemoglobinopathy",
         )
         for head in always_on:
@@ -276,128 +251,40 @@ class BuildRequestTests(unittest.TestCase):
         self.assertIn("multiples", text)
         self.assertEqual(self.shishu.decisions["heads"]["mentions_profile"]["type"], "noul")
 
-    def test_the_other_topic_gate_is_pinned_to_the_calibrated_yes_floor(self):
-        # Real `gemini-decision-1` 50-case bench (DEV + HOLDOUT): `mentions_other_topic` scored 0.7467-0.9760 on
-        # all 5 positive multi-topic cases (5/5 recall) and stayed under 0.50 on 34/36 calm single-topic cases
-        # (0.06-0.44). The loose 0.35 gate bought nothing but fan-out on near-miss quiet turns, so the floor is
-        # the empirical midpoint, in every pack, not just the one it was measured on.
+    def test_shishu_item_ref_template_covers_volunteered_child_concerns_when_active_is_denied(self):
+        # Call #16, Sunita step 4: "नहीं नीली लाइट में तो नहीं रखा था, पर मेरे बड़े बेटे अमन को तीन बार खून चढ़ाना
+        # पड़ा है और उसका पेट भी धीरे-धीरे बड़ा हो रहा है।" denies active_question and then volunteers two concerns
+        # for a named child in the same breath. The old template scoped item_ref to "the health symptom or event
+        # asked about in active_question or parent_question", so the model answered `other` and body_transfusion
+        # plus body_tummy landed unattributed (`item_ids=[]`) even though Aman was named out loud.
+        text = " ".join(str(self.shishu.decisions["heads"]["item_ref_template"]["instructions"]).split())
+        self.assertIn("volunteering another child symptom", text,
+                      "a concern volunteered while denying active_question is still that child's concern")
+        self.assertIn("whether answering active_question/parent_question", text)
+        self.assertIn("choose other ONLY if no child concern is affirmed", text)
+        self.assertNotIn("asked about in active_question or parent_question", text,
+                         "the old active_question-only scope is what dropped both symptoms")
+
+        # `mentions_other_topic` (`5fce012`) scored 0.29 and 0.068 on exactly this volunteered-NICU-and-नीली-लाइट
+        # shape, so the gate went away entirely rather than being re-tuned: no head, no threshold, no request slot.
         for pack in (self.shishu, self.fever):
             with self.subTest(pack=pack.id):
-                self.assertEqual(pack.decisions["thresholds"]["mentions_other_topic_min_yes"], 0.5)
-                text = (pack.root / "decisions.yaml").read_text(encoding="utf-8")
-                self.assertIn("mentions_other_topic_min_yes: 0.5", text)
-
-
-class GatedFanOutTests(unittest.TestCase):
-    """Gate-first fan-out: Pass 1 is the narrow gate slice, Pass 2 runs only when another topic fires."""
-
-    @classmethod
-    def setUpClass(cls):
-        cls.shishu = load_pack("shishu-hi")
-
-    def transport(self, first: dict, second: dict | Exception | None, calls: list[dict]):
-        """Two-pass fake: answers the gate slice first, then the routing slice (or an exception)."""
-
-        def send(url, payload, headers, timeout):
-            calls.append(json.loads(payload)["questions"])
-            body = first if len(calls) == 1 else second
-            if isinstance(body, Exception):
-                raise body
-            return 200, json.dumps({"answers": body, "usage": {"total_input_tokens": 1000}}).encode()
-
-        return send
-
-    def test_slim_gate_request_carries_mentions_other_topic_when_routing_is_eligible(self):
-        # Pass 1 is the whole turn on an ordinary "पता नहीं।": the slim slice plus the one narrow semantic logic
-        # gate that decides whether the 56-head routing fan-out is worth paying for. Before this, slim=True sent
-        # no gate at all, so a multi-topic answer had nothing to trigger on.
-        profile = decisions.build_turn_request(self.shishu, state_at(self.shishu, "intro_name"), slim=True)["questions"]
-        self.assertNotIn("mentions_other_topic", profile, "a profile step resolves no routable answer")
-        self.assertEqual([k for k in profile if k.startswith("stated_")], [])
-        self.assertNotIn("next_qid", profile)
-
-        gate = decisions.build_turn_request(self.shishu, state_at(self.shishu, "body_private_parts"),
-                                            utterance_text="पता नहीं।", slim=True)["questions"]
-        self.assertEqual(gate["mentions_other_topic"]["type"], "noul")
-        for head in ("active_outcome", "danger_now", "caller_stop", "mentions_profile",
-                     "redact_patient_note", "flag_confirmed_hemoglobinopathy"):
-            self.assertIn(head, gate)
-        self.assertEqual([k for k in gate if k.startswith("stated_")], [])
-        self.assertNotIn("jump_topic", gate)
-        self.assertNotIn("next_qid", gate)
-        self.assertLessEqual(len(gate), 10)
-
-    def test_build_routing_request_emits_only_stated_and_router_heads(self):
-        # Pass 2 pays for Group B and Group D only. Re-sending Group A would ask the model to re-read the active
-        # answer it already gave and let a second, thinner read overwrite the gate's verdict.
+                self.assertNotIn("mentions_other_topic", pack.decisions["heads"])
+                self.assertNotIn("mentions_other_topic_min_yes", pack.decisions["thresholds"])
         state = state_at(self.shishu, "body_private_parts")
-        req = decisions.build_routing_request(
-            self.shishu, state, utterance_text="नहीं, पर चाची को भी कैंसर हुआ था")
-        self.assertIn("stated_fam_cancer", req["questions"])
-        self.assertIn("jump_topic", req["questions"])
-        self.assertIn("next_qid", req["questions"])
-        for head in ("active_outcome", "danger_now", "caller_stop", "mentions_profile",
-                     "redact_patient_note", "mentions_other_topic"):
-            self.assertNotIn(head, req["questions"])
-        self.assertEqual(decisions.build_routing_request(self.shishu, state_at(self.shishu, "intro_name"))["questions"], {},
-                         "nothing to route when no routable answer exists and the step is a profile slot")
-
-    def test_evaluate_turn_gated_short_circuits_ordinary_turns_and_fans_out_only_when_hot(self):
-        quiet = {"danger_now": noul(0.01), "caller_stop": noul(0.01), "mentions_other_topic": noul(0.02),
-                 "active_outcome": choice(unknown=0.94, clear=0.04, other=0.02)}
-        hot = {"danger_now": noul(0.02), "caller_stop": noul(0.01), "mentions_other_topic": noul(0.92),
-               "active_outcome": choice(clear=0.93, other=0.07)}
-        routing = {"stated_fam_cancer": choice(concern=0.95, unmentioned=0.05), "jump_topic": noul(0.85),
-                   "next_qid": choice(fam_cancer=0.91, other=0.09)}
-        utterance = "नहीं, पर चाची को भी कैंसर हुआ था"
-
-        calls: list[dict] = []
-        ordinary = asyncio.run(decisions.evaluate_turn_gated(
-            self.shishu, state_at(self.shishu, "body_private_parts"), utterance_text="पता नहीं।",
-            api_key="k", transport=self.transport(quiet, None, calls)))
-        self.assertEqual(len(calls), 1, "an ordinary नहीं/पता नहीं turn stops after the gate")
-        self.assertLessEqual(len(calls[0]), 10)
-        self.assertIs(ordinary.ok, True)
-        self.assertIs(ordinary.fanout_ran, False)
-        self.assertIs(ordinary.used_slim_fallback, False)
-
-        calls = []
-        state = state_at(self.shishu, "body_private_parts")
-        fanned = asyncio.run(decisions.evaluate_turn_gated(
-            self.shishu, state, utterance_text=utterance, api_key="k",
-            transport=self.transport(hot, routing, calls)))
-        self.assertEqual(len(calls), 2)
-        self.assertIn("active_outcome", calls[0])
-        self.assertIn("mentions_other_topic", calls[0])
-        self.assertIn("stated_fam_cancer", calls[1])
-        self.assertIn("next_qid", calls[1])
-        self.assertNotIn("active_outcome", calls[1], "Pass 2 never re-asks what Pass 1 already read")
-        self.assertIs(fanned.ok, True)
-        self.assertIs(fanned.fanout_ran, True)
-        self.assertIs(fanned.used_slim_fallback, False)
-        intent = decisions.interpret_turn_decision(self.shishu, state, fanned.raw_answers, utterance_text=utterance)
-        self.assertIs(intent.command.outcome, TurnOutcome.CLEAR)
-        self.assertEqual(intent.command.stated, {"fam_cancer": TurnOutcome.CONCERN})
-        self.assertIs(intent.command.jump_topic, True)
-
-        calls = []
-        timed_out = asyncio.run(decisions.evaluate_turn_gated(
-            self.shishu, state_at(self.shishu, "body_private_parts"), utterance_text=utterance, api_key="k",
-            transport=self.transport(hot, TimeoutError("slow"), calls)))
-        self.assertEqual(len(calls), 2)
-        self.assertIs(timed_out.ok, True, "the gate's own read still stands when the fan-out dies")
-        self.assertIs(timed_out.fanout_ran, True)
-        self.assertIs(timed_out.used_slim_fallback, True)
-        self.assertEqual(timed_out.raw_answers["active_outcome"], hot["active_outcome"])
-
-        emergency = {"danger_now": noul(0.95), "caller_stop": noul(0.01), "mentions_other_topic": noul(0.95),
-                     "active_outcome": choice(clear=0.5, other=0.4)}
-        calls = []
-        urgent = asyncio.run(decisions.evaluate_turn_gated(
-            self.shishu, state_at(self.shishu, "body_private_parts"), utterance_text=utterance, api_key="k",
-            transport=self.transport(emergency, None, calls)))
-        self.assertEqual(len(calls), 1, "an active emergency never spends latency on 56 routing heads")
-        self.assertIs(urgent.fanout_ran, False)
+        for slim in (False, True):
+            with self.subTest(slim=slim):
+                self.assertNotIn(
+                    "mentions_other_topic",
+                    decisions.build_turn_request(self.shishu, state, utterance_text="पता नहीं।", slim=slim)["questions"])
+        self.assertNotIn("mentions_other_topic", decisions._NOUL)
+        self.assertNotIn("fanout_ran", decisions.DecisionCallResult._fields)
+        self.assertFalse(hasattr(decisions, "build_routing_request"), "Pass 2's fan-out request is gone")
+        self.assertFalse(hasattr(decisions, "evaluate_turn_gated"), "the gate-first fan-out is gone")
+        # Sunita Step 7b: revising "नीली लाइट" (phototherapy) on fam_cancer flipped `stated_body_blue` to 0.94
+        # when `body_blue.need` said only "lips or fingers turn blue". The pack's own `need` must disambiguate
+        # cyanosis from phototherapy blue light.
+        self.assertIn("नीली लाइट", self.shishu.by_id["body_blue"].need)
 
 
 class InterpretTests(unittest.TestCase):

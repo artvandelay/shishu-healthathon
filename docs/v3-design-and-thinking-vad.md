@@ -184,10 +184,10 @@ and comes back" defect: the model proposes, the reducer disposes.
 
 ### 3.3 Gating
 
-Every head is thresholded by `packs/<pack_id>/decisions.yaml → thresholds`, validated at startup against the 17 keys in
+Every head is thresholded by `packs/<pack_id>/decisions.yaml → thresholds`, validated at startup against the 16 keys in
 `pack._THRESHOLDS`: `*_min_confidence`/`*_min_margin` pairs for the `choice` heads (`outcome`, `choice`,
 `stated`, `item_ref`, plus `score_min_confidence`), and `*_min_yes` cut-offs for the `noul` heads (`danger_now`,
-`caller_stop`, `mentions_profile`, `redact_patient_note`, `detail_present`, `jump_topic`, `mentions_other_topic`,
+`caller_stop`, `mentions_profile`, `redact_patient_note`, `detail_present`, `jump_topic`,
 `multi_choice`). Safety heads are evaluated **first and unconditionally**; a `danger_now` above threshold returns a
 `CloseReason.EMERGENCY` path regardless of what the answer heads said. A pack that omits any required threshold fails to
 load — there is no default and no "0.5 will do".
@@ -230,12 +230,12 @@ Borrowed directly from the right systems boundaries in FormBharo (`3rdparty/form
      - **`LISTENING(epoch)`**: Mic is open; quick-tap pills unlock once ≥50% of queued step audio has played or `bot_turn_complete` arrives; `15s` check-in and `30s` silence-close timers count *only* in `LISTENING`.
      - **`DECIDING(epoch)`**: Entered when Gemini calls `next_question` (waiting up to `0.5s` on `stt_ready` if `tool_call` leads `input_transcription` by a frame). Server emits `{"type": "thinking", "epoch": epoch}` so the client shows `"सोच रही हूँ… / Thinking"`, suppresses `nudge-btn`, and ignores `on_nudge`.
      - **`CLOSING(epoch)`**: Speaks the closing line once, waits for `playback_ends_at`, and emits `ending`.
-2. **Gate-First Fan-Out, Hedged Tail Execution & 3-Strike Non-Fatal Recovery (`intake/decisions.py` + `intake/live.py`):**
-   - **Pass 1 — Narrow Semantic Gate (`evaluate_turn_gated`, `slim=True`):** Following Jev's narrow semantic-logic-gate design ("pass only the relevant local state slice, never dump the universe"), every spoken turn first runs **only Group A + `semantic_flags` + `mentions_other_topic`** (~7–8 heads, ~7.4 KB / ~1.8k tokens vs. 65 heads / ~107 KB / ~21.7k tokens — a **14.5x** payload cut). Across the 50-case `gemini-decision-1` benchmark, `mentions_other_topic_min_yes: 0.5` achieves `5/5` (`100%`) recall on multi-topic/revision/cross-clarify cases (`0.75–0.98`) while short-circuiting `94.4%` (`34/36`) of calm single-topic replies in one narrow pass.
-   - **Pass 2 — Conditional Routing Fan-Out (`build_routing_request`):** Only when `mentions_other_topic` clears `0.5` (and neither `danger_now` nor `caller_stop` fired) does Pass 2 evaluate Group B (`stated_<qid>`) + Group D (`jump_topic`, `next_qid`) and merge onto Pass 1's verdict. If Pass 2 ever fails, Pass 1's Group A verdict survives (`used_slim_fallback=True`, `fanout_ran=True`).
-   - **Hedged Tail-Latency Execution (`hedge_after_sec=2.5`, `attempt_timeout_sec=7.5`, `total_budget_sec=9.0`):** Because `/v1beta/decisions` occasionally exhibits single-request server queue spikes (`5.4s–6.5s`) while a concurrent request returns in `<1s`, Attempt 1 is **kept alive** at `2.5s` while Attempt 2 races beside it (`FIRST_COMPLETED`); turns under `2.5s` (>90%) pay one call, and neither healthy `5.5s` responses nor fast hedged rescues are thrown away.
+2. **Single-Pass Multimodal Decisions, Patient Sequential Timeout & Extractor Recovery (`intake/decisions.py` + `intake/live.py`):**
+   - **Why `Call #16` (`5fce012`) retired the 2-pass narrow gate and `2.5s` hedge:** `5fce012` briefly tried splitting turns into an ~8-head `mentions_other_topic` gate followed by a conditional routing pass, plus a `2.5s` hedged duplicate request capped at `6.5s`. On live `Call #16`, both ideas failed: (a) during a `/v1beta/decisions` queue brownout, `hedge_after_sec=2.5` doubled concurrent 92 KB WAV load on `13/15` turns while `6.5s` killed slow-but-healthy responses right before they landed (`9/15` timeouts); and (b) without seeing the form's other questions, `mentions_other_topic` scored `0.29` and `0.068` when the caller volunteered `NICU` + `नीली लाइट` on newborn questions, dropping both symptoms (`0/2` recall).
+   - **1-Pass Full Primary + Sequential Slim Retry (`attempt_timeout_sec=12.0`, `total_budget_sec=18.0`):** Every spoken turn sends one complete 4-group `build_turn_request` and waits patiently up to `12.0s` with zero duplicate hedging. Only if Attempt 1 genuinely fails (`timeout`, `connection_error`, `408`/`429`/`5xx`) does Attempt 2 run sequentially with `slim=True` (Group A + `semantic_flags`).
+   - **Independent Extractor Recovery:** `extractor.py` runs alongside `decisions.py` on profile/roster steps; if `decisions` times out after `extractor` already extracted a valid profile/roster patch (e.g. `अमन 6 साल बेटा`, `मीरा 2 साल बेटी`), `_recover_from_extraction` commits the patch and advances without re-asking.
    - **Bounded Gemini Live KV Window (`trigger_tokens=4096, target_tokens=2048`):** Prevents 50+ prior `SYSTEM CUE` prompts from accumulating in Gemini Live's conversational KV cache across long calls while `CallState` holds full external truth in Python.
-   - **Graceful 3-Strike Re-Ask:** If both hedged attempts fail during an outage, `LiveCallSession` stays in `Phase.ASKING`, increments `consecutive_tool_errors`, and cues a brief Hindi glitch apology + re-ask (`result: "retry"`), closing as `CloseReason.TECHNICAL_FAILURE` only on `missing_api_key` or **3 consecutive** failed turns.
+   - **Graceful 3-Strike Re-Ask:** If both sequential attempts fail and no profile patch resolved the step, `LiveCallSession` stays in `Phase.ASKING`, increments `consecutive_tool_errors`, and cues a brief Hindi glitch apology + re-ask (`result: "retry"`), closing as `CloseReason.TECHNICAL_FAILURE` (`result: "failed"`) only on `missing_api_key` or **3 consecutive** failed turns.
 3. **Token-Addressed WebSocket Resume + Session-Scoped Consent (`intake/live.py` + `intake/audio.py` + `call.js`):**
    - Unexpected `/ws/live` drops during `Phase.ASKING` keep the call resumable for `90s` instead of stamping `CALLER_STOP` immediately.
    - `call.js` keeps `AudioContext` and mic alive across blips and retries `/ws/live?...&resume=<share_token>` (`600 ms`, `1500 ms`, `3000 ms`). Server-side resume evicts any lingering half-open old session for that `call_id`, restores `CallState` from SQLite, appends stereo WAV segments (`CallAudioRecorder(..., append_existing=True)`), and immediately re-speaks the active question.
@@ -296,7 +296,7 @@ fewer than 2 options on a choice kind, fewer than 2 rubric levels on a `score`, 
 
 **Authoring checklist.** Unique `QuestionSpec.id`; every `group` declared; every `skip_if`/`variants[].when` names a
 `rules` key; choice kinds ≥ 2 options and `score` ≥ 2 rubric levels; `profile` steps carry `requires_slot` and
-roster-scoped steps set `roster_scoped`; all 17 keys in `pack._THRESHOLDS` present; all three templates present;
+roster-scoped steps set `roster_scoped`; all 16 keys in `pack._THRESHOLDS` present; all three templates present;
 `semantic_flags` implications name only questions the pack is willing to prune; patient-facing copy contains no disease
 names, and clinical readings go to the verbatim note.
 
