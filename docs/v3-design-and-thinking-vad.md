@@ -1,6 +1,6 @@
 # SHISHU V3 — Moldable Voice Patient Intake: Architecture & Field Evolution
 
-**Status:** design of record for branch `v3` (updated Nov 17, 2026 after staging Calls `#7`–`#15` postmortem). **Scope:** `intake/`, `packs/<pack_id>/`, `docs/`.
+**Status:** design of record for branch `v3` (updated Nov 18, 2026 — **V3.3** updates after staging Calls `#21`–`#46` adversarial voice verification, §4.4; earlier Call `#7`–`#15` postmortem in §4.1–§4.3). **Scope:** `intake/`, `packs/<pack_id>/`, `docs/`.
 **Companion code:** `intake/models.py` (typed vocabulary), `intake/pack.py` (pack loader + startup validator), `intake/engine.py` (pure reducer), `intake/live.py` (Turn-Epoch live session), `intake/decisions.py` (two-tier `gemini-decision-1` router).
 
 ---
@@ -29,22 +29,27 @@ brief, measured today at 10,264: 5,990 lines of Python (`app.py`, `engine.py`, `
 
 Roughly 1,600 of those lines were clinical content any second use case would have to rewrite: `triage_catalog.py` (56
 atomic items and their follow-ups), `copy_hi.py` (every Hindi string), and the demographic skip matrix baked into
-`engine.py`. Every new intake — a fever OPD, an immunisation register — would fork the app. **V3 target: `intake/` at or
-under 1,950 LOC**, clinical content at zero lines of Python.
+`engine.py`. Every new intake — a fever OPD, an immunisation register — would fork the app. **V3 target was `intake/` at or
+under 1,950 LOC**; measured V3.3 is **2,507** Python LOC and **1,371** browser LOC, because adversarial live calls bought
+structural hardening (§4.4) rather than features — clinical content is still zero lines of Python.
 
 | Module | Role | Measured LOC |
 |---|---|---:|
-| `intake/models.py` | typed vocabulary: `CallState`, `TurnCommand`, `AnswerRecord`, `QuestionSpec`, `PackConfig` | 105 |
+| `intake/models.py` | typed vocabulary: `CallState`, `TurnCommand`, `AnswerRecord`, `QuestionSpec`, `PackConfig` | 103 |
 | `intake/pack.py` | `load_pack`, `list_pack_ids`, startup validation | 61 |
-| `intake/engine.py` | pure reactive reducer, eligibility set `E`, rules/skip/reopen evaluation | 350 |
-| `intake/decisions.py` + `extractor.py` | Two-tier multimodal `gemini-decision-1` router (full 4-group + slim Group-A fallback) + schema extractor | ~240 |
-| `intake/audio.py` | 16 kHz PCM resampling + resumable stereo 16 kHz WAV recorder (`append_existing`) | ~85 |
-| `intake/live.py` | Gemini Live AAD voice puppet, explicit `TurnPhase` + `epoch` state machine, `?resume=<share_token>` continuity | ~580 |
-| `intake/reports.py` | Jinja2 → WeasyPrint PDF + clinician markdown projection | 202 |
-| `intake/app.py` + `intake/db.py` | passcode auth, pack routes, bug drawer API, atomic SQLite | ~305 |
-| **Python Engine Subtotal (`intake/*.py`)** | | **1,839** |
-| **Web Client + Admin (`intake/static/*.{js,html}`)** | `login.html` (82), `call.html` (71), `call.js` (281), `admin.html` (90), `admin.js` (190) | **714** |
-| **Total Runtime Code** | *(vs `10,112` LOC in V2 — a **4.0x** overall and **3.3x** Python / **5.8x** JS+HTML reduction)* | **2,553** |
+| `intake/engine.py` | pure reactive reducer, eligibility set `E`, rules/skip/reopen evaluation | 452 |
+| `intake/decisions.py` + `extractor.py` | Two-tier multimodal `gemini-decision-1` router (full 4-group + slim Group-A fallback) + schema extractor | 291 + 101 |
+| `intake/audio.py` | 16 kHz PCM resampling + resumable stereo 16 kHz WAV recorder (`append_existing`) | 111 |
+| `intake/live.py` | Gemini Live AAD voice puppet, explicit `TurnPhase` + `epoch` state machine, adaptive `noise_rms` floor + `listening_ring`, `?resume=<share_token>` continuity | 839 |
+| `intake/reports.py` | Jinja2 → WeasyPrint PDF + clinician markdown projection | 239 |
+| `intake/app.py` + `intake/db.py` | passcode auth, pack routes, bug drawer API, atomic SQLite | 177 + 132 |
+| **Python Engine Subtotal (`intake/*.py`)** | incl. `intake/__init__.py` (1) | **2,507** |
+| **Web Client + Admin (`intake/static/*.{js,html}`)** | `login.html` (82), `call.html` (71), `call.js` (939), `admin.html` (90), `admin.js` (189) | **1,371** |
+| **Total Runtime Code** | *(vs `10,112` LOC in V2 — **2.6x** overall, **2.4x** Python / **3.1x** JS+HTML reduction)* | **3,878** |
+
+Measured with `wc -l intake/*.py intake/static/*.{js,html}` (Nov 18, 2026). The growth from the 2,553 figure is concentrated
+in `live.py` and `call.js` — the two files where the `#21`–`#46` voice defects live.
+
 
 The pack surface replacing the deleted content is `packs/<pack_id>/` — plain YAML, loaded by `load_pack(pack_id)`
 (default `DEFAULT_PACK_ID = "shishu-hi"`, override via `INTAKE_PACK`, `lru_cache`d per process).
@@ -241,6 +246,16 @@ Borrowed directly from the right systems boundaries in FormBharo (`3rdparty/form
    - `call.js` keeps `AudioContext` and mic alive across blips and retries `/ws/live?...&resume=<share_token>` (`600 ms`, `1500 ms`, `3000 ms`). Server-side resume evicts any lingering half-open old session for that `call_id`, restores `CallState` from SQLite, appends stereo WAV segments (`CallAudioRecorder(..., append_existing=True)`), and immediately re-speaks the active question.
    - Consent is stored in `sessionStorage` for the tab session (cleared on **Log out**): manual page refresh starts a fresh call with consent still checked, and `paint("error")` never flashes `#consent-row` once consent is given.
 
+### 4.4 V3.3 Hardening After Adversarial Live-Voice Calls (`Calls #21–#46`)
+
+The turn-epoch machine of §4.3 held, but adversarial live calls — real phones, real clinic rooms, fast Hindi speakers, fans — exposed four bugs that survived 258 green tests because every fake event was idealised. These are now **structural invariants**. Future agents: **do not relax any of them.**
+
+1. **Single-Owner Prompt Cues & `PROMPTING` Self-Interrupt Recue (`live.py`).** Immediate cues (`greeting`, `resume`, `quick_reply`) are sent without arming a duplicate `2.2s` `_cue_if_silent` behind a cue already delivered; a post-abort `_cue_if_silent` starts only once `on_turn_complete` clears `awaiting_abort_end`, so an aborted turn's death can never cancel or unlock the step that replaced it. An unprompted `sc.interrupted` arriving during `TurnPhase.PROMPTING` with no caller turn open and no bundled `input_transcription` re-cues **once per epoch** (`prompt_recued`) — never twice, never silent. Resumed sessions merge prior `telemetry` counters and `turn_latencies_ms` sample lists instead of resetting them, so latency averages survive reconnects.
+2. **Adaptive Ambient `noise_rms` Floor & Contiguous `listening_ring` (`live.py`).** The fixed `_VOICE_RMS = 0.015` gate is gone: an asymmetric room-floor EMA clamped to `[0.003, 0.035]` tracks the room, and frames under `_ONSET_MIN = 0.012` are ignored for upward creep so a passing fan cannot gate the mic open. A `48`-frame (`~3.0s`) `listening_ring` backfills the PCM head when `input_transcription` beats the first audio frame, keeping WAVs **100% contiguous** for `0.006–0.014` RMS speakerphone voices (`Call #30`) while `15s` check-in / `30s` silence auto-close stay alive and post-speech tails release under `0.022` RMS clinic fan noise (`Calls #29, #31, #36`).
+3. **Natural `1600 ms` Hindi Pause Budget & `350 ms` Post-`stepDone` Playback Tail (`pack.yaml`, `live.py`, `call.js`).** `vad.silence_duration_ms = 1600` with `prefix_padding_ms = 200` keeps the `1.4s–1.5s` mid-sentence thinking pauses of normal Hindi inside one turn (`Call #44`) instead of splitting an answer in two. Symmetrically, a `350 ms` tail unmute — applied strictly *after* `bot_turn_complete` / `stepDone`, never before — captures eager `"नहीं"` / `"हाँ"` replies spoken over SHISHU's final syllable (`Calls #33, #34, #41`) without relaxing mid-question half-duplex muting.
+4. **Five-Phase Single-Advance `reduce_turn` & Multi-Topic `NoteText` Hygiene (`engine.py`, `decisions.py`, `extractor.py`).** The reducer is decoupled into `_apply_profile_data`, `_reduce_active` (returns `CursorStep | None`, performs **zero** premature `_advance` calls), `_apply_stated` (with `NOT_APPLICABLE` dominance over stated values), and a single cursor resolution at the end (`choice_min_confidence` floor on `jump_topic`, `detail_present` honoured on `which_item`, `8.0s` extractor budget). Multi-topic utterances are withheld from `NoteText.patient_safe` so Patient PDFs never cross-contaminate one topic's observation into another (`Calls #21, #25, #32`).
+
+
 ---
 
 ## 5. First-Time Yes/No Open-Speech Priming
@@ -318,4 +333,4 @@ names, and clinical readings go to the verbatim note.
 | Pre-audio post-tap speech cannot answer an unheard question | `TurnPhase.PROMPTING` mic gate (`_PROMPT_MUTE_MAX_SEC = 5.0`) + monotonic `epoch` |
 | Network WS blips resume the same `call_id` and WAV | `/ws/live?resume=<share_token>` + `CallAudioRecorder(append_existing=True)` |
 
-All 170 offline unit tests (`python -m unittest discover -s tests`), the 50-case calibration dry-check (`scripts/calibrate_decisions.py --dry-check`), and the 3-persona live Gemini verification suite (`scripts/run_personas.py` — 3/3 PASS) verify these invariants end to end.
+All **193** offline unit tests (`python -m unittest discover -s tests`), the 50-case calibration dry-check (`scripts/calibrate_decisions.py --dry-check`), and the 3-persona live Gemini verification suite (`scripts/run_personas.py` — 3/3 PASS) verify these invariants end to end.
