@@ -1,17 +1,13 @@
 """SQLite storage for calls, transcripts, events, and bug reports (`intake/db.py`)."""
-
 from __future__ import annotations
-
-import json, os, secrets, sqlite3, threading, time
+import json, os, secrets, sqlite3, threading, time, uuid
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
-
 from pydantic import ValidationError
-
 from . import engine
-from .models import CallState, PackConfig
-
+from .models import CallState, PackConfig, TurnOutcome
+from .turns import CursorAction, DecisionReason, Disposition, DomainFit, EvidenceSource, PolicyDecision, StoredClinicalClaim, StoredPolicyDecision, StoredSemanticCommit, StoredTurnEvidence, StoredTurnInterpretation, TopicRelation, TurnEvidence, TurnInterpretation
 DATA_DIR = os.environ.get("DATA_DIR", str(Path(__file__).resolve().parent / "storage"))
 DB_PATH = Path(DATA_DIR) / "intake.db"
 _LOCK, _EVENT_CAP, _MIN_TOKEN = threading.Lock(), 600, 8
@@ -25,12 +21,23 @@ _CALLS = ("CREATE TABLE IF NOT EXISTS calls (id INTEGER PRIMARY KEY AUTOINCREMEN
           "telemetry_json TEXT DEFAULT '{}', events_json TEXT DEFAULT '[]', cursor_json TEXT DEFAULT '', share_token TEXT DEFAULT '', clinic_code TEXT DEFAULT '')")
 _BUGS = ("CREATE TABLE IF NOT EXISTS bug_reports (id INTEGER PRIMARY KEY AUTOINCREMENT, call_id INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, "
          "reporter TEXT DEFAULT '', category TEXT DEFAULT '', note TEXT DEFAULT '', call_elapsed_sec INTEGER DEFAULT 0, snapshot_json TEXT DEFAULT '{}')")
+_TURN_EVIDENCE = ("CREATE TABLE IF NOT EXISTS turn_evidence (id INTEGER PRIMARY KEY AUTOINCREMENT, evidence_id TEXT NOT NULL UNIQUE, call_id INTEGER NOT NULL, "
+                  "sequence INTEGER NOT NULL, source TEXT NOT NULL, snapshot_step TEXT NOT NULL, transcript TEXT NOT NULL DEFAULT '', received_at REAL NOT NULL, "
+                  "selected_value_json TEXT, UNIQUE(call_id, sequence))")
+_TURN_INTERPRETATIONS = ("CREATE TABLE IF NOT EXISTS turn_interpretations (id INTEGER PRIMARY KEY AUTOINCREMENT, interpretation_id TEXT NOT NULL UNIQUE, "
+                         "call_id INTEGER NOT NULL, sequence INTEGER NOT NULL, evidence_id TEXT NOT NULL, interpretation_json TEXT NOT NULL, "
+                         "UNIQUE(call_id, sequence))")
+_CLAIMS = ("CREATE TABLE IF NOT EXISTS clinical_claims (id INTEGER PRIMARY KEY AUTOINCREMENT, claim_id TEXT NOT NULL UNIQUE, call_id INTEGER NOT NULL, "
+           "sequence INTEGER NOT NULL, claim_index INTEGER NOT NULL, target_qid TEXT, subject_ids_json TEXT NOT NULL DEFAULT '[]', relation TEXT NOT NULL, "
+           "domain_fit TEXT NOT NULL, status TEXT, value_json TEXT, UNIQUE(call_id, sequence, claim_index))")
+_POLICY_DECISIONS = ("CREATE TABLE IF NOT EXISTS policy_decisions (id INTEGER PRIMARY KEY AUTOINCREMENT, decision_id TEXT NOT NULL UNIQUE, call_id INTEGER NOT NULL, "
+                     "sequence INTEGER NOT NULL, claim_index INTEGER, disposition TEXT NOT NULL, reason TEXT NOT NULL, target_qid TEXT, cursor_action TEXT NOT NULL)")
 for _sub in ("", "audio", "pdfs"): (Path(DATA_DIR) / _sub).mkdir(parents=True, exist_ok=True)
-
 conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
 conn.row_factory = sqlite3.Row
 with _LOCK:
-    for _sql in ("PRAGMA journal_mode=WAL", "PRAGMA busy_timeout=5000", _CALLS, _BUGS, "CREATE TABLE IF NOT EXISTS server_secrets (key TEXT PRIMARY KEY, value TEXT)",
+    for _sql in ("PRAGMA journal_mode=WAL", "PRAGMA busy_timeout=5000", _CALLS, _BUGS, _TURN_EVIDENCE, _TURN_INTERPRETATIONS, _CLAIMS, _POLICY_DECISIONS,
+                 "CREATE TABLE IF NOT EXISTS server_secrets (key TEXT PRIMARY KEY, value TEXT)",
                  "CREATE UNIQUE INDEX IF NOT EXISTS idx_calls_token ON calls(share_token) WHERE share_token != ''"): conn.execute(_sql)
     conn.commit()
 def _json(raw: Any, default: type) -> Any:
@@ -74,6 +81,92 @@ def append_transcript(call_id: int, role: str, text: str, qid: str = "") -> None
 def save_cursor_state(call_id: int, pack: PackConfig, state: CallState) -> None:
     name = next((str(state.profile[s]).strip() for s in pack.profile_slots if state.profile.get(s)), "")
     _write(call_id, cursor_json=json.dumps(state.to_dict(), ensure_ascii=False), patient_name=name, roster_summary=engine.roster_label_patient(pack, state))
+def _optional_outcome(raw: Any) -> TurnOutcome | None:
+    if raw is None or raw == "": return None
+    try: return TurnOutcome(str(raw))
+    except ValueError: return None
+_EVIDENCE_COLS = "evidence_id, call_id, sequence, source, snapshot_step, transcript, received_at, selected_value_json"
+def _col_json(raw: Any) -> Any | None:
+    if raw is None: return None
+    try: return json.loads(raw)
+    except (TypeError, ValueError): return None
+def _stored_turn_evidence(row: sqlite3.Row) -> StoredTurnEvidence:
+    sv = _col_json(row["selected_value_json"]) if row["selected_value_json"] is not None else None
+    return StoredTurnEvidence(evidence_id=str(row["evidence_id"]), call_id=int(row["call_id"]), sequence=int(row["sequence"]), source=EvidenceSource(str(row["source"])),
+                            snapshot_step=str(row["snapshot_step"]), transcript=str(row["transcript"] or ""), received_at=float(row["received_at"]),
+                            selected_value=sv if row["selected_value_json"] is not None else None)
+def _insert_turn_base(cid: int, pack: PackConfig, state: CallState, evidence: TurnEvidence) -> tuple[str, int]:
+    name = next((str(state.profile[s]).strip() for s in pack.profile_slots if state.profile.get(s)), "")
+    cursor_json, roster_summary = json.dumps(state.to_dict(), ensure_ascii=False), engine.roster_label_patient(pack, state)
+    evidence_id, sv_json = str(uuid.uuid4()), None if evidence.selected_value is None else json.dumps(evidence.selected_value, ensure_ascii=False)
+    updated = conn.execute("UPDATE calls SET cursor_json = ?, patient_name = ?, roster_summary = ? WHERE id = ?", (cursor_json, name, roster_summary, cid))
+    if int(updated.rowcount or 0) < 1:
+        raise LookupError(f"call {cid} not found")
+    sequence = int(conn.execute("SELECT COALESCE(MAX(sequence), 0) + 1 AS n FROM turn_evidence WHERE call_id = ?", (cid,)).fetchone()["n"])
+    conn.execute(f"INSERT INTO turn_evidence ({_EVIDENCE_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                 (evidence_id, cid, sequence, evidence.source.value, evidence.snapshot_step, evidence.transcript, evidence.received_at, sv_json))
+    return evidence_id, sequence
+def _stored_clinical_claim(row: sqlite3.Row) -> StoredClinicalClaim:
+    val = _col_json(row["value_json"])
+    return StoredClinicalClaim(claim_id=str(row["claim_id"]), call_id=int(row["call_id"]), sequence=int(row["sequence"]), claim_index=int(row["claim_index"]),
+                               target_qid=str(row["target_qid"]) if row["target_qid"] else None, subject_ids=tuple(str(x) for x in _json(row["subject_ids_json"], list)),
+                               relation=TopicRelation(str(row["relation"])), domain_fit=DomainFit(str(row["domain_fit"])),
+                               status=_optional_outcome(row["status"]), value=val if row["value_json"] is not None else None)
+def _stored_policy_decision(row: sqlite3.Row) -> StoredPolicyDecision:
+    ci = row["claim_index"]
+    return StoredPolicyDecision(decision_id=str(row["decision_id"]), call_id=int(row["call_id"]), sequence=int(row["sequence"]), claim_index=int(ci) if ci is not None else None,
+                                disposition=Disposition(str(row["disposition"])), reason=DecisionReason(str(row["reason"])),
+                                target_qid=str(row["target_qid"]) if row["target_qid"] else None, cursor_action=CursorAction(str(row["cursor_action"])))
+def _stored_turn_interpretation(row: sqlite3.Row) -> StoredTurnInterpretation:
+    return StoredTurnInterpretation(interpretation_id=str(row["interpretation_id"]), call_id=int(row["call_id"]), sequence=int(row["sequence"]),
+                                    evidence_id=str(row["evidence_id"]), interpretation=TurnInterpretation.model_validate(_json(row["interpretation_json"], dict)))
+def _turn_txn(cid: int, call_id: int, body):
+    if cid <= 0: raise LookupError(f"call {call_id} not found")
+    with _LOCK:
+        try: conn.execute("BEGIN IMMEDIATE"); out = body(); conn.commit(); return out
+        except Exception: conn.rollback(); raise
+def commit_turn(call_id: int, pack: PackConfig, state: CallState, evidence: TurnEvidence) -> StoredTurnEvidence:
+    cid = int(call_id)
+    evidence_id, sequence = _turn_txn(cid, call_id, lambda: _insert_turn_base(cid, pack, state, evidence))
+    return StoredTurnEvidence.persisted(evidence, evidence_id=evidence_id, call_id=cid, sequence=sequence)
+_CLAIM_INS, _DEC_INS = ("INSERT INTO clinical_claims (claim_id, call_id, sequence, claim_index, target_qid, subject_ids_json, relation, domain_fit, status, value_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        "INSERT INTO policy_decisions (decision_id, call_id, sequence, claim_index, disposition, reason, target_qid, cursor_action) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+def _insert_semantic_children(cid: int, sequence: int, interpretation: TurnInterpretation, decisions: tuple[PolicyDecision, ...]) -> tuple[list[StoredClinicalClaim], list[StoredPolicyDecision]]:
+    stored_claims: list[StoredClinicalClaim] = []
+    for idx, claim in enumerate(interpretation.claims):
+        claim_id = str(uuid.uuid4())
+        conn.execute(_CLAIM_INS, (claim_id, cid, sequence, idx, claim.target_qid, json.dumps(list(claim.subject_ids), ensure_ascii=False),
+                                  claim.relation.value, claim.domain_fit.value, claim.status.value if claim.status is not None else None,
+                                  None if claim.value is None else json.dumps(claim.value, ensure_ascii=False)))
+        stored_claims.append(StoredClinicalClaim(claim_id=claim_id, call_id=cid, sequence=sequence, claim_index=idx, target_qid=claim.target_qid,
+                                                 subject_ids=claim.subject_ids, relation=claim.relation, domain_fit=claim.domain_fit, status=claim.status, value=claim.value))
+    stored_decisions: list[StoredPolicyDecision] = []
+    for decision in decisions:
+        decision_id = str(uuid.uuid4())
+        conn.execute(_DEC_INS, (decision_id, cid, sequence, decision.claim_index, decision.disposition.value, decision.reason.value,
+                                decision.target_qid, decision.cursor_action.value))
+        stored_decisions.append(StoredPolicyDecision(decision_id=decision_id, call_id=cid, sequence=sequence, claim_index=decision.claim_index,
+                                                     disposition=decision.disposition, reason=decision.reason, target_qid=decision.target_qid, cursor_action=decision.cursor_action))
+    return stored_claims, stored_decisions
+def commit_semantic_turn(call_id: int, pack: PackConfig, state: CallState, evidence: TurnEvidence, interpretation: TurnInterpretation, decisions: tuple[PolicyDecision, ...]) -> StoredSemanticCommit:
+    cid, interpretation_id = int(call_id), str(uuid.uuid4())
+    def body():
+        evidence_id, sequence = _insert_turn_base(cid, pack, state, evidence)
+        conn.execute("INSERT INTO turn_interpretations (interpretation_id, call_id, sequence, evidence_id, interpretation_json) VALUES (?, ?, ?, ?, ?)",
+                     (interpretation_id, cid, sequence, evidence_id, json.dumps(interpretation.model_dump(mode="json"), ensure_ascii=False)))
+        return evidence_id, sequence, _insert_semantic_children(cid, sequence, interpretation, decisions)
+    evidence_id, sequence, (stored_claims, stored_decisions) = _turn_txn(cid, call_id, body)
+    stored_evidence = StoredTurnEvidence.persisted(evidence, evidence_id=evidence_id, call_id=cid, sequence=sequence)
+    stored_interp = StoredTurnInterpretation(interpretation_id=interpretation_id, call_id=cid, sequence=sequence, evidence_id=evidence_id, interpretation=interpretation)
+    return StoredSemanticCommit(call_id=cid, sequence=sequence, evidence=stored_evidence, interpretation=stored_interp, claims=tuple(stored_claims), decisions=tuple(stored_decisions))
+def _list_for_call(table: str, order: str, call_id: int, mapfn):
+    with _LOCK:
+        rows = conn.execute(f"SELECT * FROM {table} WHERE call_id = ? ORDER BY {order}", (int(call_id),)).fetchall()
+    return [mapfn(r) for r in rows]
+list_turn_evidence = lambda call_id: _list_for_call("turn_evidence", "sequence", call_id, _stored_turn_evidence)
+list_turn_interpretations = lambda call_id: _list_for_call("turn_interpretations", "sequence", call_id, _stored_turn_interpretation)
+list_clinical_claims = lambda call_id: _list_for_call("clinical_claims", "sequence, claim_index", call_id, _stored_clinical_claim)
+list_policy_decisions = lambda call_id: _list_for_call("policy_decisions", "sequence, id", call_id, _stored_policy_decision)
 def call_state_from_row(call: Mapping[str, Any] | None) -> CallState:
     raw = (call or {}).get("cursor_state") or (call or {}).get("cursor_json")
     raw = _json(raw, dict) if isinstance(raw, str) else raw
@@ -97,11 +190,8 @@ def complete_call(call_id: int, duration_sec: int, audio_path: str = "") -> None
 def reopen_call(call_id: int, active_qid: str = "") -> None:
     """Put a completed call back in progress after the caller reconnects, keeping its audio path.
 
-    `active_qid` is the step the browser will be handed. A rejoin re-speaks that step's line, and the dropped
-    session had already appended its caption, so the assistant turn sitting on the row's tail for exactly this
-    question is the one the resume is about to say again: it is dropped here, in the same atomic write, so the
-    resumed caption extends one turn instead of doubling it (Call #57 `T[66]` read the 102-character question
-    twice, 205 characters).
+    `active_qid` is the step the browser will be handed. On rejoin, the assistant turn at the transcript tail for that
+    qid is dropped in the same atomic write so the resumed caption does not double (Call #57 `T[66]`, 102→205 chars).
     """
     if active_qid and (raw := _read(call_id, "transcript_json")) is not None:
         turns = _json(raw, list)

@@ -227,6 +227,9 @@ class BuildRequestTests(unittest.TestCase):
             "caller_stop",
             "mentions_profile",
             "redact_patient_note",
+            "active_topic",
+            "residual_clinical",
+            "asks_clarify",
             "flag_confirmed_hemoglobinopathy",
         )
         for head in always_on:
@@ -300,7 +303,7 @@ class InterpretTests(unittest.TestCase):
         return decisions.interpret_turn_decision(pack, state, answers, **kw)
 
     def test_a_quiet_answer_split_between_clear_and_unknown_is_read_as_the_pair(self):
-        st = state_at(self.fever, "fever_nature")
+        st = state_at(self.fever, "breathing_or_chest")
         pair = self.interpret(self.fever, st, {"active_outcome": choice(clear=0.50, unknown=0.45, concern=0.03, other=0.02)})
         self.assertIs(pair.command.outcome, TurnOutcome.CLEAR, "0.95 of the quiet pair beats the 0.2297 margin")
         flipped = self.interpret(self.fever, st, {"active_outcome": choice(unknown=0.51, clear=0.44, concern=0.03, other=0.02)})
@@ -361,7 +364,7 @@ class InterpretTests(unittest.TestCase):
         st = state_at(self.shishu, "body_bruise_bleed")
         st.answers["body_blue"] = AnswerRecord(state=AnswerStatus.CLEAR)
         intent = self.interpret(self.shishu, st, {
-            "stated_body_blue": choice(concern=0.95, unmentioned=0.02, clear=0.02, clarify=0.01)})
+            "stated_body_blue": choice(concern=0.95, unmentioned=0.02, clear=0.02)})
         self.assertEqual(intent.command.stated, {"body_blue": TurnOutcome.CONCERN})
 
 
@@ -405,8 +408,9 @@ class Wave4StagingGapTests(unittest.TestCase):
         st.answers["fam_bleeding"] = AnswerRecord(state=AnswerStatus.CLEAR)
         intent = decisions.interpret_turn_decision(self.shishu, st, {
             "active_outcome": choice(clarify=0.793, other=0.164, unknown=0.043),
-            "stated_body_regression": choice(clarify=0.88, unmentioned=0.10),
-            "stated_fam_bleeding": choice(clarify=0.91, unmentioned=0.06),
+            "asks_clarify": noul(0.85),
+            "stated_body_regression": choice(concern=0.12, clear=0.11, unmentioned=0.77),
+            "stated_fam_bleeding": choice(concern=0.10, clear=0.09, unmentioned=0.81),
             "stated_body_transfusion": choice(concern=0.93, unmentioned=0.04),
         }, utterance_text="मतलब क्या है थैलेसीमिया")
         observed_a = {
@@ -423,10 +427,13 @@ class Wave4StagingGapTests(unittest.TestCase):
 
         # Control: with NO active clarify the same head is a genuine clarify, and must keep working.
         control = self.at("body_transfusion")
+        control.last_answered_qid = "preg_thalassemia"
+        control.answers["preg_thalassemia"] = AnswerRecord(state=AnswerStatus.UNKNOWN)
         control.answers["body_regression"] = AnswerRecord(state=AnswerStatus.CLEAR)
         live_read = decisions.interpret_turn_decision(self.shishu, control, {
             "active_outcome": choice(clear=0.92, other=0.05),
-            "stated_preg_thalassemia": choice(clarify=0.88, unmentioned=0.08),
+            "asks_clarify": noul(0.91),
+            "clarify_target": choice(preg_thalassemia=0.88, active_or_none=0.08),
         }, utterance_text="नहीं, खून नहीं चढ़ाया। थैलेसीमिया का मतलब क्या है?")
         with self.subTest(subtest="A control", invariant="a lone stated clarify still lands and still moves the call"):
             self.assertEqual(live_read.command.stated, {"preg_thalassemia": TurnOutcome.CLARIFY},
@@ -445,7 +452,7 @@ class Wave4StagingGapTests(unittest.TestCase):
                  "jump_topic": noul(0.78),
                  "item_ref": choice(item_2=0.9975, other=0.0018, all=0.0004, item_1=0.0003)}
         intent_b = decisions.interpret_turn_decision(self.shishu, correction, heads | {
-            "stated_birth_jaundice": choice(concern=0.8559, clear=0.1241, unmentioned=0.0173, clarify=0.0027)})
+            "stated_birth_jaundice": choice(concern=0.8559, clear=0.1241, unmentioned=0.0199)})
         observed_b = {
             "0.8559 over the pack's 0.80 gate revises CLEAR -> CONCERN":
                 intent_b.command.stated == {"birth_jaundice": TurnOutcome.CONCERN},
@@ -460,7 +467,7 @@ class Wave4StagingGapTests(unittest.TestCase):
 
         # ...and a sub-threshold read is still refused: the pack's gate is the only gate, not no gate at all.
         weak = decisions.interpret_turn_decision(self.shishu, correction, heads | {
-            "stated_birth_jaundice": choice(concern=0.78, clear=0.12, unmentioned=0.08, clarify=0.02)})
+            "stated_birth_jaundice": choice(concern=0.78, clear=0.12, unmentioned=0.10)})
         with self.subTest(subtest="B control", invariant="a 0.78 concern is still under the pack's 0.80 stated gate"):
             self.assertEqual(weak.command.stated, {},
                              f"a sub-threshold revision is refused: "
@@ -472,18 +479,25 @@ class Wave4StagingGapTests(unittest.TestCase):
         # then asked what the term means. That ONE head is the question she just left, named again. Everything else
         # is the ASR garble of Call #47/#57: an unasked future question (`prior is None`), a settled CLEAR/CONCERN
         # answer she already closed, or two-or-more heads scatter-firing `clarify` at once with nobody named.
-        def clarify_read(**stated: float):
-            """One active clarify on `fam_related`, with `stated_` heads given as clarify-only distributions."""
+        def clarify_read(**targets: float):
+            """One active clarify on `fam_related`, with `clarify_target` softmax over named screening items."""
             base = self.at("fam_related")
             base.last_answered_qid = "preg_thalassemia"
             base.answers["preg_thalassemia"] = AnswerRecord(state=AnswerStatus.UNKNOWN)
             base.answers["body_regression"] = AnswerRecord(state=AnswerStatus.CLEAR)
             base.answers["fam_lumps"] = AnswerRecord(state=AnswerStatus.CONCERN)
+            probs = dict(targets)
+            probs["active_or_none"] = round(max(0.0, 1.0 - sum(targets.values())), 4)
             return decisions.interpret_turn_decision(
-                self.shishu, base,
-                {"active_outcome": choice(clarify=0.929, other=0.048, unknown=0.013)}
-                | {f"stated_{q}": choice(clarify=p, unmentioned=round(1.0 - p, 4)) for q, p in stated.items()},
-                utterance_text="थैलेसीमिया का क्या मतलब होता है?")
+                self.shishu,
+                base,
+                {
+                    "active_outcome": choice(clarify=0.929, other=0.048, unknown=0.013),
+                    "asks_clarify": noul(0.93),
+                    "clarify_target": choice(**probs),
+                },
+                utterance_text="थैलेसीमिया का क्या मतलब होता है?",
+            )
 
         legit = clarify_read(preg_thalassemia=0.911)
         with self.subTest(subtest="C", invariant="the question she just left may still be named by one clarify head"):

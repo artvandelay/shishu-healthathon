@@ -113,10 +113,58 @@ heads:
       false_description: >-
         Answers only active_question, gives a bare yes/no or a symptom detail that belongs to active_question
         or its follow-up, asks for clarification, or makes unrelated small talk.
+  active_topic:
+    type: noul
+    instructions: >-
+      Does caller_utterance directly answer or address the exact clinical criterion or topic asked in
+      active_question — including yes/no, a listed option, or a direct on-topic description in the caller's own words
+      outside the listed options — rather than only mentioning a side effect or different symptom that neither affirms
+      nor denies the specific criterion asked, talking about another person or question only, asking for clarification
+      without answering, or making non-medical remarks?
+    criteria:
+      true_description: >-
+        Directly answers or addresses the clinical criterion or topic that active_question asked (yes/no, a listed
+        option, or an on-topic description in words outside the listed options).
+      false_description: >-
+        Mentions only a side effect or different symptom that does not affirm or deny the specific criterion asked in
+        active_question; talks only about another person or question; asks clarification without answering; or makes
+        non-medical remarks.
+  residual_clinical:
+    type: noul
+    instructions: >-
+      Does caller_utterance mention a concrete medical symptom, side effect, reaction, illness, injury, or treatment
+      that is not captured by a bare yes/no or a listed option of active_question?
+    criteria:
+      true_description: >-
+        Mentions a concrete medical symptom, side effect, reaction, illness, injury, or treatment not captured by a
+        bare yes/no or listed option of active_question.
+      false_description: >-
+        Only a bare yes/no or listed option answering active_question, demographic profile facts, a clarification
+        question, or non-medical household or background talk.
+  asks_clarify:
+    type: noul
+    instructions: >-
+      Does caller_utterance ask what active_question means, ask what any medical or clinical term means
+      (whether that term appears inside active_question or is mentioned separately in caller_utterance),
+      ask to repeat, or say they did not understand?
+    criteria:
+      true_description: >-
+        Asks the meaning of active_question or of any medical/clinical term (in active_question or mentioned
+        separately), asks to repeat, or says they did not understand.
+      false_description: >-
+        Gives an answer, denial, symptom report, or unrelated talk without asking for clarification.
+  clarify_target_template:
+    type: choice
+    instructions: >-
+      When the caller asks for clarification, which separate screening item are they asking about, or
+      active_or_none when asking about active_question or no specific separate screening item?
+    option_template: '{question_say} ({need})'
+    catchall_description: >-
+      Caller is asking about active_question itself, or no specific separate screening item.
   stated_template:
     type: choice
     instructions: >-
-      OUTSIDE of active_question and parent_question, does caller_utterance ALSO explicitly state, revise, or ask about
+      OUTSIDE of active_question and parent_question, does caller_utterance ALSO explicitly state or revise
       THIS SEPARATE screening item (group={group}): "{question_say}" ({need})?
       CRITICAL: A bare yes/no or a reply that only answers active_question does NOT state an answer to this separate item —
       choose unmentioned unless caller_utterance specifically names or describes "{need}" for group={group} (child-scoped items
@@ -126,8 +174,6 @@ heads:
         Caller_utterance explicitly names or describes "{need}" as present for group={group} (beyond merely answering active_question).
       clear: >-
         Caller_utterance explicitly denies or retracts "{need}" by name/topic for group={group} (NEVER for a bare "नहीं" to active_question).
-      clarify: >-
-        Caller_utterance explicitly asks the meaning of "{need}" / "{question_say}" while on a different active_question.
       unmentioned: >-
         Caller_utterance only answers active_question (such as a bare हाँ/नहीं or active_question's own topic), talks about a different
         person/scope, updates profile details, or does not explicitly mention "{need}".
@@ -164,6 +210,9 @@ thresholds:
   redact_patient_note_min_yes: 0.5606
   detail_present_min_yes: 0.5262
   jump_topic_min_yes: 0.7
+  active_topic_min_yes: 0.55
+  residual_clinical_min_yes: 0.55
+  asks_clarify_min_yes: 0.55
   outcome_min_confidence: 0.5196
   outcome_min_margin: 0.2297
   choice_min_confidence: 0.52
@@ -172,5 +221,7 @@ thresholds:
   score_min_confidence: 0.45
   stated_min_confidence: 0.8
   stated_min_margin: 0.35
+  clarify_target_min_confidence: 0.75
+  clarify_target_min_margin: 0.30
   item_ref_min_confidence: 0.65
   item_ref_min_margin: 0.05

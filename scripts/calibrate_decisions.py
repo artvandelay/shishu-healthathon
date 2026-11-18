@@ -32,7 +32,7 @@ from intake.pack import DEFAULT_PACK_ID, load_pack  # noqa: E402
 CASES = ROOT / "scripts" / "decision_calibration_cases.json"
 RAW_DIR, MAX_STEPS, DEV, HOLDOUT = ROOT / "intake" / "storage", 160, "dev", "holdout"
 OUTCOMES = frozenset({"clear", "concern", "unknown", "clarify", "retract"})
-STATED = frozenset({"concern", "clear", "clarify"})
+STATED = frozenset({"concern", "clear", "unmentioned"})
 # (false-negative, false-positive) cost: missing an emergency is the most expensive mistake this pack can make.
 NOUL_COST = {"danger_now": (1000.0, 100.0), "caller_stop": (100.0, 1000.0), "mentions_profile": (10.0, 15.0),
              "redact_patient_note": (200.0, 20.0), "detail_present": (10.0, 15.0)}

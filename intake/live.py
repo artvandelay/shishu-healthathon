@@ -14,8 +14,9 @@ from google import genai
 from google.genai import types
 from starlette.websockets import WebSocketState
 
-from intake import audio, db, decisions, engine, extractor, reports
+from intake import audio, db, decisions, engine, extractor, policy, reports
 from intake.models import AnswerStatus, CallState, CloseReason, FollowupSlot, PackConfig, Phase, SubStep, TurnOutcome
+from intake.turns import EvidenceSource, PolicyDecision, TurnEvidence, TurnInterpretation
 
 logger = logging.getLogger(__name__)
 _IN, _OUT, _TICK, _MUTE_SEC, _CUE_DELAY, _STT_WAIT, _MAX_RECONNECTS, _MAX_TURN = 16000, 24000, 0.5, 0.1, 2.2, 0.5, 5, 960_000
@@ -120,7 +121,7 @@ class LiveCallSession:
             ending_sent=False, bot_text="", cue_kind="speak", checked_in=False, seen=set(), cancelled=set(),
             pcm=b"", text="", snapshot=None, preroll=deque(maxlen=4), tail_chunks=0,
             noise_rms=0.005, noise_seeded=False, listening_ring=deque(maxlen=_RING_MAX),
-            stt_ready=asyncio.Event(), tool_task=None, fallback=None, last_reduced=None,
+            stt_ready=asyncio.Event(), tool_task=None, fallback=None, last_reduced=None, last_evidence_step="",
             epoch=0, turn_phase=TurnPhase.LISTENING, prompted_at=0.0, bot_generating=False, awaiting_abort_end=False,
             closing_spoken=False, consecutive_tool_errors=0, prompt_recued=False)
         self.last_turn_meta: dict[str, Any] = {}  # the meta row for the turn just reduced, waiting for its `tool_call` event
@@ -190,11 +191,50 @@ class LiveCallSession:
         self.telemetry["last_event"] = kind
         await self._send_json({"type": "telemetry", "last_event": evt, "telemetry": dict(self.telemetry)})
         if kind == "error": await self._send_json({"type": "error", "message": detail})
-    async def _persist(self, state: CallState) -> None:
+    async def _persist(self, state: CallState, *, skip_cursor: bool = False) -> None:
         self.state = state
         if state.phase is not Phase.ASKING and not self.closing_at: self.closing_at = time.time()
-        await self._db(db.save_cursor_state, self.pack, state)
+        if not skip_cursor: await self._db(db.save_cursor_state, self.pack, state)
         await self._db(db.update_call_telemetry, dict(self.telemetry))
+    def _ingress_evidence(self, snapshot_step: str, *, spoken: str, pcm: bytes, selected_value: Any = None,
+                          source: EvidenceSource | None = None) -> TurnEvidence:
+        if source is None:
+            source = EvidenceSource.TAP if selected_value is not None else (EvidenceSource.VOICE if pcm else EvidenceSource.TEXT)
+        return TurnEvidence(source=source, snapshot_step=snapshot_step, transcript=spoken,
+                            received_at=self.speech_ended_ts or time.time(), selected_value=selected_value)
+    async def _commit_turn(self, state: CallState, evidence: TurnEvidence) -> None:
+        if self.call_id is None:
+            self.state = state
+            if state.phase is not Phase.ASKING and not self.closing_at: self.closing_at = time.time()
+            return
+        await asyncio.to_thread(db.commit_turn, self.call_id, self.pack, state, evidence)
+        await self._persist(state, skip_cursor=True)
+    async def _commit_semantic_turn(
+        self,
+        state: CallState,
+        evidence: TurnEvidence,
+        interpretation: TurnInterpretation,
+        policy_decisions: tuple[PolicyDecision, ...],
+    ) -> None:
+        if self.call_id is None:
+            self.state = state
+            if state.phase is not Phase.ASKING and not self.closing_at:
+                self.closing_at = time.time()
+            return
+        await asyncio.to_thread(
+            db.commit_semantic_turn, self.call_id, self.pack, state, evidence, interpretation, policy_decisions
+        )
+        self.state = state
+        if state.phase is not Phase.ASKING and not self.closing_at:
+            self.closing_at = time.time()
+        await self._persist(state, skip_cursor=True)
+    async def _commit_displaced_bank(self) -> None:
+        if self.turn_phase is TurnPhase.DECIDING or not (self.pcm or self.text):
+            return
+        step = self.snapshot.step_token if self.snapshot is not None else self.state.step_token
+        state, evidence = self.state, self._ingress_evidence(step, spoken=self.text, pcm=self.pcm)
+        self._reset_turn()
+        await self._commit_turn(state, evidence)
     def _cancel(self, name: str) -> None:
         if (task := getattr(self, name)) is not None and not task.done():
             task.cancel()
@@ -298,21 +338,30 @@ class LiveCallSession:
             self.bot_text = engine.merge_transcript_chunk(self.bot_text, text)
         await self._send_json({"type": "transcript", "role": role, "text": text})
         await self._db(db.append_transcript, role, text, self.last_reduced[0] if late else self.state.cursor.qid)
-        if late: await self._emit("late_stt", self.last_reduced[0], {"attached": await self._attach_late_text(text), "chars": len(text)})
-    async def _attach_late_text(self, text: str) -> bool:
+        if late:
+            attached = False
+            st = self.state
+            if self.last_evidence_step:
+                note_st = self._state_with_late_note(text)
+                if note_st is not None:
+                    attached, st = True, note_st
+                await self._commit_turn(st, TurnEvidence(source=EvidenceSource.LATE_STT, snapshot_step=self.last_evidence_step,
+                                                         transcript=text, received_at=time.time()))
+            await self._emit("late_stt", self.last_reduced[0], {"attached": attached, "chars": len(text)})
+    def _state_with_late_note(self, text: str) -> CallState | None:
         """A transcription chunk that trailed the reduction: keep it on the note of the question it answered."""
         qid, substep, idx, redacted = self.last_reduced
         rec, spec = self.state.answers.get(qid), self.pack.by_id.get(qid)
-        if rec is None or rec.state is not AnswerStatus.CONCERN: return False
+        if rec is None or rec.state is not AnswerStatus.CONCERN: return None
         st = self.state.model_copy(deep=True)
         if substep is SubStep.FOLLOWUP and spec is not None and idx < len(spec.followups):
             fid, slot = spec.followups[idx], st.answers[qid].followups.get(spec.followups[idx]) or FollowupSlot(state=AnswerStatus.CONCERN)
             st.answers[qid].followups[fid] = slot.model_copy(update={"note": slot.note.append(text, redacted=redacted)})
         else: st.answers[qid].note = st.answers[qid].note.append(text, redacted=redacted)
-        await self._persist(st)
-        return True
+        return st
     async def on_text(self, payload: dict[str, Any]) -> bool:
         if not (text := " ".join(str(payload.get("text") or "").split())) or self.state.phase is not Phase.ASKING: return True
+        await self._commit_displaced_bank()
         self._reset_turn()
         self.snapshot, self.text, self.speech_ended_ts, self.last_reduced = self.state.model_copy(deep=True), text, time.time(), None
         self.last_voice_ts, self.checked_in, self.bot_generating = self.speech_ended_ts, False, False
@@ -336,14 +385,19 @@ class LiveCallSession:
         self.awaiting_abort_end = self.bot_generating  # the tap flushed the browser queue; Gemini may still be mid-Turn-A
         self._cancel("fallback")
         if self.tool_task is not None and not self.tool_task.done(): self.stt_ready.set()
+        await self._commit_displaced_bank()
         self._reset_turn()
         self.checked_in, self.bot_generating, self.last_voice_ts, self.speech_ended_ts = False, False, time.time(), time.time()
         self.playback_ends_at, self.last_reduced = 0.0, None
         _yn, btns = engine.quick_replies(self.pack, self.state)
         spoken = next((b.get("hi") or b.get("en") or val for b in btns if b.get("value") == val), val)
         self.text = spoken  # a tap is already a counted turn: it must not re-arm the soft-speech count in `_hear`
+        step_in = self.state.step_token
+        evidence = self._ingress_evidence(step_in, spoken=spoken, pcm=b"", selected_value=val)
         await self._hear("user", spoken)
-        await self._persist(engine.reduce_turn(self.pack, self.state, cmd))
+        reduced = engine.reduce_turn(self.pack, self.state, cmd)
+        self.last_evidence_step = step_in
+        await self._commit_turn(reduced, evidence)
         self._reset_turn()  # and its label must never ride into the next Decision pass
         await self._emit("user_transcript", f"quick_reply_{val}")
         # `clear` flushes the epoch we are leaving; `_publish_and_cue` then stamps the new step with the next one.
@@ -380,7 +434,7 @@ class LiveCallSession:
             return True
         self.last_turn_meta = {k: v for k, v in (meta | {"recovered": "reask", "strike": self.consecutive_tool_errors}).items() if v is not None}
         return False
-    async def _recover_from_extraction(self, turn: Turn) -> tuple[dict[str, Any], bool] | None:
+    async def _recover_from_extraction(self, turn: Turn, evidence: TurnEvidence) -> tuple[dict[str, Any], bool] | None:
         """The extractor's own read of a turn Decisions could not finish: `None` when it saved nothing.
 
         `extractor.py` and `decisions` are two independent reads of the same utterance, and on Call #16 the
@@ -396,24 +450,27 @@ class LiveCallSession:
         if patched.step_token != self.state.step_token:
             # The patch resolved or advanced the active step: the caller's answer is in, so no re-ask is owed.
             self.consecutive_tool_errors = 0
-            await self._persist(patched)
+            self.last_evidence_step = evidence.snapshot_step
+            await self._commit_turn(patched, evidence)
             self.last_turn_meta = {k: v for k, v in {"step_in": turn.snapshot.step_token, "step_out": self.state.step_token,
                                                      "advanced": True, "recovered": "extractor", "decision_error": turn.result.error_reason,
                                                      "decision_ms": turn.result.decision_ms, "ext_ms": ext.extractor_ms,
                                                      "stt": turn.spoken[:120]}.items() if v is not None and v != ""}
             return tool_body(self.pack, self.state), False
         if patched != self.state:
-            await self._persist(patched)  # a mid-call profile write still belongs on the record before anything else
+            self.state = patched  # a mid-call profile write still belongs in memory before the evidence commit
         return None
 
-    async def _failed_turn(self, turn: Turn | None, step_in: str, error_reason: str) -> tuple[dict[str, Any], bool]:
+    async def _failed_turn(self, turn: Turn | None, step_in: str, error_reason: str, *, evidence: TurnEvidence) -> tuple[dict[str, Any], bool]:
         """A pass that produced nothing: the same question is re-asked, or the call is closed for real."""
+        self.last_evidence_step = evidence.snapshot_step
         if self._register_failure(turn, step_in, error_reason):
-            await self._persist(engine.close_technical_failure(self.state))
+            closed = engine.close_technical_failure(self.state)
+            await self._commit_turn(closed, evidence)
             # The call is being closed for real: a `next_question_ok` here told every dumpster dive the turn that
             # ended the call had answered the question (Call #16 event `[51]`), while `stop` said otherwise.
             return {**tool_body(self.pack, self.state), "result": "failed"}, False
-        await self._db(db.update_call_telemetry, dict(self.telemetry))
+        await self._commit_turn(self.state, evidence)
         return {"result": "retry", "say": _reask_say(self.pack, self.state)}, False
     async def _next_question(self) -> tuple[dict[str, Any], bool]:
         self.last_turn_meta = {}
@@ -424,6 +481,7 @@ class LiveCallSession:
             self.pcm = b"".join(chunk for chunk, _rms in self.listening_ring)[-_MAX_TURN:]
         snapshot = self.snapshot or self.state.model_copy(deep=True)
         spoken, pcm = self.text, self.pcm
+        evidence = self._ingress_evidence(snapshot.step_token, spoken=spoken, pcm=pcm)
         self._reset_turn()
         if not self.speech_ended_ts: self.speech_ended_ts = time.time()
         self.turn_phase = TurnPhase.DECIDING
@@ -434,26 +492,43 @@ class LiveCallSession:
             except Exception:  # noqa: BLE001 — a pass that never returned is a glitch to recover from, never a dead call
                 logger.exception("decision turn failed")
                 self.last_turn_meta = {}
-                return await self._failed_turn(None, snapshot.step_token, "exception")
+                return await self._failed_turn(None, snapshot.step_token, "exception", evidence=evidence)
             if not turn.result.ok:
                 # A dead Decision pass is not a dead turn: when the extractor read this same utterance cleanly, its
                 # profile/roster patch is the caller's answer and must not be thrown away to re-ask what she just
                 # said. Call #16 did exactly that twice, losing अमन and मीरा both times.
-                recovered = await self._recover_from_extraction(turn)
+                recovered = await self._recover_from_extraction(turn, evidence)
                 if recovered is not None: return recovered
-                return await self._failed_turn(turn, turn.snapshot.step_token, turn.result.error_reason)
+                return await self._failed_turn(turn, turn.snapshot.step_token, turn.result.error_reason, evidence=evidence)
             self.consecutive_tool_errors = 0
             if turn.snapshot.step_token != self.state.step_token:
+                self.last_evidence_step = evidence.snapshot_step
+                await self._commit_turn(self.state, evidence)
                 self.last_turn_meta = {"step_in": turn.snapshot.step_token, "step_out": self.state.step_token, "reason": "stale_turn"}
                 return {**tool_body(self.pack, self.state), "result": "held", "reason": "stale_turn"}, False
             cmd, ext, step_in = turn.intent.command, turn.extraction, turn.snapshot.step_token
             if turn.intent.needs_profile_extraction and ext is None:
                 ext = await extractor.extract_profile_entities(self.pack, turn.snapshot, utterance_text=turn.spoken, audio_wav_bytes=turn.wav)
-            if ext is not None and ext.ok and not (cmd.emergency or cmd.caller_stop):
-                cmd = cmd.model_copy(update={"profile_patch": ext.patch, "profile_turn_attempted": True})
-            self.last_reduced = (self.state.cursor.qid, self.state.cursor.substep, self.state.cursor.followup_idx,
-                                 engine._redact_note(cmd, self.state.cursor.qid))
-            await self._persist(engine.reduce_turn(self.pack, self.state, cmd))
+            interp = turn.intent.interpretation
+            if interp is not None:
+                if ext is not None and ext.ok and not (interp.emergency or interp.caller_stop):
+                    interp = interp.model_copy(update={"profile_patch": ext.patch, "profile_turn_attempted": True})
+                next_state, pol = policy.apply_policy(self.pack, self.state, evidence, interp)
+                cmd = pol.command
+                self.last_evidence_step = evidence.snapshot_step
+                await self._commit_semantic_turn(next_state, evidence, interp, pol.decisions)
+            else:
+                if ext is not None and ext.ok and not (cmd.emergency or cmd.caller_stop):
+                    cmd = cmd.model_copy(update={"profile_patch": ext.patch, "profile_turn_attempted": True})
+                self.last_evidence_step = evidence.snapshot_step
+                await self._commit_turn(engine.reduce_turn(self.pack, self.state, cmd), evidence)
+            answered = turn.snapshot.cursor
+            self.last_reduced = (
+                answered.qid,
+                answered.substep,
+                answered.followup_idx,
+                engine._redact_note(cmd, answered.qid),
+            )
             self.last_turn_meta = self._turn_meta(turn, step_in, cmd, ext)
             clarify = not (cmd.emergency or cmd.caller_stop) and cmd.outcome is TurnOutcome.CLARIFY
             return tool_body(self.pack, self.state, clarify=clarify), clarify

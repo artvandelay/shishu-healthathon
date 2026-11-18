@@ -123,9 +123,12 @@ def project_summary(pack: PackConfig, state: CallState | None) -> ProjectedRepor
             continue
         if rec.state is AnswerStatus.NOT_APPLICABLE: continue
         if rec.state is AnswerStatus.UNKNOWN: unknown.append(label)
-        elif rec.state is not AnswerStatus.CONCERN:
-            chosen = _clean(rec.choice_label) if rec.state is AnswerStatus.ANSWERED else ""
-            clear.setdefault(title, []).append({"question": label, "answer": chosen} if chosen else label)
+        elif rec.state is AnswerStatus.CLEAR:
+            clear.setdefault(title, []).append(label)
+        elif rec.state is AnswerStatus.ANSWERED:
+            chosen = _clean(rec.choice_label) or _clean(rec.patient_safe_text)
+            if chosen:
+                clear.setdefault(title, []).append({"question": label, "answer": chosen})
         if not q.is_reportable: continue
         child, said = (f" [{sc}]" if (sc := _scope(pack, st, rec, clinician=True)) else ""), (_note(rec.verbatim_text) or _note(rec.choice_label))
         target = _section_target(pack, q, known)
@@ -136,7 +139,7 @@ def project_summary(pack: PackConfig, state: CallState | None) -> ProjectedRepor
             alerts.append(f"{head}. Mother's words: {said}." if said else head)
             flags.append(f"{head}. {said}" if said else head)
             lines.append(f"Concern. {q.need}{child}. {said or 'reported'}.")
-        elif rec.state is AnswerStatus.ANSWERED: lines.append(f"Answered{f' ({rec.choice_label})' if rec.choice_label else ''}. {q.need}.")
+        elif rec.state is AnswerStatus.ANSWERED: lines.append(f"Answered{f' ({said})' if said else ''}. {q.need}.")
         else:
             lines.append(f"{rec.state.value.title()}. {q.need}.")
             if rec.state is AnswerStatus.CLEAR: negatives.append(f"Clear: {q.need}.")

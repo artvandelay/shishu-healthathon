@@ -10,32 +10,26 @@ from weakref import WeakKeyDictionary
 
 import httpx
 
-from intake import engine
-from intake.models import AnswerStatus, CallState, PackConfig, QuestionKind, QuestionSpec, Strict, TurnCommand, TurnOutcome
+from intake import engine, policy
+from intake.models import CallState, PackConfig, QuestionKind, QuestionSpec, Strict, TurnCommand, TurnOutcome
+from intake.policy import CHOICE_KINDS, GATES, OPENISH
+from intake.turns import ClinicalClaim, DomainFit, EvidenceSource, SpeechAct, TopicRelation, TurnEvidence, TurnInterpretation
 
 DECISIONS_ENDPOINT, DEFAULT_MODEL = "https://generativelanguage.googleapis.com/v1beta/decisions", "gemini-decision-1"
 Transport = Callable[..., tuple[int, bytes] | Awaitable[tuple[int, bytes]]]
 _CLIENTS: WeakKeyDictionary[asyncio.AbstractEventLoop, httpx.AsyncClient] = WeakKeyDictionary()
-_CORE = ("danger_now", "caller_stop", "mentions_profile", "redact_patient_note")
+_CORE = ("danger_now", "caller_stop", "mentions_profile", "redact_patient_note", "active_topic", "residual_clinical", "asks_clarify")
 _NOUL = (*_CORE, "detail_present", "jump_topic")
 _STATED_KINDS = (QuestionKind.GATE, QuestionKind.ROUTING_GATE)
-_OUTCOMES, _STATED_OUTCOMES = frozenset({"clear", "concern", "unknown", "clarify", "retract"}), frozenset({"concern", "clear", "clarify"})
+_OUTCOMES = frozenset({"clear", "concern", "unknown", "clarify", "retract"})
+_STATED_OUTCOMES = frozenset({"concern", "clear"})
 _SAFETY, _RETRY_CODES = frozenset({"safety", "prohibited_content", "blocklist", "image_safety", "content_blocked"}), {408, 429}
 
 class DecisionCallResult(NamedTuple):
-    ok: bool
-    error_reason: str
-    attempts: int
-    decision_ms: int
-    request_bytes: int
-    question_count: int
-    total_input_tokens: int | None
-    raw_answers: dict[str, Any]
-    used_slim_fallback: bool = False
+    ok: bool; error_reason: str; attempts: int; decision_ms: int; request_bytes: int; question_count: int
+    total_input_tokens: int | None; raw_answers: dict[str, Any]; used_slim_fallback: bool = False
 class TurnIntent(Strict, frozen=True):
-    command: TurnCommand
-    needs_profile_extraction: bool
-    diagnostics: dict[str, Any]
+    command: TurnCommand; needs_profile_extraction: bool; diagnostics: dict[str, Any]; interpretation: TurnInterpretation | None = None
 async def _post(url: str, body: bytes, headers: dict[str, str], budget: float) -> tuple[int, bytes]:
     """One pooled POST whose read budget belongs to THIS attempt, never to the client's lifetime.
 
@@ -63,8 +57,6 @@ def _verdict(status: int, raw: bytes) -> tuple[dict[str, Any] | None, str, bool]
     if code in _SAFETY and int(status) < 500:
         return None, "safety_block", False
     return None, f"http_{int(status)}", int(status) in _RETRY_CODES or int(status) >= 500
-
-
 async def _send(send: Transport, endpoint: str, body: bytes, headers: dict[str, str],
                 budget: float) -> tuple[dict[str, Any] | None, str, bool]:
     """One POST on its own read budget, classified where it landed."""
@@ -78,8 +70,6 @@ async def _send(send: Transport, endpoint: str, body: bytes, headers: dict[str, 
     except Exception:  # noqa: BLE001
         return None, "response_invalid", False
     return _verdict(int(status), raw)
-
-
 async def evaluate_turn(request: dict[str, Any], *, api_key: str | None = None, endpoint: str = DECISIONS_ENDPOINT,
                         max_attempts: int = 2, attempt_timeout_sec: float = 12.0, total_budget_sec: float = 18.0,
                         transport: Transport | None = None,
@@ -120,8 +110,6 @@ async def evaluate_turn(request: dict[str, Any], *, api_key: str | None = None, 
                               len(sent_request.get("questions") or {}), toks if type(toks) is int else None,
                               (payload or {}).get("answers") or {},
                               payload is not None and fallback_body is not None and body is fallback_body)
-
-
 def _build_input(pack: PackConfig, state: CallState, *, utterance_text: str, audio_wav_bytes: bytes | None,
                  audio_mime_type: str) -> Any:
     """The context document plus the optional spoken audio that every Decision request carries.
@@ -147,8 +135,6 @@ def _build_input(pack: PackConfig, state: CallState, *, utterance_text: str, aud
     text = json.dumps(ctx, ensure_ascii=False)
     return ([{"type": "text", "text": text + "\n"}, {"type": "audio", "data": base64.b64encode(audio).decode(), "mime_type": audio_mime_type}]
             if audio else text)
-
-
 def _stated_heads(pack: PackConfig, state: CallState, heads: Mapping[str, Any]) -> dict[str, Any]:
     """Group B: one `stated_<qid>` revision head per routable question other than the active one."""
     tpl = heads.get("stated_template")
@@ -158,8 +144,15 @@ def _stated_heads(pack: PackConfig, state: CallState, heads: Mapping[str, Any]) 
                                "instructions": tpl["instructions"].format(question_say=said(q), need=q.need, group=q.group),
                                "criteria": tpl["criteria"]}
             for q in pack.questions if q.is_routable and q.id != state.cursor.qid and q.kind in _STATED_KINDS}
-
-
+def _clarify_target_head(pack: PackConfig, state: CallState, heads: Mapping[str, Any]) -> dict[str, Any]:
+    tpl = heads.get("clarify_target_template")
+    if tpl is None: return {}
+    eligible = [q for q in pack.questions if q.is_routable and q.id != state.cursor.qid and policy.named_clarify_ok(pack, state, q.id)]
+    if not eligible: return {}
+    said = partial(engine.question_say, pack, state)
+    return {"clarify_target": {"type": "choice", "instructions": tpl["instructions"],
+            "criteria": {q.id: tpl["option_template"].format(question_say=said(q), need=q.need) for q in eligible}
+            | {"active_or_none": tpl["catchall_description"]}}}
 def _router_heads(pack: PackConfig, state: CallState, heads: Mapping[str, Any]) -> dict[str, Any]:
     """Group D: the jump flag and the open-question router, present only with two or more open questions."""
     tpl = heads.get("next_qid_template")
@@ -172,8 +165,6 @@ def _router_heads(pack: PackConfig, state: CallState, heads: Mapping[str, Any]) 
                       "criteria": {q.id: tpl["option_template"].format(question_say=said(q), need=q.need) for q in open_q}
                       | {"other": tpl["other_description"]}}
     return qs
-
-
 def build_turn_request(pack: PackConfig, state: CallState, *, utterance_text: str = "", audio_wav_bytes: bytes | None = None,
                        audio_mime_type: str = "audio/wav", slim: bool = False) -> dict[str, Any]:
     """One request for one turn. `slim` drops the two groups a retry can no longer afford.
@@ -200,14 +191,13 @@ def build_turn_request(pack: PackConfig, state: CallState, *, utterance_text: st
         qs["item_ref"] = {"type": "choice", "instructions": tpl["instructions"], "criteria": named | {"all": tpl["all_description"], "other": tpl["other_description"]}}
     if not slim and (router or answered):
         qs |= _stated_heads(pack, state, heads)
+        qs |= _clarify_target_head(pack, state, heads)
     qs |= {f"flag_{f}": {"type": "noul", "instructions": fs["instructions"], "criteria": {k: fs[k] for k in ("true_description", "false_description") if k in fs}} for f, fs in pack.semantic_flags.items() if f not in state.semantic_flags}
     if not slim and router:
         qs |= _router_heads(pack, state, heads)
     return {"model": str(pack.decisions.get("model") or DEFAULT_MODEL),
             "input": _build_input(pack, state, utterance_text=utterance_text, audio_wav_bytes=audio_wav_bytes, audio_mime_type=audio_mime_type),
             "questions": qs}
-
-
 def _num(v: Any) -> float | None: return float(v) if type(v) in (int, float) and math.isfinite(v) else None
 def _yes(a: Mapping[str, Any], key: str, floor: Any) -> bool:
     p = _num(a[key].get("noul")) if isinstance(a.get(key), Mapping) else None
@@ -243,50 +233,118 @@ def _active_value(spec: QuestionSpec | None, a: Mapping[str, Any], t: Mapping[st
     if spec.kind is QuestionKind.SINGLE_CHOICE: return _pick(a, "choice_value", t, "choice", allowed=frozenset(spec.options)) or None
     if spec.kind is QuestionKind.MULTI_CHOICE: return [k for k in spec.options if _yes(a, f"opt_{k}", t["multi_choice_min_yes"])] or None
     return _score_value(a, t) if spec.kind is QuestionKind.SCORE else None
-def _stated_writes(pack: PackConfig, state: CallState, a: Mapping[str, Any], t: Mapping[str, float],
-                   *, active_outcome: TurnOutcome = TurnOutcome.NOT_ABOUT_ACTIVE) -> dict[str, TurnOutcome]:
+def _stated_writes(pack: PackConfig, state: CallState, a: Mapping[str, Any], t: Mapping[str, float]) -> dict[str, TurnOutcome]:
     """Out-of-turn revisions of the other routable questions, each gated by its own stated thresholds."""
     out: dict[str, TurnOutcome] = {}
     for key in (k for k in a if str(k).startswith("stated_")):
         spec = pack.by_id.get(str(key).removeprefix("stated_"))
-        if spec is None or not spec.is_routable or spec.kind not in _STATED_KINDS or spec.id == state.cursor.qid: continue
-        # Revising CLEAR, retracting CONCERN to CLEAR, and asking what a term means all ride the pack's stated gate.
-        if w := _pick(a, key, t, "stated", "unmentioned", _STATED_OUTCOMES): out[spec.id] = TurnOutcome(w)
-    if active_outcome is not TurnOutcome.CLARIFY: return out
-    # One active clarify means one question is being asked about, and every `stated_` head reads that same
-    # clarification back as its own answer: Call #47/#57 scattered `clarify` onto unasked future questions
-    # (`prior is None`), settled CLEAR/CONCERN answers, and two-or-more heads at once whenever ASR garbled
-    # "थैलेसीमिया". A clarify can only name the question she JUST LEFT — the one that came back UNKNOWN.
-    fired = [q for q, o in out.items() if o is TurnOutcome.CLARIFY]
-    named = next((q for q in fired if q == state.last_answered_qid
-                  or ((r := state.answers.get(q)) is not None and r.state is AnswerStatus.UNKNOWN)), "") if len(fired) == 1 else ""
-    return {q: o for q, o in out.items() if o is not TurnOutcome.CLARIFY or q == named}
+        if spec is None or not spec.is_routable or spec.kind not in _STATED_KINDS or spec.id == state.cursor.qid:
+            continue
+        if w := _pick(a, key, t, "stated", "unmentioned", _STATED_OUTCOMES):
+            out[spec.id] = TurnOutcome(w)
+    return out
 def _next_qid_probs(a: Mapping[str, Any]) -> dict[str, float]:
     """The router head's candidate questions, minus the catchall and any non-finite probability."""
     head = a.get("next_qid")
     probs = (head.get("probabilities") if isinstance(head, Mapping) else None) or {}
     return {str(k): p for k, v in probs.items() if str(k) != "other" and (p := _num(v)) is not None}
+def _clarify_routable(pack: PackConfig, state: CallState) -> frozenset[str]:
+    return frozenset(q.id for q in pack.questions if q.is_routable and q.id != state.cursor.qid and policy.named_clarify_ok(pack, state, q.id))
+
+def _ac(claims: list[ClinicalClaim], qid: str, domain: DomainFit, *, status: TurnOutcome | None = None, value: Any = None) -> None:
+    claims.append(ClinicalClaim(target_qid=qid, relation=TopicRelation.ACTIVE, domain_fit=domain, status=status, value=value))
+
 def interpret_turn_decision(pack: PackConfig, state: CallState, raw_answers: Mapping[str, Any], *, utterance_text: str = "") -> TurnIntent:
     t = {k: float(v) for k, v in (pack.decisions.get("thresholds") or {}).items()}
     a = raw_answers if isinstance(raw_answers, Mapping) else {}
     kind, spec = engine.step_kind(pack, state), pack.by_id.get(state.cursor.qid)
+    active_qid = state.cursor.qid or ""
     on = {h: _yes(a, h, t[f"{h}_min_yes"]) for h in _NOUL}
-    closing = on["danger_now"] or on["caller_stop"]
+    utt = " ".join(utterance_text.split())
+    emergency = on["danger_now"]
+    caller_stop = not emergency and on["caller_stop"]
+    closing = emergency or caller_stop
     val = None if closing or kind != "main" else _active_value(spec, a, t)
-    outcome = TurnOutcome.ANSWERED if val is not None else TurnOutcome.NOT_ABOUT_ACTIVE
-    if not closing and val is None and (w := _pick(a, "active_outcome", t, "outcome", allowed=_OUTCOMES) or _quiet_split(a, t)): outcome = TurnOutcome(w)
-    stated = {} if closing else _stated_writes(pack, state, a, t, active_outcome=outcome)
+    w = ""
+    if not closing and val is None:
+        w = _pick(a, "active_outcome", t, "outcome", allowed=_OUTCOMES) or _quiet_split(a, t)
+    stated = {} if closing else _stated_writes(pack, state, a, t)
     next_probs = _next_qid_probs(a)
     flags = tuple(f for f, fs in pack.semantic_flags.items() if f not in state.semantic_flags and _yes(a, f"flag_{f}", fs.get("min_yes", 0.8)))
-    cmd = TurnCommand(
-        emergency=on["danger_now"], caller_stop=not on["danger_now"] and on["caller_stop"], outcome=outcome, value=val,
-        item_ref=_pick(a, "item_ref", t, "item_ref", allowed=frozenset({i.id for i in state.roster}) | {"all"}) if len(state.roster) >= 2 else "",
-        followup_answered=bool(on["detail_present"] and ((kind in ("main", "close") and outcome is TurnOutcome.CONCERN)
-                                                          or (kind == "which_item" and outcome in (TurnOutcome.CONCERN, TurnOutcome.ANSWERED)))),
-        stated=stated, semantic_flags=flags, jump_topic=bool(not closing and kind != "profile" and on["jump_topic"]),
-        next_qid_probs=next_probs, utterance=" ".join(utterance_text.split()), redacted=on["redact_patient_note"])
-    diag = {"active_qid": state.cursor.qid, "step_kind": kind, "outcome": outcome.value, "stated": {q: o.value for q, o in stated.items()}, "next_qid_probs": next_probs,
-            "semantic_flags": list(flags), "heads": on, **{h: _num(a[h].get("noul")) for h in _NOUL if isinstance(a.get(h), Mapping)},
-            "top2": ",".join(f"{k}:{round(p, 3)}" for k, p in _rank(a, "active_outcome")[:2]),
-            "noul_hot": ",".join(f"{h}:{round(v, 2)}" for h in _NOUL if isinstance(a.get(h), Mapping) and (v := _num(a[h].get("noul"))) is not None and v >= 0.25)}
-    return TurnIntent(command=cmd, needs_profile_extraction=on["mentions_profile"] or (kind == "profile" and outcome is not TurnOutcome.CLARIFY), diagnostics=diag)
+    item_ref = _pick(a, "item_ref", t, "item_ref", allowed=frozenset({i.id for i in state.roster}) | {"all"}) if len(state.roster) >= 2 else ""
+    outcome_for_followup = TurnOutcome(w) if w in _OUTCOMES else TurnOutcome.NOT_ABOUT_ACTIVE
+    followup_answered = bool(
+        on["detail_present"]
+        and (
+            (kind in ("main", "close") and outcome_for_followup is TurnOutcome.CONCERN)
+            or (kind == "which_item" and outcome_for_followup in (TurnOutcome.CONCERN, TurnOutcome.ANSWERED))
+        )
+    )
+    jump_topic = bool(not closing and kind != "profile" and on["jump_topic"])
+
+    claims: list[ClinicalClaim] = []
+    clarify_target_qid, act, active_relation, active_domain = None, SpeechAct.NONE, TopicRelation.UNRELATED, DomainFit.NONE
+    if not closing and w == "retract" and active_qid:
+        act = SpeechAct.RETRACT
+        _ac(claims, active_qid, DomainFit.IN_DOMAIN, status=TurnOutcome.RETRACT)
+        active_relation, active_domain = TopicRelation.ACTIVE, DomainFit.IN_DOMAIN
+    elif not closing and spec is not None and kind == "main" and spec.kind in CHOICE_KINDS:
+        if val is not None:
+            _ac(claims, active_qid, DomainFit.IN_DOMAIN, status=TurnOutcome.ANSWERED, value=val)
+            active_relation, active_domain = TopicRelation.ACTIVE, DomainFit.IN_DOMAIN
+        elif w == "unknown":
+            _ac(claims, active_qid, DomainFit.IN_DOMAIN, status=TurnOutcome.UNKNOWN)
+            active_relation, active_domain = TopicRelation.ACTIVE, DomainFit.IN_DOMAIN
+        elif val is None and on["active_topic"] and w not in ("clarify", "unknown", "retract") and utt:
+            _ac(claims, active_qid, DomainFit.UNLISTED)
+            active_relation, active_domain = TopicRelation.ACTIVE, DomainFit.UNLISTED
+    elif not closing and spec is not None and ((kind == "main" and spec.kind in GATES) or (kind == "main" and spec.kind in OPENISH)
+            or kind in ("which_item", "followup", "bridge", "close")):
+        if w in ("clear", "concern", "unknown") and not (w == "concern" and kind == "main" and spec.kind in GATES and "active_topic" in a and not on["active_topic"]):
+            _ac(claims, active_qid, DomainFit.IN_DOMAIN, status=TurnOutcome(w))
+            active_relation, active_domain = TopicRelation.ACTIVE, DomainFit.IN_DOMAIN
+    for qid, status in stated.items():
+        claims.append(ClinicalClaim(target_qid=qid, relation=TopicRelation.OTHER_FORM, domain_fit=DomainFit.IN_DOMAIN, status=status))
+        if act is SpeechAct.NONE and active_relation is TopicRelation.UNRELATED:
+            active_relation, active_domain = TopicRelation.OTHER_FORM, DomainFit.NONE
+    if on["residual_clinical"] and not stated and not closing:
+        claims.append(ClinicalClaim(relation=TopicRelation.CLINICAL_ASIDE, domain_fit=DomainFit.NONE))
+        if active_relation is TopicRelation.UNRELATED:
+            active_relation = TopicRelation.CLINICAL_ASIDE
+    clarifying = not closing and (on["asks_clarify"] or w == "clarify")
+    if clarifying:
+        act = SpeechAct.CLARIFY
+        target = _pick(a, "clarify_target", t, "clarify_target", catchall="active_or_none", allowed=_clarify_routable(pack, state))
+        clarify_target_qid = target if target and target != "active_or_none" else None
+        if active_relation is TopicRelation.UNRELATED:
+            active_relation = TopicRelation.OTHER_FORM if clarify_target_qid else TopicRelation.ACTIVE
+            active_domain = DomainFit.NONE
+    if act is SpeechAct.NONE:
+        if any(c.relation is TopicRelation.ACTIVE for c in claims):
+            act = SpeechAct.ANSWER
+        elif any(c.relation is TopicRelation.CLINICAL_ASIDE for c in claims):
+            act = SpeechAct.ANSWER
+        elif any(c.relation is TopicRelation.OTHER_FORM for c in claims):
+            act = SpeechAct.ANSWER
+    interpretation = TurnInterpretation(
+        act=act, active_relation=active_relation, active_domain=active_domain, claims=tuple(claims), clarify_target_qid=clarify_target_qid,
+        emergency=emergency, caller_stop=caller_stop, item_ref=item_ref, followup_answered=followup_answered, semantic_flags=flags,
+        jump_topic=jump_topic, next_qid_probs=next_probs, redacted=on["redact_patient_note"],
+    )
+    evidence = TurnEvidence(source=EvidenceSource.TEXT, snapshot_step=state.step_token, transcript=utt, received_at=0.0)
+    pol = policy.evaluate_policy(pack, state, evidence, interpretation)
+    cmd = pol.command
+    diag = {
+        "active_qid": state.cursor.qid,
+        "step_kind": kind,
+        "outcome": cmd.outcome.value,
+        "stated": {q: o.value for q, o in cmd.stated.items()},
+        "next_qid_probs": next_probs,
+        "semantic_flags": list(flags),
+        "heads": on,
+        **{h: _num(a[h].get("noul")) for h in _NOUL if isinstance(a.get(h), Mapping)},
+        "top2": ",".join(f"{k}:{round(p, 3)}" for k, p in _rank(a, "active_outcome")[:2]),
+        "noul_hot": ",".join(f"{h}:{round(v, 2)}" for h in _NOUL if isinstance(a.get(h), Mapping) and (v := _num(a[h].get("noul"))) is not None and v >= 0.25),
+    }
+    return TurnIntent(command=cmd, needs_profile_extraction=on["mentions_profile"] or (kind == "profile" and act is not SpeechAct.CLARIFY),
+                      diagnostics=diag, interpretation=interpretation)

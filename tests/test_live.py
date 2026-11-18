@@ -17,6 +17,7 @@ from intake.models import (
     ProfilePatch, RosterItem, RosterInput, SubStep, TurnCommand, TurnOutcome,
 )
 from intake.pack import load_pack
+from intake.turns import EvidenceSource
 from starlette.websockets import WebSocketState
 
 PACK = load_pack("shishu-hi")
@@ -130,7 +131,7 @@ class FakeRecorder:
         return "call_1.wav", 3
 
 
-def build(*, messages: list | None = None, fail_realtime: bool = False, call_id: int | None = 1,
+def build(*, messages: list | None = None, fail_realtime: bool = False, call_id: int | None = None,
           state: CallState | None = None) -> tuple[live.LiveCallSession, FakeWebSocket, FakeSession]:
     """One session wired to fakes."""
     ws, session = FakeWebSocket(), FakeSession(messages, fail_realtime=fail_realtime)
@@ -539,12 +540,12 @@ class TurnTests(unittest.TestCase):
                 return self.turn(built.state, TurnCommand(
                     outcome=TurnOutcome.CLEAR, utterance=self.utterance()))
 
-            async def fake_persist(state: CallState) -> None:
+            async def fake_commit(state: CallState, _evidence: live.TurnEvidence) -> None:
                 order.append(f"commit:{state.step_token}")
                 built.state = state
 
             built._evaluate_turn_task = fake_evaluate  # type: ignore[method-assign]
-            built._persist = fake_persist  # type: ignore[method-assign]
+            built._commit_turn = fake_commit  # type: ignore[method-assign]
             await built.on_text({"text": self.utterance()})
             body_json, _clarify = await built._next_question()
             self.assertEqual(len(order), 1, "exactly one commit per reduced turn")
@@ -621,6 +622,190 @@ class CallerUtteranceTests(unittest.TestCase):
             built.state.cursor = built.state.cursor.model_copy(update={"qid": "intro_bridge"})
             await built.on_quick_reply({"value": "clear", "step": built.state.step_token})
             self.assertIsNone(built.last_reduced)
+
+        asyncio.run(body())
+
+
+class TurnEvidenceLiveTests(unittest.TestCase):
+    """Real ingress paths must retain source evidence independently from form answers."""
+
+    def setUp(self) -> None:
+        self.calls: list[int] = []
+
+    def tearDown(self) -> None:
+        with db._LOCK:
+            for call_id in self.calls:
+                db.conn.execute("DELETE FROM turn_evidence WHERE call_id = ?", (call_id,))
+                db.conn.execute("DELETE FROM calls WHERE id = ?", (call_id,))
+            db.conn.commit()
+
+    def session(self, qid: str) -> live.LiveCallSession:
+        call_id = db.create_call(pack_id=PACK.id)
+        self.calls.append(call_id)
+        state = live.engine.new_state(PACK)
+        state.cursor = state.cursor.model_copy(update={"qid": qid})
+        return build(call_id=call_id, state=state)[0]
+
+    def test_successful_voice_and_tap_turns_keep_distinct_source_evidence(self):
+        async def body() -> None:
+            voiced = self.session("birth_bcg")
+            voiced._evaluate_turn_task = TurnMetaTests.fake_pass(TurnOutcome.CLEAR)  # type: ignore[method-assign]
+            voice_step = voiced.state.step_token
+            await voiced.on_audio({"data": pcm(), "sample_rate": 16000})
+            await voiced._hear("user", "नहीं, कोई गांठ नहीं")
+            await voiced._next_question()
+
+            tapped = self.session("intro_bridge")
+            tap_step = tapped.state.step_token
+            await tapped.on_quick_reply({"value": "clear", "step": tap_step})
+
+            voice_rows = db.list_turn_evidence(voiced.call_id)
+            tap_rows = db.list_turn_evidence(tapped.call_id)
+            self.assertEqual(
+                [(row.source, row.snapshot_step, row.transcript) for row in voice_rows],
+                [(EvidenceSource.VOICE, voice_step, "नहीं, कोई गांठ नहीं")],
+            )
+            self.assertEqual(
+                [(row.source, row.snapshot_step, row.selected_value) for row in tap_rows],
+                [(EvidenceSource.TAP, tap_step, "clear")],
+            )
+
+        asyncio.run(body())
+
+    def test_failed_semantic_pass_retains_typed_evidence_without_advancing(self):
+        async def body() -> None:
+            built = self.session("birth_bcg")
+            step = built.state.step_token
+
+            async def failed(snapshot: CallState, spoken: str, pcm_bytes: bytes) -> live.Turn:
+                result = live.decisions.DecisionCallResult(
+                    False, "timeout", 1, 12_000, 100, 4, None, {}, False
+                )
+                intent = live.decisions.TurnIntent(
+                    command=TurnCommand(), needs_profile_extraction=False, diagnostics={}
+                )
+                return live.Turn(result, intent, None, snapshot, spoken, len(pcm_bytes), None)
+
+            built._evaluate_turn_task = failed  # type: ignore[method-assign]
+            await built.on_text({"text": "बुखार आया था"})
+            response, _clarify = await built._next_question()
+
+            self.assertEqual(response["result"], "retry")
+            self.assertEqual(built.state.step_token, step)
+            rows = db.list_turn_evidence(built.call_id)
+            self.assertEqual(
+                [(row.source, row.snapshot_step, row.transcript) for row in rows],
+                [(EvidenceSource.TEXT, step, "बुखार आया था")],
+            )
+
+        asyncio.run(body())
+
+    def test_late_stt_is_a_second_evidence_record_for_the_original_step(self):
+        async def body() -> None:
+            built = self.session("birth_bcg")
+            built._evaluate_turn_task = TurnMetaTests.fake_pass(TurnOutcome.CONCERN)  # type: ignore[method-assign]
+            original_step = built.state.step_token
+            await built.on_audio({"data": pcm(), "sample_rate": 16000})
+            await built._next_question()
+            await built._hear("user", "हाँ गांठ हुई थी")
+
+            rows = db.list_turn_evidence(built.call_id)
+            self.assertEqual([row.source for row in rows], [EvidenceSource.VOICE, EvidenceSource.LATE_STT])
+            self.assertEqual([row.snapshot_step for row in rows], [original_step, original_step])
+            self.assertEqual(rows[1].transcript, "हाँ गांठ हुई थी")
+
+        asyncio.run(body())
+
+    def test_stale_semantic_result_keeps_evidence_without_clobbering_current_state(self):
+        async def body() -> None:
+            built = self.session("birth_term")
+            original_step = built.state.step_token
+
+            async def stale_pass(snapshot: CallState, spoken: str, pcm_bytes: bytes) -> live.Turn:
+                stale = snapshot.model_copy(deep=True)
+                stale.cursor = stale.cursor.model_copy(update={"qid": "birth_jaundice"})
+                return turn_with(stale, TurnOutcome.CONCERN, spoken)
+
+            built._evaluate_turn_task = stale_pass  # type: ignore[method-assign]
+            await built.on_text({"text": "नहीं"})
+            response, _clarify = await built._next_question()
+
+            self.assertEqual(response["result"], "held")
+            self.assertEqual(built.state.step_token, original_step)
+            rows = db.list_turn_evidence(built.call_id)
+            self.assertEqual(
+                [(row.source, row.snapshot_step, row.transcript) for row in rows],
+                [(EvidenceSource.TEXT, original_step, "नहीं")],
+            )
+
+        asyncio.run(body())
+
+    def test_tap_preserves_already_banked_voice_before_answering_the_step(self):
+        async def body() -> None:
+            built = self.session("birth_term")
+            original_step = built.state.step_token
+            await built.on_audio({"data": pcm(), "sample_rate": 16000})
+            await built._hear("user", "रुकिए, मैं बता रही हूँ")
+            await built.on_quick_reply({"value": "clear", "step": original_step})
+
+            rows = db.list_turn_evidence(built.call_id)
+            self.assertEqual(
+                [(row.source, row.snapshot_step, row.transcript) for row in rows],
+                [
+                    (EvidenceSource.VOICE, original_step, "रुकिए, मैं बता रही हूँ"),
+                    (EvidenceSource.TAP, original_step, "नहीं"),
+                ],
+            )
+
+        asyncio.run(body())
+
+    def test_new_typed_message_preserves_the_previous_unjudged_message(self):
+        async def body() -> None:
+            built = self.session("birth_term")
+            built._evaluate_turn_task = TurnMetaTests.fake_pass(TurnOutcome.CLEAR)  # type: ignore[method-assign]
+            original_step = built.state.step_token
+            await built.on_text({"text": "पहली बात अभी बाकी है"})
+            await built.on_text({"text": "नहीं"})
+            await built._next_question()
+
+            rows = db.list_turn_evidence(built.call_id)
+            self.assertEqual(
+                [(row.source, row.snapshot_step, row.transcript) for row in rows],
+                [
+                    (EvidenceSource.TEXT, original_step, "पहली बात अभी बाकी है"),
+                    (EvidenceSource.TEXT, original_step, "नहीं"),
+                ],
+            )
+
+        asyncio.run(body())
+
+    def test_displaced_bank_is_consumed_before_its_commit_can_yield(self):
+        async def body() -> None:
+            built, _ws, _session = build(call_id=None)
+            built.state.cursor = built.state.cursor.model_copy(update={"qid": "birth_term"})
+            built._evaluate_turn_task = TurnMetaTests.fake_pass(TurnOutcome.CLEAR)  # type: ignore[method-assign]
+            await built.on_text({"text": "रुकिए, मैं बता रही हूँ"})
+            original_state = built.state.model_copy(deep=True)
+            original_commit = built._commit_turn
+            entered, release = asyncio.Event(), asyncio.Event()
+            commits: list[tuple[CallState, Any]] = []
+
+            async def delayed_first(state: CallState, evidence: Any) -> None:
+                commits.append((state, evidence))
+                if len(commits) == 1:
+                    entered.set()
+                    await release.wait()
+                await original_commit(state, evidence)
+
+            built._commit_turn = delayed_first  # type: ignore[method-assign]
+            displaced = asyncio.create_task(built._commit_displaced_bank())
+            await entered.wait()
+            await built._next_question()
+            release.set()
+            await displaced
+
+            self.assertEqual(len(commits), 1, "the bank must become unavailable before persistence yields")
+            self.assertEqual(built.state.to_dict(), original_state.to_dict())
 
         asyncio.run(body())
 
