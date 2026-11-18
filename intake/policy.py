@@ -118,3 +118,34 @@ def apply_policy(pack: PackConfig, state: CallState, evidence: TurnEvidence, int
     elif not (c0.qid == c1.qid and c0.substep == c1.substep and c0.followup_idx == c1.followup_idx): action = CursorAction.ADVANCE
     decisions = tuple(d.model_copy(update={"cursor_action": action}) for d in result.decisions)
     return nxt, PolicyResult(decisions=decisions, command=result.command, unlisted_record=result.unlisted_record)
+def arbitrate_tap_turn(pack: PackConfig, pre_tap_state: CallState, tap_cmd: TurnCommand, current_state: CallState, evidence: TurnEvidence, interpretation: TurnInterpretation) -> tuple[CallState, PolicyResult, bool]:
+    pol = evaluate_policy(pack, pre_tap_state, evidence, interpretation)
+    if interpretation.emergency or interpretation.caller_stop:
+        nxt, out = apply_policy(pack, current_state, evidence, interpretation)
+        return nxt, out, True
+    qid, cmd = pre_tap_state.cursor.qid, pol.command
+    active = [d for d in pol.decisions if d.target_qid == qid and d.disposition is Disposition.ACCEPT_FORM and d.reason is not DecisionReason.RETRACT]
+    agrees = cmd.outcome is tap_cmd.outcome and (tap_cmd.value is None or cmd.value == tap_cmd.value)
+    conflict = (any(d.disposition is Disposition.ACCEPT_UNLISTED for d in pol.decisions) or (interpretation.act is SpeechAct.RETRACT and tap_cmd.outcome is not TurnOutcome.CLEAR)
+                or (bool(active) and not agrees) or (interpretation.act is SpeechAct.CLARIFY and not cmd.stated and not (bool(active) and agrees)))
+    if conflict:
+        held = cmd.model_copy(update={"outcome": TurnOutcome.CLARIFY, "value": None})
+        restored, out, seen = engine.reduce_turn(pack, pre_tap_state, held), [], False
+        for d in pol.decisions:
+            if d.disposition is Disposition.RETAIN_OBSERVATION or d.reason is DecisionReason.OTHER_FORM:
+                out.append(d.model_copy(update={"cursor_action": CursorAction.STAY})); continue
+            if not seen and d.target_qid == qid:
+                out.append(PolicyDecision(claim_index=d.claim_index, disposition=Disposition.CONFLICT, reason=DecisionReason.SOURCE_CONFLICT, target_qid=qid, cursor_action=CursorAction.STAY))
+                seen = True
+        if not seen: out.insert(0, PolicyDecision(disposition=Disposition.CONFLICT, reason=DecisionReason.SOURCE_CONFLICT, target_qid=qid, cursor_action=CursorAction.STAY))
+        return restored, PolicyResult(decisions=tuple(out), command=held), True
+    if active and agrees:  # same advance as the tap, plus the speech's child, note, followup, and side writes
+        nxt, out = apply_policy(pack, pre_tap_state, evidence, interpretation)
+        return nxt, out, nxt.step_token != current_state.step_token
+    nxt = current_state
+    if cmd.stated or cmd.semantic_flags or (cmd.profile_patch is not None and not cmd.profile_patch.is_empty):
+        nxt = engine.reduce_turn(pack, current_state, cmd.model_copy(update={"outcome": TurnOutcome.CLARIFY, "value": None}))
+    moved = nxt.step_token != current_state.step_token
+    action = CursorAction.CLOSE if nxt.phase is not Phase.ASKING else (CursorAction.ADVANCE if moved else CursorAction.STAY)
+    decisions = pol.decisions if action is CursorAction.STAY else tuple(d.model_copy(update={"cursor_action": action}) for d in pol.decisions)
+    return nxt, PolicyResult(decisions=decisions, command=cmd), moved

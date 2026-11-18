@@ -12,11 +12,11 @@ EvidenceSource = _enum("EvidenceSource", "VOICE TEXT TAP LATE_STT")
 SpeechAct = _enum("SpeechAct", "ANSWER CLARIFY RETRACT CLOSE NONE")
 TopicRelation = _enum("TopicRelation", "ACTIVE OTHER_FORM CLINICAL_ASIDE UNRELATED")
 DomainFit = _enum("DomainFit", "IN_DOMAIN UNLISTED NONE")
-Disposition = _enum("Disposition", "ACCEPT_FORM ACCEPT_UNLISTED RETAIN_OBSERVATION CLARIFY IGNORE")
+Disposition = _enum("Disposition", "ACCEPT_FORM ACCEPT_UNLISTED RETAIN_OBSERVATION CLARIFY IGNORE CONFLICT")
 DecisionReason = _enum(
     "DecisionReason",
     "IN_DOMAIN UNLISTED_TOPIC RESIDUAL_CLINICAL OTHER_FORM ACTIVE_CLARIFY NAMED_CLARIFY RETRACT UNRELATED "
-    "CALLER_UNKNOWN REJECTED_TARGET EMERGENCY CALLER_STOP",
+    "CALLER_UNKNOWN REJECTED_TARGET EMERGENCY CALLER_STOP SOURCE_CONFLICT",
 )
 CursorAction = _enum("CursorAction", "STAY ADVANCE CLOSE")
 TurnEvidence = _rec("TurnEvidence", source=(EvidenceSource, ...), snapshot_step=(str, ...), transcript=(str, ""), received_at=(float, ...), selected_value=(Any | None, None))

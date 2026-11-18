@@ -16,7 +16,7 @@ from starlette.websockets import WebSocketState
 
 from intake import audio, db, decisions, engine, extractor, policy, reports
 from intake.models import AnswerStatus, CallState, CloseReason, FollowupSlot, PackConfig, Phase, SubStep, TurnOutcome
-from intake.turns import EvidenceSource, PolicyDecision, TurnEvidence, TurnInterpretation
+from intake.turns import CursorAction, DecisionReason, Disposition, EvidenceSource, PolicyDecision, TurnEvidence, TurnInterpretation
 
 logger = logging.getLogger(__name__)
 _IN, _OUT, _TICK, _MUTE_SEC, _CUE_DELAY, _STT_WAIT, _MAX_RECONNECTS, _MAX_TURN = 16000, 24000, 0.5, 0.1, 2.2, 0.5, 5, 960_000
@@ -121,7 +121,7 @@ class LiveCallSession:
             ending_sent=False, bot_text="", cue_kind="speak", checked_in=False, seen=set(), cancelled=set(),
             pcm=b"", text="", snapshot=None, preroll=deque(maxlen=4), tail_chunks=0,
             noise_rms=0.005, noise_seeded=False, listening_ring=deque(maxlen=_RING_MAX),
-            stt_ready=asyncio.Event(), tool_task=None, fallback=None, last_reduced=None, last_evidence_step="",
+            stt_ready=asyncio.Event(), tool_task=None, fallback=None, last_reduced=None, last_evidence_step="", last_tap=None, deciding_count=0,
             epoch=0, turn_phase=TurnPhase.LISTENING, prompted_at=0.0, bot_generating=False, awaiting_abort_end=False,
             closing_spoken=False, consecutive_tool_errors=0, prompt_recued=False)
         self.last_turn_meta: dict[str, Any] = {}  # the meta row for the turn just reduced, waiting for its `tool_call` event
@@ -181,6 +181,7 @@ class LiveCallSession:
         self._cancel("fallback")
         # One owner per cue: a cue that is sent IS the prompt, so nothing ticks behind it to speak it again.
         if immediate: return await (self._send_realtime(text=text) if text is not None else self._speak(kind))
+        if self.awaiting_abort_end: return True  # on_turn_complete arms this once Gemini has finished killing Turn A
         self.fallback = asyncio.ensure_future(self._cue_if_silent(self.state.step_token, self.epoch, kind))
         self.fallback.add_done_callback(consume_task_error)
         return True
@@ -245,6 +246,9 @@ class LiveCallSession:
         spec = self.pack.by_id.get(snapshot.cursor.qid)
         return (engine.step_kind(self.pack, snapshot) == "profile" or bool(spec and spec.saves_to_profile)
                 or not engine.roster_resolved(self.pack, snapshot))
+    def _drop_other_step_tap(self, step: str) -> None:
+        in_flight = self.deciding_count or self.turn_phase is TurnPhase.DECIDING or (self.tool_task is not None and not self.tool_task.done())
+        if not in_flight and self.last_tap is not None and self.last_tap[0] != step: self.last_tap = None
     def _reset_turn(self) -> None:
         self.pcm, self.text, self.snapshot, self.tail_chunks = b"", "", None, 0
         self.preroll.clear()  # a reset abandons the banked onset, so no stale chunk can seed the next turn
@@ -304,6 +308,7 @@ class LiveCallSession:
             if not self.pcm:
                 self._cancel("fallback")  # caller started speaking; never talk over her with a delayed cue
                 if self.snapshot is None: self.snapshot = self.state.model_copy(deep=True)
+                self._drop_other_step_tap(self.snapshot.step_token)
                 self.last_reduced = None
                 self.pcm = (self._soft_lead(tail_rms) + pcm_16k)[-_MAX_TURN:]  # the consonants before the vowel are hers too
                 self.preroll.clear()
@@ -330,6 +335,7 @@ class LiveCallSession:
             if not self.pcm and not self.text:  # soft speech under the RMS gate still counts as her turn
                 self._cancel("fallback")
                 if self.snapshot is None: self.snapshot = self.state.model_copy(deep=True)
+                self._drop_other_step_tap(self.snapshot.step_token)
                 self.last_reduced, self.telemetry["user_turns"] = None, self.telemetry["user_turns"] + 1
             self.text = engine.merge_transcript_chunk(self.text, text)
             self.stt_ready.set()
@@ -364,6 +370,7 @@ class LiveCallSession:
         await self._commit_displaced_bank()
         self._reset_turn()
         self.snapshot, self.text, self.speech_ended_ts, self.last_reduced = self.state.model_copy(deep=True), text, time.time(), None
+        self._drop_other_step_tap(self.snapshot.step_token)
         self.last_voice_ts, self.checked_in, self.bot_generating = self.speech_ended_ts, False, False
         if self.turn_phase is TurnPhase.PROMPTING: self.turn_phase = TurnPhase.LISTENING  # the caller typed, so the prompt is over
         self.telemetry["user_turns"] += 1
@@ -393,6 +400,7 @@ class LiveCallSession:
         spoken = next((b.get("hi") or b.get("en") or val for b in btns if b.get("value") == val), val)
         self.text = spoken  # a tap is already a counted turn: it must not re-arm the soft-speech count in `_hear`
         step_in = self.state.step_token
+        self.last_tap = (step_in, self.state.model_copy(deep=True), cmd)
         evidence = self._ingress_evidence(step_in, spoken=spoken, pcm=b"", selected_value=val)
         await self._hear("user", spoken)
         reduced = engine.reduce_turn(self.pack, self.state, cmd)
@@ -488,7 +496,11 @@ class LiveCallSession:
         await self._send_json({"type": "thinking", "epoch": self.epoch, "step": self.state.step_token})
         try:
             try:
-                turn = await self._evaluate_turn_task(snapshot, spoken, pcm)
+                self.deciding_count += 1
+                try:
+                    turn = await self._evaluate_turn_task(snapshot, spoken, pcm)
+                finally:
+                    self.deciding_count -= 1
             except Exception:  # noqa: BLE001 — a pass that never returned is a glitch to recover from, never a dead call
                 logger.exception("decision turn failed")
                 self.last_turn_meta = {}
@@ -501,7 +513,40 @@ class LiveCallSession:
                 if recovered is not None: return recovered
                 return await self._failed_turn(turn, turn.snapshot.step_token, turn.result.error_reason, evidence=evidence)
             self.consecutive_tool_errors = 0
+            if self.state.phase is not Phase.ASKING:  # a close won the race; only emergency speech may change why
+                closed_interp = turn.intent.interpretation
+                self.last_evidence_step = evidence.snapshot_step
+                if closed_interp is not None and closed_interp.emergency:
+                    note = " ".join(turn.spoken.split()) or self.state.emergency_note
+                    upgraded = self.state.model_copy(update={"close_reason": CloseReason.EMERGENCY, "emergency_note": note})
+                    await self._commit_semantic_turn(upgraded, evidence, closed_interp, (PolicyDecision(disposition=Disposition.IGNORE, reason=DecisionReason.EMERGENCY, cursor_action=CursorAction.CLOSE),))
+                    return tool_body(self.pack, self.state), False
+                await self._commit_turn(self.state, evidence)
+                return {**tool_body(self.pack, self.state), "result": "held", "reason": "stale_turn"}, False
             if turn.snapshot.step_token != self.state.step_token:
+                interp = turn.intent.interpretation
+                if self.last_tap is not None and self.last_tap[0] == turn.snapshot.step_token and interp is not None:
+                    _, pre_tap, tap_cmd = self.last_tap
+                    self.last_tap = None
+                    ext = turn.extraction
+                    if turn.intent.needs_profile_extraction and ext is None:
+                        ext = await extractor.extract_profile_entities(self.pack, turn.snapshot, utterance_text=turn.spoken, audio_wav_bytes=turn.wav)
+                    if ext is not None and ext.ok and not (interp.emergency or interp.caller_stop):
+                        interp = interp.model_copy(update={"profile_patch": ext.patch, "profile_turn_attempted": True})
+                    nxt, pol, reprompt = policy.arbitrate_tap_turn(self.pack, pre_tap, tap_cmd, self.state, evidence, interp)
+                    step_in = turn.snapshot.step_token
+                    self.last_evidence_step = evidence.snapshot_step
+                    await self._commit_semantic_turn(nxt, evidence, interp, pol.decisions)
+                    asked = pre_tap.cursor
+                    self.last_reduced = ((asked.qid, asked.substep, asked.followup_idx, engine._redact_note(pol.command, asked.qid))
+                                         if asked.qid in self.state.answers else None)
+                    if not reprompt:
+                        self.last_turn_meta = {"step_in": step_in, "step_out": self.state.step_token, "reason": "tap_agreed"}
+                        return {**tool_body(self.pack, self.state), "result": "held", "reason": "tap_agreed"}, False
+                    await self._send_json({"type": "clear", "epoch": self.epoch})
+                    clarify = self.state.phase is Phase.ASKING and any(d.disposition in (Disposition.CONFLICT, Disposition.CLARIFY) for d in pol.decisions)
+                    self.last_turn_meta = {"step_in": step_in, "step_out": self.state.step_token, "reason": "tap_conflict" if clarify else "tap_enriched"}
+                    return tool_body(self.pack, self.state, clarify=clarify), clarify
                 self.last_evidence_step = evidence.snapshot_step
                 await self._commit_turn(self.state, evidence)
                 self.last_turn_meta = {"step_in": turn.snapshot.step_token, "step_out": self.state.step_token, "reason": "stale_turn"}
@@ -541,7 +586,7 @@ class LiveCallSession:
     async def _answer_tools(self, calls: list[Any], *, wait_stt: bool = False) -> None:
         step_in = self.state.step_token
         if wait_stt and self.pcm and not self.text: await _ignore(asyncio.wait_for(self.stt_ready.wait(), timeout=_STT_WAIT))
-        stale = self.state.step_token != step_in
+        stale = self.state.step_token != step_in and not (self.last_tap is not None and self.last_tap[0] == step_in)
         responses, details, clarify, held, retry = [], [], False, stale, False
         for c in calls:
             cid, name = str(getattr(c, "id", "") or ""), str(getattr(c, "name", "") or "") or "next_question"
@@ -550,6 +595,7 @@ class LiveCallSession:
             body, asked = ({**tool_body(self.pack, self.state), "result": "held", "reason": "stale_turn"}, False) if (stale and name == "next_question") else (
                 (await self._next_question()) if name == "next_question" else ({"result": "ignored", "say": engine.say_text(self.pack, self.state)}, False))
             clarify, held = clarify or asked, held or body.get("result") == "held"
+            if body.get("stop") and self.state.close_reason is CloseReason.EMERGENCY: held = False  # replace the time-limit cue
             retry = retry or body.get("result") == "retry"
             details.append(f"{name}_{body.get('result') or 'ok'}")
             responses.append(types.FunctionResponse(id=cid, name=name, response=body))
@@ -627,13 +673,14 @@ class LiveCallSession:
         if getattr(response, "go_away", None) is not None: self.resume_requested = bool(self.resume_handle)
     async def on_turn_complete(self) -> None:
         if self.tool_task is not None and not self.tool_task.done():
+            if self.awaiting_abort_end: self.awaiting_abort_end, self.bot_text = False, ""  # Turn A died; the cue may arm when the pass returns
             self.stt_ready.set()
             return
         if self.awaiting_abort_end:  # the aborted turn's death: it may never unlock or cancel the step that replaced it
             self.awaiting_abort_end, self.bot_text = False, ""
             # The tap's cue can be swallowed by the abort itself, so the silence rescue may only start ticking once
             # Turn A is really dead: no timer may run against a turn Gemini has not finished killing.
-            if (self.fallback is None and self.turn_phase is TurnPhase.PROMPTING
+            if ((self.fallback is None or self.fallback.done()) and self.turn_phase is TurnPhase.PROMPTING
                     and not self.bot_generating and self.state.phase is Phase.ASKING):
                 self.fallback = asyncio.ensure_future(self._cue_if_silent(self.state.step_token, self.epoch, self.cue_kind))
                 self.fallback.add_done_callback(consume_task_error)
@@ -668,6 +715,7 @@ class LiveCallSession:
         await self._emit("turn_complete")
     async def _close(self, reason: CloseReason) -> None:
         if self.state.phase is not Phase.ASKING: return
+        self.last_tap = None
         st = self.state.model_copy(deep=True)
         st.phase, st.close_reason = Phase.CLOSING, reason
         self._reset_turn()
