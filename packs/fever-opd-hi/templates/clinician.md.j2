@@ -1,4 +1,4 @@
-{# Context: profile_lines, alerts, sections, negatives, incomplete, red_flags. #}
+{# Context: profile_lines, alerts, sections, negatives, incomplete, red_flags, observations. #}
 {%- macro block(heading, lines, empty) -%}
 {{ heading }}
 - {{ (lines or [empty]) | join("\n- ") }}
@@ -13,3 +13,6 @@
 {{ block(sec.heading, sec.lines, nothing) }}
 {% endfor %}
 {{ block("### Pertinent Negatives", negative_lines, "No confirmed negatives were recorded.") }}
+{%- if observations %}
+{{ block("### Additional Clinical Observations (Unlisted)", observations, nothing) }}
+{% endif %}

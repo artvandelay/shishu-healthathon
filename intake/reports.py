@@ -16,6 +16,7 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from . import db, engine
 from .models import AnswerRecord, AnswerStatus, CallState, CloseReason, PackConfig, QuestionKind, QuestionSpec, Strict
+from .turns import StoredTurnEvidence
 from .pack import DEFAULT_PACK_ID, list_pack_ids, load_pack
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -55,6 +56,7 @@ class ProjectedReport(Strict, frozen=True):
     page2_groups: tuple[dict[str, Any], ...] = ()
     page2_unknown: tuple[str, ...] = ()
     page2_unasked: tuple[dict[str, Any], ...] = ()
+    observations: tuple[str, ...] = ()
 def _clean(text: Any) -> str: return " ".join(str(text or "").split())
 def _note(text: Any) -> str: return _clean(text).rstrip("।. ")
 def _unique(items: Sequence[Any]) -> list[str]: return list(dict.fromkeys(c for c in map(_clean, items) if c))
@@ -103,7 +105,7 @@ def _patient_copy(pack: PackConfig, st: CallState, concerns: Sequence[tuple[Ques
         asked.append(question)
     kept = [q for q in _unique(asked) if q not in routine or not emergency][:6]
     return yes, (kept + [f for f in fillers if len(kept) < 3 and f not in kept])[:6]
-def project_summary(pack: PackConfig, state: CallState | None) -> ProjectedReport:
+def project_summary(pack: PackConfig, state: CallState | None, observations: Sequence[StoredTurnEvidence] = ()) -> ProjectedReport:
     st, cfg = state or CallState(), pack.report_cfg
     reason = str(st.close_reason or CloseReason.COMPLETE)
     emergency, incomplete = reason == CloseReason.EMERGENCY, reason in _INCOMPLETE
@@ -148,8 +150,10 @@ def project_summary(pack: PackConfig, state: CallState | None) -> ProjectedRepor
     prof = [f"{s.replace('_', ' ').capitalize()}: {_clean(st.profile[s])}." for s in pack.profile_slots if st.profile.get(s)]
     prof += [f"{s.replace('_', ' ').capitalize()}: {_clean(v)}." for s, v in st.profile.items() if s not in pack.profile_slots]
     if pack.roster_cfg: prof.append(f"Children: {roster or 'none reported'}.")
+    obs_lines = tuple(_unique(f"Unlisted clinical aside during {spec.id} ({spec.need}): {said}." if (spec := pack.by_id.get(obs.snapshot_step.split(":", 1)[0]))
+                      else f"Unlisted clinical aside ({obs.snapshot_step}): {said}." for obs in observations if (said := _note(obs.transcript))))
     md = _template(pack, "clinician.md.j2").render(profile_lines=[*prof, f"Close reason: {reason}.", f"Chief complaint: {chief}.", *profile_extra], alerts=alerts,
-                                                   sections=[{"heading": h, "lines": v} for h, v in sections.items()], negatives=negatives, incomplete=incomplete, red_flags=flags)
+                                                   sections=[{"heading": h, "lines": v} for h, v in sections.items()], negatives=negatives, incomplete=incomplete, red_flags=flags, observations=obs_lines)
     yes, asked = _patient_copy(pack, st, concerns, emergency)
     body = "\n".join([str(cfg.get("yes_header_hi") or ""), *(f"- {x}" for x in yes)]) if yes else str(cfg.get("yes_empty_hi") or "")
     pat_text = "\n".join([body, "", str(cfg.get("question_header_hi") or ""), *(f"{i}. {q}" for i, q in enumerate(asked, 1))])
@@ -157,12 +161,12 @@ def project_summary(pack: PackConfig, state: CallState | None) -> ProjectedRepor
         patient_name=next((_clean(st.profile[s]) for s in pack.profile_slots if st.profile.get(s)), ""), roster_patient=engine.roster_label_patient(pack, st),
         roster_clinician=roster, close_reason=reason, emergency=emergency, incomplete=incomplete, doctor_markdown=md, patient_summary_text=pat_text,
         red_flags=tuple(_unique(flags)), yes_items=tuple(yes), patient_questions=tuple(asked), page2_groups=_grouped(clear),
-        page2_unknown=tuple(_unique(unknown)), page2_unasked=_grouped(unasked) if incomplete else ())
+        page2_unknown=tuple(_unique(unknown)), page2_unasked=_grouped(unasked) if incomplete else (), observations=obs_lines)
 def _ist(raw: Any) -> datetime | None:
     try: return datetime.strptime(str(raw)[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc).astimezone(IST)
     except ValueError: return None
 def render_patient_html(pack: PackConfig, call: Mapping[str, Any], proj: ProjectedReport | None = None) -> str:
-    rep = proj or project_summary(pack, db.call_state_from_row(call))
+    rep = proj or project_summary(pack, db.call_state_from_row(call), () if (cid := int(call.get("id") or 0)) <= 0 else db.list_retained_observations(cid))
     when, months = _ist(call.get("started_at")), list(pack.report_cfg.get("months_hi") or ("",))
     cfg = pack.report_cfg
     m, s = divmod(max(0, int(call.get("duration_sec") or 0)), 60)
@@ -193,7 +197,7 @@ def pdf_filename(pack: PackConfig, call: Mapping[str, Any]) -> str:
 def build_patient_pdf_sync(call_id: int) -> tuple[bytes, str]:
     if (call := db.get_call(call_id)) is None: raise LookupError(f"Call {call_id} not found")
     pack = load_pack(str(call.get("pack_id") or DEFAULT_PACK_ID))
-    proj = project_summary(pack, db.call_state_from_row(call))
+    proj = project_summary(pack, db.call_state_from_row(call), db.list_retained_observations(call_id))
     db.save_report_text(call_id, proj.doctor_markdown, proj.patient_summary_text, list(proj.red_flags), proj.patient_name, proj.roster_patient)
     if not (pdf := render_patient_pdf(pack, call, proj)).startswith(b"%PDF"): raise ValueError("Renderer did not return a PDF")
     target = patient_pdf_path(call_id)

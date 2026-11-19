@@ -627,6 +627,62 @@ class SemanticReaderAndLiveSeamTests(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_retained_observations_project_into_doctor_markdown_and_never_into_patient_pdf(self):
+        call_id = db.create_call(pack_id=SHISHU.id)
+        st0 = _shishu_at("birth_bcg")
+        aside_txt = "टीके के बाद दो दिन हल्का बुखार आया था"
+        ev1 = _voice(st0.step_token, aside_txt)
+        interp1 = TurnInterpretation(
+            act=SpeechAct.ANSWER,
+            active_relation=TopicRelation.CLINICAL_ASIDE,
+            active_domain=DomainFit.NONE,
+            claims=(ClinicalClaim(relation=TopicRelation.CLINICAL_ASIDE),),
+        )
+        st1, out1 = apply_policy(SHISHU, st0, ev1, interp1)
+        db.commit_semantic_turn(call_id, SHISHU, st1, ev1, interp1, out1.decisions)
+
+        # Unrelated household noise on the next turn must NOT appear in observations:
+        noise_txt = "गैस बंद कर दो, दूध उबल रहा है"
+        ev2 = _voice(st1.step_token, noise_txt)
+        interp2 = TurnInterpretation(
+            act=SpeechAct.NONE,
+            active_relation=TopicRelation.UNRELATED,
+            active_domain=DomainFit.NONE,
+        )
+        st2, out2 = apply_policy(SHISHU, st1, ev2, interp2)
+        db.commit_semantic_turn(call_id, SHISHU, st2, ev2, interp2, out2.decisions)
+        db.complete_call(call_id, 180)
+
+        pdf_bytes, _name = reports.build_patient_pdf_sync(call_id)
+        self.assertTrue(pdf_bytes.startswith(b"%PDF"))
+        saved = db.get_call(call_id)
+        doctor_md = saved["summary_doctor"]
+        patient_txt = saved["summary_patient"]
+        patient_html = reports.render_patient_html(SHISHU, saved)
+
+        self.assertIn("### Additional Clinical Observations", doctor_md)
+        self.assertIn("birth_bcg", doctor_md)
+        self.assertIn(aside_txt, doctor_md)
+        self.assertNotIn(noise_txt, doctor_md)
+        self.assertNotIn(aside_txt, patient_txt)
+        self.assertNotIn(aside_txt, patient_html)
+        self.assertEqual(saved["red_flags"], [], "an unconfirmed BCG fever aside is not a BCG red flag")
+
+        # Audio-only RETAIN_OBSERVATION (empty transcript at commit) + trailing LATE_STT must still reach doctor_markdown!
+        call_late = db.create_call(pack_id=SHISHU.id)
+        ev_audio = _voice(st0.step_token, "")
+        st_a, out_a = apply_policy(SHISHU, st0, ev_audio, interp1)
+        db.commit_semantic_turn(call_late, SHISHU, st_a, ev_audio, interp1, out_a.decisions)
+        db.commit_turn(
+            call_late,
+            SHISHU,
+            st_a,
+            TurnEvidence(source=EvidenceSource.LATE_STT, snapshot_step=st0.step_token, transcript="टीके के बाद उल्टी हुई थी", received_at=1_795_000_101.0),
+        )
+        db.complete_call(call_late, 90)
+        reports.build_patient_pdf_sync(call_late)
+        self.assertIn("टीके के बाद उल्टी हुई थी", db.get_call(call_late)["summary_doctor"])
+
 
 if __name__ == "__main__":
     unittest.main()

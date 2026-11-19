@@ -67,7 +67,7 @@ def _pdf(call: dict) -> tuple[int, str]:
 
 def _projection(call: dict, pack, problems: list[str]):
     """One projection must feed the stored note, the patient summary, the flags, and the PDF."""
-    proj = reports.project_summary(pack, db.call_state_from_row(call))
+    proj = reports.project_summary(pack, db.call_state_from_row(call), db.list_retained_observations(int(call.get("id") or 0)))
     for column, expected in (("summary_doctor", proj.doctor_markdown),
                              ("summary_patient", proj.patient_summary_text)):
         if str(call.get(column) or "").strip() != expected.strip():

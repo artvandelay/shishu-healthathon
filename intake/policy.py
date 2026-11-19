@@ -30,7 +30,7 @@ def _domain_membership(spec: QuestionSpec, claim: ClinicalClaim) -> bool:
         if isinstance(raw_score, bool): return False
         try: float(raw_score); return True
         except (TypeError, ValueError): return False
-    if kind in _OPENISH: return status in _ACTIVE_OUTCOMES
+    if kind is QuestionKind.PROFILE or kind in _OPENISH: return status in _ACTIVE_OUTCOMES
     return False
 def _rejected_target(pack: PackConfig, state: CallState, target: str, active_qid: str) -> bool:
     spec = pack.by_id.get(target)
@@ -104,7 +104,10 @@ def evaluate_policy(pack: PackConfig, state: CallState, evidence: TurnEvidence, 
             if not active_accepted: cmd = cmd.model_copy(update={"outcome": TurnOutcome.CLARIFY})
     if not decisions: decisions.append(D(disposition=Disposition.IGNORE, reason=DecisionReason.UNRELATED))
     if stated: cmd = cmd.model_copy(update={"stated": {**cmd.stated, **stated}})
-    if not active_accepted and interpretation.act is not SpeechAct.CLARIFY: cmd = cmd.model_copy(update={"outcome": TurnOutcome.NOT_ABOUT_ACTIVE})
+    if not active_accepted and interpretation.act is not SpeechAct.CLARIFY:
+        open_capture = active_spec is not None and active_spec.kind is QuestionKind.OPEN_CAPTURE
+        held = {"outcome": TurnOutcome.CLARIFY} if open_capture and stated else {"outcome": TurnOutcome.NOT_ABOUT_ACTIVE, **({"utterance": ""} if open_capture else {})}
+        cmd = cmd.model_copy(update=held)
     unlisted_record = (AnswerRecord(state=AnswerStatus.ANSWERED, value=None, choice_label="", note=NoteText.from_text(utt, redacted=engine._redact_note(cmd, active_qid)))
                        if unlisted_accepted else None)
     return PolicyResult(decisions=tuple(decisions), command=cmd, unlisted_record=unlisted_record)

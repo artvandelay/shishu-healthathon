@@ -299,7 +299,7 @@ def interpret_turn_decision(pack: PackConfig, state: CallState, raw_answers: Map
             _ac(claims, active_qid, DomainFit.UNLISTED)
             active_relation, active_domain = TopicRelation.ACTIVE, DomainFit.UNLISTED
     elif not closing and spec is not None and ((kind == "main" and spec.kind in GATES) or (kind == "main" and spec.kind in OPENISH)
-            or kind in ("which_item", "followup", "bridge", "close")):
+            or kind in ("profile", "which_item", "followup", "bridge", "close")):
         if w in ("clear", "concern", "unknown") and not (w == "concern" and kind == "main" and spec.kind in GATES and "active_topic" in a and not on["active_topic"]):
             _ac(claims, active_qid, DomainFit.IN_DOMAIN, status=TurnOutcome(w))
             active_relation, active_domain = TopicRelation.ACTIVE, DomainFit.IN_DOMAIN
@@ -307,10 +307,13 @@ def interpret_turn_decision(pack: PackConfig, state: CallState, raw_answers: Map
         claims.append(ClinicalClaim(target_qid=qid, relation=TopicRelation.OTHER_FORM, domain_fit=DomainFit.IN_DOMAIN, status=status))
         if act is SpeechAct.NONE and active_relation is TopicRelation.UNRELATED:
             active_relation, active_domain = TopicRelation.OTHER_FORM, DomainFit.NONE
-    if on["residual_clinical"] and not stated and not closing:
+    if on["residual_clinical"] and not stated and not closing and not (spec is not None and spec.kind is QuestionKind.OPEN_CAPTURE):
         claims.append(ClinicalClaim(relation=TopicRelation.CLINICAL_ASIDE, domain_fit=DomainFit.NONE))
         if active_relation is TopicRelation.UNRELATED:
             active_relation = TopicRelation.CLINICAL_ASIDE
+    elif on["residual_clinical"] and not stated and not closing and w == "" and spec is not None and spec.kind is QuestionKind.OPEN_CAPTURE:
+        _ac(claims, active_qid, DomainFit.IN_DOMAIN, status=TurnOutcome.CONCERN)
+        active_relation, active_domain = TopicRelation.ACTIVE, DomainFit.IN_DOMAIN
     clarifying = not closing and (on["asks_clarify"] or w == "clarify")
     if clarifying:
         act = SpeechAct.CLARIFY

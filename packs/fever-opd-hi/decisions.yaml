@@ -95,10 +95,16 @@ heads:
       outside the listed options — rather than only mentioning a side effect or different symptom that neither affirms
       nor denies the specific criterion asked, talking about another person or question only, asking for clarification
       without answering, or making non-medical remarks?
+      An explicit affirmative or negative reply (yes/हाँ/no/नहीं) to active_question ALWAYS addresses active_question
+      (true), even when followed by a diagnosis name or extra detail, whereas mentioning only a separate symptom or
+      side effect with NO yes/no to active_question is false.
     criteria:
       true_description: >-
         Directly answers or addresses the clinical criterion or topic that active_question asked (yes/no, a listed
-        option, or an on-topic description in words outside the listed options).
+        option, or an on-topic description in words outside the listed options). An explicit affirmative or negative
+        reply (yes/हाँ/no/नहीं) to active_question ALWAYS addresses active_question, even when followed by a diagnosis
+        name or extra detail, whereas mentioning only a separate symptom or side effect with NO yes/no to
+        active_question does not.
       false_description: >-
         Mentions only a side effect or different symptom that does not affirm or deny the specific criterion asked in
         active_question; talks only about another person or question; asks clarification without answering; or makes

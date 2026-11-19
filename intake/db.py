@@ -167,6 +167,20 @@ list_turn_evidence = lambda call_id: _list_for_call("turn_evidence", "sequence",
 list_turn_interpretations = lambda call_id: _list_for_call("turn_interpretations", "sequence", call_id, _stored_turn_interpretation)
 list_clinical_claims = lambda call_id: _list_for_call("clinical_claims", "sequence, claim_index", call_id, _stored_clinical_claim)
 list_policy_decisions = lambda call_id: _list_for_call("policy_decisions", "sequence, id", call_id, _stored_policy_decision)
+def list_retained_observations(call_id: int) -> list[StoredTurnEvidence]:
+    cid = int(call_id)
+    with _LOCK:
+        ev = conn.execute("SELECT * FROM turn_evidence WHERE call_id = ? ORDER BY sequence", (cid,)).fetchall()
+        keep = {int(r[0]) for r in conn.execute("SELECT DISTINCT sequence FROM policy_decisions WHERE call_id = ? AND disposition = 'retain_observation'", (cid,))}
+    out = []
+    for i, row in enumerate(ev):
+        if int(row["sequence"]) not in keep: continue
+        text = str(row["transcript"] or "")
+        for nxt in ev[i + 1:]:
+            if nxt["source"] != "late_stt" or nxt["snapshot_step"] != row["snapshot_step"]: break
+            text = engine.merge_transcript_chunk(text, str(nxt["transcript"] or ""))
+        out.append(_stored_turn_evidence(row).model_copy(update={"transcript": text}))
+    return out
 def call_state_from_row(call: Mapping[str, Any] | None) -> CallState:
     raw = (call or {}).get("cursor_state") or (call or {}).get("cursor_json")
     raw = _json(raw, dict) if isinstance(raw, str) else raw
