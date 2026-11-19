@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import math
 import unittest
 from unittest import mock
 
+import httpx
 from google.genai import types
 
 from intake import decisions, engine, extractor
@@ -89,7 +91,10 @@ class EvaluateTurnTests(unittest.TestCase):
             seen_bodies.append(payload)
             if len(seen_bodies) == 1:
                 raise TimeoutError("primary timed out")
-            body = {"answers": {"active_outcome": {"probabilities": {"unknown": 0.95, "clear": 0.05}}},
+            # The slim fallback also asks for `danger_now`, so this reply must answer it: a 200 that omits a
+            # requested safety head is now a retryable bad reply, never a confident "not an emergency".
+            body = {"answers": {"danger_now": {"noul": 0.02},
+                                "active_outcome": {"probabilities": {"unknown": 0.95, "clear": 0.05}}},
                     "usage": {"total_input_tokens": 1180}}
             return 200, json.dumps(body).encode("utf-8")
 
@@ -146,6 +151,174 @@ class EvaluateTurnTests(unittest.TestCase):
         self.assertEqual(result.attempts, 1, "an answered turn pays exactly one call")
         self.assertEqual(peak, 1, "never a second request racing the one already in flight")
         self.assertIs(result.used_slim_fallback, False)
+
+
+def danger_request() -> dict:
+    """A request that ASKS for `danger_now`, so the reply is required to answer it."""
+    return {"model": "gemini-decision-1", "input": "x",
+            "questions": {"danger_now": {"type": "noul", "instructions": "emergency?"},
+                          "active_outcome": {"type": "choice"}}}
+
+
+def plain_request() -> dict:
+    """A request that never asks for `danger_now` (the shape a caller-less fixture uses)."""
+    return {"model": "gemini-decision-1", "input": "x", "questions": {"a": {}, "b": {}}}
+
+
+def reply(status: int, body: object) -> tuple[int, bytes]:
+    return status, json.dumps(body).encode()
+
+
+class DangerNowFailClosedTests(unittest.TestCase):
+    """A 200 that does not answer the safety head is a BAD REPLY, never a confident "not an emergency".
+
+    `_verdict` treated `answers` as a bag of optional heads, so a 200 whose `answers` omitted `danger_now`
+    (or carried `null` / `NaN` / `Inf` / a string / a bool under `noul`) fell through `_yes` -> `_num` -> None
+    and read as `emergency=False`. That is a fail-OPEN on the one head that closes a call for an emergency:
+    the turn was reported `ok=True`, `interpret_turn_decision` saw no emergency, and the caller was re-asked
+    the screening question while a life-threatening complaint sat unanswered in the reply.
+    """
+
+    def run_danger(self, transport, **kw) -> decisions.DecisionCallResult:
+        return asyncio.run(decisions.evaluate_turn(danger_request(), api_key="k", transport=transport, **kw))
+
+    def assert_fail_closed(self, result: decisions.DecisionCallResult, label: str) -> None:
+        self.assertFalse(result.ok, f"{label}: a bad 200 must not be reported as a clean decision")
+        self.assertIn(result.error_reason, {"missing_danger_now", "invalid_danger_now", "response_invalid"},
+                      f"{label}: reason={result.error_reason!r} must name the unanswered safety head")
+        self.assertEqual(result.raw_answers, {}, f"{label}: nothing from a rejected reply may be interpreted")
+        self.assertEqual(result.attempts, 2, f"{label}: the slim fallback must still get its one attempt")
+
+    def test_a_200_whose_answers_omit_danger_now_is_retried_and_then_fails_closed(self):
+        # The head WAS requested; the model just did not return it. Treating that as `emergency=False` is the bug.
+        bodies = [{"answers": {"active_outcome": choice(concern=0.97, clear=0.01, other=0.02)}},
+                  {"answers": {"active_outcome": choice(clear=0.9, unknown=0.05, other=0.05)}}]
+        seen: list = []
+
+        def send(url, payload, headers, timeout):
+            seen.append(payload)
+            return reply(200, bodies[len(seen) - 1])
+
+        result = self.run_danger(send)
+        self.assertEqual(len(seen), 2, "a missing safety head is retryable, so Attempt 2 still runs")
+        self.assert_fail_closed(result, "missing danger_now")
+        self.assertEqual(result.error_reason, "missing_danger_now")
+
+    def test_a_200_with_an_unreadable_danger_now_value_is_retried_and_then_fails_closed(self):
+        cases = {
+            "None": {"noul": None},
+            "NaN": {"noul": float("nan")},
+            "Inf": {"noul": math.inf},
+            "-Inf": {"noul": -math.inf},
+            "a string": {"noul": "bad"},
+            "a bool": {"noul": True},
+            "a dict without noul": {"probability": 0.9},
+            "not a dict at all": 0.02,
+        }
+        for label, head in cases.items():
+            with self.subTest(danger_now=label):
+                result = self.run_danger(transport_returning(200, {"answers": {"danger_now": head}}))
+                self.assert_fail_closed(result, label)
+                self.assertEqual(result.error_reason, "invalid_danger_now")
+
+    def test_a_readable_danger_now_still_passes_on_the_first_attempt(self):
+        result = self.run_danger(transport_returning(200, OK_BODY))
+        self.assertTrue(result.ok)
+        self.assertEqual((result.error_reason, result.attempts), ("", 1))
+        self.assertEqual(result.raw_answers, OK_BODY["answers"])
+
+    def test_danger_now_is_only_required_when_the_request_actually_asked_for_it(self):
+        # Every fixture that never sends the head must keep working: the rule is "answer what you were asked",
+        # not "every reply must carry this head".
+        body = {"answers": {"active_outcome": choice(clear=0.9, unknown=0.05, other=0.05)}}
+        result = asyncio.run(decisions.evaluate_turn(
+            plain_request(), api_key="k", transport=transport_returning(200, body)))
+        self.assertTrue(result.ok)
+        self.assertEqual((result.error_reason, result.attempts), ("", 1))
+        self.assertEqual(result.raw_answers, body["answers"])
+
+    def test_the_slim_fallback_is_judged_by_the_heads_IT_requested(self):
+        # Attempt 2 carries the slim body, which also asks for `danger_now`: a slim reply that omits it is
+        # equally invalid, so a primary timeout plus a headless slim reply must not pass.
+        seen: list = []
+
+        def send(url, payload, headers, timeout):
+            seen.append(json.loads(payload))
+            if len(seen) == 1:
+                raise TimeoutError("primary timed out")
+            return reply(200, {"answers": {"active_outcome": choice(clear=0.9, unknown=0.05, other=0.05)}})
+
+        result = asyncio.run(decisions.evaluate_turn(
+            danger_request(), api_key="k", transport=send, fallback_request=danger_request()))
+        self.assertEqual(len(seen), 2)
+        self.assert_fail_closed(result, "slim fallback missing danger_now")
+
+
+class VerdictFailurePathTests(unittest.TestCase):
+    """The transport/verdict branches the suite had no coverage for: non-JSON, empty answers, 5xx, 4xx, connect."""
+
+    def run_plain(self, transport, **kw) -> decisions.DecisionCallResult:
+        return asyncio.run(decisions.evaluate_turn(plain_request(), api_key="k", transport=transport, **kw))
+
+    def test_a_200_that_is_not_json_is_a_terminal_bad_reply(self):
+        calls: list = []
+
+        def send(url, payload, headers, timeout):
+            calls.append(payload)
+            return 200, b"<html>not json</html>"
+
+        result = self.run_plain(send)
+        self.assertFalse(result.ok)
+        self.assertEqual((result.error_reason, result.attempts, len(calls)), ("response_invalid", 1, 1))
+
+    def test_a_200_with_empty_answers_is_terminal_and_never_retried(self):
+        calls: list = []
+        result = self.run_plain(transport_returning(200, {"answers": {}}, calls))
+        self.assertFalse(result.ok)
+        self.assertEqual((result.error_reason, result.attempts, len(calls)), ("empty_answers", 1, 1))
+        self.assertEqual(result.raw_answers, {})
+
+    def test_a_500_is_retried_and_a_following_200_recovers_the_turn(self):
+        seen: list = []
+
+        def send(url, payload, headers, timeout):
+            seen.append(payload)
+            return reply(500, {}) if len(seen) == 1 else reply(200, OK_BODY)
+
+        result = self.run_plain(send)
+        self.assertTrue(result.ok)
+        self.assertEqual((result.error_reason, result.attempts, len(seen)), ("", 2, 2))
+        self.assertEqual(result.total_input_tokens, 312)
+
+    def test_a_400_is_terminal_and_never_retried(self):
+        calls: list = []
+        result = self.run_plain(transport_returning(400, {"error": {"code": "invalid_argument"}}, calls))
+        self.assertFalse(result.ok)
+        self.assertEqual((result.error_reason, result.attempts, len(calls)), ("http_400", 1, 1))
+
+    def test_a_connection_error_is_retryable(self):
+        seen: list = []
+
+        def send(url, payload, headers, timeout):
+            seen.append(payload)
+            raise httpx.ConnectError("no route to host")
+
+        result = self.run_plain(send)
+        self.assertFalse(result.ok)
+        self.assertEqual((result.error_reason, result.attempts, len(seen)), ("connection_error", 2, 2))
+
+    def test_a_connection_error_then_a_200_recovers_the_turn(self):
+        seen: list = []
+
+        def send(url, payload, headers, timeout):
+            seen.append(payload)
+            if len(seen) == 1:
+                raise httpx.ConnectError("no route to host")
+            return reply(200, OK_BODY)
+
+        result = self.run_plain(send)
+        self.assertTrue(result.ok)
+        self.assertEqual((result.error_reason, result.attempts), ("", 2))
 
 
 class BuildRequestTests(unittest.TestCase):

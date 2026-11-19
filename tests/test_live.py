@@ -2944,5 +2944,146 @@ class Call67AckTests(unittest.TestCase):
         asyncio.run(body())
 
 
+class NudgeAndReconnectFrameTests(unittest.TestCase):
+    """A nudge must judge what the caller already said, and a dying socket must never take the call down with it."""
+
+    @staticmethod
+    def hold(qid: str = "birth_cord_3weeks") -> CallState:
+        """A resolved, bridged call parked on `qid`, with every earlier question already answered."""
+        state = live.engine.new_state(PACK)
+        state.profile.update({"caller_name": "मीरा", "num_children": 1, "marital_status": "married"})
+        state.roster = [RosterItem(id="item_1", age_years=2.0, age_label="2 साल", tag="female")]
+        state.roster_stated = True
+        for q in PACK.questions:
+            if q.id == qid:
+                break
+            state.answers[q.id] = AnswerRecord(state=AnswerStatus.CLEAR)
+        state.cursor = CursorStep(qid=qid)
+        return state
+
+    def test_a_forward_failure_during_reconnect_is_a_dropped_frame_never_a_dead_call(self):
+        # Call #65's neighbour: a socket swap was in progress, `send_realtime_input` on the dying session raised,
+        # and `on_audio` answered `False` — so `_browser_loop` returned and the run() tore the call down mid-heal.
+        async def body() -> None:
+            for flag in ("reconnecting", "resume_requested"):
+                with self.subTest(flag=flag):
+                    built, ws, session = build(fail_realtime=True, call_id=None)
+                    setattr(built, flag, True)
+                    if flag == "resume_requested":
+                        built.resume_handle = "handle-1"  # `_lost()` re-marks a resumable socket lost
+                    self.assertTrue(await built.on_audio({"data": pcm(), "sample_rate": 16000}),
+                                    "a frame lost while the socket is replaced is a dropped frame, not a hangup")
+                    self.assertFalse(built.stop.is_set(), "the call is still alive and owed its reconnect")
+                    self.assertTrue(built.pcm, "the caller's words are banked for the pass that will judge them")
+                    self.assertEqual(ws.of("error"), [], "a healing socket is not reported to the browser as an error")
+                    if flag == "reconnecting":
+                        self.assertEqual(session.realtime("audio"), [],
+                                         "the session being replaced is not handed a frame at all")
+
+            # Control: with no reconnect in flight a real send failure is still a dead call.
+            with self.subTest(flag="healthy_socket"):
+                built, ws, _session = build(fail_realtime=True, call_id=None)
+                self.assertFalse(await built.on_audio({"data": pcm(), "sample_rate": 16000}))
+                self.assertEqual([p["message"] for p in ws.of("error")], ["Could not forward audio to Gemini"])
+
+        asyncio.run(body())
+
+    def test_browser_loop_survives_a_forward_failure_while_the_socket_is_being_replaced(self):
+        async def body() -> None:
+            built, ws, _session = build(fail_realtime=True, call_id=None)
+            built.reconnecting = True
+            for _ in range(2):
+                await ws.push({"type": "audio", "data": pcm(), "sample_rate": 16000})
+            await ws.push({"type": "hangup"})
+            await asyncio.wait_for(built._browser_loop(), timeout=2)
+            self.assertTrue(built.stop.is_set(), "the loop ran on to the caller's own hangup, not to a lost frame")
+            self.assertTrue(built.client_hung_up)
+            self.assertEqual(ws.of("error"), [])
+
+        asyncio.run(body())
+
+    def test_nudge_evaluates_the_caller_speech_gemini_left_unjudged(self):
+        # Call #65: the mother answered, Gemini sat silent (no `next_question`, no `turn_complete`), and tapping
+        # Nudge threw her answer away and re-asked the question she had just answered.
+        async def body() -> None:
+            built, ws, session = build(call_id=None, state=self.hold())
+            seen: list[str] = []
+
+            async def fake_evaluate(snapshot: CallState, spoken: str, audio: bytes) -> live.Turn:
+                seen.append(spoken)
+                return turn_with(snapshot, TurnOutcome.CLEAR, spoken)._replace(pcm_len=len(audio))
+
+            built._evaluate_turn_task = fake_evaluate  # type: ignore[method-assign]
+            await built.on_audio({"data": pcm(), "sample_rate": 16000})
+            await built._hear("user", "डोरी सूखी नहीं है")
+            old_step, old_epoch = built.state.step_token, built.epoch
+            old_cue = live.speak_cue(PACK, built.state, "speak")
+            cues_before = len(session.realtime("text"))
+
+            self.assertTrue(await built.on_nudge({}), "a nudge is never a dead call")
+            self.assertEqual(seen, ["डोरी सूखी नहीं है"], "her spoken answer is judged, never thrown away")
+            self.assertEqual(built.state.cursor.qid, "birth_cord_bleed", "the nudge moved the call to the next question")
+            self.assertNotEqual(built.state.step_token, old_step)
+            self.assertEqual((built.text, built.pcm), ("", b""), "the judged turn is cleared, never re-judged")
+            self.assertEqual(built.epoch, old_epoch + 1, "the next question is a new epoch")
+            self.assertIs(built.turn_phase, live.TurnPhase.PROMPTING)
+            self.assertEqual(ws.of("question_state")[-1]["qid"], "birth_cord_bleed")
+            self.assertEqual(ws.of("question_state")[-1]["epoch"], old_epoch + 1)
+            cue = live.speak_cue(PACK, built.state, "speak")
+            self.assertNotEqual(cue, old_cue, "the old question is not what gets spoken")
+            self.assertEqual(session.realtime("text")[cues_before:], [cue], "exactly one cue, and it is the next question")
+            evt = ws.of("telemetry")[-1]["last_event"]
+            self.assertEqual((evt["type"], evt["detail"]), ("manual_nudge", "evaluated"))
+            self.assertEqual(evt["meta"]["step_in"], old_step, "the nudge books the turn it judged")
+
+        asyncio.run(body())
+
+    def test_nudge_re_asks_in_a_fresh_epoch_when_the_pending_turn_cannot_be_judged(self):
+        async def body() -> None:
+            built, ws, session = build(call_id=None, state=self.hold())
+
+            async def dead_pass(*_args: Any, **_kwargs: Any) -> live.Turn:
+                raise RuntimeError("the decision pass died")
+
+            built._evaluate_turn_task = dead_pass  # type: ignore[method-assign]
+            await built._hear("user", "डोरी सूखी नहीं है")
+            old_step, old_epoch = built.state.step_token, built.epoch
+            cues_before = len(session.realtime("text"))
+
+            self.assertTrue(await built.on_nudge({}))
+            self.assertEqual(built.state.step_token, old_step, "a failed pass never moves the call")
+            self.assertEqual(built.epoch, old_epoch + 1, "but the same step is re-cued in a fresh epoch")
+            self.assertIs(built.turn_phase, live.TurnPhase.PROMPTING)
+            self.assertEqual(session.realtime("text")[cues_before:], [live.speak_cue(PACK, built.state, "retry")],
+                             "the pack's own reask goes out, not a bare repeat of the question")
+            self.assertEqual(built.consecutive_tool_errors, 1)
+            self.assertIn("manual_nudge", [p["last_event"]["type"] for p in ws.of("telemetry")])
+
+        asyncio.run(body())
+
+    def test_nudge_into_silence_re_cues_the_step_in_a_fresh_epoch(self):
+        # Nothing was banked: the nudge is the pure "she is silent" case, and it still owes a published step, an
+        # epoch bump, and the cancellation of any stale safety cue instead of a bare `_speak()` on the old epoch.
+        async def body() -> None:
+            built, ws, session = build(call_id=None, state=self.hold())
+            self.assertEqual((built.pcm, built.text), (b"", ""))
+            fallback = SpeakingStepTests.Fallback()
+            built.fallback = fallback
+            cue = live.speak_cue(PACK, built.state, "speak")
+
+            self.assertTrue(await built.on_nudge({}))
+            self.assertEqual(built.epoch, 1, "the nudge publishes the step it re-speaks")
+            self.assertIs(built.turn_phase, live.TurnPhase.PROMPTING)
+            self.assertEqual(ws.of("question_state"), [live.question_state_payload(PACK, built.state, 1)],
+                             "the nudge publishes the step it re-speaks, stamped with the new epoch")
+            self.assertEqual(ws.of("question_state")[0]["qid"], "birth_cord_3weeks")
+            self.assertEqual(session.realtime("text"), [cue], "exactly one cue, and it is the current question")
+            self.assertTrue(fallback.cancelled_, "the stale safety cue is cancelled, never left to speak again")
+            self.assertIsNone(built.fallback, "and no second timer is armed behind an already-sent cue")
+            self.assertEqual(ws.of("telemetry")[-1]["last_event"]["type"], "manual_nudge")
+
+        asyncio.run(body())
+
+
 if __name__ == "__main__":
     unittest.main()

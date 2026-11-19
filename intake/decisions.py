@@ -24,6 +24,10 @@ _STATED_KINDS = (QuestionKind.GATE, QuestionKind.ROUTING_GATE)
 _OUTCOMES = frozenset({"clear", "concern", "unknown", "clarify", "retract"})
 _STATED_OUTCOMES = frozenset({"concern", "clear"})
 _SAFETY, _RETRY_CODES = frozenset({"safety", "prohibited_content", "blocklist", "image_safety", "content_blocked"}), {408, 429}
+# Heads whose answer decides whether a life-threatening turn is handled at all. A reply that was ASKED for one of
+# these and does not readably answer it is not a confident "no": it is a bad reply that must be retried and, if it
+# stays bad, reported `ok=False` so the caller's own 3-strike safety net closes the call instead of re-asking.
+_MUST_ANSWER = frozenset({"danger_now"})
 
 class DecisionCallResult(NamedTuple):
     ok: bool; error_reason: str; attempts: int; decision_ms: int; request_bytes: int; question_count: int
@@ -43,8 +47,14 @@ async def _post(url: str, body: bytes, headers: dict[str, str], budget: float) -
     timeout = httpx.Timeout(connect=3.0, read=budget, write=3.0, pool=3.0)
     reply = await client.post(url, content=body, headers=headers, timeout=timeout)
     return reply.status_code, reply.content
-def _verdict(status: int, raw: bytes) -> tuple[dict[str, Any] | None, str, bool]:
-    """One reply's read: its payload, or a reason plus whether another call could still rescue the turn."""
+def _verdict(status: int, raw: bytes, required: frozenset[str] = frozenset()) -> tuple[dict[str, Any] | None, str, bool]:
+    """One reply's read: its payload, or a reason plus whether another call could still rescue the turn.
+
+    `required` names the heads the request actually asked for and whose silence cannot be read as a negative —
+    `danger_now` above all. A `null`/`NaN`/`Inf`/string/bool `noul`, or a missing head, makes the whole reply a
+    bad one: it is retryable because the slim fallback may read the same utterance cleanly, and if Attempt 2 is
+    just as headless the turn ends `ok=False` rather than as a confident "not an emergency" (fail-closed).
+    """
     try:
         obj = json.loads(bytes(raw).decode("utf-8"))
     except Exception:  # noqa: BLE001 - a body that is not JSON is a bad reply, not a bad day
@@ -52,13 +62,22 @@ def _verdict(status: int, raw: bytes) -> tuple[dict[str, Any] | None, str, bool]
     err = obj.get("error") if isinstance(obj, dict) else None
     code = str(err.get("code") or "").lower() if isinstance(err, dict) else ""
     if 200 <= int(status) <= 299:
-        return ((obj, "", False) if isinstance(obj, dict) and obj.get("answers")
-                else (None, "empty_answers", False))
+        if not isinstance(obj, dict) or not obj.get("answers"):
+            return None, "empty_answers", False
+        answers = obj["answers"]
+        if not isinstance(answers, Mapping):
+            return None, "empty_answers", False
+        for head in required:
+            if head not in answers:
+                return None, f"missing_{head}", True
+            if not isinstance(answers[head], Mapping) or _num(answers[head].get("noul")) is None:
+                return None, f"invalid_{head}", True
+        return obj, "", False
     if code in _SAFETY and int(status) < 500:
         return None, "safety_block", False
     return None, f"http_{int(status)}", int(status) in _RETRY_CODES or int(status) >= 500
 async def _send(send: Transport, endpoint: str, body: bytes, headers: dict[str, str],
-                budget: float) -> tuple[dict[str, Any] | None, str, bool]:
+                budget: float, required: frozenset[str] = frozenset()) -> tuple[dict[str, Any] | None, str, bool]:
     """One POST on its own read budget, classified where it landed."""
     try:
         sent = send(endpoint, body, headers, budget)
@@ -69,7 +88,21 @@ async def _send(send: Transport, endpoint: str, body: bytes, headers: dict[str, 
         return None, "connection_error", True
     except Exception:  # noqa: BLE001
         return None, "response_invalid", False
-    return _verdict(int(status), raw)
+    return _verdict(int(status), raw, required)
+
+
+def _required_heads(request: Mapping[str, Any]) -> frozenset[str]:
+    """The safety heads THIS body asks for: a reply owes a readable answer to every one it was asked.
+
+    `build_turn_request` keys `questions` by head name (`{"danger_now": {...}, ...}`), so the head names are the
+    mapping's keys; a list-shaped `questions` names its heads by `id`, and both shapes are read here.
+    """
+    asked = request.get("questions") or {}
+    if isinstance(asked, Mapping):
+        names = {str(k) for k in asked}
+    else:
+        names = {str(q.get("id")) for q in asked if isinstance(q, Mapping)}
+    return frozenset(names & _MUST_ANSWER)
 async def evaluate_turn(request: dict[str, Any], *, api_key: str | None = None, endpoint: str = DECISIONS_ENDPOINT,
                         max_attempts: int = 2, attempt_timeout_sec: float = 12.0, total_budget_sec: float = 18.0,
                         transport: Transport | None = None,
@@ -99,7 +132,7 @@ async def evaluate_turn(request: dict[str, Any], *, api_key: str | None = None, 
             reason = "timeout"
             break
         attempts += 1
-        payload, reason, retry = await _send(send, endpoint, body, headers, budget)
+        payload, reason, retry = await _send(send, endpoint, body, headers, budget, _required_heads(sent_request))
         if payload is not None or not retry:
             break
         body, sent_request = ((fallback_body, fallback_request) if fallback_body is not None

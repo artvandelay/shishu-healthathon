@@ -45,12 +45,15 @@ def _json(raw: Any, default: type) -> Any:
     except (TypeError, ValueError): parsed = None
     return parsed if isinstance(parsed, default) else default()
 def _write(call_id: int, **fields: Any) -> None:
-    with _LOCK:
-        conn.execute(f"UPDATE calls SET {', '.join(f'{k} = ?' for k in fields)} WHERE id = ?", (*fields.values(), int(call_id)))
-        conn.commit()
+    with _LOCK: _write_unlocked(call_id, **fields)
+def _write_unlocked(call_id: int, **fields: Any) -> None:
+    """Write columns with `_LOCK` assumed held, so a caller can read, mutate and write as one transaction."""
+    conn.execute(f"UPDATE calls SET {', '.join(f'{k} = ?' for k in fields)} WHERE id = ?", (*fields.values(), int(call_id)))
+    conn.commit()
 def _read(call_id: int, col: str) -> Any:
-    with _LOCK:
-        row = conn.execute(f"SELECT {col} FROM calls WHERE id = ?", (int(call_id),)).fetchone()
+    with _LOCK: return _read_unlocked(call_id, col)
+def _read_unlocked(call_id: int, col: str) -> Any:
+    row = conn.execute(f"SELECT {col} FROM calls WHERE id = ?", (int(call_id),)).fetchone()
     return None if row is None else row[col]
 def _row(row: sqlite3.Row | None) -> dict[str, Any] | None:
     if row is None: return None
@@ -73,11 +76,13 @@ def create_call(*, pack_id: str = "shishu-hi", caller_name: str = "", user_role:
         conn.commit()
     return int(cur.lastrowid)
 def append_transcript(call_id: int, role: str, text: str, qid: str = "") -> None:
-    if not (text or "").strip() or (raw := _read(call_id, "transcript_json")) is None: return
-    turns = _json(raw, list)
-    if turns and turns[-1].get("role") == role and (turns[-1].get("qid") or "") == qid: turns[-1].update(text=engine.merge_transcript_chunk(turns[-1]["text"], text), ts=time.time())
-    else: turns.append({"role": role, "text": text.strip(), "ts": time.time(), **({"qid": qid} if qid else {})})
-    _write(call_id, transcript_json=json.dumps(turns, ensure_ascii=False))
+    if not (text or "").strip(): return
+    with _LOCK:  # read, merge and write in one transaction, or a concurrent append overwrites this turn
+        if (raw := _read_unlocked(call_id, "transcript_json")) is None: return
+        turns = _json(raw, list)
+        if turns and turns[-1].get("role") == role and (turns[-1].get("qid") or "") == qid: turns[-1].update(text=engine.merge_transcript_chunk(turns[-1]["text"], text), ts=time.time())
+        else: turns.append({"role": role, "text": text.strip(), "ts": time.time(), **({"qid": qid} if qid else {})})
+        _write_unlocked(call_id, transcript_json=json.dumps(turns, ensure_ascii=False))
 def save_cursor_state(call_id: int, pack: PackConfig, state: CallState) -> None:
     name = next((str(state.profile[s]).strip() for s in pack.profile_slots if state.profile.get(s)), "")
     _write(call_id, cursor_json=json.dumps(state.to_dict(), ensure_ascii=False), patient_name=name, roster_summary=engine.roster_label_patient(pack, state))
@@ -188,12 +193,15 @@ def call_state_from_row(call: Mapping[str, Any] | None) -> CallState:
     except ValidationError: return CallState()
 def append_call_event(call_id: int, event_type: str, detail: str = "", meta: dict | None = None) -> dict:
     evt = {"t": round(time.time(), 3), "type": event_type, "detail": detail or "", "meta": meta or {}}
-    if (raw := _read(call_id, "events_json")) is not None: _write(call_id, events_json=json.dumps((_json(raw, list) + [evt])[-_EVENT_CAP:], ensure_ascii=False))
+    with _LOCK:  # read, append and write in one transaction, or a concurrent append drops this event
+        if (raw := _read_unlocked(call_id, "events_json")) is not None:
+            _write_unlocked(call_id, events_json=json.dumps((_json(raw, list) + [evt])[-_EVENT_CAP:], ensure_ascii=False))
     return evt
 def update_call_telemetry(call_id: int, patch: dict[str, Any]) -> dict:
-    if (raw := _read(call_id, "telemetry_json")) is None: return {}
-    merged = _json(raw, dict) | (patch if isinstance(patch, dict) else {})
-    _write(call_id, telemetry_json=json.dumps(merged, ensure_ascii=False))
+    with _LOCK:  # read, merge and write in one transaction, or a concurrent patch is lost
+        if (raw := _read_unlocked(call_id, "telemetry_json")) is None: return {}
+        merged = _json(raw, dict) | (patch if isinstance(patch, dict) else {})
+        _write_unlocked(call_id, telemetry_json=json.dumps(merged, ensure_ascii=False))
     return merged
 def save_report_text(call_id: int, summary_doctor: str = "", summary_patient: str = "", red_flags: list[str] | None = None, patient_name: str = "",
                      roster_summary: str = "") -> None:
@@ -207,12 +215,13 @@ def reopen_call(call_id: int, active_qid: str = "") -> None:
     `active_qid` is the step the browser will be handed. On rejoin, the assistant turn at the transcript tail for that
     qid is dropped in the same atomic write so the resumed caption does not double (Call #57 `T[66]`, 102→205 chars).
     """
-    if active_qid and (raw := _read(call_id, "transcript_json")) is not None:
-        turns = _json(raw, list)
-        if (turns and turns[-1].get("role") == "assistant" and (turns[-1].get("qid") or "") == active_qid):
-            _write(call_id, status="active", ended_at=None, transcript_json=json.dumps(turns[:-1], ensure_ascii=False))
-            return
-    _write(call_id, status="active", ended_at=None)
+    with _LOCK:  # read the transcript and reopen in one transaction, or a concurrent append is dropped
+        if active_qid and (raw := _read_unlocked(call_id, "transcript_json")) is not None:
+            turns = _json(raw, list)
+            if (turns and turns[-1].get("role") == "assistant" and (turns[-1].get("qid") or "") == active_qid):
+                _write_unlocked(call_id, status="active", ended_at=None, transcript_json=json.dumps(turns[:-1], ensure_ascii=False))
+                return
+        _write_unlocked(call_id, status="active", ended_at=None)
 def create_bug_report(call_id: int = 0, reporter: str = "", category: str = "", note: str = "", call_elapsed_sec: int = 0,
                       extra_snapshot: dict | None = None, include_call_body: bool = False) -> dict:
     call = (get_call(call_id) if (owned := bool(include_call_body and call_id > 0)) else None) or {}

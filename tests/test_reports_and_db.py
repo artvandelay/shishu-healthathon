@@ -11,7 +11,9 @@ import asyncio
 import io
 import os
 import re
+import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -266,6 +268,157 @@ class PatientPdfTests(unittest.TestCase):
                         self.assertTrue(path.read_bytes().startswith(b"%PDF"))
 
 
+class SeedScenarioReportTests(unittest.TestCase):
+    """Each seeded scenario must keep the clinical content it exists to demonstrate.
+
+    A seed that silently degrades to "0 red flags" or "complete" still writes a PDF, so file-existence smoke tests
+    pass on a pack whose danger signs stopped being reported. These assert the actual flag text, the actual
+    all-clear, and the actual stopped-early inventory, on the clinician note, the projection and the rendered page.
+    """
+
+    CALL = {"id": 7, "started_at": reports.SAMPLE_STARTED_AT, "duration_sec": 420}
+
+    def report(self, pack_id: str, scenario_id: str) -> tuple[reports.ProjectedReport, str]:
+        pack = load_pack(pack_id)
+        proj = reports.project_summary(pack, _replay(pack, scenario_id))
+        return proj, reports.render_patient_html(pack, self.CALL, proj)
+
+    @staticmethod
+    def alerts(proj: reports.ProjectedReport) -> str:
+        """The clinician note's red-flag block, so an assertion cannot pass on text from another section."""
+        return proj.doctor_markdown.split("### Positive Red Flags", 1)[1].split("\n### ", 1)[0]
+
+    def test_shishu_red_flags_reports_every_seeded_gate_with_the_mothers_words(self):
+        proj, html = self.report(_SHISHU, "red_flags")
+        flags = self.alerts(proj)
+        self.assertEqual(len(proj.red_flags), 4)
+        # Each seeded answer is a different clinical concern and each must reach the doctor.
+        for tag_id, need, said in (
+            ("Q03 birth_jaundice", "jaundice treated under blue light", "हाँ, तीन दिन नीली लाइट में रखा था"),
+            ("Q04 body_joint_swelling", "knee or joint swelling after a fall", "हाँ, गिरने पर घुटने में सूजन 5 से 7 दिन रहती है"),
+            ("Antenatal preg_conditions", "high BP, sugar, or thyroid in a pregnancy",
+             "हाँ, हाई बीपी और थायरॉइड की दवा डिलीवरी के बाद भी चल रही है"),
+            ("Q12 fam_infant_death", "a baby in the family died before 1 year", "झटके आने से उसकी मौत हुई थी"),
+        ):
+            with self.subTest(flag=tag_id):
+                line = next((f for f in proj.red_flags if f.startswith(f"{tag_id}:")), None)
+                self.assertIsNotNone(line, f"no red flag for {tag_id} in {proj.red_flags}")
+                self.assertIn(need, line)
+                self.assertIn(said, line)
+                self.assertIn(need, flags)
+                self.assertIn(said, flags)
+        # The two-page patient sheet repeats them as the "हाँ" list she asked the doctor about.
+        yes_list = re.search(r'<ul class="yes">(.*?)</ul>', html, re.S)
+        self.assertIsNotNone(yes_list)
+        for said in ("नीली लाइट में रखा था", "घुटने में सूजन", "हाई बीपी और थायरॉइड", "झटके आने से उसकी मौत"):
+            with self.subTest(yes_item=said):
+                self.assertIn(said, yes_list.group(1))
+        self.assertFalse(proj.incomplete)
+        self.assertNotIn("यह कॉल अधूरी रही", html)
+
+    def test_shishu_no_flags_is_a_clean_call_on_every_surface(self):
+        proj, html = self.report(_SHISHU, "no_flags")
+        self.assertEqual(proj.red_flags, ())
+        self.assertEqual(proj.yes_items, ())
+        self.assertEqual(self.alerts(proj).strip().splitlines(), ["& NRROID Gate Alerts", "- No positive gate alerts."])
+        self.assertEqual(proj.page2_unknown, ("इसके अलावा डॉक्टर के लिए कुछ और बताना है जो आपके मन में हो",))
+        self.assertEqual(proj.page2_unanswered, ())
+        self.assertIn("इस कॉल में कोई बात हाँ में नहीं आई।", html)
+        self.assertNotIn('<ul class="yes">', html)
+        self.assertFalse(proj.incomplete)
+        self.assertNotIn("यह कॉल अधूरी रही", html)
+
+    def test_shishu_incomplete_marks_the_call_partial_and_lists_what_was_never_asked(self):
+        proj, html = self.report(_SHISHU, "incomplete")
+        self.assertEqual(proj.close_reason, "caller_stop")
+        self.assertTrue(proj.incomplete)
+        # The one answered gate is still reported; nothing answered must be invented for the rest.
+        self.assertEqual(len(proj.red_flags), 1)
+        self.assertIn("Q03 birth_nicu: NICU or glass-box stay after birth", proj.red_flags[0])
+        self.assertIn("दो दिन काँच के बक्से में रखा पड़ा था", proj.red_flags[0])
+        unasked = [item for group in proj.page2_unasked for item in group["items"]]
+        self.assertIn("जन्म के बाद पीलिया के लिए बच्चे को नीली लाइट में रखना पड़ा था", unasked)
+        self.assertIn("परिवार में किसी छोटे बच्चे की 1 साल से कम उम्र में मौत हुई है", unasked)
+        self.assertEqual(len(unasked), 50)
+        self.assertIn("Call ended before every applicable question was asked.", proj.doctor_markdown)
+        self.assertIn("यह कॉल अधूरी रही।", html)
+        self.assertIn("अभी नहीं पूछा गया", html)
+        self.assertNotIn("पूर्ण कॉल", html)
+
+    def test_fever_urgent_fever_reports_the_red_flag_gate_and_the_fever_gates(self):
+        proj, html = self.report(_FEVER, "urgent_fever")
+        flags = self.alerts(proj)
+        self.assertEqual(len(proj.red_flags), 7)
+        # The seeded danger sign: breathlessness on stairs, with its own follow-up, under the RED_FLAG gate.
+        breathing = next(f for f in proj.red_flags if f.startswith("RED_FLAG breathing_or_chest:"))
+        self.assertIn("difficulty breathing, or chest pain or tightness", breathing)
+        self.assertIn("हाँ, सीढ़ियाँ चढ़ने पर साँस फूलती है", breathing)
+        self.assertIn("- RED_FLAG breathing_or_chest: difficulty breathing, or chest pain or tightness. "
+                      "Mother's words: हाँ, सीढ़ियाँ चढ़ने पर साँस फूलती है.", flags)
+        # Duration (9 days -> 7+ bucket) and severity are scored gates, so they flag without a danger-sign tag.
+        self.assertIn("- FEVER fever_duration_bucket: how long the fever has lasted. Mother's words: 7 दिन से ज़्यादा.", flags)
+        self.assertIn("- FEVER fever_severity: how severe the fever is, from mild warmth to being unable to stand or eat. "
+                      "Mother's words: बहुत तेज़ बुखार है — खड़े नहीं हो पाते, या कुछ खा-पी नहीं पाते.", flags)
+        self.assertIn("- FEVER associated_symptoms: which symptoms accompany the fever. "
+                      "Mother's words: कंपकंपी और ठंड लगना; बदन दर्द.", flags)
+        self.assertIn("हाँ, सीढ़ियाँ चढ़ने पर साँस फूलती है", html)
+        self.assertFalse(proj.incomplete)
+        self.assertNotIn("यह कॉल अधूरी रही", html)
+
+    def test_fever_clean_fever_is_a_clean_call_on_every_surface(self):
+        proj, html = self.report(_FEVER, "clean_fever")
+        self.assertEqual(proj.red_flags, ())
+        self.assertEqual(proj.yes_items, ())
+        self.assertEqual(self.alerts(proj).strip().splitlines(), ["& Gate Alerts", "- No positive gate alerts."])
+        self.assertEqual((proj.page2_unknown, proj.page2_unanswered), ((), ()))
+        # Every gate was answered "नहीं", so page two prints them as negatives rather than dropping them.
+        negatives = proj.doctor_markdown.split("### Pertinent Negatives", 1)[1]
+        self.assertIn("Clear: difficulty breathing, or chest pain or tightness.", negatives)
+        self.assertIn("Clear: jaundice, or bleeding from the nose, gums, or in the urine.", negatives)
+        self.assertIn("इस कॉल में कोई बात हाँ में नहीं आई।", html)
+        self.assertNotIn('<ul class="yes">', html)
+        self.assertFalse(proj.incomplete)
+
+    def test_fever_stopped_early_keeps_the_flags_it_got_and_the_questions_it_never_asked(self):
+        proj, html = self.report(_FEVER, "stopped_early")
+        self.assertEqual(proj.close_reason, "caller_stop")
+        self.assertTrue(proj.incomplete)
+        self.assertEqual(len(proj.red_flags), 3)
+        self.assertIn("RED_FLAG breathing_or_chest: difficulty breathing, or chest pain or tightness", proj.red_flags[2])
+        self.assertIn("हल्की साँस फूलती है, पर छाती में दर्द नहीं", proj.red_flags[2])
+        self.assertIn("तेज़ बुखार है — बिस्तर पर रहना पड़ता है", proj.red_flags[0])
+        # Stopped after the second warning gate: the remaining danger-sign and treatment questions are unasked,
+        # never recorded as "no".
+        groups = {group["title"]: list(group["items"]) for group in proj.page2_unasked}
+        self.assertEqual(set(groups), {"खतरे की निशानी", "इलाज और संपर्क", "अंत"})
+        self.assertEqual(groups["खतरे की निशानी"], ["बार-बार उल्टी हो रही है, या पतले दस्त आ रहे हैं"])
+        self.assertIn("इस बुखार के लिए अब तक कोई दवा ली है, या डॉक्टर से दिखाया है", groups["इलाज और संपर्क"])
+        negatives = proj.doctor_markdown.split("### Pertinent Negatives", 1)[1]
+        self.assertIn("Call ended before every applicable question was asked.", negatives)
+        self.assertNotIn("Clear: repeated vomiting or loose stools.", negatives)
+        self.assertIn("यह कॉल अधूरी रही।", html)
+        self.assertIn("अभी नहीं पूछा गया", html)
+        self.assertIn("बार-बार उल्टी हो रही है, या पतले दस्त आ रहे हैं", html)
+        self.assertNotIn("पूर्ण कॉल", html)
+
+
+def _run_together(worker, threads: int) -> None:
+    """Start `threads` copies of `worker(i)` that all leave the gate at the same instant."""
+    gate, errors = threading.Barrier(threads), []
+
+    def run(i: int) -> None:
+        try:
+            gate.wait()
+            worker(i)
+        except BaseException as exc:  # noqa: BLE001 — re-raised on the test thread so a crash is a failure
+            errors.append(exc)
+
+    running = [threading.Thread(target=run, args=(i,)) for i in range(threads)]
+    for t in running: t.start()
+    for t in running: t.join()
+    if errors: raise errors[0]
+
+
 class _TempDataDir(unittest.TestCase):
     """Point `db.DATA_DIR` at a throwaway directory and empty the tables between tests."""
 
@@ -392,6 +545,56 @@ class StorageTests(_TempDataDir):
         with self.assertRaises(LookupError):
             asyncio.run(reports.ensure_patient_pdf(987654))
         self.assertEqual(reports._inflight, {})
+
+
+class ConcurrentWriteTests(_TempDataDir):
+    """Every read-modify-write helper must be one transaction, or a second caller silently overwrites the first.
+
+    `append_call_event` and `append_transcript` read the JSON column, mutate it and write it back. With the lock
+    released in between, two threads on the same call interleave: both read the same list, both write base+own,
+    and everything the slower thread read is gone. On the clinic floor that is a lost transcript turn or a lost
+    red-flag event on a call two people are watching at once.
+    """
+
+    THREADS, APPENDS = 4, 25
+
+    def setUp(self):
+        super().setUp()
+        # Force frequent GIL handovers so the read/modify/write window is actually hit on every machine.
+        self._previous_switch = sys.getswitchinterval()
+        sys.setswitchinterval(1e-6)
+        self.addCleanup(sys.setswitchinterval, self._previous_switch)
+
+    def test_concurrent_append_call_event_keeps_every_event(self):
+        call_id = db.create_call()
+        _run_together(lambda i: [db.append_call_event(call_id, "step", f"{i}-{n}") for n in range(self.APPENDS)],
+                      self.THREADS)
+        events = db.get_call(call_id)["events"]
+        self.assertEqual(len(events), self.THREADS * self.APPENDS)
+        expected = {f"{i}-{n}" for i in range(self.THREADS) for n in range(self.APPENDS)}
+        self.assertEqual({e["detail"] for e in events}, expected)
+
+    def test_concurrent_append_transcript_keeps_every_turn(self):
+        call_id = db.create_call()
+        # A qid unique per append keeps the neighbour-merge rule out of the way, so every append must survive
+        # as its own turn instead of being folded into the turn before it.
+        _run_together(lambda i: [db.append_transcript(call_id, "user", f"बात {i}-{n}", qid=f"q{i}-{n}")
+                                 for n in range(self.APPENDS)], self.THREADS)
+        turns = db.get_call(call_id)["transcript"]
+        self.assertEqual(len(turns), self.THREADS * self.APPENDS)
+        self.assertEqual({t["text"] for t in turns},
+                         {f"बात {i}-{n}" for i in range(self.THREADS) for n in range(self.APPENDS)})
+        self.assertEqual({t["qid"] for t in turns},
+                         {f"q{i}-{n}" for i in range(self.THREADS) for n in range(self.APPENDS)})
+
+    def test_concurrent_telemetry_patches_all_land_in_the_same_object(self):
+        call_id = db.create_call()
+        db.update_call_telemetry(call_id, {"seeded": True})
+        _run_together(lambda i: [db.update_call_telemetry(call_id, {f"k{i}_{n}": n}) for n in range(self.APPENDS)],
+                      self.THREADS)
+        telemetry = db.get_call(call_id)["telemetry"]
+        self.assertTrue(telemetry.pop("seeded"))
+        self.assertEqual(telemetry, {f"k{i}_{n}": n for i in range(self.THREADS) for n in range(self.APPENDS)})
 
 
 if __name__ == "__main__":

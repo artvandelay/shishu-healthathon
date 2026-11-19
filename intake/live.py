@@ -325,7 +325,13 @@ class LiveCallSession:
             self.pcm, self.tail_chunks = (self.pcm + pcm_16k)[-_MAX_TURN:], self.tail_chunks - 1
         else: self.preroll.append(pcm_16k)  # a frame at the room's own floor never moves `last_voice_ts`
         self.listening_ring.append((pcm_16k, rms))
+        if self.reconnecting or self.resume_requested:
+            return True  # a socket swap is in flight: the frame is banked, but the session being replaced is not fed
         if await self._send_realtime(audio=types.Blob(data=pcm, mime_type=f"audio/pcm;rate={rate}")): return True
+        if self.reconnecting or self.resume_requested:
+            # `_lost()` marks the failed socket resumable, so this blip is a dropped frame, never a dead call:
+            # returning `False` here tore down `_browser_loop` in the middle of the reconnect that would have healed it.
+            return True
         await self._emit("error", "Could not forward audio to Gemini")
         return False
     async def _hear(self, role: str, text: str) -> None:
@@ -416,7 +422,16 @@ class LiveCallSession:
         if self.turn_phase in (TurnPhase.DECIDING, TurnPhase.CLOSING) or self.state.phase is not Phase.ASKING:
             return True  # a pass is already in flight, or the call is ending: a nudge would race the answer
         self.bot_generating = False
-        if not await self._speak(): return await self._fail()
+        # A nudge over a banked caller turn is Call #65: Gemini sat silent, so the words she already spoke were never
+        # judged. Re-speaking the old question threw her answer away, so the nudge runs the pass Gemini skipped.
+        if self.pcm or self.text:
+            body, clarify = await self._next_question()
+            await self._emit("manual_nudge", "evaluated", self.last_turn_meta or None)
+            kind = "retry" if body.get("result") == "retry" else self._cue_kind(clarify)
+            if not await self._publish_and_cue(kind): return await self._fail()
+            return True
+        # Pure silence: the published step is re-owed a cue, so its epoch, phase, and stale fallback all move together.
+        if not await self._publish_and_cue("speak"): return await self._fail()
         await self._emit("manual_nudge")
         return True
     def _turn_meta(self, turn: Turn, step_in: str, cmd: Any, ext: Any) -> dict[str, Any]:

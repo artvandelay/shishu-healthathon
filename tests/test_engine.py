@@ -331,6 +331,74 @@ class RealPackIntegrationTests(unittest.TestCase):
         self.assertEqual(st.answers["birth_nicu"].state, AnswerStatus.NOT_APPLICABLE)
         self.assertEqual(st.cursor.qid, "intro_bridge")
 
+    def test_a_caller_who_never_gives_her_name_is_reasked_once_then_unanswered(self):
+        # Bug: the give-up guard in `reduce_turn` was `prev_spec.kind is not QuestionKind.PROFILE`, so a caller
+        # who declines to give her name — or an extractor that never hears it — left `intro_name` unsatisfied
+        # and the call re-asked it forever. A profile step is a question like any other: two empty turns
+        # exhaust it, and the explicit UNANSWERED record is what releases the step.
+        shishu = load_pack("shishu-hi")
+        decline = TurnCommand(outcome=TurnOutcome.NOT_ABOUT_ACTIVE, profile_patch=ProfilePatch(),
+                              profile_turn_attempted=True, utterance="नहीं बताऊँगी")
+        st = new_state(shishu)
+        self.assertEqual(st.cursor.qid, "intro_name")
+        st = reduce_turn(shishu, st, decline)
+        self.assertEqual(st.cursor.qid, "intro_name", "the first miss still asks the name once more")
+        self.assertEqual(st.cursor.attempts, 1)
+        self.assertNotIn("caller_name", st.profile)
+        self.assertFalse(st.answers.get("intro_name") is not None and st.answers["intro_name"].state is AnswerStatus.UNANSWERED)
+        st = reduce_turn(shishu, st, decline)
+        self.assertIs(st.answers["intro_name"].state, AnswerStatus.UNANSWERED)
+        self.assertEqual(st.cursor.qid, "intro_married", "an exhausted profile step never loops back on itself")
+        self.assertNotIn("caller_name", st.profile)
+
+    def test_a_caller_who_never_gives_a_roster_is_reasked_once_then_unanswered(self):
+        # Same bug on `intro_children`: an empty profile patch (roster and roster_complete both null) re-asked
+        # the children question forever. One miss must still re-ask for the ages — a partial roster needs a
+        # second chance — and only the second miss may exhaust the step.
+        shishu = load_pack("shishu-hi")
+        nothing = TurnCommand(outcome=TurnOutcome.NOT_ABOUT_ACTIVE, profile_patch=ProfilePatch(),
+                              profile_turn_attempted=True, utterance="अभी नहीं बता सकती")
+        st = at_children(shishu)
+        self.assertEqual(st.cursor.qid, "intro_children")
+        st = reduce_turn(shishu, st, nothing)
+        self.assertEqual((st.cursor.qid, st.cursor.hold_slot), ("intro_children", "roster"))
+        self.assertEqual(st.cursor.attempts, 1)
+        self.assertEqual(active_prompt(shishu, st), "जी, उन सभी बच्चों की उम्र क्या-क्या है?")
+        self.assertFalse(st.answers.get("intro_children") is not None and st.answers["intro_children"].state is AnswerStatus.UNANSWERED)
+        st = reduce_turn(shishu, st, nothing)
+        self.assertIs(st.answers["intro_children"].state, AnswerStatus.UNANSWERED)
+        self.assertNotEqual(st.cursor.qid, "intro_children", "an exhausted roster step never loops back on itself")
+        self.assertEqual(st.cursor.qid, "intro_bridge")
+
+    def test_a_partial_twin_roster_still_gets_its_ages_reask_before_giving_up(self):
+        # Call #11's twins with no ages: ONE incomplete roster turn must still re-ask for the ages, never skip
+        # the step. Only after the retry budget is spent does the ages reask stop holding the call.
+        shishu = load_pack("shishu-hi")
+        twins_no_ages = TurnCommand(outcome=TurnOutcome.NOT_ABOUT_ACTIVE, profile_turn_attempted=True,
+                                    profile_patch=ProfilePatch(roster=(), roster_complete=False))
+        st = reduce_turn(shishu, at_children(shishu), twins_no_ages)
+        self.assertTrue(st.roster_incomplete)
+        self.assertEqual((st.cursor.qid, st.cursor.hold_slot), ("intro_children", "roster"))
+        self.assertEqual(active_prompt(shishu, st), "जी, उन सभी बच्चों की उम्र क्या-क्या है?")
+        st = reduce_turn(shishu, st, twins_no_ages)
+        self.assertIs(st.answers["intro_children"].state, AnswerStatus.UNANSWERED)
+        self.assertNotEqual(st.cursor.qid, "intro_children")
+
+    def test_a_given_up_roster_step_revives_when_she_later_mentions_missed_twins(self):
+        # A give-up is only ever about a caller who would not answer. The moment she volunteers children again —
+        # Call #11's "मेरे ट्विंस बच्चे हैं, मुझे लगता नहीं आप वो सुन पाए" — the ages reask is live again and
+        # must hold the call, instead of a stale UNANSWERED quietly skipping the ages it now needs.
+        shishu = load_pack("shishu-hi")
+        st = at_children(shishu, qid="birth_nicu")
+        st.answers["intro_children"] = AnswerRecord(state=AnswerStatus.UNANSWERED)
+        self.assertNotEqual(st.cursor.qid, "intro_children")
+        st = reduce_turn(shishu, st, TurnCommand(outcome=TurnOutcome.NOT_ABOUT_ACTIVE, profile_turn_attempted=True,
+                                                 profile_patch=ProfilePatch(roster=(), roster_complete=False),
+                                                 utterance="मेरे ट्विंस बच्चे हैं, आपने सुना नहीं"))
+        self.assertEqual((st.cursor.qid, st.cursor.hold_slot), ("intro_children", "roster"))
+        self.assertTrue(st.roster_incomplete)
+        self.assertFalse(st.answers.get("intro_children") is not None and st.answers["intro_children"].state is AnswerStatus.UNANSWERED)
+
     def test_a_mid_call_count_only_statement_rewinds_to_the_ages_reask(self):
         shishu = load_pack("shishu-hi")
         st = at_children(shishu, qid="birth_nicu")

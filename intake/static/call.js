@@ -105,10 +105,16 @@ const unraf = () => {
   raf = 0;
 };
 
+/* The nudge pill is only ever saffron while it is actually on screen; hiding it always drops the highlight. */
+const hideNudge = () => {
+  show(nudgeBtn, false);
+  nudgeBtn.classList.remove("hot");
+};
+
 function stopWaiting() {
   waitingSince = 0;
   userSpoke = false;
-  show(nudgeBtn, false);
+  hideNudge();
 }
 
 const clock = (sec) => `${String(Math.floor(sec / 60)).padStart(2, "0")}:${String(sec % 60).padStart(2, "0")}`;
@@ -182,6 +188,7 @@ function runTimer(active) {
     }
     if (turnPhase === "listening" && waitingSince && Date.now() - waitingSince > NUDGE_AFTER_MS) {
       show(nudgeBtn, true);
+      nudgeBtn.classList.add("hot");
     }
   }, 250);
 }
@@ -281,7 +288,7 @@ function onMicFrame(samples) {
   if (micAllowed && rms > 0.015) {
     userSpoke = true;
     waitingSince = 0;
-    show(nudgeBtn, false);
+    hideNudge();
   } else if (micAllowed && userSpoke) {
     userSpoke = false;
     waitingSince = Date.now();
@@ -449,7 +456,7 @@ function answer(value) {
   const chosen = options.find((o) => String(o.value) === value);
   hideQuick();
   flushAudio();
-  show(nudgeBtn, false);
+  hideNudge();
   say(T.listen);
   showCaption("user", chosen ? chosen.hi : value);
   send({ type: "quick_reply", value, step, epoch });

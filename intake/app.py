@@ -70,7 +70,8 @@ async def _prepare_pdf(call_id: int) -> bool:
         return False
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
-    reports.ensure_seeded()
+    # Demo seeding is opt-in: a fresh production database must never invent finished patients on boot.
+    if os.environ.get("SEED_DEMO_CALLS", "").strip().lower() in ("1", "true", "yes"): reports.ensure_seeded()
     yield
 app = FastAPI(lifespan=_lifespan)
 
@@ -97,7 +98,8 @@ async def auth(request: Request):
         res = JSONResponse({"ok": True})
         res.delete_cookie(COOKIE, path="/")
         return res
-    ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or getattr(request.client, "host", "")
+    ip = next((part.strip() for part in reversed(request.headers.get("x-forwarded-for", "").split(",")) if part.strip()),
+              "") or getattr(request.client, "host", "")
     if _over("login", ip, count=False): return JSONResponse({"ok": False}, status_code=429)
     try: said = await request.json()
     except ValueError: said = {}

@@ -71,9 +71,9 @@
   }
   // Concerns first, then unknown/answered/clear — the order a clinician reads a chart in.
   function paintAnswers(answers) {
-    const rank = { concern: 0, unknown: 1, answered: 2, clear: 3 };
+    const rank = { concern: 0, unknown: 1, unanswered: 2, answered: 3, clear: 4 };
     const keys = Object.keys(answers).filter((q) => String(asObj(answers[q]).state || "") !== "not_applicable");
-    keys.sort((a, b) => (rank[asObj(answers[a]).state] ?? 4) - (rank[asObj(answers[b]).state] ?? 4) || a.localeCompare(b));
+    keys.sort((a, b) => (rank[asObj(answers[a]).state] ?? 5) - (rank[asObj(answers[b]).state] ?? 5) || a.localeCompare(b));
     if (!keys.length) return set("answers", '<p class="calm">No structured findings were recorded.</p>');
     set("answers", grid(["Question ID", "State", "Value / Note"], keys.map((q) => ({ cls: asObj(answers[q]).state === "concern" ? "flag" : "", cells: [esc(q), esc(asObj(answers[q]).state), esc(answerText(asObj(answers[q])))] }))));
   }

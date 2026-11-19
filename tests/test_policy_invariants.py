@@ -7,11 +7,11 @@ import unittest
 import tests  # noqa: F401 — isolated storage before intake
 
 from intake import db, engine, reports
-from intake.models import AnswerRecord, AnswerStatus, CursorStep, QuestionKind, RosterItem, SubStep, TurnOutcome
+from intake.models import AnswerRecord, AnswerStatus, CloseReason, CursorStep, Phase, QuestionKind, RosterItem, SubStep, TurnCommand, TurnOutcome
 from intake.pack import load_pack
 from intake.policy import apply_policy, arbitrate_tap_turn
 from intake.turns import (
-    ClinicalClaim, DecisionReason, Disposition, DomainFit, EvidenceSource, SpeechAct, TopicRelation, TurnEvidence, TurnInterpretation,
+    ClinicalClaim, CursorAction, DecisionReason, Disposition, DomainFit, EvidenceSource, SpeechAct, TopicRelation, TurnEvidence, TurnInterpretation,
 )
 
 PACKS = {pid: load_pack(pid) for pid in ("shishu-hi", "fever-opd-hi")}
@@ -109,6 +109,16 @@ def _cases():
             yield pack, spec, sub, n, pi, st, ev, interp, listed
 def _tag(pack, spec, sub, n, pi):
     return f"pack={pack.id} q={spec.id} kind={spec.kind.value} sub={sub.value} roster={n} pattern={pi}"
+_EMERGENCY_UTT = "अभी बच्चे को साँस नहीं आ रही है, तुरंत डॉक्टर को दिखाना है!"
+def _emergency_cases():
+    """The same anchors, but every turn also carries an active emergency plus a full in-domain answer to the question
+    being asked. The claim is deliberate bait: a closed call must read neither it nor any later question."""
+    for pack, spec, sub, n in _anchors():
+        st = _state(pack, spec, n, sub)
+        claim = ClinicalClaim(target_qid=spec.id, relation=TopicRelation.ACTIVE, domain_fit=DomainFit.IN_DOMAIN, status=TurnOutcome.CONCERN)
+        interp = TurnInterpretation(act=SpeechAct.ANSWER, active_relation=TopicRelation.ACTIVE, active_domain=DomainFit.IN_DOMAIN, claims=(claim,), emergency=True)
+        ev = TurnEvidence(source=EvidenceSource.VOICE, snapshot_step=st.step_token, transcript=_EMERGENCY_UTT, received_at=1.0)
+        yield pack, spec, sub, n, st, ev, interp
 class PolicyInvariantTests(unittest.TestCase):
     def test_universal_laws_hold_on_generated_matrix(self):
         bad, seen = [], 0
@@ -160,5 +170,61 @@ class PolicyInvariantTests(unittest.TestCase):
             if saved.answers[qid].state is not AnswerStatus.CLEAR or n_claims < 2 or n_dec < 2:
                 bad.append(f"law6 {pack.id} {qid} state={saved.answers[qid].state.value} claims={n_claims} decisions={n_dec}")
         self.assertFalse(bad, f"{len(bad)} violations / {seen} cases\n" + "\n".join(bad[:12]))
+    def test_emergency_closes_the_call_and_keeps_the_invariants(self):
+        """An active danger sign ends the call on that turn: no question is read, asked, or advanced past.
+
+        The anchor turn deliberately co-reports a full in-domain CONCERN for the question on the cursor, so an
+        implementation that kept walking the form would record the answer and move on. Nothing about that claim may
+        land, and `reduce_turn` must be closed for every later turn too — the emergency is not a phase to leave.
+        """
+        bad, packs, seen = [], set(), 0
+        for pack, spec, sub, n, st, ev, interp in _emergency_cases():
+            seen, tag = seen + 1, f"pack={pack.id} q={spec.id} kind={spec.kind.value} sub={sub.value} roster={n}"
+            nxt, out = apply_policy(pack, st, ev, interp)
+            packs.add(pack.id)
+            if nxt.phase is Phase.ASKING or nxt.close_reason is not CloseReason.EMERGENCY:
+                bad.append(f"emg1 not closed {tag} phase={nxt.phase.value} reason={nxt.close_reason}")
+            if nxt.step_token != f"closing:{CloseReason.EMERGENCY}":
+                bad.append(f"emg2 still askable {tag} token={nxt.step_token}")
+            if out.command.emergency is not True or any(d.cursor_action is not CursorAction.CLOSE for d in out.decisions):
+                bad.append(f"emg3 command not a close {tag} emergency={out.command.emergency} actions={[d.cursor_action.value for d in out.decisions]}")
+            if not any(d.reason is DecisionReason.EMERGENCY for d in out.decisions):
+                bad.append(f"emg4 no EMERGENCY decision {tag} reasons={[d.reason.value for d in out.decisions]}")
+            # The co-reported answer is bait: a closed call reads nothing from the question it was asking.
+            prior, after = st.answers.get(st.cursor.qid), nxt.answers.get(st.cursor.qid)
+            if (prior.model_dump() if prior else None) != (after.model_dump() if after else None):
+                bad.append(f"emg5 answer read through the emergency {tag} {st.cursor.qid} -> {after.state.value if after else None}")
+            for aq, rec in nxt.answers.items():
+                old = st.answers.get(aq)
+                if rec.state is not AnswerStatus.NOT_APPLICABLE and (old is None or old.model_dump() != rec.model_dump()):
+                    bad.append(f"emg6 untethered write {tag} {aq}={rec.state.value}")
+            if nxt.cursor.qid != st.cursor.qid or nxt.cursor.attempts or nxt.cursor.followup_idx:
+                bad.append(f"emg7 advanced {tag} {st.cursor.qid}/{sub.value} -> {nxt.cursor.qid}/{nxt.cursor.substep.value} attempts={nxt.cursor.attempts}")
+            if nxt.last_answered_qid != st.last_answered_qid or list(nxt.semantic_flags) != list(st.semantic_flags):
+                bad.append(f"emg8 ledger moved {tag} last={nxt.last_answered_qid!r}")
+            if not nxt.emergency_note or nxt.emergency_note != ev.transcript:
+                bad.append(f"emg9 caller's words lost {tag} note={nxt.emergency_note!r}")
+            # A later turn can never resume the form, and cannot overwrite why the call ended.
+            later = engine.reduce_turn(pack, nxt, TurnCommand(outcome=TurnOutcome.CONCERN, value=next(iter(spec.options), None) if spec.options else None, utterance=UTT))
+            if later.phase is Phase.ASKING or later.close_reason is not CloseReason.EMERGENCY or later.answers != nxt.answers:
+                bad.append(f"emg10 call resumed {tag} phase={later.phase.value} reason={later.close_reason}")
+            # Report invariants: the emergency band owns page one, and no routine question is put to the mother.
+            cfg, proj = pack.report_cfg, reports.project_summary(pack, nxt)
+            if not (proj.emergency and proj.close_reason == str(CloseReason.EMERGENCY) and proj.incomplete):
+                bad.append(f"emg11 report not an emergency {tag} emergency={proj.emergency} reason={proj.close_reason!r} incomplete={proj.incomplete}")
+            fillers, routine = set(cfg.get("emergency_questions") or ()), set(cfg.get("routine_questions") or ())
+            # A closed call adds no question of its own: page one may only carry copy for concerns already on record
+            # (the bait claim must not become one) plus the emergency fillers, never a routine question.
+            from_record = [q for q in proj.patient_questions if q not in fillers]
+            on_record = [qid for qid, rec in nxt.answers.items() if rec.state is AnswerStatus.CONCERN]
+            if routine & set(proj.patient_questions) or len(from_record) > len(on_record):
+                bad.append(f"emg12 questions invented after emergency {tag} from_record={len(from_record)} concerns={len(on_record)} questions={list(proj.patient_questions)}")
+            if not any(str(cfg.get("emergency_flag_en") or "") in f for f in proj.red_flags) or "Active emergency" not in proj.doctor_markdown:
+                bad.append(f"emg13 emergency band missing {tag} flags={list(proj.red_flags)}")
+            if _EMERGENCY_UTT.rstrip("।. ") not in proj.doctor_markdown:
+                bad.append(f"emg14 mother's words missing from the clinician note {tag}")
+        self.assertEqual(packs, {"shishu-hi", "fever-opd-hi"}, f"emergency pattern only covered {sorted(packs)}")
+        self.assertEqual(seen, len(list(_anchors())), "every anchor must be exercised under an emergency")
+        self.assertFalse(bad, f"{len(bad)} emergency violations / {seen} cases\n" + "\n".join(bad[:12]))
 if __name__ == "__main__":
     unittest.main()

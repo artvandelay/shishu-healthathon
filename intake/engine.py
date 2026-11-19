@@ -160,7 +160,11 @@ def _is_unsatisfied(pack: PackConfig, state: CallState, spec: QuestionSpec) -> b
     if spec.kind is QuestionKind.PROFILE:
         # A profile step's satisfaction is ALWAYS its `requires_slot`: a stale `state.answers` entry (a replay
         # harness CLEAR, or an old answer) must never keep the ages reask from reopening on an incomplete roster.
+        # The one exception is the step's OWN give-up: an explicit UNANSWERED, written only once its retry budget
+        # is spent, releases a caller who will never give her name (or any age) so the call can move on.
         slot = spec.requires_slot
+        rec = state.answers.get(spec.id)
+        if rec is not None and rec.state is AnswerStatus.UNANSWERED: return False
         return not (roster_resolved(pack, state) if _on_roster(pack, slot) else state.profile.get(slot) not in (None, "", [], {}))
     if state.answers.get(spec.id) is not None: return False
     return spec.is_routable or spec.kind is QuestionKind.BRIDGE
@@ -222,7 +226,8 @@ def _apply_profile_data(pack: PackConfig, st: CallState, patch: ProfilePatch) ->
     """Write a patch's slots and roster onto `st`; True when the turn carried children. Touches no cursor: a turn
     that also answered a question is resolved once, by `reduce_turn`, never pre-empted by its own patch."""
     slots = {k: (" ".join(v.split()) if isinstance(v, str) else v) for k, v in patch.slots.items()}
-    st.profile.update({k: v for k, v in slots.items() if v not in (None, "")})
+    fresh = {k: v for k, v in slots.items() if v not in (None, "")}
+    st.profile.update(fresh)
     for k, clean in slots.items():
         for q in pack.questions:
             if clean not in (None, "") and q.saves_to_profile == k and q.kind is QuestionKind.SINGLE_CHOICE and clean in q.options:
@@ -238,8 +243,20 @@ def _apply_profile_data(pack: PackConfig, st: CallState, patch: ProfilePatch) ->
         elif complete: st.roster = []  # an explicit zero children; an ages-less count keeps what is already typed
         st.roster_incomplete, st.roster_stated = not complete, complete
     _imply(pack, st, roster_given=roster_given)
+    _revive_declined_slots(pack, st, fresh, roster_given=roster_given)
     _resync(pack, st)
     return roster_given
+def _revive_declined_slots(pack: PackConfig, st: CallState, slots: dict[str, Any], *, roster_given: bool) -> None:
+    """Fresh data for a slot the caller once declined reopens that profile step.
+
+    A give-up record only ever spoke for her silence: the caller who would not give a name, or the extractor that
+    heard no child. The moment she volunteers that slot — Call #11's "मेरे ट्विंस बच्चे हैं, मुझे लगता नहीं आप वो सुन
+    पाए" — the ages reask must be live again, not silently skipped because an old UNANSWERED is still on record.
+    """
+    for q in pack.questions:
+        rec = st.answers.get(q.id)
+        if not q.requires_slot or q.kind is not QuestionKind.PROFILE or rec is None or rec.state is not AnswerStatus.UNANSWERED: continue
+        if q.requires_slot in slots or (roster_given and _on_roster(pack, q.requires_slot)): del st.answers[q.id]
 def apply_profile_patch(pack: PackConfig, state: CallState, patch: ProfilePatch, *, attempted_on_profile: bool = False) -> CallState:
     """A patch is a turn whose only content is profile data: the same five phases decide where the call goes."""
     if patch.is_empty and not attempted_on_profile: return state.model_copy(deep=True)
@@ -450,11 +467,22 @@ def reduce_turn(pack: PackConfig, state: CallState, cmd: TurnCommand) -> CallSta
         return st.model_copy(update={"phase": Phase.ASKING, "close_reason": None, "cursor": CursorStep(qid=clarify_qid)})
     if prev_kind == _PROFILE:
         if prev_spec is not None and _is_unsatisfied(pack, st, prev_spec):
-            if cmd.profile_turn_attempted or roster_given:
-                st.cursor = CursorStep(qid=prev_qid, hold_slot="roster" if st.roster_incomplete or _on_roster(pack, prev_spec.requires_slot) else prev_spec.requires_slot)
-            else:
+            if not (cmd.profile_turn_attempted or roster_given):
                 st.cursor = prev_step
-            return st
+                return st
+            held = CursorStep(qid=prev_qid, hold_slot="roster" if st.roster_incomplete or _on_roster(pack, prev_spec.requires_slot) else prev_spec.requires_slot,
+                              attempts=prev_step.attempts)
+            # A profile slot is asked like any other question, so a turn that brought no usable answer spends one of
+            # its attempts. A turn that did bring profile data (a count with no ages, a volunteered marriage) is not
+            # a miss and spends nothing, so the ages reask still owns the next turn without a changed step token.
+            # Until the budget runs out the re-ask is unchanged; the last attempt records an explicit UNANSWERED,
+            # which is what releases the step. Without it a caller who never gives her name re-asks "आपका नाम?"
+            # forever, and an extractor that hears no child re-asks the roster forever.
+            missed = roster_given or cmd.profile_patch is None or cmd.profile_patch.is_empty
+            if not (missed and _bump(held)):
+                st.cursor = held
+                return st
+            st.answers[prev_qid] = AnswerRecord(state=AnswerStatus.UNANSWERED)
         record_last = True
     # A profile change rewinds: only an earlier profile slot while this step is still live, else anything open before it.
     if profile_ran and (rewound := _reopens(pack, st, prev_qid, profile_only=local_cursor not in (None, prev_step))) is not None:

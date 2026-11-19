@@ -239,6 +239,81 @@ const api = {
 globalThis.api = api;
 """
 
+ADMIN_HARNESS = r"""
+const fs = require("fs"), vm = require("vm");
+const html = fs.readFileSync(process.env.HTML_PATH, "utf8");
+const source = fs.readFileSync(process.env.JS_PATH, "utf8");
+const nodes = {}, intervals = [];
+
+function node(id) {
+  const attrs = {}, listeners = {}, set = new Set(), kids = [];
+  const el = {
+    id, hidden: false, disabled: false, checked: false, value: "", src: "", href: "", textContent: "", innerHTML: "", className: "",
+    dataset: {}, style: {}, children: kids,
+    classList: {
+      add: (c) => set.add(c), remove: (c) => set.delete(c), contains: (c) => set.has(c),
+      toggle: (c, on) => { const v = on === undefined ? !set.has(c) : !!on; if (v) set.add(c); else set.delete(c); return v; }
+    },
+    setAttribute(k, v) { attrs[k] = String(v); },
+    getAttribute(k) { return k in attrs ? attrs[k] : null; },
+    removeAttribute(k) { delete attrs[k]; },
+    addEventListener(t, fn) { (listeners[t] = listeners[t] || []).push(fn); },
+    fire(t, ev) { (listeners[t] || []).forEach((fn) => fn(ev || { target: el })); },
+    appendChild(c) { kids.push(c); return c; },
+    replaceChildren() { kids.length = 0; },
+    querySelectorAll() { return []; }, querySelector() { return null; }, remove() {}, focus() {}, click() { el.fire("click"); }
+  };
+  return el;
+}
+
+/* Ids and hidden flags, straight from the served dashboard page. */
+for (const m of html.matchAll(/<([a-z]+)\s([^>]*?)\/?>/g)) {
+  const attrs = m[2] || "", id = /id="([^"]+)"/.exec(attrs);
+  if (!id) continue;
+  const el = node(id[1]);
+  el.hidden = /(^|\s)hidden(\s|$)/.test(attrs);
+  nodes[id[1]] = el;
+}
+
+const PLAN = {
+  pack: JSON.parse(process.env.ADMIN_PACK),
+  calls: JSON.parse(process.env.ADMIN_CALLS),
+  detail: JSON.parse(process.env.ADMIN_DETAIL)
+};
+const ok = (body) => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
+
+const box = {
+  console,
+  setInterval: (fn, ms) => { intervals.push({ fn, ms }); return intervals.length; },
+  clearInterval() {},
+  setTimeout: () => 0, clearTimeout() {},
+  document: {
+    getElementById: (id) => nodes[id] || (nodes[id] = node(id)),
+    createElement: (tag) => node(tag),
+    body: { classList: { add() {}, remove() {} } },
+    title: ""
+  },
+  location: { search: "", pathname: "/admin", href: "http://t/admin" },
+  navigator: { clipboard: { writeText: () => Promise.resolve() } },
+  URLSearchParams,
+  window: { addEventListener() {}, print() {} },
+  fetch: (url) => {
+    if (url === "/api/pack") return ok(PLAN.pack);
+    if (url === "/api/bugs") return ok([]);
+    if (url.indexOf("/api/calls/") === 0) return ok(PLAN.detail);
+    if (url === "/api/calls") return ok({ calls: PLAN.calls });
+    return ok({});
+  }
+};
+
+vm.createContext(box);
+vm.runInContext(source, box, { filename: "admin.js" });
+globalThis.api = {
+  nodes,
+  async settle() { for (let i = 0; i < 120; i += 1) await Promise.resolve(); }
+};
+"""
+
 PACK = {
     "ui": {
         "yes_no_prime": {"hi": "प्राइम हिंदी", "en": "Prime English"},
@@ -267,6 +342,43 @@ class CallPageTests(unittest.TestCase):
         )
         self.assertEqual(done.returncode, 0, done.stderr)
         return json.loads(done.stdout.strip().splitlines()[-1])
+
+    def run_admin_js(self, body: str, calls=None, detail=None) -> dict:
+        script = ADMIN_HARNESS + "\n(async () => {\n" + body + "\n})()" \
+            ".then((out) => process.stdout.write(JSON.stringify(out)))" \
+            ".catch((err) => { console.error(err); process.exit(1); });"
+        done = subprocess.run(
+            [NODE, "-e", script], capture_output=True, text=True, check=False,
+            env={"PATH": "/usr/bin:/bin:/usr/local/bin", "JS_PATH": str(STATIC / "admin.js"),
+                 "HTML_PATH": str(STATIC / "admin.html"), "ADMIN_PACK": json.dumps({"role": "admin"}),
+                 "ADMIN_CALLS": json.dumps(calls or [{"id": 1}]), "ADMIN_DETAIL": json.dumps(detail or {"id": 1})},
+        )
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return json.loads(done.stdout.strip().splitlines()[-1])
+
+    def test_structured_answers_sort_concern_unknown_unanswered_answered_clear(self):
+        # A chart reads worst-first: an `unanswered` question is a gap the clinician must close, so it belongs
+        # beside `unknown` — above `answered` and `clear`, never below them.
+        answers = {
+            "q_a": {"state": "clear", "choice_label": "clear"},
+            "q_b": {"state": "answered", "choice_label": "answered"},
+            "q_c": {"state": "unanswered"},
+            "q_d": {"state": "unknown"},
+            "q_e": {"state": "concern", "choice_label": "concern"},
+            "q_f": {"state": "not_applicable"},
+        }
+        out = self.run_admin_js(r"""
+await api.settle();
+const html = api.nodes["answers"].innerHTML;
+const states = [];
+for (const m of html.matchAll(/<tr[^>]*><td>([^<]*)<\/td><td>([^<]*)<\/td>/g)) states.push(m[2]);
+return { states, html };
+""", calls=[{"id": 7, "pack_id": "p", "status": "completed"}],
+            detail={"id": 7, "pack_id": "p", "status": "completed", "cursor_state": {"answers": answers},
+                    "events": [], "transcript": [], "telemetry": {}})
+
+        self.assertEqual(out["states"], ["concern", "unknown", "unanswered", "answered", "clear"])
+        self.assertNotIn("not_applicable", out["html"], "not_applicable questions stay out of the chart")
 
     def test_first_yes_no_primes_once_then_pills_and_bug_dialog(self):
         out = self.run_js(r"""
@@ -368,9 +480,13 @@ const twoSeconds = api.nodes["nudge-btn"].hidden;
 api.advance(1500);
 const afterThree = !api.nodes["nudge-btn"].hidden;
 
+/* The revealed button is the saffron one (`styles.css .nudge-btn.hot`), not an invisible white pill. */
+const hotOnReveal = api.nodes["nudge-btn"].classList.contains("hot");
+
 /* Talking again hides it and re-arms the clock. */
 api.mic(0.2);
 const talksAgain = api.nodes["nudge-btn"].hidden;
+const hotWhileQuietAgain = api.nodes["nudge-btn"].classList.contains("hot");
 api.mic(0);
 api.advance(3500);
 const revealedAgain = !api.nodes["nudge-btn"].hidden;
@@ -379,6 +495,7 @@ const revealedAgain = !api.nodes["nudge-btn"].hidden;
 api.nodes["nudge-btn"].fire("click");
 await api.settle();
 const afterTap = api.nodes["nudge-btn"].hidden;
+const hotAfterTap = api.nodes["nudge-btn"].classList.contains("hot");
 const nudges = api.sent.filter((m) => m.type === "nudge").length;
 
 /* A bot turn arriving hides it; a quick-reply tap starts a fresh wait. */
@@ -393,16 +510,20 @@ api.advance(4000);
 const nudgeDuringPrompting = api.nodes["nudge-btn"].hidden;
 api.advance(1500);
 const afterReply = !api.nodes["nudge-btn"].hidden;
+const hotAfterReply = api.nodes["nudge-btn"].classList.contains("hot");
 api.push({ type: "question_state", step: "fever_days", is_yes_no: true, quick_replies: [], prompt_chars: 60 });
 api.push({ type: "audio", data: api.pcm(4800), sample_rate: 24000 });
 await api.settle();
 const afterBotAudio = api.nodes["nudge-btn"].hidden;
+const hotAfterBotAudio = api.nodes["nudge-btn"].classList.contains("hot");
 api.push({ type: "clear" });
 api.advance(4000);
 const afterClear = api.nodes["nudge-btn"].hidden;
+const hotAfterClear = api.nodes["nudge-btn"].classList.contains("hot");
 
-return { micReady, quietIdle, duringSpeech, stillSpeaking, twoSeconds, afterThree, talksAgain, revealedAgain,
-         afterTap, nudges, nudgeDuringPrompting, afterReply, afterBotAudio, afterClear };
+return { micReady, quietIdle, duringSpeech, stillSpeaking, twoSeconds, afterThree, hotOnReveal, talksAgain,
+         hotWhileQuietAgain, revealedAgain, afterTap, hotAfterTap, nudges, nudgeDuringPrompting, afterReply,
+         hotAfterReply, afterBotAudio, hotAfterBotAudio, afterClear, hotAfterClear };
 """)
 
         self.assertTrue(out["micReady"], "the capture worklet is wired up by startCall")
@@ -411,14 +532,20 @@ return { micReady, quietIdle, duringSpeech, stillSpeaking, twoSeconds, afterThre
         self.assertTrue(out["stillSpeaking"], "a long utterance keeps it hidden")
         self.assertTrue(out["twoSeconds"], "2 s of silence is too early")
         self.assertTrue(out["afterThree"], "past 3 s it must surface")
+        self.assertTrue(out["hotOnReveal"], "the revealed nudge carries .hot so it paints saffron")
         self.assertTrue(out["talksAgain"], "speaking again hides it")
+        self.assertFalse(out["hotWhileQuietAgain"], "and the .hot highlight goes with it")
         self.assertTrue(out["revealedAgain"], "and the clock restarts on silence")
         self.assertTrue(out["afterTap"], "the tap hides it")
+        self.assertFalse(out["hotAfterTap"], "the tap clears the .hot highlight")
         self.assertEqual(out["nudges"], 1, "the tap sends exactly one nudge")
         self.assertTrue(out["nudgeDuringPrompting"], "no nudge in the 5 s prompting window after a tap")
         self.assertTrue(out["afterReply"], "a quick-reply tap arms the wait even with no mic frames")
+        self.assertTrue(out["hotAfterReply"], "the re-revealed nudge is highlighted too")
         self.assertTrue(out["afterBotAudio"], "bot audio clears the wait")
+        self.assertFalse(out["hotAfterBotAudio"], "and it drops the .hot highlight")
         self.assertTrue(out["afterClear"], "a clear clears the wait")
+        self.assertFalse(out["hotAfterClear"], "and drops the .hot highlight")
 
     def test_the_mic_is_muted_while_shishu_speaks_so_no_echo_is_sent(self):
         # "She can tap over SHISHU but not talk over her": while any of her audio is still queued, the capture

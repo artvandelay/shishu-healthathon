@@ -1,7 +1,13 @@
 """End-to-end HTTP and socket checks for the V3 intake app. No network calls."""
 
+import json
 import os
+import shutil
+import subprocess
+import sys
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import tests  # noqa: F401 — ensure isolated TEST_DATA_DIR under `-s tests`
@@ -15,10 +21,26 @@ USER_PASS = os.environ["APP_PASSCODE"]
 ADMIN_PASS = os.environ["ADMIN_PASSCODE"]
 
 
+_SEEDED = False
+
+
+def seed_once() -> None:
+    """Seed the demo calls exactly once for the whole module.
+
+    Seeding is no longer a side effect of the app lifespan (it is gated behind `SEED_DEMO_CALLS`), so the
+    tests that need finished calls ask for them here instead of hoping the boot path did it.
+    """
+    global _SEEDED
+    if not _SEEDED:
+        reports.ensure_seeded()
+        _SEEDED = bool(db.list_calls())
+
+
 class AppTestCase(unittest.TestCase):
     """One client and empty rate-limit windows per test, over the shared seeded database."""
 
     def setUp(self) -> None:
+        seed_once()
         for bucket in intake_app.HITS.values():
             bucket.clear()
         self.client = TestClient(intake_app.app)
@@ -99,6 +121,18 @@ class RateLimitTests(AppTestCase):
         limit = intake_app.LIMITS["login"][0]
         codes = [self.client.post("/api/login", json={"passcode": "wrong"}).status_code
                  for _ in range(limit + 1)]
+        self.assertEqual(codes[:limit], [401] * limit)
+        self.assertEqual(codes[-1], 429)
+
+    def test_a_spoofed_leftmost_x_forwarded_for_cannot_dodge_the_login_cap(self):
+        # Railway's edge appends the real client IP on the right of X-Forwarded-For; anything the browser
+        # sends is on the left. Reading the leftmost entry let an attacker mint a fresh rate-limit bucket
+        # per request just by varying the header, so the cap below must key off the rightmost entry.
+        limit = intake_app.LIMITS["login"][0]
+        codes = [self.client.post(
+            "/api/login", json={"passcode": "wrong"},
+            headers={"x-forwarded-for": f"10.0.{i}.{i}, 203.0.113.9"}).status_code
+            for i in range(1, limit + 2)]
         self.assertEqual(codes[:limit], [401] * limit)
         self.assertEqual(codes[-1], 429)
 
@@ -282,6 +316,50 @@ class LiveSocketTests(AppTestCase):
             with self.client.websocket_connect("/ws/live?pack=shishu-hi"):
                 pass
             self.assertEqual(seen["resume_token"], "")
+
+
+class SeedGateTests(unittest.TestCase):
+    """A fresh production database must stay empty unless demo seeding is asked for explicitly.
+
+    `ensure_seeded()` used to run on every boot, so a brand-new prod deploy silently invented six completed
+    patients. It now runs only when `SEED_DEMO_CALLS` says so. Each case boots the real lifespan in a child
+    process against its own empty `DATA_DIR`, because `intake.db` binds its database path at import time.
+    """
+
+    SCRIPT = (
+        "import json\n"
+        "from fastapi.testclient import TestClient\n"
+        "from intake import app as intake_app, db\n"
+        "with TestClient(intake_app.app):\n"
+        "    pass\n"
+        "print(json.dumps(len(db.list_calls())))\n"
+    )
+
+    def boot_with(self, seed_flag: str | None) -> int:
+        root = Path(__file__).resolve().parents[1]
+        data_dir = tempfile.mkdtemp(prefix="intake-seed-gate-")
+        env = {k: v for k, v in os.environ.items() if k != "SEED_DEMO_CALLS"}
+        env.update({"DATA_DIR": data_dir, "PYTHONPATH": str(root)})
+        if seed_flag is not None:
+            env["SEED_DEMO_CALLS"] = seed_flag
+        try:
+            done = subprocess.run([sys.executable, "-c", self.SCRIPT], cwd=str(root), env=env,
+                                  capture_output=True, text=True, timeout=300)
+        finally:
+            shutil.rmtree(data_dir, ignore_errors=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return int(json.loads(done.stdout.strip().splitlines()[-1]))
+
+    def test_an_empty_database_stays_empty_without_the_seed_flag(self):
+        self.assertEqual(self.boot_with(None), 0)
+
+    def test_a_negative_seed_flag_leaves_the_database_empty_too(self):
+        for flag in ("", "0", "false", "no", "off"):
+            self.assertEqual(self.boot_with(flag), 0, flag)
+
+    def test_the_seed_flag_fills_an_empty_database(self):
+        for flag in ("1", "true", "yes", "TRUE", " Yes "):
+            self.assertEqual(self.boot_with(flag), 6, flag)
 
 
 if __name__ == "__main__":
