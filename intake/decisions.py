@@ -219,6 +219,16 @@ def _quiet_split(a: Mapping[str, Any], t: Mapping[str, float]) -> str:
     if len(ranked) < 2 or {ranked[0][0], ranked[1][0]} != {"clear", "unknown"}: return ""
     pair, third = ranked[0][1] + ranked[1][1], (ranked[2][1] if len(ranked) > 2 else 0.0)
     return ranked[0][0] if pair >= t["outcome_min_confidence"] and pair - third >= t["outcome_min_margin"] else ""
+def _clarify_split(a: Mapping[str, Any], t: Mapping[str, float]) -> str:
+    """A question mixed with an answer is still her question: the pair is read as clarify, not as a missed turn.
+
+    Call #67 Event 24 split `concern` 0.493 / `clarify` 0.329 on "आप बच्चे की पूछ रहे कि बूढ़े की पूछ रहे?".
+    Neither label cleared the margin, `asks_clarify` stayed under its gate, and the turn burned an attempt.
+    """
+    ranked = _rank(a, "active_outcome")
+    if len(ranked) < 2 or {ranked[0][0], ranked[1][0]} not in ({"concern", "clarify"}, {"clear", "clarify"}): return ""
+    pair, third = ranked[0][1] + ranked[1][1], (ranked[2][1] if len(ranked) > 2 else 0.0)
+    return "clarify" if pair >= t["outcome_min_confidence"] and pair - third >= t["outcome_min_margin"] else ""
 def _score_value(a: Mapping[str, Any], t: Mapping[str, float]) -> dict[str, Any] | None:
     """A rubric score plus its nearest level, accepted only when the head's own confidence clears the pack gate."""
     head = a.get("score_value")
@@ -253,6 +263,18 @@ def _clarify_routable(pack: PackConfig, state: CallState) -> frozenset[str]:
 
 def _ac(claims: list[ClinicalClaim], qid: str, domain: DomainFit, *, status: TurnOutcome | None = None, value: Any = None) -> None:
     claims.append(ClinicalClaim(target_qid=qid, relation=TopicRelation.ACTIVE, domain_fit=domain, status=status, value=value))
+def _utterance_already_stored(kind: str, spec: QuestionSpec | None, w: str, followup_answered: bool, claims: list[ClinicalClaim]) -> bool:
+    """True when this turn's words already sit on an accepted active note, so a second aside would file them twice.
+
+    Followup, which-item, and close steps keep the utterance. A main CONCERN does too once the followup is
+    already answered, or when the question has no followup left to ask. Call #67 Event 30 accepted
+    "मेरे नाना-नानी को अल्जाइमर था" on `fam_fits_delay:followup:0` and also emitted CLINICAL_ASIDE.
+    """
+    active = [c for c in claims if c.relation is TopicRelation.ACTIVE and c.status is not None]
+    if not active: return False
+    if kind in ("followup", "close"): return True
+    if kind == "which_item": return any(c.status is not TurnOutcome.CLEAR for c in active)
+    return kind == "main" and w == "concern" and (followup_answered or spec is None or not spec.followups)
 
 def interpret_turn_decision(pack: PackConfig, state: CallState, raw_answers: Mapping[str, Any], *, utterance_text: str = "") -> TurnIntent:
     t = {k: float(v) for k, v in (pack.decisions.get("thresholds") or {}).items()}
@@ -267,7 +289,7 @@ def interpret_turn_decision(pack: PackConfig, state: CallState, raw_answers: Map
     val = None if closing or kind != "main" else _active_value(spec, a, t)
     w = ""
     if not closing and val is None:
-        w = _pick(a, "active_outcome", t, "outcome", allowed=_OUTCOMES) or _quiet_split(a, t)
+        w = _pick(a, "active_outcome", t, "outcome", allowed=_OUTCOMES) or _quiet_split(a, t) or _clarify_split(a, t)
     stated = {} if closing else _stated_writes(pack, state, a, t)
     next_probs = _next_qid_probs(a)
     flags = tuple(f for f, fs in pack.semantic_flags.items() if f not in state.semantic_flags and _yes(a, f"flag_{f}", fs.get("min_yes", 0.8)))
@@ -307,7 +329,8 @@ def interpret_turn_decision(pack: PackConfig, state: CallState, raw_answers: Map
         claims.append(ClinicalClaim(target_qid=qid, relation=TopicRelation.OTHER_FORM, domain_fit=DomainFit.IN_DOMAIN, status=status))
         if act is SpeechAct.NONE and active_relation is TopicRelation.UNRELATED:
             active_relation, active_domain = TopicRelation.OTHER_FORM, DomainFit.NONE
-    if on["residual_clinical"] and not stated and not closing and not (spec is not None and spec.kind is QuestionKind.OPEN_CAPTURE):
+    stored_utt = _utterance_already_stored(kind, spec, w, followup_answered, claims)
+    if on["residual_clinical"] and not stated and not closing and not stored_utt and not (spec is not None and spec.kind is QuestionKind.OPEN_CAPTURE):
         claims.append(ClinicalClaim(relation=TopicRelation.CLINICAL_ASIDE, domain_fit=DomainFit.NONE))
         if active_relation is TopicRelation.UNRELATED:
             active_relation = TopicRelation.CLINICAL_ASIDE

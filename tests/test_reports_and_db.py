@@ -18,7 +18,7 @@ from unittest import mock
 
 import tests  # noqa: F401 — ensure isolated TEST_DATA_DIR under `-s tests`
 from intake import db, engine, reports
-from intake.models import CallState, Phase, ProfilePatch, TurnCommand
+from intake.models import AnswerRecord, AnswerStatus, CallState, Phase, ProfilePatch, TurnCommand
 from intake.pack import load_pack
 
 _SHISHU = "shishu-hi"
@@ -107,6 +107,85 @@ class Page2DetailTests(unittest.TestCase):
         items = [item for group in groups for item in group["items"]]
         self.assertIn({"question": self.MARRIED_Q, "answer": "शादी हो गई"}, items)
         self.assertIn(self.SHISHU_CLEAR_Q, items)
+
+
+class ResponseStateGlossaryTests(unittest.TestCase):
+    """UNKNOWN is what she said (पता नहीं). UNANSWERED is a question the call never got an answer for.
+
+    Call #67 wrote UNKNOWN after off-topic misses, so the report told the doctor she had said she did not know.
+    """
+
+    _CASES = {
+        _SHISHU: {
+            "unknown": ("birth_jaundice",
+                        "जन्म के बाद पीलिया के लिए बच्चे को नीली लाइट में रखना पड़ा था",
+                        "jaundice treated under blue light"),
+            "unanswered": ("birth_bcg",
+                           "कंधे के BCG टीके की जगह पर बड़ा फोड़ा, मवाद, या बगल में गाँठ हुई थी",
+                           "big boil, pus, or armpit lump at the BCG site"),
+        },
+        _FEVER: {
+            "unknown": ("jaundice_or_bleeding",
+                        "आँखों या शरीर में पीलापन दिख रहा है, या नाक, मसूड़े या पेशाब से खून आ रहा है",
+                        "jaundice, or bleeding from the nose, gums, or in the urine"),
+            "unanswered": ("breathing_or_chest",
+                           "साँस लेने में तकलीफ़ है, या छाती में दर्द या जकड़न है",
+                           "difficulty breathing, or chest pain or tightness"),
+        },
+    }
+
+    def ans_for(self, html: str, question: str) -> str:
+        row = re.search(r'<div class="no-row"><span>' + re.escape(question) + r'</span>'
+                        r'<span class="ans">([^<]*)</span></div>', html)
+        self.assertIsNotNone(row, f"no page-two row for {question!r}")
+        return row.group(1)
+
+    def test_glossary_is_fixed_on_clinician_note_and_patient_pdf(self):
+        for pack_id in (_SHISHU, _FEVER):
+            pack = load_pack(pack_id)
+            proj = reports.project_summary(pack, CallState())
+            html = reports.render_patient_html(
+                pack, {"id": 3, "started_at": reports.SAMPLE_STARTED_AT, "duration_sec": 60}, proj)
+            with self.subTest(pack=pack_id, surface="clinician"):
+                md = proj.doctor_markdown
+                self.assertIn("### Response State Glossary", md)
+                self.assertIn("Concern / हाँ — caller reported yes.", md)
+                self.assertIn("Clear / नहीं — caller reported no.", md)
+                self.assertIn("Unknown / पता नहीं — caller said don't know / not tested.", md)
+                self.assertIn(
+                    "Unanswered / जवाब नहीं हो पाया — question was not answered on the call — doctor should confirm.",
+                    md)
+            with self.subTest(pack=pack_id, surface="patient"):
+                self.assertIn("जवाब का मतलब", html)
+                self.assertIn("पता नहीं", html)
+                self.assertIn("खुद कहा — पता नहीं, या जाँच नहीं हुई", html)
+                self.assertIn("जवाब नहीं हो पाया", html)
+                self.assertIn("कॉल पर जवाब नहीं मिला — डॉक्टर से बात करें", html)
+
+    def test_unanswered_renders_apart_from_unknown(self):
+        for pack_id, case in self._CASES.items():
+            pack = load_pack(pack_id)
+            unk_id, unk_stem, unk_need = case["unknown"]
+            miss_id, miss_stem, miss_need = case["unanswered"]
+            state = CallState(answers={
+                unk_id: AnswerRecord(state=AnswerStatus.UNKNOWN),
+                miss_id: AnswerRecord(state=AnswerStatus.UNANSWERED),
+            })
+            proj = reports.project_summary(pack, state)
+            html = reports.render_patient_html(
+                pack, {"id": 7, "started_at": reports.SAMPLE_STARTED_AT, "duration_sec": 90}, proj)
+            with self.subTest(pack=pack_id):
+                self.assertIn(f"Unknown. {unk_need}.", proj.doctor_markdown)
+                self.assertIn(f"Not answered on call (confirm with patient). {miss_need}.", proj.doctor_markdown)
+                self.assertNotIn(f"Unknown. {miss_need}.", proj.doctor_markdown)
+                self.assertNotIn(f"Not answered on call (confirm with patient). {unk_need}.", proj.doctor_markdown)
+                self.assertIn(unk_stem, proj.page2_unknown)
+                self.assertNotIn(miss_stem, proj.page2_unknown)
+                self.assertIn(miss_stem, proj.page2_unanswered)
+                self.assertEqual(self.ans_for(html, unk_stem), "पता नहीं")
+                self.assertEqual(self.ans_for(html, miss_stem), "जवाब नहीं हो पाया — डॉक्टर से बात करें")
+                negatives = proj.doctor_markdown.split("### Pertinent Negatives", 1)[1]
+                self.assertNotIn(miss_need, negatives)
 
 
 class BuildInfoTests(unittest.TestCase):

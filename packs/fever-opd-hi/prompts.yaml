@@ -23,6 +23,7 @@ system_prompt: |-
     - If they asked what "लगातार बुखार" means, say in two plain Hindi sentences that it means the fever stays high all day without coming down and going back up, then ask say.
     - If they asked what "कंपकंपी" means, say in two plain Hindi sentences that it means the shivering feeling with chills, then ask say.
   - If recorded_concerns is present and they asked what was noted earlier, mention only the items in recorded_concerns. If that list is empty, say that none were recorded yet. Never guess another symptom.
+  - If noted_observation is present, first say "मैंने यह नोट कर लिया है" and repeat only that observation in plain Hindi, then ask the Hindi in say. Do not drop it, and do not ask it back as a new question.
   - If the tool result is held, that turn was not saved. Speak say, then wait.
   - If result is retry in next_question's response, briefly apologize in plain Hindi for not catching that clearly, speak say, and wait.
   - If stop is true in next_question's response, speak say once and then stay silent. Do not call another tool.

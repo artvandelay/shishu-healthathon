@@ -16,3 +16,9 @@
 {%- if observations %}
 {{ block("### Additional Clinical Observations (Unlisted)", observations, nothing) }}
 {% endif %}
+{{ block("### Response State Glossary", [
+  "Concern / हाँ — caller reported yes.",
+  "Clear / नहीं — caller reported no.",
+  "Unknown / पता नहीं — caller said don't know / not tested.",
+  "Unanswered / जवाब नहीं हो पाया — question was not answered on the call — doctor should confirm.",
+], nothing) }}

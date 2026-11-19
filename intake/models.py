@@ -25,15 +25,15 @@ QuestionKind = _enum("QuestionKind", "PROFILE BRIDGE ROUTING_GATE GATE SINGLE_CH
 TurnOutcome = _enum("TurnOutcome", "CLEAR CONCERN ANSWERED UNKNOWN CLARIFY RETRACT NOT_ABOUT_ACTIVE")
 CloseReason = _enum("CloseReason", "COMPLETE SILENCE TIME_LIMIT EMERGENCY CALLER_STOP TECHNICAL_FAILURE")
 _YES_NO = (QuestionKind.BRIDGE, QuestionKind.ROUTING_GATE, QuestionKind.GATE, QuestionKind.OPEN_CAPTURE)
-AnswerStatus = _enum("AnswerStatus", "CONCERN CLEAR ANSWERED UNKNOWN NOT_APPLICABLE")
-AnswerStatus.is_resolved = property(lambda s: s in (s.CONCERN, s.CLEAR, s.ANSWERED, s.UNKNOWN))
+AnswerStatus = _enum("AnswerStatus", "CONCERN CLEAR ANSWERED UNKNOWN UNANSWERED NOT_APPLICABLE")
+AnswerStatus.is_resolved = property(lambda s: s in (s.CONCERN, s.CLEAR, s.ANSWERED, s.UNKNOWN, s.UNANSWERED))
 
 def dedupe_clauses(clauses: Iterable[str]) -> str:
     seen: dict[str, str] = {}
     for text in filter(None, (" ".join(p.split()) for c in clauses for p in str(c or "").split(SEP))): seen.setdefault(text.casefold(), text)
     return SEP_SP.join(seen.values())
 def _joined(rec: AnswerRecord, attr: str, *, skip_clear: bool = False) -> str:
-    return dedupe_clauses([getattr(rec.note, attr), *(getattr(s.note, attr) for s in rec.followups.values() if not (skip_clear and s.state in (AnswerStatus.CLEAR, AnswerStatus.UNKNOWN)))])
+    return dedupe_clauses([getattr(rec.note, attr), *(getattr(s.note, attr) for s in rec.followups.values() if not (skip_clear and s.state in (AnswerStatus.CLEAR, AnswerStatus.UNKNOWN, AnswerStatus.UNANSWERED)))])
 class NoteText(_Frozen):
     verbatim: str = ""
     patient_safe: str = ""

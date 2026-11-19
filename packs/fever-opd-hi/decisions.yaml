@@ -128,13 +128,18 @@ heads:
     instructions: >-
       Does caller_utterance ask what active_question means, ask what any medical or clinical term means
       (whether that term appears inside active_question or is mentioned separately in caller_utterance),
-      ask to repeat, or say they did not understand?
+      ask to repeat, or say they did not understand? Also true for a meta-question about this call or the
+      notes, such as "did you note that?" or "are you asking about kids or adults?"
+      (for example "आप बच्चे की पूछ रहे कि बूढ़े की पूछ रहे?").
     criteria:
       true_description: >-
         Asks the meaning of active_question or of any medical/clinical term (in active_question or mentioned
-        separately), asks to repeat, or says they did not understand.
+        separately), asks to repeat, says they did not understand, or asks a meta-question about the call
+        or the notes, such as "did you note that?" or "are you asking about kids or adults?".
       false_description: >-
         Gives an answer, denial, symptom report, or unrelated talk without asking for clarification.
+        A question about what was noted, or about whether the question is about kids or adults, is a
+        clarification, not unrelated talk.
 
   clarify_target_template:
     type: choice

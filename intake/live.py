@@ -72,10 +72,11 @@ def speak_cue(pack: PackConfig, state: CallState, kind: str = "speak") -> str:
     key = "closing" if state.phase is not Phase.ASKING else kind
     prompt = _reask_say(pack, state) if key == "retry" else engine.say_text(pack, state)
     return str((pack.prompts.get("speak_cues") or {}).get(key) or "{prompt}").replace("{prompt}", prompt)
-def tool_body(pack: PackConfig, state: CallState, *, clarify: bool = False) -> dict[str, Any]:
+def tool_body(pack: PackConfig, state: CallState, *, clarify: bool = False, noted_observation: str = "") -> dict[str, Any]:
     spec, body = pack.by_id.get(state.cursor.qid), {"result": "ok", "say": engine.say_text(pack, state)}
     if state.phase is Phase.CLOSING: body["stop"] = True
     if clarify or (spec is not None and spec.shares_recorded_concerns): body["recorded_concerns"] = engine.recorded_concerns_summary(pack, state)
+    if noted := " ".join(noted_observation.split()): body["noted_observation"] = noted
     return body | {"clarify": True} if clarify else body
 def question_state_payload(pack: PackConfig, state: CallState, epoch: int = 0) -> dict[str, Any]:
     spec, (is_yn, replies) = pack.by_id.get(state.cursor.qid), engine.quick_replies(pack, state)
@@ -551,7 +552,7 @@ class LiveCallSession:
                 await self._commit_turn(self.state, evidence)
                 self.last_turn_meta = {"step_in": turn.snapshot.step_token, "step_out": self.state.step_token, "reason": "stale_turn"}
                 return {**tool_body(self.pack, self.state), "result": "held", "reason": "stale_turn"}, False
-            cmd, ext, step_in = turn.intent.command, turn.extraction, turn.snapshot.step_token
+            cmd, ext, step_in, pol = turn.intent.command, turn.extraction, turn.snapshot.step_token, None
             if turn.intent.needs_profile_extraction and ext is None:
                 ext = await extractor.extract_profile_entities(self.pack, turn.snapshot, utterance_text=turn.spoken, audio_wav_bytes=turn.wav)
             interp = turn.intent.interpretation
@@ -575,8 +576,15 @@ class LiveCallSession:
                 engine._redact_note(cmd, answered.qid),
             )
             self.last_turn_meta = self._turn_meta(turn, step_in, cmd, ext)
-            clarify = not (cmd.emergency or cmd.caller_stop) and cmd.outcome is TurnOutcome.CLARIFY
-            return tool_body(self.pack, self.state, clarify=clarify), clarify
+            stayed = (self.state.phase is Phase.ASKING and self.state.cursor.qid == answered.qid
+                      and self.state.cursor.substep is answered.substep and self.state.cursor.followup_idx == answered.followup_idx)
+            # A backtrack or a side note that did not answer the question still has to be spoken back. Call #67
+            # Event 42 kept the uncle's diabetic blindness and then re-asked fam_cancer with a bare speak cue.
+            ack = bool(pol is not None and stayed and any(
+                d.disposition is Disposition.RETAIN_OBSERVATION or d.reason is DecisionReason.OTHER_FORM for d in pol.decisions))
+            noted = " ".join((turn.spoken or cmd.utterance or "").split()) if ack else ""
+            clarify = not (cmd.emergency or cmd.caller_stop) and (cmd.outcome is TurnOutcome.CLARIFY or ack)
+            return tool_body(self.pack, self.state, clarify=clarify, noted_observation=noted), clarify
         finally:
             if self.turn_phase is TurnPhase.DECIDING:
                 # A standalone caller (`_next_question` then `_hear`) must never stay wedged in DECIDING; the mic

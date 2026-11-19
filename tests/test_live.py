@@ -2868,5 +2868,81 @@ class Wave3AcousticAndPlaybackTailTests(unittest.TestCase):
         asyncio.run(body())
 
 
+class Call67AckTests(unittest.TestCase):
+    """Call #67 Event 42: a retained aside or other-form note must be spoken back before the same question is asked again."""
+
+    ASIDE = "मामा को शुगर से अंधापन हो गया, कैंसर नहीं"
+    OTHER = "बुआ को दिल की बीमारी है, कैंसर नहीं"
+
+    def session_at(self, qid: str) -> live.LiveCallSession:
+        st = live.engine.new_state(PACK)
+        st.cursor = live.engine.new_state(PACK).cursor.model_copy(update={"qid": qid})
+        built, _ws, _session = build(state=st)
+        return built
+
+    def test_retained_aside_is_acknowledged_before_the_same_question_is_asked_again(self):
+        # Event 42, fam_cancer: backtracking about an uncle's diabetic blindness. Policy keeps the observation
+        # and the outcome stays not_about_active, so the cue used to repeat fam_cancer with no acknowledgement.
+        async def body() -> None:
+            built = self.session_at("fam_cancer")
+            raw = {
+                "danger_now": {"noul": 0.01},
+                "active_topic": {"noul": 0.08},
+                "residual_clinical": {"noul": 0.94},
+                "asks_clarify": {"noul": 0.06},
+                "active_outcome": {"probabilities": {"other": 0.91, "concern": 0.05, "clear": 0.04}},
+            }
+
+            async def evaluate(snapshot, spoken, pcm_bytes):
+                result = live.decisions.DecisionCallResult(True, "", 1, 180, 120, 6, 40, raw)
+                intent = live.decisions.interpret_turn_decision(PACK, snapshot, raw, utterance_text=spoken)
+                return live.Turn(result, intent, None, snapshot, spoken, len(pcm_bytes), None)
+
+            built._evaluate_turn_task = evaluate  # type: ignore[method-assign]
+            built.text = self.ASIDE
+            body_json, clarify = await built._next_question()
+            self.assertEqual(built.state.cursor.qid, "fam_cancer")
+            self.assertEqual(built.state.cursor.attempts, 1, "the aside still does not answer fam_cancer")
+            self.assertIs(built.state.phase, live.Phase.ASKING)
+            self.assertTrue(clarify, f"a retained observation must be spoken back, body={body_json}")
+            self.assertTrue(body_json.get("clarify"))
+            self.assertIn("अंधापन", body_json.get("noted_observation", ""))
+            self.assertIn("recorded_concerns", body_json)
+            self.assertIn("noted_observation", PACK.prompts["system_prompt"])
+            self.assertIn("मैंने यह नोट कर लिया है", PACK.prompts["system_prompt"])
+
+        asyncio.run(body())
+
+    def test_other_form_note_is_acknowledged_while_the_cursor_stays(self):
+        async def body() -> None:
+            built = self.session_at("fam_cancer")
+            raw = {
+                "danger_now": {"noul": 0.01},
+                "active_topic": {"noul": 0.1},
+                "residual_clinical": {"noul": 0.1},
+                "asks_clarify": {"noul": 0.05},
+                "active_outcome": {"probabilities": {"other": 0.9, "concern": 0.05, "clear": 0.05}},
+                "stated_fam_heart_kidney": {"probabilities": {"concern": 0.95, "unmentioned": 0.03, "clear": 0.02}},
+            }
+
+            async def evaluate(snapshot, spoken, pcm_bytes):
+                result = live.decisions.DecisionCallResult(True, "", 1, 180, 120, 6, 40, raw)
+                intent = live.decisions.interpret_turn_decision(PACK, snapshot, raw, utterance_text=spoken)
+                return live.Turn(result, intent, None, snapshot, spoken, len(pcm_bytes), None)
+
+            built._evaluate_turn_task = evaluate  # type: ignore[method-assign]
+            built.text = self.OTHER
+            body_json, clarify = await built._next_question()
+            # A stated side-write keeps the ask (attempts stay 0) and does not answer fam_cancer.
+            self.assertEqual((built.state.cursor.qid, built.state.cursor.attempts), ("fam_cancer", 0))
+            self.assertIs(built.state.phase, live.Phase.ASKING)
+            self.assertTrue(clarify, f"an other-form note must be spoken back, body={body_json}")
+            self.assertIn("दिल", body_json.get("noted_observation", ""))
+            self.assertTrue(body_json.get("recorded_concerns"), body_json.get("recorded_concerns"))
+            self.assertIn("noted_observation", load_pack("fever-opd-hi").prompts["system_prompt"])
+
+        asyncio.run(body())
+
+
 if __name__ == "__main__":
     unittest.main()

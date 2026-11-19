@@ -12,7 +12,7 @@ from intake.engine import (
     reduce_turn, roster_rows, which_item_prompt,
 )
 from intake.models import (
-    AnswerRecord, AnswerStatus, CallState, CloseReason, CursorStep, OptionSpec, PackConfig, Phase,
+    AnswerRecord, AnswerStatus, CallState, CloseReason, CursorStep, FollowupSlot, NoteText, OptionSpec, PackConfig, Phase,
     ProfilePatch, QuestionKind, QuestionSpec, RosterInput, RosterItem, SubStep,
     TurnCommand, TurnOutcome, VariantSpec,
 )
@@ -110,14 +110,19 @@ class EngineSyntheticTests(unittest.TestCase):
         self.assertEqual([b["value"] for b in btns2], ["a", "b"])
         self.assertEqual(quick_reply_command(ch_pack, new_state(ch_pack), "b").value, "b")
 
-    def test_retry_exhaustion_records_unknown_and_moves_on(self):
-        pack = make_pack([gate("g"), gate("next")])
+    def test_retry_exhaustion_records_unanswered_and_moves_on(self):
+        # A value the question cannot accept is not "पता नहीं". Two misses close the step as unanswered
+        # and must not write a false no into the profile slot the question saves.
+        pack = make_pack([gate("g", saves_to_profile="flag"), gate("next")])
         st = new_state(pack)
         for _ in range(MAX_STEP_ATTEMPTS - 1):
             st = play(pack, st, TurnOutcome.ANSWERED, value="bad")
             self.assertEqual(st.cursor.qid, "g")
         st = play(pack, st, TurnOutcome.ANSWERED, value="bad")
-        self.assertEqual((st.answers["g"].state, st.cursor.qid), (AnswerStatus.UNKNOWN, "next"))
+        self.assertEqual((st.answers["g"].state.value, st.cursor.qid), ("unanswered", "next"))
+        self.assertNotIn("flag", st.profile)
+        self.assertTrue(st.answers["g"].state.is_resolved)
+        self.assertNotIn(st.answers["g"].state, (AnswerStatus.CONCERN, AnswerStatus.CLEAR, AnswerStatus.UNKNOWN))
 
     def test_audio_only_followup_keeps_several_slots_in_order(self):
         pack = make_pack([gate("nicu", followups=("nicu_reason", "nicu_days")), gate("next")],
@@ -137,17 +142,18 @@ class EngineSyntheticTests(unittest.TestCase):
         st = play(pack, st, TurnOutcome.NOT_ABOUT_ACTIVE, utterance="")
         self.assertEqual((st.cursor.qid, st.cursor.attempts), ("nicu", 1))
         st = play(pack, st, TurnOutcome.NOT_ABOUT_ACTIVE, utterance="उसकी तबीयत ठीक थी")
-        self.assertEqual((st.answers["nicu"].followups["nicu_reason"].state, st.cursor.qid), (AnswerStatus.UNKNOWN, "next"))
+        self.assertEqual((st.answers["nicu"].followups["nicu_reason"].state.value, st.cursor.qid), ("unanswered", "next"))
 
     def test_off_topic_turn_at_main_costs_an_attempt_then_gives_up(self):
         # Bug: NOT_ABOUT_ACTIVE at SubStep.MAIN returned an untouched state, so `attempts` never moved and the
-        # same question repeated forever. It must burn an attempt, then record UNKNOWN and move on.
+        # same question repeated forever. It must burn an attempt, then record unanswered and move on.
+        # Call #67: that give-up is not UNKNOWN — she never said पता नहीं.
         pack = make_pack([gate("g"), gate("next")])
         st = play(pack, new_state(pack), TurnOutcome.NOT_ABOUT_ACTIVE)
         self.assertEqual((st.cursor.qid, st.cursor.attempts), ("g", 1))
         self.assertIn("try:1", st.step_token)
         st = play(pack, st, TurnOutcome.NOT_ABOUT_ACTIVE)
-        self.assertEqual((st.answers["g"].state, st.cursor.qid), (AnswerStatus.UNKNOWN, "next"))
+        self.assertEqual((st.answers["g"].state.value, st.cursor.qid), ("unanswered", "next"))
 
     def test_open_capture_off_topic_turns_close_cleanly_and_keep_a_finding(self):
         pack = make_pack([{"id": "close_any", "kind": QuestionKind.OPEN_CAPTURE, "say": "कुछ और?"}])
@@ -164,7 +170,73 @@ class EngineSyntheticTests(unittest.TestCase):
         self.assertEqual((st.phase, st.close_reason), (Phase.CLOSING, CloseReason.COMPLETE))
         self.assertEqual(st.answers["close_any"].state, AnswerStatus.CONCERN)
         self.assertEqual(st.answers["close_any"].verbatim_text, "उसके पेट में दर्द रहता है; उसको रात में खांसी आती है")
-        # `_open_capture` line 302 semantics: the prior CONCERN transcript is never replaced by a bare UNKNOWN.
+        # A spoken CONCERN already on record is never flattened when the step gives up.
+
+    def test_call_67_off_topic_give_up_is_unanswered_while_dont_know_stays_unknown(self):
+        # Call #67: two turns that were not about the question exhausted the step. Writing UNKNOWN
+        # ("पता नहीं") claims the mother said she did not know. Only TurnOutcome.UNKNOWN may do that.
+        pack = make_pack([gate("said"), gate("missed"), gate("next")])
+        said = play(pack, new_state(pack), TurnOutcome.UNKNOWN)
+        self.assertEqual((said.answers["said"].state, said.cursor.qid), (AnswerStatus.UNKNOWN, "missed"))
+        missed = play(pack, said, TurnOutcome.NOT_ABOUT_ACTIVE)
+        self.assertEqual(missed.cursor.qid, "missed")
+        missed = play(pack, missed, TurnOutcome.NOT_ABOUT_ACTIVE)
+        self.assertEqual(missed.answers["missed"].state.value, "unanswered")
+        self.assertTrue(missed.answers["missed"].state.is_resolved)
+        self.assertNotIn(missed.answers["missed"].state, (AnswerStatus.CONCERN, AnswerStatus.CLEAR, AnswerStatus.UNKNOWN))
+        self.assertFalse(eval_rule(pack, missed, {"field": "missed", "op": "eq", "value": False}))
+        self.assertFalse(eval_rule(pack, missed, {"field": "missed", "op": "eq", "value": True}))
+        self.assertEqual(missed.answers["said"].state, AnswerStatus.UNKNOWN)
+        self.assertEqual(missed.cursor.qid, "next")
+
+    def test_unanswered_is_resolved_without_being_concern_or_clear(self):
+        member = AnswerStatus.__members__.get("UNANSWERED")
+        self.assertIsNotNone(member)
+        self.assertEqual(member.value, "unanswered")
+        self.assertTrue(member.is_resolved)
+        self.assertNotIn(member, (AnswerStatus.CONCERN, AnswerStatus.CLEAR, AnswerStatus.UNKNOWN))
+        self.assertFalse(AnswerStatus.NOT_APPLICABLE.is_resolved)
+        self.assertTrue(AnswerStatus.UNKNOWN.is_resolved)
+
+    def test_open_capture_exhaustion_without_a_finding_is_unanswered(self):
+        # Open capture sorts last, so it has to be the only step or the misses land on the gate instead.
+        pack = make_pack([{"id": "close_any", "kind": QuestionKind.OPEN_CAPTURE, "say": "कुछ और?"}])
+        st = new_state(pack)
+        self.assertEqual(st.cursor.qid, "close_any")
+        for _ in range(MAX_STEP_ATTEMPTS):
+            st = play(pack, st, TurnOutcome.NOT_ABOUT_ACTIVE, utterance="")
+        self.assertEqual(st.answers["close_any"].state.value, "unanswered")
+        self.assertEqual(st.answers["close_any"].verbatim_text, "")
+        self.assertEqual((st.phase, st.close_reason), (Phase.CLOSING, CloseReason.COMPLETE))
+
+    def test_open_capture_helper_writes_unanswered_and_keeps_a_spoken_finding(self):
+        # reduce_turn intercepts a silent NOT_ABOUT_ACTIVE before `_open_capture`. Call the helper so its
+        # own give-up cannot fall through to UNKNOWN, and a spoken CONCERN stays on record.
+        from intake.engine import _open_capture
+        pack = make_pack([{"id": "close_any", "kind": QuestionKind.OPEN_CAPTURE, "say": "कुछ और?"}])
+        spec = pack.by_id["close_any"]
+        blank = new_state(pack)
+        cmd = TurnCommand(outcome=TurnOutcome.NOT_ABOUT_ACTIVE)
+        self.assertIsNotNone(_open_capture(pack, blank, cmd, spec, ""))
+        self.assertIsNone(_open_capture(pack, blank, cmd, spec, ""))
+        self.assertEqual(blank.answers["close_any"].state.value, "unanswered")
+        known = new_state(pack)
+        self.assertIsNone(_open_capture(pack, known, TurnCommand(outcome=TurnOutcome.UNKNOWN), spec, ""))
+        self.assertEqual(known.answers["close_any"].state, AnswerStatus.UNKNOWN)
+        kept = new_state(pack)
+        kept.answers["close_any"] = AnswerRecord(state=AnswerStatus.CONCERN, note=NoteText.from_text("पेट में दर्द रहता है"))
+        self.assertIsNone(_open_capture(pack, kept, TurnCommand(outcome=TurnOutcome.CLEAR), spec, ""))
+        self.assertEqual(kept.answers["close_any"].state, AnswerStatus.CONCERN)
+        self.assertEqual(kept.answers["close_any"].verbatim_text, "पेट में दर्द रहता है")
+
+    def test_unanswered_followup_is_not_quoted_as_the_patients_words(self):
+        rec = AnswerRecord(
+            state=AnswerStatus.CONCERN,
+            note=NoteText.from_text("हाँ, NICU में रहा"),
+            followups={"nicu_reason": FollowupSlot(state=AnswerStatus.UNANSWERED, note=NoteText.from_text("गलत उद्धरण"))},
+        )
+        self.assertEqual(rec.patient_safe_text, "हाँ, NICU में रहा")
+        self.assertIn("गलत उद्धरण", rec.verbatim_text)
 
     def test_which_item_keeps_the_spoken_answer_when_no_child_resolves(self):
         # Bug: an ANSWERED turn naming no roster id dropped the transcript, losing "दोनों जुड़वाँ को".

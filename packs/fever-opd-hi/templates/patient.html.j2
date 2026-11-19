@@ -1,6 +1,6 @@
 {# Context: css, logo_uri, call_id, who, meta, emergency, incomplete, questions, yes_items,
-   page2_groups, page2_unknown, page2_unasked, universal_line.
-   Page one is for the patient; page two is the detail list: नहीं, पता नहीं, पूछा नहीं गया.
+   page2_groups, page2_unknown, page2_unanswered, page2_unasked, universal_line.
+   Page one is for the patient; page two is the detail list: नहीं, पता नहीं, जवाब नहीं हो पाया, पूछा नहीं गया.
    Identical context contract to every pack — `intake/reports.py` renders this with no pack-specific code. #}
 {%- macro detail_group(group, answer) -%}
 {%- set title = group["title"] if group is mapping else group.title -%}
@@ -42,7 +42,7 @@
 <h2>इस कॉल में जो हाँ था</h2>
 {% if yes_items %}
 <ul class="yes">{% for line in yes_items %}<li>{{ line|e }}</li>{% endfor %}</ul>
-{% elif page2_unasked and not page2_groups and not page2_unknown %}
+{% elif page2_unasked and not page2_groups and not page2_unknown and not page2_unanswered %}
 <p class="calm">इस कॉल में कोई जवाब दर्ज नहीं हुआ।</p>
 {% else %}
 <p class="calm">इस कॉल में कोई बात हाँ में नहीं आई।</p>
@@ -51,11 +51,22 @@
 <section class="page2">
   <h1>विवरण</h1>
   <p class="meta">{{ who|e }}</p>
+  <div class="group">जवाब का मतलब</div>
+  <div class="no-row"><span>हाँ</span><span class="ans">चिंता की बात</span></div>
+  <div class="no-row"><span>नहीं</span><span class="ans">साफ़ इनकार</span></div>
+  <div class="no-row"><span>पता नहीं</span><span class="ans">खुद कहा — पता नहीं, या जाँच नहीं हुई</span></div>
+  <div class="no-row"><span>जवाब नहीं हो पाया</span><span class="ans">कॉल पर जवाब नहीं मिला — डॉक्टर से बात करें</span></div>
 {% for group in page2_groups %}{{ detail_group(group, "नहीं") }}{% endfor %}
 {% if page2_unknown %}
   <div class="group">पक्का जवाब नहीं मिला</div>
 {% for question in page2_unknown %}
   <div class="no-row"><span>{{ question|e }}</span><span class="ans">पता नहीं</span></div>
+{% endfor %}
+{% endif %}
+{% if page2_unanswered %}
+  <div class="group">कॉल पर जवाब नहीं मिला</div>
+{% for question in page2_unanswered %}
+  <div class="no-row"><span>{{ question|e }}</span><span class="ans">जवाब नहीं हो पाया — डॉक्टर से बात करें</span></div>
 {% endfor %}
 {% endif %}
 {% if page2_unasked %}

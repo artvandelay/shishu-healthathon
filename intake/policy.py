@@ -11,7 +11,6 @@ from intake.turns import ClinicalClaim, CursorAction, DecisionReason, Dispositio
 CHOICE_KINDS = (QuestionKind.SINGLE_CHOICE, QuestionKind.MULTI_CHOICE, QuestionKind.SCORE)
 GATES = (QuestionKind.GATE, QuestionKind.ROUTING_GATE)
 OPENISH = (QuestionKind.OPEN_CAPTURE, QuestionKind.BRIDGE)
-_CHOICE_KINDS, _GATES, _OPENISH = CHOICE_KINDS, GATES, OPENISH
 _GATE_OUTCOMES = (TurnOutcome.CONCERN, TurnOutcome.CLEAR, TurnOutcome.UNKNOWN)
 _ACTIVE_OUTCOMES = (TurnOutcome.CONCERN, TurnOutcome.CLEAR, TurnOutcome.UNKNOWN, TurnOutcome.ANSWERED)
 _STATED_OUTCOMES = (TurnOutcome.CONCERN, TurnOutcome.CLEAR)
@@ -19,8 +18,8 @@ def _skip_blocked(pack: PackConfig, state: CallState, spec: QuestionSpec) -> boo
     return any(engine.eval_rule(pack, state, r) for r in spec.skip_if if "group_no_concern" not in (pack.rules.get(r) or {}))
 def _domain_membership(spec: QuestionSpec, claim: ClinicalClaim) -> bool:
     kind, status, value = spec.kind, claim.status, claim.value
-    if kind in _GATES: return status in _GATE_OUTCOMES and value is None
-    if kind in _CHOICE_KINDS:
+    if kind in GATES: return status in _GATE_OUTCOMES and value is None
+    if kind in CHOICE_KINDS:
         if status is TurnOutcome.UNKNOWN and value is None: return True
         if kind is QuestionKind.SINGLE_CHOICE: return isinstance(value, str) and value in spec.options
         if kind is QuestionKind.MULTI_CHOICE:
@@ -30,7 +29,7 @@ def _domain_membership(spec: QuestionSpec, claim: ClinicalClaim) -> bool:
         if isinstance(raw_score, bool): return False
         try: float(raw_score); return True
         except (TypeError, ValueError): return False
-    if kind is QuestionKind.PROFILE or kind in _OPENISH: return status in _ACTIVE_OUTCOMES
+    if kind is QuestionKind.PROFILE or kind in OPENISH: return status in _ACTIVE_OUTCOMES
     return False
 def _rejected_target(pack: PackConfig, state: CallState, target: str, active_qid: str) -> bool:
     spec = pack.by_id.get(target)
@@ -75,7 +74,7 @@ def evaluate_policy(pack: PackConfig, state: CallState, evidence: TurnEvidence, 
         if target != active_qid or active_spec is None:
             decisions.append(D(claim_index=idx, disposition=Disposition.IGNORE, reason=DecisionReason.REJECTED_TARGET, target_qid=target or None)); continue
         if claim.domain_fit is DomainFit.UNLISTED or interpretation.active_domain is DomainFit.UNLISTED:
-            if active_spec.kind in _CHOICE_KINDS and substep is SubStep.MAIN and not active_spec.saves_to_profile and interpretation.active_relation is TopicRelation.ACTIVE and utt:
+            if active_spec.kind in CHOICE_KINDS and substep is SubStep.MAIN and not active_spec.saves_to_profile and interpretation.active_relation is TopicRelation.ACTIVE and utt:
                 unlisted_accepted = True
                 decisions.append(D(claim_index=idx, disposition=Disposition.ACCEPT_UNLISTED, reason=DecisionReason.UNLISTED_TOPIC, target_qid=active_qid))
                 active_accepted, cmd = True, cmd.model_copy(update={"outcome": TurnOutcome.ANSWERED, "value": None})

@@ -250,7 +250,7 @@ def _ids(state: CallState, ref_raw: str) -> list[str]:
     if ref == "all": return [c.id for c in state.ordered_roster]
     return [ref] if ref in ids else (ids if len(ids) == 1 and not ref and not state.roster_incomplete else [])
 def _spoken_finding(st: CallState, qid: str) -> bool:
-    """True when a CONCERN carrying the caller's own words is already on record: never flatten it to UNKNOWN or CLEAR."""
+    """True when a CONCERN carrying the caller's own words is already on record: never flatten it to UNKNOWN, UNANSWERED, or CLEAR."""
     rec = st.answers.get(qid)
     return rec is not None and rec.state is AnswerStatus.CONCERN and bool(rec.verbatim_text)
 def _bump(step: CursorStep) -> bool:
@@ -354,7 +354,7 @@ def _followup(pack: PackConfig, st: CallState, cmd: TurnCommand, spec: QuestionS
     if not settled and not _bump(st.cursor): return st.cursor
     rec, fid = st.answers.get(spec.id) or AnswerRecord(state=AnswerStatus.CONCERN), spec.followups[st.cursor.followup_idx]
     note = (rec.followups[fid].note if fid in rec.followups else NoteText()).append(utt if settled else "", redacted=_redact_note(cmd, spec.id))
-    slot = _STATUS.get(cmd.outcome, AnswerStatus.CONCERN) if settled else AnswerStatus.UNKNOWN
+    slot = _STATUS.get(cmd.outcome, AnswerStatus.CONCERN) if settled else AnswerStatus.UNANSWERED
     st.answers[spec.id] = rec.model_copy(update={"followups": {**rec.followups, fid: FollowupSlot(state=slot, note=note)}})
     nxt = st.cursor.followup_idx + 1
     return CursorStep(qid=spec.id, substep=SubStep.FOLLOWUP, followup_idx=nxt) if nxt < len(spec.followups) else None
@@ -366,18 +366,19 @@ def _open_capture(pack: PackConfig, st: CallState, cmd: TurnCommand, spec: Quest
         return CursorStep(qid=spec.id, open_rounds=st.cursor.open_rounds + 1)
     if cmd.outcome not in _QUIET and not _bump(st.cursor):
         return CursorStep(qid=spec.id, substep=SubStep.FOLLOWUP) if spec.followups else st.cursor
-    if not _spoken_finding(st, spec.id): st.answers[spec.id] = AnswerRecord(state=_STATUS.get(cmd.outcome, AnswerStatus.UNKNOWN))
+    if not _spoken_finding(st, spec.id): st.answers[spec.id] = AnswerRecord(state=_STATUS.get(cmd.outcome, AnswerStatus.UNANSWERED))
     return None
 def _bridge(pack: PackConfig, st: CallState, cmd: TurnCommand, spec: QuestionSpec, utt: str) -> CursorStep | None:
     st.answers[spec.id] = AnswerRecord(state=AnswerStatus.CLEAR)
 def _scored(pack: PackConfig, st: CallState, cmd: TurnCommand, spec: QuestionSpec, utt: str) -> CursorStep | None:
     parsed = _read_answer(spec, cmd)
     if parsed is None and cmd.outcome is not TurnOutcome.UNKNOWN and not _bump(st.cursor): return st.cursor
-    status, val, label = parsed or (AnswerStatus.UNKNOWN, None, "")
+    # UNKNOWN is only what she said. Giving up on a value the question cannot accept is unanswered.
+    status, val, label = parsed or ((AnswerStatus.UNKNOWN, None, "") if cmd.outcome is TurnOutcome.UNKNOWN else (AnswerStatus.UNANSWERED, None, ""))
     prior = st.answers.get(spec.id)
     rec = prior if (prior is not None and prior.state.is_resolved and status is AnswerStatus.CONCERN) else AnswerRecord(state=status)
     rec = st.answers[spec.id] = rec.model_copy(update={"state": status, "value": val, "choice_label": label} | (_note_concern(st, spec, cmd, rec, utt) if status is AnswerStatus.CONCERN else {}))
-    if spec.saves_to_profile and status is not AnswerStatus.UNKNOWN:
+    if spec.saves_to_profile and status not in (AnswerStatus.UNKNOWN, AnswerStatus.UNANSWERED):
         st.profile[spec.saves_to_profile] = val if spec.kind is QuestionKind.SINGLE_CHOICE else (status is AnswerStatus.CONCERN)
         _imply(pack, st)
     if status is not AnswerStatus.CONCERN: return None
@@ -393,8 +394,8 @@ def _reduce_active(pack: PackConfig, st: CallState, cmd: TurnCommand, spec: Ques
     if cmd.outcome is TurnOutcome.NOT_ABOUT_ACTIVE and step.substep is SubStep.MAIN and not (spec.kind is QuestionKind.OPEN_CAPTURE and utt):
         # An off-topic turn is still a miss: burn the attempt so the question can never repeat forever.
         if not _bump(st.cursor): return st.cursor
-        # Mirror `_open_capture`: a spoken finding already on record is never flattened to a bare UNKNOWN.
-        if not _spoken_finding(st, spec.id): st.answers[spec.id] = AnswerRecord(state=AnswerStatus.UNKNOWN)
+        # Mirror `_open_capture`: a spoken finding already on record is never flattened when the step gives up.
+        if not _spoken_finding(st, spec.id): st.answers[spec.id] = AnswerRecord(state=AnswerStatus.UNANSWERED)
         return None
     if cmd.outcome is TurnOutcome.RETRACT or (step.substep is SubStep.WHICH_ITEM and cmd.outcome is TurnOutcome.CLEAR and not _ids(st, cmd.item_ref)):
         if not (spec.kind is QuestionKind.OPEN_CAPTURE and _spoken_finding(st, spec.id)): st.answers[spec.id] = AnswerRecord(state=AnswerStatus.CLEAR)

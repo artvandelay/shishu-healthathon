@@ -55,6 +55,7 @@ class ProjectedReport(Strict, frozen=True):
     patient_questions: tuple[str, ...] = ()
     page2_groups: tuple[dict[str, Any], ...] = ()
     page2_unknown: tuple[str, ...] = ()
+    page2_unanswered: tuple[str, ...] = ()
     page2_unasked: tuple[dict[str, Any], ...] = ()
     observations: tuple[str, ...] = ()
 def _clean(text: Any) -> str: return " ".join(str(text or "").split())
@@ -111,7 +112,7 @@ def project_summary(pack: PackConfig, state: CallState | None, observations: Seq
     emergency, incomplete = reason == CloseReason.EMERGENCY, reason in _INCOMPLETE
     headings = {str(k): str(v) for k, v in (cfg.get("clinician_headings") or {}).items()}
     known, sections = set(headings.values()), {h: [] for k, h in headings.items() if k not in _SPECIAL}
-    alerts, negatives, flags, profile_extra, clear, unasked, unknown, concerns = [], [], [], [], {}, {}, [], []
+    alerts, negatives, flags, profile_extra, clear, unasked, unknown, unanswered, concerns = [], [], [], [], {}, {}, [], [], []
     specials = {headings.get("alerts"): alerts, headings.get("negatives"): negatives, headings.get("patient_profile"): profile_extra}
     if emergency:
         said, line, flag = _note(st.emergency_note), str(cfg.get("emergency_line_en") or ""), str(cfg.get("emergency_flag_en") or "")
@@ -125,6 +126,7 @@ def project_summary(pack: PackConfig, state: CallState | None, observations: Seq
             continue
         if rec.state is AnswerStatus.NOT_APPLICABLE: continue
         if rec.state is AnswerStatus.UNKNOWN: unknown.append(label)
+        elif rec.state is AnswerStatus.UNANSWERED: unanswered.append(label)
         elif rec.state is AnswerStatus.CLEAR:
             clear.setdefault(title, []).append(label)
         elif rec.state is AnswerStatus.ANSWERED:
@@ -142,6 +144,7 @@ def project_summary(pack: PackConfig, state: CallState | None, observations: Seq
             flags.append(f"{head}. {said}" if said else head)
             lines.append(f"Concern. {q.need}{child}. {said or 'reported'}.")
         elif rec.state is AnswerStatus.ANSWERED: lines.append(f"Answered{f' ({said})' if said else ''}. {q.need}.")
+        elif rec.state is AnswerStatus.UNANSWERED: lines.append(f"Not answered on call (confirm with patient). {q.need}.")
         else:
             lines.append(f"{rec.state.value.title()}. {q.need}.")
             if rec.state is AnswerStatus.CLEAR: negatives.append(f"Clear: {q.need}.")
@@ -161,7 +164,8 @@ def project_summary(pack: PackConfig, state: CallState | None, observations: Seq
         patient_name=next((_clean(st.profile[s]) for s in pack.profile_slots if st.profile.get(s)), ""), roster_patient=engine.roster_label_patient(pack, st),
         roster_clinician=roster, close_reason=reason, emergency=emergency, incomplete=incomplete, doctor_markdown=md, patient_summary_text=pat_text,
         red_flags=tuple(_unique(flags)), yes_items=tuple(yes), patient_questions=tuple(asked), page2_groups=_grouped(clear),
-        page2_unknown=tuple(_unique(unknown)), page2_unasked=_grouped(unasked) if incomplete else (), observations=obs_lines)
+        page2_unknown=tuple(_unique(unknown)), page2_unanswered=tuple(_unique(unanswered)),
+        page2_unasked=_grouped(unasked) if incomplete else (), observations=obs_lines)
 def _ist(raw: Any) -> datetime | None:
     try: return datetime.strptime(str(raw)[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc).astimezone(IST)
     except ValueError: return None
@@ -185,7 +189,8 @@ def render_patient_html(pack: PackConfig, call: Mapping[str, Any], proj: Project
     return _template(pack, "patient.html.j2").render(
         css=css, doc_title=ref, pdf_subject=subject, logo_uri=(pack.root / "assets" / str(assets.get("logo") or "")).as_uri(), call_id=cid, who=who, meta=meta,
         emergency=rep.emergency, incomplete=rep.incomplete, questions=list(rep.patient_questions), yes_items=list(rep.yes_items), page2_groups=list(rep.page2_groups),
-        page2_unknown=list(rep.page2_unknown), page2_unasked=list(rep.page2_unasked), universal_line=str(pack.report_cfg.get("universal_advice_line_hi") or ""))
+        page2_unknown=list(rep.page2_unknown), page2_unanswered=list(rep.page2_unanswered), page2_unasked=list(rep.page2_unasked),
+        universal_line=str(pack.report_cfg.get("universal_advice_line_hi") or ""))
 def render_patient_pdf(pack: PackConfig, call: Mapping[str, Any], proj: ProjectedReport | None = None) -> bytes:
     return weasyprint.HTML(string=render_patient_html(pack, call, proj), base_url=str(pack.root / "assets")).write_pdf()
 def patient_pdf_path(call_id: int) -> Path: return Path(db.DATA_DIR) / "pdfs" / f"call-{int(call_id)}.pdf"

@@ -16,6 +16,7 @@ from intake.models import (
     RosterItem, SubStep, TurnOutcome,
 )
 from intake.pack import load_pack
+from intake.turns import TopicRelation
 
 OK_BODY = {"answers": {"danger_now": {"noul": 0.02}}, "usage": {"total_input_tokens": 312}}
 
@@ -758,6 +759,106 @@ class Wave1DetailPresentAndExtractorTimeoutTests(unittest.TestCase):
         }.items():
             with self.subTest(invariant=label):
                 self.assertTrue(ok, f"{label}: declared default={default!r} recorded wait_for budgets={seen!r}")
+
+
+class Call67DecisionTests(unittest.TestCase):
+    """Call #67: a concern/clarify split must be heard as a question, and a note already stored must not be filed twice."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.shishu = load_pack("shishu-hi")
+        cls.fever = load_pack("fever-opd-hi")
+
+    def interpret(self, state, answers, **kw) -> decisions.TurnIntent:
+        return decisions.interpret_turn_decision(self.shishu, state, answers, **kw)
+
+    def test_concern_clarify_split_answers_the_meta_question_instead_of_burning_the_attempt(self):
+        # Event 24, fam_fits_delay: "बूढ़े को है। आप बच्चे की पूछ रहे कि बूढ़े की पूछ रहे?"
+        # active_outcome split concern 0.493 / clarify 0.329, asks_clarify 0.41 under the 0.55 gate.
+        st = state_at(self.shishu, "fam_fits_delay")
+        said = "बूढ़े को है। आप बच्चे की पूछ रहे कि बूढ़े की पूछ रहे?"
+        cases = {
+            "concern/clarify": {
+                "active_outcome": choice(concern=0.493, clarify=0.329, clear=0.10, unknown=0.05, retract=0.028),
+                "asks_clarify": noul(0.41),
+                "active_topic": noul(0.48),
+                "residual_clinical": noul(0.22),
+            },
+            "clear/clarify": {
+                "active_outcome": choice(clear=0.48, clarify=0.36, concern=0.10, unknown=0.04, other=0.02),
+                "asks_clarify": noul(0.40),
+            },
+        }
+        for label, answers in cases.items():
+            with self.subTest(split=label):
+                intent = self.interpret(st, answers, utterance_text=said)
+                self.assertIs(
+                    intent.command.outcome, TurnOutcome.CLARIFY,
+                    f"{label} split must answer her question, got {intent.command.outcome.value} "
+                    f"top2={intent.diagnostics.get('top2')}")
+
+    def test_asks_clarify_covers_meta_questions_about_the_call_and_the_notes(self):
+        for pack in (self.shishu, self.fever):
+            head = pack.decisions["heads"]["asks_clarify"]
+            text = "\n".join((
+                str(head.get("instructions") or ""),
+                str((head.get("criteria") or {}).get("true_description") or ""),
+            ))
+            with self.subTest(pack=pack.id):
+                self.assertIn("did you note that", text)
+                self.assertIn("kids or adults", text)
+
+    def test_followup_concern_is_not_also_filed_as_a_clinical_aside(self):
+        # Event 30, fam_fits_delay:followup:0: the Alzheimer's note was accepted as the followup AND emitted CLINICAL_ASIDE.
+        st = state_at(self.shishu, "fam_fits_delay", substep=SubStep.FOLLOWUP, followup_idx=0)
+        st.answers["fam_fits_delay"] = AnswerRecord(state=AnswerStatus.CONCERN)
+        said = "मेरे नाना-नानी को अल्जाइमर था"
+        intent = self.interpret(st, {
+            "active_topic": noul(0.92),
+            "residual_clinical": noul(0.91),
+            "active_outcome": choice(concern=0.93, clear=0.04, other=0.03),
+            "asks_clarify": noul(0.05),
+        }, utterance_text=said)
+        rels = [c.relation for c in intent.interpretation.claims]
+        self.assertNotIn(
+            TopicRelation.CLINICAL_ASIDE, rels,
+            f"followup already stores the note, got {rels}")
+        self.assertIn(TopicRelation.ACTIVE, rels)
+        self.assertIs(intent.command.outcome, TurnOutcome.CONCERN)
+
+    def test_which_item_and_stored_concern_notes_are_not_duplicated_as_asides(self):
+        cases = {
+            "which_item": (
+                state_at(self.shishu, "birth_jaundice", substep=SubStep.WHICH_ITEM),
+                {"active_topic": noul(0.9), "residual_clinical": noul(0.9),
+                 "active_outcome": choice(concern=0.91, clear=0.05, other=0.04)},
+                "बड़े वाले को नीली लाइट में रखा था",
+                False,
+            ),
+            "concern with no followup": (
+                state_at(self.shishu, "birth_bcg"),
+                {"active_topic": noul(0.93), "residual_clinical": noul(0.9),
+                 "active_outcome": choice(concern=0.92, clear=0.04, other=0.04)},
+                "हाँ, कंधे पर फोड़ा हुआ था",
+                False,
+            ),
+            "concern with followup already answered": (
+                state_at(self.shishu, "fam_fits_delay"),
+                {"active_topic": noul(0.93), "detail_present": noul(0.9), "residual_clinical": noul(0.88),
+                 "active_outcome": choice(concern=0.94, other=0.04, clear=0.02)},
+                "नाना को अल्जाइमर था",
+                True,
+            ),
+        }
+        for label, (st, answers, said, want_followup) in cases.items():
+            if st.cursor.substep is SubStep.WHICH_ITEM:
+                st.answers[st.cursor.qid] = AnswerRecord(state=AnswerStatus.CONCERN)
+            with self.subTest(step=label):
+                intent = self.interpret(st, answers, utterance_text=said)
+                rels = [c.relation for c in intent.interpretation.claims]
+                if want_followup:
+                    self.assertTrue(intent.command.followup_answered, label)
+                self.assertNotIn(TopicRelation.CLINICAL_ASIDE, rels, f"{label} already stores the note, got {rels}")
 
 
 if __name__ == "__main__":
