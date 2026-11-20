@@ -85,7 +85,10 @@ heads:
         caller_utterance gives NO answer at all to active_question (for example when it talks ONLY about
         a different topic without saying yes or no to active_question, rules out one child on a which-child
         question without naming the affected child, only updates demographic profile details, or is unrelated
-        chatter).
+        chatter). Also choose other when the caller interrupts to correct or revise an earlier question
+        ("अरे रुकिए, मैंने पहले गलत बोल दिया — ...", "wait, I said it wrong earlier") and then describes
+        only that other item without answering active_question: the correction is not an answer to the
+        question being asked now.
   detail_present:
     type: noul
     instructions: >-
@@ -133,8 +136,11 @@ heads:
         active_question does not.
       false_description: >-
         Mentions only a side effect or different symptom that does not affirm or deny the specific criterion asked in
-        active_question; talks only about another person or question; asks clarification without answering; or makes
-        non-medical remarks.
+        active_question; talks only about another person or question; asks clarification without answering; makes
+        non-medical remarks; or interrupts to correct an earlier question ("अरे रुकिए, मैंने पहले गलत बोल दिया — ...",
+        "wait, I said it wrong earlier") and describes only that other item, without giving a yes/no or any direct
+        answer to active_question. A correction that ALSO carries an explicit yes/हाँ or no/नहीं to active_question
+        remains true.
   residual_clinical:
     type: noul
     instructions: >-

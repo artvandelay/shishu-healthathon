@@ -1,10 +1,13 @@
 """Node VM checks for the V3 call page: one-time yes/no prime, quick replies, bug dialog."""
 
 import json
+import re
 import shutil
 import subprocess
 import unittest
 from pathlib import Path
+
+from intake.pack import load_pack
 
 ROOT = Path(__file__).resolve().parents[1]
 STATIC = ROOT / "intake" / "static"
@@ -41,17 +44,39 @@ function node(id) {
   return el;
 }
 
-/* Build the DOM from the served page: ids, hidden flags, and data-ui hooks on real elements. */
+/* Build the DOM from the served page: ids, hidden flags, data-ui hooks, and the real child tree — so a test
+   can prove an inline SVG still sits inside the button after `applyUi` rewrites the label span. */
+const VOID = new Set(["meta", "link", "img", "input", "br", "hr", "source"]);
+const htmlIds = new Set();
+
 function parseDom() {
-  for (const m of html.matchAll(/<([a-z]+)\s([^>]*?)\/?>/g)) {
-    const attrs = m[2] || "";
+  const stack = [];
+  /* Tag tokens and text tokens in one pass, so an element's own copy is captured even when nothing rewrites it. */
+  for (const m of html.matchAll(/<(\/?)([a-z]+)\s*([^>]*?)(\/?)>|([^<>]+)/g)) {
+    if (m[5] != null) {
+      const parent = stack.length ? stack[stack.length - 1] : null;
+      const text = m[5].replace(/&amp;/g, "&").replace(/&quot;/g, '"').trim();
+      if (parent && text) parent.textContent = (parent.textContent || "") + text;
+      continue;
+    }
+    const closing = m[1], tag = m[2], attrs = m[3] || "", selfClose = m[4];
+    if (closing) { if (stack.length) stack.pop(); continue; }
     const id = /id="([^"]+)"/.exec(attrs);
     const ui = /data-ui="([^"]+)"/.exec(attrs);
-    if (!id && !ui) continue;
-    const el = node(id ? id[1] : "ui:" + ui[1]);
-    el.hidden = /\shidden(\s|$)/.test(attrs.split("data-ui")[0].trim() + " ");
-    if (ui) { el._ui = ui[1]; uiNodes.push(el); }
-    if (id) nodes[id[1]] = el;
+    const made = node(id ? id[1] : (ui ? "ui:" + ui[1] : "tag:" + tag));
+    made.tagName = tag.toUpperCase();
+    /* Mirror every served attribute into the mock's attribute map: `getAttribute("data-ui")` is how
+       applyUi() finds its hooks, so a missing map would make the whole pack copy a no-op here. */
+    for (const a of attrs.matchAll(/([a-zA-Z-]+)="([^"]*)"/g)) made.setAttribute(a[1], a[2]);
+    const cls = /class="([^"]*)"/.exec(attrs);
+    made.className = cls ? cls[1] : "";
+    made.className.split(/\s+/).filter(Boolean).forEach((c) => made.classList.add(c));
+    made.hidden = /(^|\s)hidden(\s|$)/.test(attrs.split("data-ui")[0].trim() + " ");
+    if (ui) { made._ui = ui[1]; uiNodes.push(made); }
+    const parent = stack.length ? stack[stack.length - 1] : null;
+    if (parent) parent.appendChild(made);
+    if (id) { nodes[id[1]] = made; htmlIds.add(id[1]); }
+    if (!VOID.has(tag) && !selfClose) stack.push(made);
   }
 }
 
@@ -67,7 +92,8 @@ const sent = [], pdfCalls = [], intervals = [], timeouts = [], worklets = [], ws
 let timerId = 0;
 let bugBody = null, ctxRef = null, current = null, frames = [];
 let PACK_JSON = {}, NOW = 1_700_000_000_000;
-let pdfHeaders = "", pdfNoHeaders = false, canShare = true;
+let pdfHeaders = "", pdfNoHeaders = false, pdfFails = false, pdfGate = false, pdfRelease = null;
+let canShare = true, shareCalls = 0, revoked = [];
 const fileNames = [], anchors = [];
 
 /* One tab's sessionStorage. It outlives a `Cmd+R`, exactly like the real thing. */
@@ -130,7 +156,7 @@ function makeSandbox() {
     requestAnimationFrame: (fn) => frames.push(fn), cancelAnimationFrame() {},
     atob: (s) => Buffer.from(s, "base64").toString("binary"),
     btoa: (s) => Buffer.from(s, "binary").toString("base64"),
-    URL: { createObjectURL: () => "blob:x", revokeObjectURL() {} },
+    URL: { createObjectURL: () => "blob:x", revokeObjectURL: (u) => revoked.push(u) },
     Blob: function (parts) { this.parts = parts; },
     File: function (parts, name, cfg) { this.parts = parts; this.name = name; this.type = cfg && cfg.type; fileNames.push(name); },
     Image: function () { const self = this; setTimeout(() => self.onerror && self.onerror(), 0); },
@@ -146,7 +172,8 @@ function makeSandbox() {
     location: { protocol: "http:", host: "t", search: "", href: "http://t/", pathname: "/" },
     navigator: {
       mediaDevices: { getUserMedia: () => Promise.resolve({ getTracks: () => [{ stop() {} }] }) },
-      canShare: () => canShare, share: () => Promise.resolve(),
+      canShare: () => canShare,
+      share: () => { shareCalls += 1; return Promise.resolve(); },
       clipboard: { writeText: () => Promise.resolve() }
     },
     WebSocket: MockWS,
@@ -163,7 +190,11 @@ function makeSandbox() {
     if (url.includes("patient.pdf")) {
       pdfCalls.push(init && init.method);
       const headers = pdfNoHeaders ? undefined : { get: (k) => (k.toLowerCase() === "content-disposition" ? pdfHeaders : null) };
-      return Promise.resolve({ ok: true, status: 200, headers, blob: () => Promise.resolve(new Blob([])) });
+      const reply = () => (pdfFails
+        ? { ok: false, status: 500, headers, blob: () => Promise.resolve(new Blob([])) }
+        : { ok: true, status: 200, headers, blob: () => Promise.resolve(new Blob([])) });
+      if (pdfGate) return new Promise((resolve) => { pdfRelease = () => resolve(reply()); });
+      return Promise.resolve(reply());
     }
     return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) });
   };
@@ -232,7 +263,31 @@ const api = {
   bug() { return bugBody; },
   pdfName() { return fileNames.slice(); },
   downloads() { return anchors.map((a) => a.download); },
+  shares() { return shareCalls; },
+  revoked() { return revoked.slice(); },
+  /* `has` is the only honest "this id exists on the served page" check: a missing id would otherwise
+     be conjured by getElementById with `hidden === false` and read as visible. */
+  has(id) { return htmlIds.has(id); },
   setPdf(disposition, noHeaders, shareable) { pdfHeaders = disposition || ""; pdfNoHeaders = !!noHeaders; canShare = shareable !== false; },
+  failPdf(fails) { pdfFails = !!fails; },
+  /* Hold the PDF response open, so "preparing" can be observed mid-flight instead of guessed at. */
+  gatePdf() { pdfGate = true; pdfRelease = null; },
+  releasePdf() { pdfGate = false; const done = pdfRelease; pdfRelease = null; if (done) done(); },
+  /* A missing id is a real defect (the element was never served), so say so — never let getElementById's
+     lazy stand-in answer as if it were on the page. */
+  need(id) { if (!nodes[id]) throw new Error("#" + id + " is not on the served call page"); return nodes[id]; },
+  shown(id) { return !api.need(id).hidden; },
+  tree(id) {
+    const out = [];
+    const textOf = (n) => (n.textContent || "") + (n.children || []).map(textOf).join("");
+    const walk = (n) => {
+      out.push({ tag: n.tagName || "", cls: n.className || "", aria: n.getAttribute("aria-hidden"),
+                 d: n.getAttribute("d"), text: textOf(n), id: n.id || "" });
+      (n.children || []).forEach(walk);
+    };
+    walk(api.need(id));
+    return out;
+  },
   /* `playing()` is a `let` binding inside the page's own context, so it is read there, never from this scope. */
   playing() { return vm.runInContext("playing()", sandbox); }
 };
@@ -322,6 +377,8 @@ PACK = {
             "listening": {"hi": "सुन रही हूँ…", "en": "Listening"},
             "thinking": {"hi": "सोच रही हूँ…", "en": "Thinking"},
             "reconnecting": {"hi": "लाइन जुड़ रही है…", "en": "Reconnecting"},
+            "preparing": {"hi": "रिपोर्ट तैयार हो रही है…", "en": "Preparing report…"},
+            "download_btn": {"hi": "डाउनलोड करें", "en": "Download"},
         },
     },
     "assets_url": {"logo": "/static/pack-logo.png", "consent_pdf": "/static/consent.pdf"},
@@ -638,7 +695,7 @@ api.setPdf('attachment; filename="SHISHU-2026-11-12-093000-c4.pdf"', false, fals
 api.push({ type: "call_completed", call_id: 4, share_token: "tok" });
 await api.settle();
 const adopted = api.pdfName().pop();
-api.nodes["share-pdf"].fire("click");
+api.need("download-pdf").fire("click");
 await api.settle();
 const adoptedDownload = api.downloads().pop();
 
@@ -646,7 +703,7 @@ api.setPdf("", true, false);
 api.nodes["retry-pdf"].fire("click");
 await api.settle();
 const fallback = api.pdfName().pop();
-api.nodes["share-pdf"].fire("click");
+api.need("download-pdf").fire("click");
 await api.settle();
 const fallbackDownload = api.downloads().pop();
 
@@ -856,6 +913,153 @@ return { beforeComplete, midLine, outsideTail, insideTail, turnPhase, statusText
                          "300 ms left, after turn_complete: the eager \"नहीं\" is her voice, not an echo")
         self.assertEqual(out["turnPhase"], "listening", "inside the tail the client is already listening")
         self.assertIn("सुन रही हूँ…", out["statusText"], "and it says so on screen")
+
+
+    def test_preparing_state_animates_on_the_end_screen_until_the_pdf_lands(self):
+        # The end screen used to say "Preparing report…" and then simply do nothing visible: `#wait` belongs to
+        # the live stage, and `call_completed` flashed an empty thank-you card. The preparing indicator has to
+        # live on #thanks, spin while the PDF is in flight, and be gone the moment the file is ready.
+        out = self.run_js(r"""
+api.boot(JSON.parse(process.env.PACK));
+await api.settle();
+await api.start();
+api.push({ type: "session_started", call_id: 4, share_token: "tok", out_sample_rate: 24000 });
+await api.settle();
+const idleHidden = !api.shown("thanks-preparing");
+
+api.gatePdf();
+api.push({ type: "call_completed", call_id: 4, share_token: "tok" });
+await api.settle();
+const waiting = api.shown("thanks-preparing");
+const waitingThanks = api.shown("thanks");
+const downloadHiddenWhileWaiting = !api.shown("download-pdf");
+const spinner = api.tree("thanks-preparing").some((n) => n.cls.split(/\s+/).includes("prep-spinner"));
+const hint = api.tree("thanks-preparing").map((n) => n.text).join("|");
+
+api.releasePdf();
+await api.settle();
+const afterReady = api.shown("thanks-preparing");
+const downloadAfterReady = api.shown("download-pdf");
+
+return { idleHidden, waiting, waitingThanks, downloadHiddenWhileWaiting, spinner, hint, afterReady, downloadAfterReady };
+""")
+
+        self.assertTrue(out["idleHidden"], "the preparing indicator is hidden before the call ends")
+        self.assertTrue(out["waiting"], "while the PDF is being built the end screen shows the preparing indicator")
+        self.assertTrue(out["waitingThanks"], "and it does so on the #thanks screen, not the live stage")
+        self.assertTrue(out["downloadHiddenWhileWaiting"], "no download button before there is a file to download")
+        self.assertTrue(out["spinner"], "the indicator carries the .prep-spinner that styles.css animates")
+        self.assertIn("रिपोर्ट तैयार हो रही है…", out["hint"], "and the pack's preparing copy")
+        self.assertFalse(out["afterReady"], "once the PDF lands the preparing indicator is gone")
+        self.assertTrue(out["downloadAfterReady"], "and the download button takes its place")
+
+    def test_preparing_indicator_clears_when_the_pdf_build_fails(self):
+        out = self.run_js(r"""
+api.boot(JSON.parse(process.env.PACK));
+await api.settle();
+await api.start();
+api.push({ type: "session_started", call_id: 9, share_token: "tok9", out_sample_rate: 24000 });
+await api.settle();
+api.failPdf(true);
+api.push({ type: "call_completed", call_id: 9, share_token: "tok9" });
+await api.settle();
+const preparing = api.shown("thanks-preparing");
+const retry = api.shown("retry-pdf");
+const download = api.shown("download-pdf");
+return { preparing, retry, download };
+""")
+
+        self.assertFalse(out["preparing"], "a failed build must not leave the spinner running forever")
+        self.assertTrue(out["retry"], "a failed build offers the rebuild button")
+        self.assertFalse(out["download"], "and never a download button with no file behind it")
+
+    def test_download_button_has_an_svg_arrow_and_never_calls_navigator_share(self):
+        # Windows Safari/Chrome and the iPhone home-screen browser all behaved differently through
+        # navigator.share. A plain <a download> is the one thing every target does the same way.
+        out = self.run_js(r"""
+api.boot(JSON.parse(process.env.PACK));
+await api.settle();
+await api.start();
+api.push({ type: "session_started", call_id: 4, share_token: "tok", out_sample_rate: 24000 });
+await api.settle();
+
+/* Both share APIs present and happy: the page must ignore them anyway. */
+api.setPdf('attachment; filename="SHISHU-report.pdf"', false, true);
+api.push({ type: "call_completed", call_id: 4, share_token: "tok" });
+await api.settle();
+
+const hasButton = api.has("download-pdf");
+const tree = api.tree("download-pdf");
+const svg = tree.find((n) => n.tag === "SVG");
+const arrow = tree.find((n) => n.tag === "PATH");
+const label = tree.find((n) => n.cls.split(/\s+/).includes("btn-label"));
+const revokedBefore = api.revoked().length;
+api.need("download-pdf").fire("click");
+await api.settle();
+const shareCalls = api.shares();
+const downloads = api.downloads();
+/* The blob must outlive the click: revoking it in the same tick can cancel the download on Safari. */
+const revokedAtClick = api.revoked().length;
+api.advance(1500);
+const revokedLater = api.revoked().length;
+
+return { hasButton, svg: svg || null, arrow: arrow || null, shareCalls, downloads,
+         revokedAtClick: revokedAtClick - revokedBefore, revokedLater: revokedLater - revokedBefore,
+         label: label ? label.text : "", button: tree.map((n) => n.text).join("|") };
+""")
+
+        self.assertTrue(out["hasButton"], "the end screen ships a #download-pdf button")
+        self.assertIsNotNone(out["svg"], "the button carries an inline SVG download icon")
+        self.assertEqual(out["svg"]["aria"], "true", "the icon is decorative: aria-hidden on the SVG")
+        self.assertIsNotNone(out["arrow"], "the icon is drawn with a <path>")
+        self.assertIn("M12 3", out["arrow"]["d"] or "",
+                      "the icon is the standard down-arrow: the arrow shaft starts at the top of the viewBox")
+        self.assertIn("h12.4", out["arrow"]["d"] or "", "and ends in the tray/bar the arrow drops into")
+        self.assertIn("डाउनलोड करें", out["label"], "the pack's Hindi download copy lands on the button")
+        self.assertIn("Download", out["label"], "beside the English copy")
+        self.assertEqual(out["shareCalls"], 0,
+                         "navigator.share must never be touched, even when it exists and canShare says yes")
+        self.assertEqual(out["downloads"], ["SHISHU-report.pdf"], "the click is a direct <a download>")
+        self.assertEqual(out["revokedAtClick"], 0, "the blob URL outlives the click itself")
+        self.assertEqual(out["revokedLater"], 1, "and is released a moment later, so memory is not leaked")
+
+    def test_download_icon_survives_the_pack_copy_that_rewrites_the_button_label(self):
+        # applyUi() calls replaceChildren() on every [data-ui] node, which would shred an inline <svg> that sat
+        # directly inside the button. The icon lives beside a .btn-label span, so the pack only repaints the text.
+        out = self.run_js(r"""
+api.boot(JSON.parse(process.env.PACK));
+await api.settle();
+await api.start();
+api.push({ type: "session_started", call_id: 4, share_token: "tok", out_sample_rate: 24000 });
+await api.settle();
+api.setPdf('attachment; filename="SHISHU-report.pdf"', false, true);
+api.push({ type: "call_completed", call_id: 4, share_token: "tok" });
+await api.settle();
+const tree = api.tree("download-pdf");
+return { svg: tree.filter((n) => n.tag === "SVG").length,
+         label: tree.find((n) => n.cls.split(/\s+/).includes("btn-label")) || null,
+         text: api.need("download-pdf").textContent };
+""")
+
+        self.assertEqual(out["svg"], 1, "the SVG down-arrow is still in the button after the pack copy applies")
+        self.assertIsNotNone(out["label"], "the label rides in its own .btn-label span")
+        self.assertIn("डाउनलोड करें", out["label"]["text"] if out["label"] else "",
+                      "and the pack's Hindi copy is what the span shows")
+
+    def test_both_packs_ship_the_download_copy_and_no_share_instruction(self):
+        # The end screen has no share step any more, so no pack may still tell her to tap 'शेयर करें'.
+        for pack_id in ("shishu-hi", "fever-opd-hi"):
+            with self.subTest(pack=pack_id):
+                ui = load_pack(pack_id).meta["ui"]["call"]
+                self.assertIn("download_btn", ui, f"{pack_id} ships the download button copy")
+                self.assertNotIn("share_btn", ui, f"{pack_id} no longer ships share button copy")
+                hi, en = ui["thanks_summary"]["hi"], ui["thanks_summary"]["en"]
+                self.assertNotIn("शेयर करें", hi, f"{pack_id} stops pointing at a Share button in Hindi")
+                self.assertNotIn("Share", en, f"{pack_id} stops pointing at a Share button in English")
+                self.assertIn("डाउनलोड करें", hi, f"{pack_id} points at Download in Hindi")
+                self.assertIn("Download", en, f"{pack_id} points at Download in English")
+                self.assertEqual(ui["download_btn"]["hi"], "डाउनलोड करें")
+                self.assertEqual(ui["download_btn"]["en"], "Download")
 
 
 if __name__ == "__main__":

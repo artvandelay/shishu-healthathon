@@ -16,14 +16,14 @@ const PLAYBACK_TAIL_SEC = 0.35; /* the last 350 ms of a completed turn: she may 
 
 const NAMES = (
   "status timer caption wait stage avatar-wrap thanks error thanks-sub call-btn no-btn yes-btn nudge-btn " +
-  "consent-row consent-check yes-no-prime choice-pills share-pdf retry-pdf bug-dialog bug-chips bug-note bug-shot " +
-  "bug-save bug-confirm bug-error brand-logo avatar-logo admin-link consent-link"
+  "consent-row consent-check yes-no-prime choice-pills download-pdf retry-pdf thanks-preparing bug-dialog " +
+  "bug-chips bug-note bug-shot bug-save bug-confirm bug-error brand-logo avatar-logo admin-link consent-link"
 ).split(" ");
 
 const [
   statusEl, timerEl, captionEl, waitEl, stageEl, avatarEl, thanksEl, errorEl, subEl, callBtn, noBtn, yesBtn,
-  nudgeBtn, consentRow, consentCheck, primeEl, pillsEl, shareBtn, retryBtn, bugDialog, bugChips, bugNote,
-  bugShot, bugSave, bugOk, bugErr, brandLogo, avatarLogo, adminLink, consentLink
+  nudgeBtn, consentRow, consentCheck, primeEl, pillsEl, downloadBtn, retryBtn, preparingEl, bugDialog, bugChips,
+  bugNote, bugShot, bugSave, bugOk, bugErr, brandLogo, avatarLogo, adminLink, consentLink
 ] = NAMES.map(el);
 
 const micMeter = el("mic-meter");
@@ -556,7 +556,7 @@ function onClose(sock) {
   stopMic();
   runTimer(false);
   resetQuick();
-  hide([shareBtn, retryBtn]);
+  hide([downloadBtn, retryBtn, preparingEl]);
   paint("error");
   setCallButton(false);
   say(T.start);
@@ -683,7 +683,8 @@ function closeAudio() {
 }
 
 async function loadPdf(method) {
-  hide([shareBtn, retryBtn]);
+  hide([downloadBtn, retryBtn]);
+  show(preparingEl, true);
   try {
     const url = `/api/calls/by-token/${encodeURIComponent(token)}/patient.pdf`;
     const res = await fetch(url, { method, credentials: "same-origin" });
@@ -691,12 +692,15 @@ async function loadPdf(method) {
     if (!res.ok) throw new Error("report");
     const m = /filename="([^"]+)"/.exec(cd);
     pdf = new File([await res.blob()], (m && m[1]) || "SHISHU.pdf", { type: "application/pdf" });
-    show(shareBtn, true);
+    show(preparingEl, false);
+    show(downloadBtn, true);
   } catch (e) {
+    show(preparingEl, false);
     show(retryBtn, true);
   }
 }
 
+/* Every platform downloads the same way: a plain anchor with `download`. No navigator.share, no canShare. */
 function savePdf() {
   if (!pdf) return;
   const url = URL.createObjectURL(pdf);
@@ -707,23 +711,12 @@ function savePdf() {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function sharePdf() {
-  if (!pdf) return;
-  if (token) {
-    const url = `/api/calls/by-token/${encodeURIComponent(token)}/events`;
-    const body = JSON.stringify({ event: "share_clicked" });
-    fetch(url, { method: "POST", credentials: "same-origin", body }).catch(() => {});
-  }
-  if (!navigator.canShare || !navigator.canShare({ files: [pdf] })) return savePdf();
-  navigator.share({ files: [pdf], title: "SHISHU" }).catch(savePdf);
-}
-
 function showThanks() {
   phase = "done";
   runTimer(false);
   closeAudio();
   paint("thanks");
-  hide([shareBtn, retryBtn]);
+  hide([downloadBtn, retryBtn, preparingEl]);
   subEl.textContent = timerEl.textContent;
 }
 
@@ -750,7 +743,7 @@ function resetForNewCall() {
   stopWaiting();
   consentCheck.checked = readConsent();
   paint("idle");
-  hide([shareBtn, retryBtn]);
+  hide([downloadBtn, retryBtn, preparingEl]);
   warn(null);
   say(T.start);
   setCallButton(false);
@@ -910,7 +903,7 @@ on("no-btn", "click", () => answer("clear"));
 on("yes-btn", "click", () => answer("concern"));
 on("nudge-btn", "click", nudge);
 on("bug-save", "click", saveBug);
-on("share-pdf", "click", sharePdf);
+on("download-pdf", "click", savePdf);
 on("retry-pdf", "click", () => {
   show(retryBtn, false);
   loadPdf("POST");

@@ -246,22 +246,27 @@ def _pick(a: Mapping[str, Any], key: str, t: Mapping[str, float], pair: str = ""
     if not ranked or ranked[0][0] == catchall or (allowed and ranked[0][0] not in allowed): return ""
     (top, best), sec, name = ranked[0], (ranked[1][1] if len(ranked) > 1 else 0.0), pair or key
     return top if best >= t[f"{name}_min_confidence"] and best - sec >= t[f"{name}_min_margin"] else ""
-def _quiet_split(a: Mapping[str, Any], t: Mapping[str, float]) -> str:
-    """`clear`/`unknown` are one quiet answer split across two labels, so neither can win alone: their PAIR is the read."""
-    ranked = _rank(a, "active_outcome")
-    if len(ranked) < 2 or {ranked[0][0], ranked[1][0]} != {"clear", "unknown"}: return ""
-    pair, third = ranked[0][1] + ranked[1][1], (ranked[2][1] if len(ranked) > 2 else 0.0)
-    return ranked[0][0] if pair >= t["outcome_min_confidence"] and pair - third >= t["outcome_min_margin"] else ""
-def _clarify_split(a: Mapping[str, Any], t: Mapping[str, float]) -> str:
-    """A question mixed with an answer is still her question: the pair is read as clarify, not as a missed turn.
+# Label pairs that are ONE read split in half, each mapped to the label that pair actually means on this step.
+_SPLIT_READS: dict[frozenset[str], Callable[[str, str], str]] = {
+    frozenset(("clear", "unknown")): lambda top, kind: top,            # one quiet answer, read by its own winner
+    frozenset(("concern", "clarify")): lambda top, kind: "clarify",    # a question mixed into her answer
+    frozenset(("clear", "clarify")): lambda top, kind: "clarify",
+    # "नहीं, ऐसा कुछ नहीं हुआ था।" on a substep splits `clear`/`retract` because taking the parent CONCERN back IS
+    # that no: heard as clear, the denial is filed as detail INSIDE the red flag (Call #8 `birth_sudden:followup:0`).
+    frozenset(("clear", "retract")): lambda top, kind: "retract" if kind in ("followup", "which_item") else top,
+}
+def _outcome_split(a: Mapping[str, Any], t: Mapping[str, float], kind: str) -> str:
+    """Two labels that are ONE read split in half: their PAIR is the read, and the pair's winner is the outcome.
 
-    Call #67 Event 24 split `concern` 0.493 / `clarify` 0.329 on "आप बच्चे की पूछ रहे कि बूढ़े की पूछ रहे?".
-    Neither label cleared the margin, `asks_clarify` stayed under its gate, and the turn burned an attempt.
+    Neither half clears `outcome_min_margin` alone — 0.563 + 0.418 is 0.981 of a single negation, not a tie — so
+    the top two are summed and that sum is gated against the third label. Call #67 Event 24's question mixed with
+    an answer and Call #8's denial of the parent gate are both this shape.
     """
     ranked = _rank(a, "active_outcome")
-    if len(ranked) < 2 or {ranked[0][0], ranked[1][0]} not in ({"concern", "clarify"}, {"clear", "clarify"}): return ""
+    read = _SPLIT_READS.get(frozenset((ranked[0][0], ranked[1][0]))) if len(ranked) >= 2 else None
+    if read is None: return ""
     pair, third = ranked[0][1] + ranked[1][1], (ranked[2][1] if len(ranked) > 2 else 0.0)
-    return "clarify" if pair >= t["outcome_min_confidence"] and pair - third >= t["outcome_min_margin"] else ""
+    return read(ranked[0][0], kind) if pair >= t["outcome_min_confidence"] and pair - third >= t["outcome_min_margin"] else ""
 def _score_value(a: Mapping[str, Any], t: Mapping[str, float]) -> dict[str, Any] | None:
     """A rubric score plus its nearest level, accepted only when the head's own confidence clears the pack gate."""
     head = a.get("score_value")
@@ -322,7 +327,7 @@ def interpret_turn_decision(pack: PackConfig, state: CallState, raw_answers: Map
     val = None if closing or kind != "main" else _active_value(spec, a, t)
     w = ""
     if not closing and val is None:
-        w = _pick(a, "active_outcome", t, "outcome", allowed=_OUTCOMES) or _quiet_split(a, t) or _clarify_split(a, t)
+        w = _pick(a, "active_outcome", t, "outcome", allowed=_OUTCOMES) or _outcome_split(a, t, kind)
     stated = {} if closing else _stated_writes(pack, state, a, t)
     next_probs = _next_qid_probs(a)
     flags = tuple(f for f, fs in pack.semantic_flags.items() if f not in state.semantic_flags and _yes(a, f"flag_{f}", fs.get("min_yes", 0.8)))
@@ -353,8 +358,20 @@ def interpret_turn_decision(pack: PackConfig, state: CallState, raw_answers: Map
         elif val is None and on["active_topic"] and w not in ("clarify", "unknown", "retract") and utt:
             _ac(claims, active_qid, DomainFit.UNLISTED)
             active_relation, active_domain = TopicRelation.ACTIVE, DomainFit.UNLISTED
+    elif not closing and spec is not None and kind == "followup":
+        # A followup is an OPEN question ("who in the family has it?"), never a yes/no gate: its free-text answer
+        # ("मेरे नाना जी को ... अल्जाइमर बीमारी थी।") can come back as a soft concern under `outcome_min_confidence`
+        # with `w == ""`, and the binary gate branch below then emitted no ACTIVE claim at all — so
+        # `_utterance_already_stored` said False, CLINICAL_ASIDE took the turn, and Call #7's `fam_who` closed
+        # UNANSWERED with an empty note. An on-topic utterance with no yes/no IS the answer this question asks for.
+        if w in ("clear", "concern", "unknown"):
+            _ac(claims, active_qid, DomainFit.IN_DOMAIN, status=TurnOutcome(w))
+            active_relation, active_domain = TopicRelation.ACTIVE, DomainFit.IN_DOMAIN
+        elif on["active_topic"] and not on["asks_clarify"] and w not in ("clarify", "retract"):
+            _ac(claims, active_qid, DomainFit.IN_DOMAIN, status=TurnOutcome.ANSWERED)
+            active_relation, active_domain = TopicRelation.ACTIVE, DomainFit.IN_DOMAIN
     elif not closing and spec is not None and ((kind == "main" and spec.kind in GATES) or (kind == "main" and spec.kind in OPENISH)
-            or kind in ("profile", "which_item", "followup", "bridge", "close")):
+            or kind in ("profile", "which_item", "bridge", "close")):
         if w in ("clear", "concern", "unknown") and not (w == "concern" and kind == "main" and spec.kind in GATES and "active_topic" in a and not on["active_topic"]):
             _ac(claims, active_qid, DomainFit.IN_DOMAIN, status=TurnOutcome(w))
             active_relation, active_domain = TopicRelation.ACTIVE, DomainFit.IN_DOMAIN

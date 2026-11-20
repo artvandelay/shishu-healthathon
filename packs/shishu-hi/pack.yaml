@@ -82,11 +82,11 @@ ui:
       hi: "धन्यवाद"
       en: "Thank you"
     thanks_summary:
-      hi: "इस रिपोर्ट (PDF) में वे सवाल हैं जो आप अगली मुलाकात में डॉक्टर या ASHA / ANM दीदी से पूछ सकती हैं। इसे व्हाट्सएप पर भेजने या सेव करने के लिए नीचे 'शेयर करें' दबाएँ।"
-      en: "This report (PDF) has the questions you can ask the doctor or ASHA / ANM didi at your next visit. To send it on WhatsApp or save it, tap Share below."
-    share_btn:
-      hi: "शेयर करें"
-      en: "Share"
+      hi: "इस रिपोर्ट (PDF) में वे सवाल हैं जो आप अगली मुलाकात में डॉक्टर या ASHA / ANM दीदी से पूछ सकती हैं। इसे फ़ोन में सेव करने के लिए नीचे 'डाउनलोड करें' दबाएँ।"
+      en: "This report (PDF) has the questions you can ask the doctor or ASHA / ANM didi at your next visit. To save it on your phone, tap Download below."
+    download_btn:
+      hi: "डाउनलोड करें"
+      en: "Download"
     retry_btn:
       hi: "रिपोर्ट दोबारा बनाएँ"
       en: "Make the report again"

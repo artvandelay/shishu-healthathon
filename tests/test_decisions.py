@@ -12,13 +12,15 @@ from unittest import mock
 import httpx
 from google.genai import types
 
-from intake import decisions, engine, extractor
+from intake import decisions, engine, extractor, policy
 from intake.models import (
     AnswerRecord, AnswerStatus, CallState, CursorStep, PackConfig,
     RosterItem, SubStep, TurnOutcome,
 )
 from intake.pack import load_pack
-from intake.turns import TopicRelation
+from intake.turns import (
+    DomainFit, EvidenceSource, SpeechAct, TopicRelation, TurnEvidence,
+)
 
 OK_BODY = {"answers": {"danger_now": {"noul": 0.02}}, "usage": {"total_input_tokens": 312}}
 
@@ -1032,6 +1034,239 @@ class Call67DecisionTests(unittest.TestCase):
                 if want_followup:
                     self.assertTrue(intent.command.followup_answered, label)
                 self.assertNotIn(TopicRelation.CLINICAL_ASIDE, rels, f"{label} already stores the note, got {rels}")
+
+
+class Call7FollowupAnswerTests(unittest.TestCase):
+    """Call #7 `seq=77`: a free-text answer to an open **followup** must settle that followup.
+
+    `interpret_turn_decision` folded `kind == "followup"` into the binary yes/no gate branch, whose `w` requires
+    `active_outcome` to clear `outcome_min_confidence`. "मेरे नाना जी को बुढ़ापे में भूलने की अल्जाइमर बीमारी थी।"
+    came back as a soft concern 0.499 (< 0.5196), so `w == ""`, no ACTIVE claim existed, `_utterance_already_stored`
+    said False, `CLINICAL_ASIDE` took the turn, and `fam_who` closed UNANSWERED with an empty note.
+    """
+
+    FOLLOWUP_STEP = "fam_fits_delay:followup:0"
+    SAID = "मेरे नाना जी को बुढ़ापे में भूलने की अल्जाइमर बीमारी थी।"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.shishu = load_pack("shishu-hi")
+
+    def at_fam_who(self) -> CallState:
+        st = state_at(self.shishu, "fam_fits_delay", substep=SubStep.FOLLOWUP, followup_idx=0)
+        st.answers["fam_fits_delay"] = AnswerRecord(state=AnswerStatus.CONCERN)
+        self.assertEqual(st.step_token, self.FOLLOWUP_STEP, "the replay must run on the live followup step")
+        return st
+
+    def turn(self, st: CallState, answers: dict, said: str | None = None, **kw):
+        """One full turn: the interpreter, then the pure policy + reducer, exactly as `live.py` runs them."""
+        text = self.SAID if said is None else said
+        intent = decisions.interpret_turn_decision(self.shishu, st, answers, utterance_text=text, **kw)
+        ev = TurnEvidence(source=EvidenceSource.VOICE, snapshot_step=st.step_token, transcript=text, received_at=1.0)
+        nxt, out = policy.apply_policy(self.shishu, st, ev, intent.interpretation)
+        return intent, nxt, out
+
+    def test_a_free_text_followup_answer_settles_the_slot_and_suppresses_the_duplicate_aside(self):
+        # seq=77: active_topic 0.92, residual_clinical 0.81, active_outcome concern 0.499 / clear 0.204 / other 0.15.
+        st = self.at_fam_who()
+        answers = {
+            "active_topic": noul(0.92),
+            "residual_clinical": noul(0.81),
+            "active_outcome": choice(concern=0.499, clear=0.204, other=0.15, unknown=0.05, clarify=0.05, retract=0.047),
+            "asks_clarify": noul(0.03),
+        }
+        intent, nxt, _out = self.turn(st, answers)
+        claims = intent.interpretation.claims
+        active = [c for c in claims if c.relation is TopicRelation.ACTIVE]
+        self.assertEqual(intent.diagnostics["outcome"], "answered",
+                         f"the outcome head never cleared its 0.5196 gate, so w is the empty read: "
+                         f"top2={intent.diagnostics.get('top2')} outcome={intent.command.outcome.value}")
+        self.assertTrue(active, f"a followup answer must carry an ACTIVE claim, got {[c.relation for c in claims]}")
+        self.assertIs(active[0].status, TurnOutcome.ANSWERED, f"got status={active[0].status!r}")
+        self.assertIs(active[0].domain_fit, DomainFit.IN_DOMAIN)
+        self.assertNotIn(TopicRelation.CLINICAL_ASIDE, [c.relation for c in claims],
+                         "the followup note is already stored, so a second aside would file it twice")
+
+        rec = nxt.answers["fam_fits_delay"]
+        self.assertIs(rec.state, AnswerStatus.CONCERN, "the parent gate answer is untouched")
+        self.assertIs(rec.followups["fam_who"].state, AnswerStatus.ANSWERED,
+                      f"fam_who must settle, got {rec.followups['fam_who'].state.value!r}")
+        self.assertIn("अल्जाइमर", rec.verbatim_text, "her words are the note: they must survive verbatim")
+        self.assertIn("अल्जाइमर", rec.patient_safe_text, "an ANSWERED slot is not skipped by skip_clear")
+        self.assertNotEqual(nxt.cursor.qid, "fam_fits_delay", "the call advances past the answered family question")
+        self.assertNotEqual(nxt.step_token, self.FOLLOWUP_STEP)
+
+    def test_an_off_topic_aside_on_a_followup_still_retains_the_observation_and_burns_the_attempt(self):
+        # Control: active_topic 0.10 — she is not talking about the question at all.
+        st = self.at_fam_who()
+        intent, nxt, out = self.turn(st, {
+            "active_topic": noul(0.10),
+            "residual_clinical": noul(0.85),
+            "active_outcome": choice(other=0.44, concern=0.21, clear=0.18, unknown=0.10, clarify=0.05, retract=0.02),
+            "asks_clarify": noul(0.02),
+        }, said="गैस बंद कर दो, दूध उबल रहा है")
+        rels = [c.relation for c in intent.interpretation.claims]
+        self.assertNotIn(TopicRelation.ACTIVE, rels, "an off-topic remark answers nothing")
+        self.assertIn(TopicRelation.CLINICAL_ASIDE, rels, "the residual clinical mention is kept as an observation")
+        self.assertEqual([d.disposition.value for d in out.decisions], ["retain_observation"])
+        self.assertEqual(nxt.cursor.qid, "fam_fits_delay")
+        self.assertEqual(nxt.step_token, f"{self.FOLLOWUP_STEP}:try:1",
+                         f"an unanswered followup burns one attempt, got {nxt.step_token}")
+        self.assertNotIn("fam_who", nxt.answers["fam_fits_delay"].followups, "no slot is settled by an aside")
+
+    def test_a_clarification_on_a_followup_holds_the_step_without_settling_or_burning_an_attempt(self):
+        # Control: asks_clarify 0.80 — she is asking what the question means, not answering it.
+        st = self.at_fam_who()
+        intent, nxt, _out = self.turn(st, {
+            "active_topic": noul(0.85),
+            "asks_clarify": noul(0.80),
+            "residual_clinical": noul(0.20),
+            "active_outcome": choice(clarify=0.40, concern=0.24, other=0.20, clear=0.10, unknown=0.05, retract=0.01),
+        }, said="मतलब क्या है? किसकी बात कर रहे हैं?")
+        self.assertIs(intent.interpretation.act, SpeechAct.CLARIFY)
+        self.assertNotIn(TopicRelation.ACTIVE, [c.relation for c in intent.interpretation.claims],
+                         "a clarification is not an answer to the followup")
+        self.assertEqual(nxt.cursor.qid, "fam_fits_delay")
+        self.assertEqual(nxt.step_token, self.FOLLOWUP_STEP,
+                         f"a clarify holds the same step and spends nothing, got {nxt.step_token}")
+        self.assertNotIn("fam_who", nxt.answers["fam_fits_delay"].followups, "nothing is settled by a clarify")
+
+    def test_explicit_unknown_and_clear_answers_keep_their_own_outcome(self):
+        cases = {
+            "unknown": (
+                {"active_topic": noul(0.90), "active_outcome": choice(unknown=0.90, other=0.04, clear=0.03, concern=0.03),
+                 "asks_clarify": noul(0.02)},
+                TurnOutcome.UNKNOWN, AnswerStatus.UNKNOWN, "पता नहीं, मुझे याद नहीं",
+            ),
+            "clear": (
+                {"active_topic": noul(0.90), "active_outcome": choice(clear=0.90, unknown=0.04, other=0.03, concern=0.03),
+                 "asks_clarify": noul(0.02)},
+                TurnOutcome.CLEAR, AnswerStatus.CLEAR, "नहीं, परिवार में किसी को नहीं है",
+            ),
+        }
+        for label, (answers, want_outcome, want_status, said) in cases.items():
+            with self.subTest(outcome=label):
+                st = self.at_fam_who()
+                intent, nxt, _out = self.turn(st, answers, said=said)
+                self.assertIs(intent.command.outcome, want_outcome,
+                              f"an explicit {label} keeps its outcome, got {intent.command.outcome.value}")
+                self.assertIs(nxt.answers["fam_fits_delay"].followups["fam_who"].state, want_status)
+                self.assertNotEqual(nxt.cursor.qid, "fam_fits_delay")
+
+    def test_the_pack_boundary_sentences_for_pure_backtracking_load_cleanly(self):
+        # Task 2: a pure correction preamble ("अरे रुकिए, मैंने पहले गलत बोल दिया — ...") that describes only the
+        # other item is `other` on active_outcome and `false` on active_topic. The pack must still load, and the
+        # two sentences must live in the YAML (no Python heuristic), without any threshold moving.
+        pack = load_pack("shishu-hi")
+        heads = pack.decisions["heads"]
+        outcome_other = " ".join(str(heads["active_outcome"]["criteria"]["other"]).split())
+        topic_false = " ".join(str(heads["active_topic"]["criteria"]["false_description"]).split())
+        for label, text in (("active_outcome.criteria.other", outcome_other),
+                            ("active_topic.criteria.false_description", topic_false)):
+            with self.subTest(head=label):
+                self.assertIn("correct", text.lower(),
+                              f"{label} must name the interrupting correction preamble: {text!r}")
+                self.assertIn("active_question", text)
+        self.assertIn("wrong earlier", outcome_other.lower(),
+                      "the worked example ('wait, I spoke wrongly earlier') is what the model needs to see")
+        self.assertEqual(pack.decisions["thresholds"]["outcome_min_confidence"], 0.5196,
+                         "thresholds are untouched by a prompt-boundary fix")
+        self.assertEqual(pack.decisions["thresholds"]["active_topic_min_yes"], 0.55)
+
+
+class Call8RetractSplitTests(unittest.TestCase):
+    """Call #8 `birth_sudden:followup:0`: a flat denial was filed onto the red flag it retracts.
+
+    "नहीं, ऐसा कुछ नहीं हुआ था।" came back `clear` 0.563 / `retract` 0.418 — one negation split across two labels,
+    so neither cleared the 0.2297 margin, `w == ""`, and the `followup` branch read `active_topic` 0.82 as
+    ANSWERED. The denial landed INSIDE `birth_sudden`'s CONCERN instead of clearing it.
+    """
+
+    CALL8_STEP = "birth_sudden:followup:0"
+    SAID = "नहीं, ऐसा कुछ नहीं हुआ था।"
+    CALL8_OUTCOME = dict(clear=0.563, retract=0.418, concern=0.009, other=0.005, unknown=0.003, clarify=0.002)
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.shishu = load_pack("shishu-hi")
+
+    def at_concern_followup(self) -> CallState:
+        st = state_at(self.shishu, "birth_sudden", substep=SubStep.FOLLOWUP, followup_idx=0)
+        st.answers["birth_sudden"] = AnswerRecord(state=AnswerStatus.CONCERN)
+        self.assertEqual(st.step_token, self.CALL8_STEP, "the replay must run on the live followup step")
+        return st
+
+    def turn(self, st: CallState, answers: dict, said: str | None = None):
+        """One full turn: the interpreter, then the pure policy + reducer, exactly as `live.py` runs them."""
+        text = self.SAID if said is None else said
+        intent = decisions.interpret_turn_decision(self.shishu, st, answers, utterance_text=text)
+        ev = TurnEvidence(source=EvidenceSource.VOICE, snapshot_step=st.step_token, transcript=text, received_at=1.0)
+        nxt, out = policy.apply_policy(self.shishu, st, ev, intent.interpretation)
+        return intent, nxt, out
+
+    def test_the_call8_denial_retracts_the_parent_concern_instead_of_answering_it(self):
+        st = self.at_concern_followup()
+        intent, nxt, _out = self.turn(st, {
+            "active_topic": noul(0.82),
+            "active_outcome": choice(**self.CALL8_OUTCOME),
+        })
+        self.assertIs(intent.interpretation.act, SpeechAct.RETRACT,
+                      f"a denial of the parent gate is a retraction, got act={intent.interpretation.act} "
+                      f"outcome={intent.command.outcome.value} top2={intent.diagnostics.get('top2')}")
+        self.assertIs(intent.command.outcome, TurnOutcome.RETRACT,
+                      f"clear 0.563 + retract 0.418 is one negation, not an answer, got "
+                      f"{intent.command.outcome.value} top2={intent.diagnostics.get('top2')}")
+        rec = nxt.answers["birth_sudden"]
+        self.assertIs(rec.state, AnswerStatus.CLEAR,
+                      f"taking the gate back clears it, got {rec.state.value!r}")
+        self.assertEqual(rec.verbatim_text, "", "a denial is not a finding: it must never become the note")
+        self.assertEqual(rec.patient_safe_text, "")
+        self.assertNotEqual(nxt.cursor.qid, "birth_sudden", "the cleared question is done with")
+        self.assertNotEqual(nxt.step_token, self.CALL8_STEP)
+
+    def test_a_clear_retract_split_retracts_on_which_item_too(self):
+        st = state_at(self.shishu, "birth_sudden", substep=SubStep.WHICH_ITEM)
+        st.answers["birth_sudden"] = AnswerRecord(state=AnswerStatus.CONCERN)
+        intent, nxt, _out = self.turn(st, {
+            "active_outcome": choice(clear=0.55, retract=0.42, concern=0.02, other=0.01)})
+        self.assertIs(intent.command.outcome, TurnOutcome.RETRACT,
+                      f"a substep retract clears the parent, got {intent.command.outcome.value} "
+                      f"top2={intent.diagnostics.get('top2')}")
+        self.assertIs(nxt.answers["birth_sudden"].state, AnswerStatus.CLEAR,
+                      f"the parent concern is cleared, got {nxt.answers['birth_sudden'].state.value!r}")
+
+    def test_a_weak_split_with_a_concern_majority_never_falsely_retracts(self):
+        st = state_at(self.shishu, "birth_sudden", substep=SubStep.WHICH_ITEM)
+        st.answers["birth_sudden"] = AnswerRecord(state=AnswerStatus.CONCERN)
+        intent, nxt, _out = self.turn(st, {
+            "active_outcome": choice(clear=0.30, retract=0.20, concern=0.40, other=0.10)})
+        self.assertIsNot(intent.command.outcome, TurnOutcome.RETRACT,
+                         f"a 0.20 retract beside a 0.40 concern retracts nothing, got {intent.command.outcome.value}")
+        self.assertIs(nxt.answers["birth_sudden"].state, AnswerStatus.CONCERN,
+                      "the red flag survives a split too weak to read")
+
+    def test_a_clear_retract_pair_under_the_outcome_gate_never_falsely_retracts(self):
+        # The pair gate is the whole reason clear+retract can be summed: 0.28 + 0.23 is 0.51, under the pack's
+        # 0.5196 `outcome_min_confidence`, so it is a coin toss, not a denial, and the red flag must survive it.
+        st = state_at(self.shishu, "birth_sudden", substep=SubStep.WHICH_ITEM)
+        st.answers["birth_sudden"] = AnswerRecord(state=AnswerStatus.CONCERN)
+        intent, nxt, _out = self.turn(st, {
+            "active_outcome": choice(clear=0.28, retract=0.23, concern=0.20, other=0.20, unknown=0.09)})
+        self.assertIsNot(intent.command.outcome, TurnOutcome.RETRACT,
+                         f"a 0.51 pair is under the 0.5196 gate, got {intent.command.outcome.value} "
+                         f"top2={intent.diagnostics.get('top2')}")
+        self.assertIs(nxt.answers["birth_sudden"].state, AnswerStatus.CONCERN,
+                      f"the red flag survives an unreadable pair, got {nxt.answers['birth_sudden'].state.value!r}")
+
+    def test_a_clear_retract_split_on_the_main_gate_resolves_cleanly(self):
+        # On the main gate the two labels are the same "no": the pair's own winner is the read, never a burnt retry.
+        st = state_at(self.shishu, "birth_sudden")
+        intent, nxt, _out = self.turn(st, {"active_outcome": choice(clear=0.55, retract=0.40, concern=0.05)})
+        self.assertIs(intent.command.outcome, TurnOutcome.CLEAR,
+                      f"the quiet label of the pair wins on main, got {intent.command.outcome.value} "
+                      f"top2={intent.diagnostics.get('top2')}")
+        self.assertIs(nxt.answers["birth_sudden"].state, AnswerStatus.CLEAR)
+        self.assertNotEqual(nxt.step_token, st.step_token, "a read answer never burns a retry")
 
 
 if __name__ == "__main__":

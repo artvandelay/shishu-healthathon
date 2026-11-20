@@ -559,6 +559,41 @@ img { max-width: 100%; }
 
 .thanks .sub { margin: 6px 0 16px; color: var(--muted); font-size: 14px; text-align: center; }
 
+/* The end screen's own preparing state: the PDF is still being built, so say so and keep animating
+   until it lands (or the build fails). #wait belongs to the live stage and is never shown here. */
+.thanks-preparing {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0 18px;
+  padding: 20px 16px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--navy-soft);
+  text-align: center;
+}
+
+.prep-spinner {
+  width: 30px;
+  height: 30px;
+  margin-bottom: 4px;
+  border: 3px solid rgba(27, 42, 74, 0.14);
+  border-top-color: var(--saffron);
+  border-radius: 50%;
+  animation: shishu-spin 900ms linear infinite;
+}
+
+.thanks-preparing .prep-copy { color: var(--navy); font-size: 17px; font-weight: 750; line-height: 1.35; }
+
+.thanks-preparing .prep-hint { color: var(--muted); font-size: 12.5px; font-weight: 550; line-height: 1.4; }
+
+#thanks-preparing .en { margin-top: 2px; font-size: 11.5px; }
+
+@keyframes shishu-spin {
+  to { transform: rotate(360deg); }
+}
+
 .summary { font-size: 16px; font-weight: 500; line-height: 1.55; text-align: center; }
 
 .thanks-actions { display: flex; flex-direction: column; gap: 10px; margin-top: 20px; }
@@ -588,6 +623,31 @@ img { max-width: 100%; }
 .text-btn .en { color: rgba(255, 255, 255, 0.88); }
 
 .text-btn svg { width: 20px; height: 20px; fill: currentColor; }
+
+/* The download button: a stroked (not filled) arrow-into-tray icon beside its own label span. */
+.download-btn { gap: 10px; }
+
+.download-btn .dl-icon {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.download-btn .btn-label { display: block; text-align: center; }
+
+.download-btn .btn-label .hi { font-size: 15px; font-weight: 700; }
+
+.download-btn .btn-label .en {
+  margin-top: 1px;
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 11px;
+  font-weight: 550;
+}
 
 .dash-link { background: var(--navy-soft); color: var(--navy); }
 
@@ -1110,6 +1170,8 @@ tr.flag td { background: #fff6f5; }
 @media (prefers-reduced-motion: reduce) {
   .ring, #wait .dots i, .quick-btn, .choice-pill { animation: none; transition: none; }
   .call-btn:not(:disabled):active { transform: none; }
+  /* No spin: a still, clearly-shaped ring still reads as "working" without motion. */
+  .prep-spinner { animation: none; border-color: rgba(27, 42, 74, 0.14); border-top-color: var(--saffron); }
 }
 
 @media (max-width: 980px) {
