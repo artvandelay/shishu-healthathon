@@ -1,6 +1,6 @@
 # SHISHU — Product Requirements & User Flows
 
-Hindi voice intake before a clinic visit. Asks a fixed history, preserves the caller's words verbatim, and produces two deterministic artefacts with **zero post-call LLM calls**: a Hindi Patient PDF and an English clinician note. Companion: [`TECH-SPEC.md`](TECH-SPEC.md).
+Hindi voice intake before a clinic visit. Asks a fixed history, preserves the caller's words verbatim, and produces two deterministic artefacts with **zero post-call LLM calls**: a Hindi Patient PDF and an English clinician note. Companion: [`TECH-SPEC.md`](../spec/TECH-SPEC.md).
 
 ## 1. Scope & Context
 
@@ -86,4 +86,4 @@ First five resolve the step; `NOT_APPLICABLE` never counts as an answer.
 ## 7. Operational Limits & New-Pack DoD
 
 - **Limits:** Single forward pass (no loops/sub-forms/per-child block repeats); 8 answer kinds (no dates, unit-validated vitals, computed scores, in-flow uploads); 1 flat roster; fixed report projection model (templates only); browser WS only; single server process (for resume); speech over SHISHU is not a caller turn (half-duplex tap-over avoids echo storms); classifier is a hard runtime dependency (3 failures end call).
-- **New-pack DoD (zero Python):** Valid when intake is 1 ordered pass, 1 patient or flat roster, voice + optional yes/no or single-choice taps, 8 supported kinds, and positive / negative / unknown / unasked reporting. Contract: [`TECH-SPEC.md`](TECH-SPEC.md) §4.
+- **New-pack DoD (zero Python):** Valid when intake is 1 ordered pass, 1 patient or flat roster, voice + optional yes/no or single-choice taps, 8 supported kinds, and positive / negative / unknown / unasked reporting. Contract: [`TECH-SPEC.md`](../spec/TECH-SPEC.md) §4.

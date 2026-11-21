@@ -4,7 +4,7 @@
 change without touching Python or JavaScript, and where does the clay stop being clay?*
 
 Companion documents: [`v3-design-and-thinking-vad.md`](v3-design-and-thinking-vad.md) (the
-design of record), [`../README.md`](../README.md) (how to run it).
+design of record), [`../../README.md`](../../README.md) (how to run it), [`../README.md`](../README.md) (doc map).
 
 ---
 
@@ -124,7 +124,7 @@ silence-close, soft limit, and hard limit timers.
 | How out-of-turn answers are phrased to the model | `decisions.yaml → heads.stated_template` |
 | How the topic router is phrased | `decisions.yaml → heads.next_qid_template` |
 | How per-child attribution is phrased | `decisions.yaml → heads.item_ref_template` |
-| Every confidence gate | `decisions.yaml → thresholds{}` (all 16 keys are mandatory; a pack that omits one fails to load) |
+| Every confidence gate | `decisions.yaml → thresholds{}` (all 21 keys in `pack._THRESHOLDS` are mandatory; a pack that omits one fails to load) |
 
 ### 2.7 Reports
 
@@ -179,9 +179,9 @@ A pack cannot introduce an answer type the engine does not already understand:
 - no file or photo upload inside the flow
 - no signature
 
-The `profile_slots[].type` field exists but is **not honoured**: `intake/extractor.py`
-builds every slot as a nullable string in the extraction schema, so `type: number` yields a
-string. A numeric slot works only because the string is parsed nowhere it matters.
+`profile_slots[].type` is honoured by `intake/extractor.py` for `number`, `integer`, and
+`boolean` (defaulting otherwise to nullable string), **without** unit conversion or min/max
+range validation.
 
 ### 3.3 The roster is one flat list
 
@@ -288,7 +288,7 @@ PYTHONPATH=. ~/pyenv/shishu/bin/python -m unittest discover -s tests
 
 The startup validator rejects duplicate ids, unknown groups/rules/variants/follow-ups, choice
 kinds with fewer than two options, `score` with fewer than two rubric levels, a `profile`
-step without `requires_slot`, any of the 17 missing thresholds, and any missing template — so
+step without `requires_slot`, any of the 21 missing thresholds, and any missing template — so
 a broken pack fails at load with the whole error list rather than at the first bad question.
 
 If any of the five does not hold, the work is in `intake/`, and it will affect every pack.

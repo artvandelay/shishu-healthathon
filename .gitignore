@@ -26,7 +26,8 @@ SHISHU_Round_2_Owner_Working_Draft.pptx
 # Old versions. This app does not use them.
 code/bad-v1/
 plan/
-architecture/
+# Deprecated local copy only; published diagrams live under docs/architecture/
+/architecture/
 3rdparty/
 
 # Local Ollama probe artifacts (not published)

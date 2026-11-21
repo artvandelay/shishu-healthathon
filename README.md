@@ -10,9 +10,11 @@ V3 is an **engine**, not a rare-disease app. The clinical content — every ques
 Hindi string, every template — lives in a declarative pack under `packs/`. Adding a second
 use case costs zero lines of Python.
 
-Design of record: [`docs/v3-design-and-thinking-vad.md`](docs/v3-design-and-thinking-vad.md).
+Documentation map: [`docs/README.md`](docs/README.md).
+Design of record: [`docs/design/v3-design-and-thinking-vad.md`](docs/design/v3-design-and-thinking-vad.md).
 What a pack can and cannot change without touching code:
-[`docs/v3-moldability-boundary.md`](docs/v3-moldability-boundary.md).
+[`docs/design/v3-moldability-boundary.md`](docs/design/v3-moldability-boundary.md).
+Normative spec: [`docs/spec/TECH-SPEC.md`](docs/spec/TECH-SPEC.md).
 
 ## The loop
 
@@ -36,13 +38,15 @@ Three invariants hold for every pack:
 |---|---|
 | `models.py` | The typed vocabulary: `CallState`, `TurnCommand`, `AnswerRecord`, `QuestionSpec`, `PackConfig` |
 | `pack.py` | `load_pack`, `list_pack_ids`, and the startup schema validator |
+| `turns.py` | Immutable `TurnEvidence`, `TurnInterpretation`, `ClinicalClaim`, and `PolicyDecision` contracts |
+| `policy.py` | Pure turn policy (`evaluate_policy`, `apply_policy`, `arbitrate_tap_turn`) |
 | `engine.py` | Pure FormBharo reducer: eligibility, skip matrix, roster, re-ask policy |
 | `audio.py` | 16 kHz PCM resampling and resumable stereo 16 kHz call WAV recorder |
 | `decisions.py` | Single-pass `gemini-decision-1` multimodal turn classifier with slim retry fallback |
 | `extractor.py` | Schema-validated profile extractor (typed slot values and roster out of free speech) |
 | `live.py` | Gemini Live AAD voice puppet, `TurnPhase` + `epoch` state machine, `?resume=<share_token>` continuity |
 | `reports.py` | `project_summary` plus the Jinja → WeasyPrint Patient PDF and clinician markdown |
-| `db.py` | Atomic SQLite: calls, transcripts, events, bug reports, share tokens |
+| `db.py` | Atomic SQLite: calls, transcripts, events, bug reports, share tokens, and semantic ledger |
 | `app.py` | FastAPI routes, HMAC cookie auth, sliding-window rate limits, `/ws/live` |
 | `static/` | `login.html`, `call.html`, `admin.html`, `styles.css`, `call.js`, `admin.js` |
 
@@ -66,7 +70,7 @@ packs/<pack_id>/
   pack.yaml        title, subtitle, Gemini model + voice, VAD timings, every UI string
   prompts.yaml     spoken copy and the live session's system prompt
   form.yaml        questions, groups, followups, rules, implications, report config
-  decisions.yaml   calibrated thresholds for the eleven Decision API gates
+  decisions.yaml   calibrated thresholds for the 21 required Decision API gates
   seed.yaml        scripted regression calls, replayed through the real reducer
   assets/          logo, Devanagari font, consent PDF
   templates/       patient.html.j2, clinician.md.j2, pdf.css
@@ -125,9 +129,9 @@ Open http://127.0.0.1:8000, or go straight to a pack:
 - `/?pack=fever-opd-hi` — the OPD fever call
 - `/admin` — the clinician dashboard, which needs `ADMIN_PASSCODE`
 
-At startup the lifespan seeds both packs from their `seed.yaml` scenarios, so a fresh
-database is never empty. Seeding replays each scripted call through the real reducer and
-skips a pack that already has calls.
+When `SEED_DEMO_CALLS=1` is set in the environment, startup lifespan seeds both packs from
+their `seed.yaml` scenarios, so a fresh database is never empty. Seeding replays each
+scripted call through the real reducer and skips a pack that already has calls.
 
 ## Tests
 

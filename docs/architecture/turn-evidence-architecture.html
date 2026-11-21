@@ -1,0 +1,641 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SHISHU Turn &amp; Evidence Architecture</title>
+  <style>
+    :root {
+      --bg: #f4f7fb;
+      --surface: #ffffff;
+      --ink: #172033;
+      --muted: #637089;
+      --line: #d8e0ec;
+      --keep: #2563eb;
+      --keep-bg: #eff6ff;
+      --new: #b45309;
+      --new-bg: #fff7ed;
+      --later: #7c3aed;
+      --later-bg: #f5f3ff;
+      --safe: #047857;
+      --safe-bg: #ecfdf5;
+      --danger: #be123c;
+      --danger-bg: #fff1f2;
+      --shadow: 0 12px 32px rgba(23, 32, 51, .08);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--bg);
+      font: 15px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    button, select { font: inherit; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+    .hero {
+      padding: 44px max(24px, calc((100vw - 1280px) / 2));
+      color: white;
+      background: linear-gradient(135deg, #13213c, #1d4f73);
+    }
+    .hero h1 { max-width: 900px; margin: 0 0 10px; font-size: clamp(30px, 5vw, 54px); line-height: 1.05; }
+    .hero p { max-width: 850px; margin: 0; color: #d6e7f5; font-size: 17px; }
+    .status-line { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 22px; }
+    .status-line span, .badge {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 4px 9px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .status-line span { border: 1px solid #ffffff3d; background: #ffffff12; }
+
+    .toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      padding: 12px max(24px, calc((100vw - 1280px) / 2));
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, .94);
+      backdrop-filter: blur(14px);
+    }
+    .toolbar strong { margin-right: 8px; }
+    .toolbar button, .toolbar select {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 7px 10px;
+      color: var(--ink);
+      background: white;
+      cursor: pointer;
+    }
+    .toolbar button:hover { border-color: #8da2bf; }
+
+    main { width: min(1280px, calc(100% - 32px)); margin: 28px auto 80px; }
+    section {
+      margin: 22px 0;
+      padding: 26px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+    h2 { margin: 0 0 8px; font-size: 26px; }
+    h3 { margin: 20px 0 8px; }
+    .lede { margin: 0 0 20px; color: var(--muted); }
+    .callout {
+      margin: 16px 0;
+      padding: 14px 16px;
+      border-left: 4px solid var(--keep);
+      border-radius: 6px;
+      background: var(--keep-bg);
+    }
+    .warning { border-color: var(--new); background: var(--new-bg); }
+
+    .legend { display: flex; flex-wrap: wrap; gap: 8px; }
+    .badge.keep { color: var(--keep); background: var(--keep-bg); }
+    .badge.new { color: var(--new); background: var(--new-bg); }
+    .badge.later { color: var(--later); background: var(--later-bg); }
+    .badge.safe { color: var(--safe); background: var(--safe-bg); }
+    .badge.risk { color: var(--danger); background: var(--danger-bg); }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(7, minmax(128px, 1fr));
+      gap: 26px 18px;
+      align-items: stretch;
+      overflow-x: auto;
+      padding: 12px 2px 18px;
+    }
+    .node {
+      position: relative;
+      min-width: 128px;
+      padding: 14px;
+      border: 2px solid var(--line);
+      border-radius: 12px;
+      background: white;
+    }
+    .node::after {
+      position: absolute;
+      top: 50%;
+      left: calc(100% + 4px);
+      width: 11px;
+      border-top: 2px solid #9aa8bc;
+      content: "";
+    }
+    .node::before {
+      position: absolute;
+      top: calc(50% - 4px);
+      left: calc(100% + 14px);
+      border: 5px solid transparent;
+      border-left-color: #9aa8bc;
+      content: "";
+    }
+    .node:last-child::after, .node:last-child::before { display: none; }
+    .node strong { display: block; margin-bottom: 5px; }
+    .node small { display: block; color: var(--muted); line-height: 1.35; }
+    .node.keep { border-color: #93b4ef; background: var(--keep-bg); }
+    .node.new { border-color: #f1b974; background: var(--new-bg); }
+    .node.later { border-color: #bda7ee; background: var(--later-bg); }
+    .node.safe { border-color: #8fd3ba; background: var(--safe-bg); }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 14px;
+    }
+    .card { padding: 17px; border: 1px solid var(--line); border-radius: 12px; background: #fbfcfe; }
+    .card h3 { margin: 0 0 8px; font-size: 17px; }
+    .card p, .card ul { margin: 7px 0; }
+    .card ul { padding-left: 20px; }
+
+    .decision-grid {
+      display: grid;
+      grid-template-columns: 1fr 40px 1.2fr 40px 1.3fr;
+      gap: 12px;
+      align-items: center;
+    }
+    .arrow { text-align: center; color: var(--muted); font-size: 25px; }
+    .lane { padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: #fbfcfe; }
+    .lane + .lane { margin-top: 8px; }
+    .lane.answer { border-left: 4px solid var(--safe); }
+    .lane.aside { border-left: 4px solid var(--new); }
+    .lane.retry { border-left: 4px solid var(--danger); }
+
+    .timeline { display: grid; gap: 10px; }
+    .time-row { display: grid; grid-template-columns: 150px 1fr 110px; gap: 12px; align-items: center; }
+    .bar { min-height: 34px; border-radius: 7px; padding: 7px 10px; color: #fff; background: var(--keep); }
+    .bar.new { background: var(--new); }
+    .bar.later { background: var(--later); }
+    .time-row output { color: var(--muted); font-size: 13px; }
+
+    .schema {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 14px;
+    }
+    .record { overflow: hidden; border: 1px solid var(--line); border-radius: 11px; }
+    .record header { padding: 10px 13px; font-weight: 800; background: #edf2f8; }
+    .record.new header { color: var(--new); background: var(--new-bg); }
+    .record pre { overflow-x: auto; margin: 0; padding: 13px; font-size: 12px; line-height: 1.55; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { padding: 11px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+
+    details { margin-top: 12px; border: 1px solid var(--line); border-radius: 10px; background: #fbfcfe; }
+    summary { padding: 13px 15px; cursor: pointer; font-weight: 750; }
+    details > div { padding: 0 15px 15px; }
+    .assumption { border-left: 4px solid var(--later); }
+    .hidden { display: none !important; }
+    footer { width: min(1280px, calc(100% - 32px)); margin: 0 auto 40px; color: var(--muted); }
+
+    @media (max-width: 920px) {
+      .flow { grid-template-columns: 1fr; overflow: visible; }
+      .node::after, .node::before { display: none; }
+      .decision-grid { grid-template-columns: 1fr; }
+      .arrow { transform: rotate(90deg); }
+      .time-row { grid-template-columns: 1fr; gap: 4px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <h1>Turn &amp; Evidence Architecture</h1>
+    <p>A reviewable placeholder for separating what the caller said, what the model inferred, what deterministic policy accepted, and what the clinical form reports.</p>
+    <div class="status-line">
+      <span>Slice 1–3 implemented on v3 (turns.py, policy.py, ledger)</span>
+      <span>Verified against current code: 21 Nov 2026</span>
+      <span>Deferred: TurnController &amp; single semantic reader</span>
+    </div>
+  </header>
+
+  <nav class="toolbar" aria-label="Diagram controls">
+    <strong>View</strong>
+    <select id="detail-level" aria-label="Detail level">
+      <option value="all">All detail</option>
+      <option value="overview">Overview only</option>
+      <option value="implementation">Implementation detail</option>
+    </select>
+    <button type="button" data-toggle="current">Toggle current system</button>
+    <button type="button" data-toggle="new">Toggle proposed changes</button>
+    <button type="button" data-toggle="later">Toggle later work</button>
+    <button type="button" id="expand-all">Expand all notes</button>
+  </nav>
+
+  <main>
+    <section data-level="overview">
+      <h2>1. Complete picture</h2>
+      <p class="lede">Read left to right. Blue is retained current behavior, amber is the first restructuring, and purple is intentionally deferred.</p>
+      <div class="legend">
+        <span class="badge keep">KEEP / CURRENT</span>
+        <span class="badge new">NEW / FIRST SLICES</span>
+        <span class="badge later">LATER / NOT REQUIRED FIRST</span>
+        <span class="badge safe">DETERMINISTIC BOUNDARY</span>
+      </div>
+      <div class="flow" aria-label="Target system flow">
+        <article class="node keep current">
+          <strong>1. Capture</strong>
+          <small>Voice audio, typed text, quick tap, delayed STT.</small>
+        </article>
+        <article class="node new proposed">
+          <strong>2. TurnEvidence</strong>
+          <small>Immutable source, transcript/audio reference, timing and original step.</small>
+        </article>
+        <article class="node new proposed">
+          <strong>3. Interpretation</strong>
+          <small>One act, one relation, zero or more bounded clinical claims.</small>
+        </article>
+        <article class="node safe proposed">
+          <strong>4. Policy</strong>
+          <small>Accept answer, retain aside, clarify, retry, ignore or mark conflict.</small>
+        </article>
+        <article class="node keep current">
+          <strong>5. Form projection</strong>
+          <small>Existing reducer and <code>CallState.answers</code> remain authoritative for the form.</small>
+        </article>
+        <article class="node new proposed">
+          <strong>6. Atomic commit</strong>
+          <small>Form state and append-only evidence history succeed or fail together.</small>
+        </article>
+        <article class="node later deferred">
+          <strong>7. Projections</strong>
+          <small>Clinician sees approved observations; patient sees accepted safe answers only.</small>
+        </article>
+      </div>
+      <div class="callout warning">
+        <strong>Core rule:</strong> “Not an answer to the active question” is not one thing. It may be another form answer, a clinical aside, unusable input, or unrelated speech. The policy must not force all four into one form slot.
+      </div>
+    </section>
+
+    <section data-level="overview">
+      <h2>2. Who decides the three practical lanes?</h2>
+      <p class="lede">The lanes are policy outcomes, not a single opaque three-class classifier.</p>
+      <div class="decision-grid">
+        <div class="card current">
+          <h3>A. Local/server checks</h3>
+          <ul>
+            <li>No speech or empty transcript</li>
+            <li>Obvious audio/transport failure</li>
+            <li>Stale step or duplicate turn ID</li>
+          </ul>
+          <span class="badge keep">No LLM needed</span>
+        </div>
+        <div class="arrow">→</div>
+        <div class="card proposed">
+          <h3>B. One semantic reader</h3>
+          <p>For usable speech, emit structured <code>act</code>, <code>relation</code> and <code>claims[]</code>.</p>
+          <p>It replaces the conceptual role of many independent question heads; it does not directly mutate form state.</p>
+          <span class="badge new">Model inference</span>
+        </div>
+        <div class="arrow">→</div>
+        <div>
+          <div class="lane answer"><strong>Answer</strong><br>Target is explicit and value valid → update form.</div>
+          <div class="lane aside"><strong>Clinical aside</strong><br>Retain for clinician policy; active question stays open.</div>
+          <div class="lane retry"><strong>Unusable / unrelated / uncertain</strong><br>No clinical write; retry once, then leave unanswered.</div>
+        </div>
+      </div>
+      <details>
+        <summary>Why “noise” stays deliberately small</summary>
+        <div>
+          <p>A phone microphone cannot reliably identify TV speech versus a nearby caregiver from acoustics alone. The system only needs enough detection to avoid a form write. It retains minimal audit evidence, retries once, and does not build a rich taxonomy of noise.</p>
+          <p>Valid clinical speech that does not answer the active criterion is not noise. Example: “The child had fever after BCG” is a clinical aside unless it also answers the exact red-flag criterion.</p>
+        </div>
+      </details>
+    </section>
+
+    <section data-level="implementation">
+      <h2>3. Detailed turn lifecycle</h2>
+      <p class="lede">Each branch names the owner and the state mutation allowed at that point.</p>
+      <div class="cards">
+        <article class="card current">
+          <h3>Ingress — browser + Live session</h3>
+          <ul>
+            <li>Browser provides mic audio and quick replies.</li>
+            <li><code>LiveCallSession</code> banks PCM and snapshots the current step.</li>
+            <li>Gemini Live supplies endpointing, input transcription and rendered speech today.</li>
+            <li>Epoch/step checks reject stale taps.</li>
+          </ul>
+        </article>
+        <article class="card proposed">
+          <h3>Evidence creation — new seam</h3>
+          <ul>
+            <li>Allocate one call-local sequence and immutable evidence ID.</li>
+            <li>Record source: voice, text, tap or late STT.</li>
+            <li>Bind to the pre-turn step token, never the cursor after mutation.</li>
+            <li>Reference audio by range/hash; do not duplicate PCM in SQLite.</li>
+          </ul>
+        </article>
+        <article class="card proposed">
+          <h3>Semantic reader — proposed</h3>
+          <ul>
+            <li>Act: answer, clarify, retract, stop, noise/unknown.</li>
+            <li>Relation: active, other form question, clinical aside, unrelated.</li>
+            <li>Claims have explicit targets when known.</li>
+            <li>Low confidence stays unresolved; it is not promoted to clinical truth.</li>
+          </ul>
+        </article>
+        <article class="card proposed">
+          <h3>Pure policy — proposed</h3>
+          <ul>
+            <li>Consumes interpretation, current state and pack rules.</li>
+            <li>Produces claim dispositions and at most one cursor action.</li>
+            <li>Cannot invent a target question.</li>
+            <li>Can retain evidence without changing the form.</li>
+          </ul>
+        </article>
+        <article class="card current">
+          <h3>Form reducer — keep</h3>
+          <ul>
+            <li>Current five-phase deterministic reduction remains.</li>
+            <li><code>CallState.answers</code> remains the fast form projection.</li>
+            <li>Existing skip, follow-up and patient-safe behavior remains protected.</li>
+            <li>A temporary adapter maps accepted policy decisions to <code>TurnCommand</code>.</li>
+          </ul>
+        </article>
+        <article class="card deferred">
+          <h3>TurnController — later</h3>
+          <ul>
+            <li>Server owns finalization by turn ID.</li>
+            <li>Gemini tool calls become advisory transport signals.</li>
+            <li>Exactly one commit and cursor transition per turn.</li>
+            <li>Current cue recovery remains until replay evidence supports removal.</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section data-level="implementation">
+      <h2>4. Timers, budgets and retry boundaries</h2>
+      <p class="lede">Blue values exist in the current code. Amber marks where a new bounded decision sits. These are ceilings, not promised latency.</p>
+      <div class="timeline current">
+        <div class="time-row"><strong>AAD prefix</strong><div class="bar" style="width: 18%">200 ms</div><output>Current Gemini Live config</output></div>
+        <div class="time-row"><strong>AAD silence</strong><div class="bar" style="width: 34%">1.6 s</div><output>End-of-speech signal</output></div>
+        <div class="time-row"><strong>Late STT wait</strong><div class="bar" style="width: 22%">0.5 s</div><output>Only when audio exists but text does not</output></div>
+        <div class="time-row"><strong>Cue fallback</strong><div class="bar" style="width: 42%">2.2 s</div><output>If Gemini does not begin next prompt</output></div>
+        <div class="time-row"><strong>Decision attempt</strong><div class="bar" style="width: 72%">≤ 12 s</div><output>Current first attempt ceiling</output></div>
+        <div class="time-row"><strong>Total decision</strong><div class="bar" style="width: 100%">≤ 18 s</div><output>At most two attempts; retry only technical failures</output></div>
+      </div>
+      <div class="timeline proposed" style="margin-top: 16px">
+        <div class="time-row"><strong>New reader</strong><div class="bar new" style="width: 50%">Target: no extra call</div><output>Replaces existing semantic decision shape</output></div>
+        <div class="time-row"><strong>Noise retry</strong><div class="bar new" style="width: 38%">One re-ask</div><output>Then leave unanswered; no endless loop</output></div>
+      </div>
+      <details>
+        <summary>Decision API failure policy</summary>
+        <div>
+          <ul>
+            <li>Retry only timeout, connection failure, HTTP 408/429 or 5xx.</li>
+            <li>Safety block, invalid reply, empty answers and other 4xx do not repeat the same API call.</li>
+            <li>A slim second request uses only the remaining part of the 18-second budget.</li>
+            <li>Observed 0.8–1.0 second calls are historical examples, not a guaranteed bound; 5–7 second delays can come from model queueing or turn/tool protocol.</li>
+          </ul>
+        </div>
+      </details>
+      <details>
+        <summary>Call-level timers, separate from semantic classification</summary>
+        <div>
+          <ul>
+            <li>Soft call limit: 1,140 seconds.</li>
+            <li>Hard call limit: 1,200 seconds.</li>
+            <li>Maximum Gemini Live reconnect attempts: 5.</li>
+            <li>Playback tail that may still accept caller speech: 350 ms.</li>
+            <li>Captured PCM limit per turn: 960,000 bytes.</li>
+          </ul>
+        </div>
+      </details>
+    </section>
+
+    <section data-level="implementation">
+      <h2>5. Proposed data contract</h2>
+      <p class="lede">These structures are design candidates. Names and fields must be frozen in a separate architecture checkpoint before implementation.</p>
+      <div class="schema">
+        <article class="record new proposed">
+          <header>TurnEvidence — immutable input</header>
+          <pre>{
+  evidence_id: UUID
+  call_id: int
+  sequence: int
+  source: voice | text | tap | late_stt
+  snapshot_step: str
+  transcript: str
+  selected_value: any?
+  audio_ref: {path, start_ms, end_ms, hash}?
+  received_at: timestamp
+}</pre>
+        </article>
+        <article class="record new proposed">
+          <header>TurnInterpretation — model reading</header>
+          <pre>{
+  interpretation_id: UUID
+  evidence_ids: UUID[]
+  schema_version: str
+  act: answer | clarify | retract | stop | unknown
+  active_relation:
+    active | other_form | clinical_aside | unrelated
+  claims: ClinicalClaim[]
+  confidence: number?
+  model_metadata: object
+}</pre>
+        </article>
+        <article class="record new proposed">
+          <header>ClinicalClaim — bounded assertion</header>
+          <pre>{
+  claim_id: UUID
+  evidence_id: UUID
+  target_qid: str?
+  subject_ids: str[]
+  status_or_value: any
+  quoted_span: str
+  relation: enum
+}</pre>
+        </article>
+        <article class="record new proposed">
+          <header>PolicyDecision — deterministic result</header>
+          <pre>{
+  claim_id: UUID?
+  disposition:
+    accept_form | retain_observation |
+    clarify | ignore | conflict
+  reason: str
+  form_write: TurnCommand?
+  cursor_action: stay | advance | close
+}</pre>
+        </article>
+        <article class="record current">
+          <header>CallState — current form projection</header>
+          <pre>{
+  phase
+  close_reason
+  profile
+  roster
+  semantic_flags
+  cursor
+  last_answered_qid
+  emergency_note
+  answers: dict[qid, AnswerRecord]
+}</pre>
+        </article>
+        <article class="record new proposed">
+          <header>TurnCommit — atomic persistence envelope</header>
+          <pre>{
+  evidence: TurnEvidence[]
+  interpretation: TurnInterpretation?
+  decisions: PolicyDecision[]
+  next_state: CallState
+  expected_prior_step: str
+}</pre>
+        </article>
+      </div>
+      <div class="callout">
+        <strong>Compatibility boundary:</strong> do not add these records inside <code>cursor_json</code>. Legacy call state is strictly validated and currently falls back to a blank state on validation failure. Use separate append-only tables and one transaction.
+      </div>
+    </section>
+
+    <section data-level="implementation">
+      <h2>6. Behavior matrix — ifs, buts and edge cases</h2>
+      <div style="overflow-x:auto">
+        <table>
+          <thead>
+            <tr><th>Input</th><th>Interpretation</th><th>Form effect</th><th>Ledger effect</th><th>Next prompt</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Clear answer to active question</td><td>answer + active + targeted claim</td><td>Accept answer; at most one cursor advance</td><td>Evidence, claim and accepted decision</td><td>Next deterministic question</td></tr>
+            <tr><td>Answer to another known question</td><td>answer + other_form</td><td>Write only explicit target; active stays open</td><td>Evidence and targeted claim</td><td>Repeat/clarify active question</td></tr>
+            <tr><td>“Fever after BCG” while asking exact BCG red flag</td><td>answer/observation + clinical_aside</td><td>BCG remains unanswered</td><td>Retain clinician observation, initially audit-only</td><td>Clarify exact criterion once</td></tr>
+            <tr><td>TV, unrelated instruction, or unknown topic</td><td>unrelated or unknown</td><td>No write</td><td>Minimal audit evidence; no clinical claim</td><td>Retry once</td></tr>
+            <tr><td>Silence / empty STT / transport error</td><td>Local unusable-input check</td><td>No write</td><td>Technical event only</td><td>Retry once</td></tr>
+            <tr><td>Clarification request</td><td>clarify act</td><td>No write; cursor stays</td><td>Evidence + clarify decision</td><td>Explain/rephrase current question</td></tr>
+            <tr><td>Retraction of prior concern</td><td>retract + explicit target</td><td>Update current form projection</td><td>Append retraction; never erase old evidence</td><td>Confirm or continue by policy</td></tr>
+            <tr><td>Tap yes + spoken no, same original step</td><td>Source conflict</td><td>No silent winner; do not advance</td><td>Both evidence records + conflict decision</td><td>Short confirmation</td></tr>
+            <tr><td>Late STT after cursor advanced</td><td>Bound to snapshot step</td><td>Cannot mutate new active question</td><td>Distinct late-STT evidence</td><td>No prompt unless policy requests repair</td></tr>
+            <tr><td>Low-confidence possible clinical aside</td><td>Unknown/unresolved</td><td>No write</td><td>Evidence retained; no approved observation</td><td>One targeted clarification or continue</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section data-level="implementation">
+      <h2>7. Exact code touch map</h2>
+      <p class="lede">The first slice is intentionally narrower than the complete target.</p>
+      <div class="cards">
+        <article class="card current"><h3><code>intake/turns.py</code> — implemented</h3><p>Frozen evidence, interpretation, claim, policy and commit contracts. No transport code.</p></article>
+        <article class="card current"><h3><code>intake/policy.py</code> — implemented</h3><p>Pure claim → disposition evaluation, tap-conflict arbitration, and command mapping.</p></article>
+        <article class="card current"><h3><code>intake/db.py</code> — implemented</h3><p>Append-only tables (<code>turn_evidence</code>, <code>turn_interpretations</code>, <code>clinical_claims</code>, <code>policy_decisions</code>) and atomic state-plus-ledger transaction.</p></article>
+        <article class="card current"><h3><code>intake/live.py</code> — implemented</h3><p>Creates source-specific evidence and routes voice/tap/late-STT through one commit boundary.</p></article>
+        <article class="card current"><h3><code>intake/engine.py</code></h3><p>Keeps 5-phase single-advance reducer semantics; receives accepted policy writes via <code>TurnCommand</code>.</p></article>
+        <article class="card deferred"><h3><code>intake/decisions.py</code></h3><p>Later replace wide <code>stated_&lt;qid&gt;</code> and router heads with one structured reader after replay parity is proven.</p></article>
+        <article class="card current"><h3><code>intake/reports.py</code> + templates</h3><p>Projects approved retained clinician observations; patient output never reads raw evidence.</p></article>
+        <article class="card current"><h3><code>intake/static/call.js</code></h3><p>Step/epoch gating and source-conflict prompt confirmation live on <code>v3</code>.</p></article>
+        <article class="card current"><h3><code>tests/</code></h3><p>RED-first contract tests across <code>test_turn_evidence.py</code>, <code>test_semantic_policy.py</code>, and <code>test_tap_conflict.py</code>.</p></article>
+      </div>
+    </section>
+
+    <section data-level="overview">
+      <h2>8. Bounded delivery stages</h2>
+      <div class="cards">
+        <article class="card proposed">
+          <span class="badge new">FIRST</span>
+          <h3>Lossless evidence seam</h3>
+          <p>Capture immutable voice/tap/late-STT evidence and commit it atomically with unchanged form behavior.</p>
+          <p><strong>Proof:</strong> no evidence loss, no cursor/report regression, no partial write.</p>
+        </article>
+        <article class="card proposed">
+          <span class="badge new">SECOND</span>
+          <h3>One semantic vertical</h3>
+          <p>Active answer, another form answer, clinical aside, unrelated input, clarification and retraction.</p>
+          <p><strong>Proof:</strong> pure deterministic policy against frozen real-call interpretations.</p>
+        </article>
+        <article class="card proposed">
+          <span class="badge new">THIRD</span>
+          <h3>Source conflict</h3>
+          <p>Bundle same-step tap and voice evidence; contradictory sources trigger confirmation.</p>
+          <p><strong>Proof:</strong> tap-yes/spoken-no cannot silently advance.</p>
+        </article>
+        <article class="card deferred">
+          <span class="badge later">LATER</span>
+          <h3>Server-owned progression</h3>
+          <p>Finalize and commit by turn ID; Gemini Live remains audio/transcription/rendering transport.</p>
+          <p><strong>Proof:</strong> duplicate, missed-tool, interruption and reconnect replays commit once.</p>
+        </article>
+      </div>
+      <div class="callout warning">
+        <strong>Stage-one honesty:</strong> the evidence seam improves auditability and prevents future semantic loss, but does not itself prove that the model can distinguish TV speech from clinical asides. That requires a labeled replay evaluation in stage two.
+      </div>
+    </section>
+
+    <section data-level="implementation">
+      <h2>9. Verification and evidence required before rollout</h2>
+      <div class="cards">
+        <article class="card"><h3>RED-first contract tests</h3><p>Each new behavior must fail against current code before implementation. Record the actual failing assertion.</p></article>
+        <article class="card"><h3>Frozen incident corpus</h3><p>Label Calls #21–#65 by transport, semantic relation, conversational act, source conflict or UX/prompt failure.</p></article>
+        <article class="card"><h3>Shadow reader</h3><p>Run the structured reader without changing live form state. Compare its claims and relation against human labels.</p></article>
+        <article class="card"><h3>Policy invariants</h3><p>No write without explicit target; related/unrelated input cannot resolve active question; one cursor transition maximum.</p></article>
+        <article class="card"><h3>Rollback boundary</h3><p>Keep the legacy command adapter and feature flag until replay parity is achieved for the migrated question family.</p></article>
+      </div>
+      <details class="assumption">
+        <summary>Claims not yet proven</summary>
+        <div>
+          <ul>
+            <li>That one structured reader will outperform all current heads on every question family.</li>
+            <li>That TV speech is reliably detectable from mixed phone audio.</li>
+            <li>That clinician observations should appear immediately without confirmation.</li>
+            <li>That server-owned endpointing will reduce latency without harming barge-in behavior.</li>
+            <li>That the proposed table split is the final schema; it is a reviewable starting contract.</li>
+          </ul>
+        </div>
+      </details>
+    </section>
+
+    <section data-level="overview">
+      <h2>10. Decisions to make before code</h2>
+      <div class="cards">
+        <article class="card"><h3>Observation visibility</h3><p>Recommendation: related but unconfirmed clinical asides remain audit-only first; expose them to the clinician only after policy and replay validation.</p></article>
+        <article class="card"><h3>Conflicting sources</h3><p>Recommendation: preserve both, keep the question unresolved and ask one confirmation. Do not make voice or tap universally dominant.</p></article>
+        <article class="card"><h3>Unusable input</h3><p>Recommendation: one retry, then leave unanswered or move by explicit pack policy. Never loop indefinitely.</p></article>
+        <article class="card"><h3>First implementation boundary</h3><p>Recommendation: ship the evidence ledger with unchanged user-visible behavior before changing inference or reports.</p></article>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    Source basis: <code>intake/models.py</code>, <code>intake/turns.py</code>, <code>intake/policy.py</code>, <code>intake/decisions.py</code>, <code>intake/db.py</code>, <code>intake/live.py</code>, and the Calls #21–#65 architecture discussion. Core evidence, semantic ledger, policy, and tap-conflict slices are implemented on <code>v3</code>; items tagged <code>LATER</code> remain deferred (see <code>docs/spec/TECH-SPEC.md</code> for the normative contract).
+  </footer>
+
+  <script>
+    const groups = {
+      current: ".current",
+      new: ".proposed",
+      later: ".deferred"
+    };
+
+    document.querySelectorAll("[data-toggle]").forEach((button) => {
+      button.addEventListener("click", () => {
+        document.querySelectorAll(groups[button.dataset.toggle]).forEach((element) => {
+          element.classList.toggle("hidden");
+        });
+      });
+    });
+
+    document.querySelector("#detail-level").addEventListener("change", (event) => {
+      const choice = event.target.value;
+      document.querySelectorAll("section[data-level]").forEach((section) => {
+        const visible = choice === "all" || section.dataset.level === choice;
+        section.classList.toggle("hidden", !visible);
+      });
+    });
+
+    document.querySelector("#expand-all").addEventListener("click", (event) => {
+      const details = [...document.querySelectorAll("details")];
+      const shouldOpen = details.some((item) => !item.open);
+      details.forEach((item) => { item.open = shouldOpen; });
+      event.target.textContent = shouldOpen ? "Collapse all notes" : "Expand all notes";
+    });
+  </script>
+</body>
+</html>

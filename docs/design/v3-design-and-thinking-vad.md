@@ -1,6 +1,6 @@
 # SHISHU V3 — Moldable Voice Patient Intake: Architecture & Field Evolution
 
-**Status:** design of record for branch `v3` (updated Nov 18, 2026 — **V3.3** updates after staging Calls `#21`–`#46` adversarial voice verification, §4.4; earlier Call `#7`–`#15` postmortem in §4.1–§4.3). **Scope:** `intake/`, `packs/<pack_id>/`, `docs/`.
+**Status:** design of record for branch `v3` (updated Nov 18, 2026 — **V3.3** updates after staging Calls `#21`–`#46` adversarial voice verification, §4.4; earlier Call `#7`–`#15` postmortem in §4.1–§4.3). **Scope:** `intake/`, `packs/<pack_id>/`, `docs/` (see [`../README.md`](../README.md)).
 **Companion code:** `intake/models.py` (typed vocabulary), `intake/pack.py` (pack loader + startup validator), `intake/engine.py` (pure reducer), `intake/live.py` (Turn-Epoch live session), `intake/decisions.py` (two-tier `gemini-decision-1` router).
 
 ---
@@ -30,25 +30,26 @@ brief, measured today at 10,264: 5,990 lines of Python (`app.py`, `engine.py`, `
 Roughly 1,600 of those lines were clinical content any second use case would have to rewrite: `triage_catalog.py` (56
 atomic items and their follow-ups), `copy_hi.py` (every Hindi string), and the demographic skip matrix baked into
 `engine.py`. Every new intake — a fever OPD, an immunisation register — would fork the app. **V3 target was `intake/` at or
-under 1,950 LOC**; measured V3.3 is **2,507** Python LOC and **1,371** browser LOC, because adversarial live calls bought
-structural hardening (§4.4) rather than features — clinical content is still zero lines of Python.
+under 1,950 LOC**; measured today is **3,193** Python LOC and **1,377** browser JS+HTML LOC (plus **1,221** CSS LOC), because adversarial live calls and the turn-evidence/policy layer bought structural hardening (§4.4) rather than features — clinical content is still zero lines of Python.
 
 | Module | Role | Measured LOC |
 |---|---|---:|
 | `intake/models.py` | typed vocabulary: `CallState`, `TurnCommand`, `AnswerRecord`, `QuestionSpec`, `PackConfig` | 103 |
-| `intake/pack.py` | `load_pack`, `list_pack_ids`, startup validation | 61 |
-| `intake/engine.py` | pure reactive reducer, eligibility set `E`, rules/skip/reopen evaluation | 452 |
-| `intake/decisions.py` + `extractor.py` | Two-tier multimodal `gemini-decision-1` router (full 4-group + slim Group-A fallback) + schema extractor | 291 + 101 |
+| `intake/pack.py` | `load_pack`, `list_pack_ids`, startup validation | 63 |
+| `intake/turns.py` | immutable `TurnEvidence`, `TurnInterpretation`, `ClinicalClaim`, `PolicyDecision` contracts | 65 |
+| `intake/policy.py` | pure turn policy (`evaluate_policy`, `apply_policy`, `arbitrate_tap_turn`) | 152 |
+| `intake/engine.py` | pure reactive reducer, eligibility set `E`, rules/skip/reopen evaluation | 493 |
+| `intake/decisions.py` + `extractor.py` | Two-tier multimodal `gemini-decision-1` router (full 4-group + slim Group-A fallback) + schema extractor | 426 + 101 |
 | `intake/audio.py` | 16 kHz PCM resampling + resumable stereo 16 kHz WAV recorder (`append_existing`) | 111 |
-| `intake/live.py` | Gemini Live AAD voice puppet, explicit `TurnPhase` + `epoch` state machine, adaptive `noise_rms` floor + `listening_ring`, `?resume=<share_token>` continuity | 839 |
-| `intake/reports.py` | Jinja2 → WeasyPrint PDF + clinician markdown projection | 239 |
-| `intake/app.py` + `intake/db.py` | passcode auth, pack routes, bug drawer API, atomic SQLite | 177 + 132 |
-| **Python Engine Subtotal (`intake/*.py`)** | incl. `intake/__init__.py` (1) | **2,507** |
-| **Web Client + Admin (`intake/static/*.{js,html}`)** | `login.html` (82), `call.html` (71), `call.js` (939), `admin.html` (90), `admin.js` (189) | **1,371** |
-| **Total Runtime Code** | *(vs `10,112` LOC in V2 — **2.6x** overall, **2.4x** Python / **3.1x** JS+HTML reduction)* | **3,878** |
+| `intake/live.py` | Gemini Live AAD voice puppet, explicit `TurnPhase` + `epoch` state machine, adaptive `noise_rms` floor + `listening_ring`, `?resume=<share_token>` continuity | 992 |
+| `intake/reports.py` | Jinja2 → WeasyPrint PDF + clinician markdown projection | 251 |
+| `intake/app.py` + `intake/db.py` | passcode auth, pack routes, bug drawer API, atomic SQLite + semantic ledger | 179 + 256 |
+| **Python Engine Subtotal (`intake/*.py`)** | incl. `intake/__init__.py` (1) | **3,193** |
+| **Web Client + Admin (`intake/static/*.{js,html}`)** | `login.html` (82), `call.html` (77), `call.js` (939), `admin.html` (90), `admin.js` (189) *(plus `styles.css`: 1,221)* | **1,377** |
+| **Total Runtime Code** | *(vs `10,112` LOC in V2 — **2.2x** overall Python+JS/HTML reduction)* | **4,570** |
 
-Measured with `wc -l intake/*.py intake/static/*.{js,html}` (Nov 18, 2026). The growth from the 2,553 figure is concentrated
-in `live.py` and `call.js` — the two files where the `#21`–`#46` voice defects live.
+Measured with `wc -l intake/*.py intake/static/*.{js,html}` (Nov 2026). The growth from earlier V3 cuts is concentrated
+in `live.py`, `decisions.py`, `db.py`, and the new `turns.py`/`policy.py` seam — where voice edge cases and the lossless evidence ledger live.
 
 
 The pack surface replacing the deleted content is `packs/<pack_id>/` — plain YAML, loaded by `load_pack(pack_id)`
@@ -189,11 +190,11 @@ and comes back" defect: the model proposes, the reducer disposes.
 
 ### 3.3 Gating
 
-Every head is thresholded by `packs/<pack_id>/decisions.yaml → thresholds`, validated at startup against the 16 keys in
+Every head is thresholded by `packs/<pack_id>/decisions.yaml → thresholds`, validated at startup against the 21 keys in
 `pack._THRESHOLDS`: `*_min_confidence`/`*_min_margin` pairs for the `choice` heads (`outcome`, `choice`,
-`stated`, `item_ref`, plus `score_min_confidence`), and `*_min_yes` cut-offs for the `noul` heads (`danger_now`,
+`stated`, `item_ref`, `clarify_target`), `score_min_confidence`, and `*_min_yes` cut-offs for the `noul` heads (`danger_now`,
 `caller_stop`, `mentions_profile`, `redact_patient_note`, `detail_present`, `jump_topic`,
-`multi_choice`). Safety heads are evaluated **first and unconditionally**; a `danger_now` above threshold returns a
+`active_topic`, `residual_clinical`, `asks_clarify`, `multi_choice`). Safety heads are evaluated **first and unconditionally**; a `danger_now` above threshold returns a
 `CloseReason.EMERGENCY` path regardless of what the answer heads said. A pack that omits any required threshold fails to
 load — there is no default and no "0.5 will do".
 
@@ -289,7 +290,7 @@ packs/<pack_id>/
   prompts.yaml    # intro_bridge copy, speak cues, closing lines
   form.yaml       # profile_slots, roster, extractor_prompt, implications, semantic_flags,
                   # rules, groups, followups, report config, and the ordered questions[]
-  decisions.yaml  # thresholds{} - every key in pack._REQUIRED_THRESHOLDS
+  decisions.yaml  # thresholds{} - every key in pack._THRESHOLDS
   seed.yaml       # scenarios[] - offline fixtures, zero network
   templates/      # patient.html.j2, clinician.md.j2, pdf.css
   assets/         # NotoSansDevanagari.ttf, SHISHU-consent.pdf, logo
@@ -299,10 +300,10 @@ packs/<pack_id>/
 |---|---|---|
 | Domain | rare-disease risk screen, mother + child roster | acute OPD fever triage, single patient |
 | Profile slots | `caller_name` + `marital_status` (`single_choice`) + `children` roster | `patient_name`, `patient_age` |
-| Question count | 62 total (58 routable) + 25 follow-ups, multi-child scoped | 14 questions + 3 follow-ups |
+| Question count | 62 total (59 routable) + 25 follow-ups, multi-child scoped | 14 total (11 routable) + 3 follow-ups |
 | Dominant kinds | `profile`, `bridge`, `single_choice`, `gate`, `open_capture` | `profile`, `bridge`, `single_choice`, `score` (`0..3`), `multi_choice`, `gate`, `open_capture` |
 | `semantic_flags` | `confirmed_hemoglobinopathy` prunes redundant `body_blood_count` probe | `confirmed_malaria_or_dengue` prunes redundant `recent_travel` probe |
-| Artifacts / turn | 2–3 page Hindi Patient PDF + 7-section English note; up to 63 parallel heads | 2-page Hindi OPD PDF + 6-section English note; ~15 parallel heads |
+| Artifacts / turn | 2-page Hindi Patient PDF + 8-heading English note; up to 63 parallel heads | 2-page Hindi OPD PDF + 6-heading English note; ~15 parallel heads |
 
 Both `packs/shishu-hi/` and `packs/fever-opd-hi/` ship complete on branch `v3` and pass `load_pack()` startup validation. `_validate_pack`
 rejects duplicate ids, an unknown `group`, an unknown `skip_if`/`variants[].when` rule, an unknown follow-up,
@@ -311,7 +312,7 @@ fewer than 2 options on a choice kind, fewer than 2 rubric levels on a `score`, 
 
 **Authoring checklist.** Unique `QuestionSpec.id`; every `group` declared; every `skip_if`/`variants[].when` names a
 `rules` key; choice kinds ≥ 2 options and `score` ≥ 2 rubric levels; `profile` steps carry `requires_slot` and
-roster-scoped steps set `roster_scoped`; all 16 keys in `pack._THRESHOLDS` present; all three templates present;
+roster-scoped steps set `roster_scoped`; all 21 keys in `pack._THRESHOLDS` present; all three templates present;
 `semantic_flags` implications name only questions the pack is willing to prune; patient-facing copy contains no disease
 names, and clinical readings go to the verbatim note.
 
@@ -333,4 +334,4 @@ names, and clinical readings go to the verbatim note.
 | Pre-audio post-tap speech cannot answer an unheard question | `TurnPhase.PROMPTING` mic gate (`_PROMPT_MUTE_MAX_SEC = 5.0`) + monotonic `epoch` |
 | Network WS blips resume the same `call_id` and WAV | `/ws/live?resume=<share_token>` + `CallAudioRecorder(append_existing=True)` |
 
-All **193** offline unit tests (`python -m unittest discover -s tests`), the 50-case calibration dry-check (`scripts/calibrate_decisions.py --dry-check`), and the 3-persona live Gemini verification suite (`scripts/run_personas.py` — 3/3 PASS) verify these invariants end to end.
+All **286** offline unit tests (`python -m unittest discover -s tests`), the calibration dry-check (`scripts/calibrate_decisions.py --dry-check`), and scripted live persona gates verify these invariants end to end.

@@ -1,8 +1,8 @@
 # SHISHU — Technical Specification
 
 Normative contract; code deviating from this is a defect. IDs (`R-`, `S-`, `N-`) map to tests.
-Companion: [`PRD-user-flows.md`](PRD-user-flows.md).
-**Measured:** `intake/*.py` 3,193 LOC · browser 1,377 LOC · pack YAML 2,580 LOC · 286 tests (~14 s, offline).
+Companion: [`PRD-user-flows.md`](../product/PRD-user-flows.md).
+**Measured:** `intake/*.py` 3,193 LOC · browser JS+HTML 1,377 LOC (`styles.css` +1,221 LOC) · pack YAML 2,586 LOC · 286 tests (~18 s, offline).
 
 ---
 
