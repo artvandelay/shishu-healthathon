@@ -169,13 +169,19 @@ def _build_input(pack: PackConfig, state: CallState, *, utterance_text: str, aud
     return ([{"type": "text", "text": text + "\n"}, {"type": "audio", "data": base64.b64encode(audio).decode(), "mime_type": audio_mime_type}]
             if audio else text)
 def _stated_heads(pack: PackConfig, state: CallState, heads: Mapping[str, Any]) -> dict[str, Any]:
-    """Group B: one `stated_<qid>` revision head per routable question other than the active one."""
+    """Group B: one `stated_<qid>` revision head per routable question other than the active one.
+
+    `stated_need` (else `need`) is the wording this head reads: a question may be ASKED narrowly and still be
+    volunteered broadly. `birth_jaundice.need` is "jaundice treated under blue light", so the head told the model
+    to answer `unmentioned` unless she named phototherapy — and "जन्म के बाद बच्चे को पीलिया हुआ था" was demoted to
+    `clinical_aside` on the bridge turn even though her jaundice concern was exactly this question's topic.
+    """
     tpl = heads.get("stated_template")
     if tpl is None: return {}
     said = partial(engine.question_say, pack, state)
     return {f"stated_{q.id}": {"type": "choice",
-                               "instructions": tpl["instructions"].format(question_say=said(q), need=q.need, group=q.group),
-                               "criteria": tpl["criteria"]}
+                               "instructions": tpl["instructions"].format(question_say=said(q), need=q.stated_need or q.need, group=q.group),
+                               "criteria": {k: str(v).format(need=q.stated_need or q.need, group=q.group) for k, v in tpl["criteria"].items()}}
             for q in pack.questions if q.is_routable and q.id != state.cursor.qid and q.kind in _STATED_KINDS}
 def _clarify_target_head(pack: PackConfig, state: CallState, heads: Mapping[str, Any]) -> dict[str, Any]:
     tpl = heads.get("clarify_target_template")

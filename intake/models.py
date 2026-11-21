@@ -90,7 +90,7 @@ QuestionSpec = _rec(
     clinician_group=(str, ""), requires_slot=(str, ""), reask=(str, ""), saves_to_profile=(str, ""), roster_scoped=(bool, False),
     skip_if=(tuple[str, ...], ()), followups=(tuple[str, ...], ()), variants=(tuple[VariantSpec, ...], ()),
     options=(dict[str, OptionSpec], Field(default_factory=dict)), quick_options=(bool, False), score_rubric=(tuple[str, ...], ()),
-    concern_if=(dict[str, Any], Field(default_factory=dict)), shares_recorded_concerns=(bool, False))
+    concern_if=(dict[str, Any], Field(default_factory=dict)), shares_recorded_concerns=(bool, False), stated_need=(str, ""))
 QuestionSpec.is_routable = property(lambda q: q.kind not in (QuestionKind.PROFILE, QuestionKind.BRIDGE))
 QuestionSpec.is_reportable = property(lambda q: q.is_routable and q.kind is not QuestionKind.ROUTING_GATE)
 QuestionSpec.allows_yes_no = property(lambda q: q.kind in _YES_NO)

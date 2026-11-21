@@ -26,8 +26,11 @@ _RING_MAX, _PLAYBACK_TAIL_SEC = 48, 0.35  # ~3.0 s of 64 ms frames, and the last
 _TAIL_CHUNKS, _SILENCE_100MS = 8, b"\x00\x00" * 1600  # 100 ms digital silence keeps Gemini AAD warm in half-duplex
 _PROMPT_MUTE_MAX_SEC = 5.0  # the most a step may hold the mic shut waiting for audio that never comes
 _MAX_CONSECUTIVE_TOOL_ERRORS = 3  # a Decision pass that dies this many times in a row is a technical failure, not a glitch
-_COUNTERS = ("user_turns", "bot_turns", "tool_calls", "tool_errors", "audio_chunks_in", "audio_chunks_out", "interruptions", "reconnects")
+_COUNTERS = ("user_turns", "bot_turns", "tool_calls", "tool_errors", "audio_chunks_in", "audio_chunks_out", "interruptions", "reconnects", "watchdog_nudges")
 _RESUME_GRACE_SEC = 90.0  # how long a call whose socket died waits for the browser to rejoin before it is finalized
+# A send that never returns takes the whole call with it: `_watchdog` is the only caller of `tick()`, so a half-open
+# socket wedges every timer (silence close, hard limit) at the one await. Call 7 sat `active` for 12 minutes that way.
+_SEND_TIMEOUT_SEC = 5.0
 _ACTIVE_CALLS: dict[int, "LiveCallSession"] = {}  # call id -> the session that currently owns it
 _PENDING_FINALIZE: dict[int, asyncio.Task] = {}  # call id -> the grace timer that will finalize it if nobody rejoins
 _NEXT_QUESTION = {"name": "next_question", "parameters": {"type": "OBJECT", "properties": {}}, "description":
@@ -76,7 +79,11 @@ def tool_body(pack: PackConfig, state: CallState, *, clarify: bool = False, note
     spec, body = pack.by_id.get(state.cursor.qid), {"result": "ok", "say": engine.say_text(pack, state)}
     if state.phase is Phase.CLOSING: body["stop"] = True
     if clarify or (spec is not None and spec.shares_recorded_concerns): body["recorded_concerns"] = engine.recorded_concerns_summary(pack, state)
-    if noted := " ".join(noted_observation.split()): body["noted_observation"] = noted
+    # `ack_note` is always present, and always the truth: the prompt may only open with "मैंने यह नोट कर लिया है"
+    # when this says `True`. Call 9 read the mother's हीमोफीलिया aloud off an ABSENT key - the model inferred an
+    # acknowledgement nobody asked for - so silence is not an option here; the answer has to be explicit.
+    if noted := " ".join(noted_observation.split()): body["noted_observation"], body["ack_note"] = noted, True
+    else: body["ack_note"] = False
     return body | {"clarify": True} if clarify else body
 def question_state_payload(pack: PackConfig, state: CallState, epoch: int = 0) -> dict[str, Any]:
     spec, (is_yn, replies) = pack.by_id.get(state.cursor.qid), engine.quick_replies(pack, state)
@@ -118,6 +125,7 @@ class LiveCallSession:
             started_at=now, last_voice_ts=now, closing_at=0.0, playback_ends_at=0.0, speech_ended_ts=0.0, resume_handle="", reconnects=0,
             hard_limit_sec=float(timers.get("hard_limit_sec") or 1200.0), soft_limit_sec=float(timers.get("soft_limit_sec") or 1140.0),
             silence_close_sec=float(timers.get("silence_close_sec") or 30.0), check_in_sec=float(timers.get("check_in_sec") or 15.0),
+            watchdog_timeout_sec=float(timers.get("watchdog_timeout_sec") or 8.0), rescued_step="",
             stop=asyncio.Event(), ws_lock=asyncio.Lock(), send_lock=asyncio.Lock(), resume_requested=False, reconnecting=False,
             ending_sent=False, bot_text="", cue_kind="speak", checked_in=False, seen=set(), cancelled=set(),
             pcm=b"", text="", snapshot=None, preroll=deque(maxlen=4), tail_chunks=0,
@@ -134,6 +142,9 @@ class LiveCallSession:
             "build": reports.build_info()["tag"], "model": str(pack.meta.get("gemini_model") or _MODEL), "voice": str(pack.meta.get("gemini_voice") or "Kore"),
             "turn_latencies_ms": samples, "avg_latency_ms": int(round(sum(samples) / len(samples))) if samples else 0,
             "max_latency_ms": max(samples) if samples else 0, "errors": [str(e) for e in (seed.get("errors") or ())][-20:]}
+        # The attempt budget is a property of the CALL, not of this session object: a rejoin that started it at 0
+        # spent the whole 5 again and wrote `1` over the 4 the call had already used (Call #2).
+        self.reconnects = int(self.telemetry.get("reconnects") or 0)
     async def _send_json(self, payload: dict[str, Any]) -> None:
         async def _w() -> None:
             async with self.ws_lock: await self.ws.send_json(payload)
@@ -144,9 +155,13 @@ class LiveCallSession:
     async def _send_realtime(self, **kwargs: Any) -> bool:
         if len(kwargs) != 1: raise ValueError("Gemini Live takes exactly one keyword argument")
         try:
-            async with self.send_lock: await self.session.send_realtime_input(**kwargs)
+            # Bounded, because this await is the single point every timer depends on: half-open sockets resolve
+            # neither way, and an unbounded send parked the watchdog forever (Call 7: 12 minutes, zero events).
+            # `wait_for` cancels the send, so the `async with` still exits and `send_lock` is released before we
+            # report the frame lost - a lock left held here would hang every later send instead.
+            async with self.send_lock: await asyncio.wait_for(self.session.send_realtime_input(**kwargs), _SEND_TIMEOUT_SEC)
             return True
-        except Exception: return self._lost()  # noqa: BLE001
+        except Exception: return self._lost()  # noqa: BLE001 - a TimeoutError is a lost frame too
     async def _speak(self, kind: str = "speak") -> bool: return await self._send_realtime(text=speak_cue(self.pack, self.state, kind))
 
     async def _fail(self, detail: str = "") -> bool:
@@ -294,6 +309,9 @@ class LiveCallSession:
         rate = int(raw) if (raw.isdigit() and int(raw) > 0) else _IN
         now = time.time()
         if self._mic_muted(now):
+            # S-7.6: a muted frame is not a caller turn, but it is still evidence she spoke. The stereo audit WAV is
+            # the only witness to speech that went over SHISHU, so the frame lands there before the gate returns.
+            if self.recorder is not None: self.recorder.add_user_pcm(pcm, rate)
             self.preroll.clear()  # she can tap over SHISHU but never talk over her: her own voice is not a caller turn
             self.listening_ring.clear()
             return True
@@ -597,7 +615,10 @@ class LiveCallSession:
             # Event 42 kept the uncle's diabetic blindness and then re-asked fam_cancer with a bare speak cue.
             ack = bool(pol is not None and stayed and any(
                 d.disposition is Disposition.RETAIN_OBSERVATION or d.reason is DecisionReason.OTHER_FORM for d in pol.decisions))
-            noted = " ".join((turn.spoken or cmd.utterance or "").split()) if ack else ""
+            # Never hand a redacted sentence back to be repeated: `redact_patient_note` fired because she named a
+            # diagnosis, and the model reads `noted_observation` aloud verbatim. Call 9 spoke हीमोफीलिया that way
+            # while the note, her summary, and the PDF all stayed clean - the spoken channel was the only leak.
+            noted = "" if ack and cmd.redacted else (" ".join((turn.spoken or cmd.utterance or "").split()) if ack else "")
             clarify = not (cmd.emergency or cmd.caller_stop) and (cmd.outcome is TurnOutcome.CLARIFY or ack)
             return tool_body(self.pack, self.state, clarify=clarify, noted_observation=noted), clarify
         finally:
@@ -763,6 +784,22 @@ class LiveCallSession:
             return elapsed < self.hard_limit_sec
         if self.turn_phase is TurnPhase.PROMPTING and (now - self.prompted_at) >= _PROMPT_MUTE_MAX_SEC and now >= self.playback_ends_at:
             self.turn_phase = TurnPhase.LISTENING  # a silent model: the step is hers now, mic and all
+        # The banked-turn watchdog: Gemini may take her whole answer and then say nothing at all - no
+        # `input_transcription`, no `next_question`, and no `turn_complete`, so `on_turn_complete`'s `recovered`
+        # branch never runs and nothing re-owes the step (Call 3 of `adversarial_shishu_untested`: her reply is
+        # sample-exact in the audit WAV and the call still closed on silence). Her words are already banked, so the
+        # only thing missing is the pass Gemini skipped. One rescue per step, and never the room: a bank quieter
+        # than the onset that admitted it is the fan, not her.
+        if (self.turn_phase is TurnPhase.LISTENING and (self.pcm or self.text)
+                and (self.tool_task is None or self.tool_task.done())
+                and not self.reconnecting and not self.resume_requested
+                and now - max(self.last_voice_ts, self.playback_ends_at) >= self.watchdog_timeout_sec
+                and self.rescued_step != self.state.step_token
+                and (bool(self.text) or audio.pcm_rms(self.pcm) >= max(_ONSET_MIN, self.noise_rms * 2.5))):
+            self.rescued_step = self.state.step_token
+            await self._emit("watchdog_nudge", self.rescued_step)
+            self.telemetry["watchdog_nudges"] = int(self.telemetry.get("watchdog_nudges") or 0) + 1
+            return await self.on_nudge({})
         # The silence timers count only while she owns an open turn: never over her own voice, never during a pass.
         if self.turn_phase is not TurnPhase.LISTENING or self._mic_muted(now): return True
         quiet = now - max(self.last_voice_ts, self.playback_ends_at)
@@ -773,18 +810,28 @@ class LiveCallSession:
             await self._emit("silence_check_in", f"{int(quiet)}s")
         return True
     async def _reconnect(self) -> bool:
-        self.resume_requested, self.reconnecting, self.reconnects = False, True, self.reconnects + 1
-        await self._send_json({"type": "reconnecting", "attempt": self.reconnects})
-        sess = await _try_call(self.connect, self.resume_handle) if (self.connect is not None and self.reconnects <= _MAX_RECONNECTS) else None
-        self.reconnecting = False
-        if sess is None: return await self._fail("Gemini Live could not reconnect")
-        self.session, self.telemetry["reconnects"] = sess, self.reconnects
-        self.seen.clear()
-        self.cancelled.clear()
-        await self._send_json({"type": "reconnected", "attempt": self.reconnects})
-        await self._emit("reconnected", str(self.reconnects))
-        self._enter_prompting()
-        return await self._speak()
+        """One socket swap at a time, announced once, under its own attempt number.
+
+        Both `tick` and `_gemini_loop` call this, and the connect await is long enough for a stale send to re-arm
+        `resume_requested` through `_lost()` in the middle of it (Call #2: one death, five attempts, `1 3 3 5 5`).
+        The guard makes the second caller a no-op, `attempt` is local so the wire prints this swap's own number,
+        and `reconnecting` is released only once the tail has spoken — never before, or the guard was a no-op too.
+        """
+        if self.reconnecting: return True  # a swap already owns the socket: this death is the same death
+        attempt, self.resume_requested, self.reconnecting = self.reconnects + 1, False, True
+        try:
+            await self._send_json({"type": "reconnecting", "attempt": attempt})
+            sess = await _try_call(self.connect, self.resume_handle) if (self.connect is not None and attempt <= _MAX_RECONNECTS) else None
+            if sess is None: return await self._fail("Gemini Live could not reconnect")
+            self.session, self.reconnects, self.telemetry["reconnects"] = sess, attempt, attempt
+            self.seen.clear()
+            self.cancelled.clear()
+            await self._send_json({"type": "reconnected", "attempt": attempt})
+            await self._emit("reconnected", str(attempt))
+            self._enter_prompting()
+            return await self._speak()
+        finally:
+            self.reconnecting = False
     async def _pump(self) -> None:
         async for resp in self.session.receive():
             if self.stop.is_set(): return
@@ -920,9 +967,13 @@ async def handle_live_ws(ws: WebSocket, *, pack: PackConfig, caller_name: str = 
         tok = (resume_token or "").strip()
         row = await asyncio.to_thread(db.get_call_by_token, tok) if tok else None
         saved_state = db.call_state_from_row(row) if row is not None else CallState()
-        still_open = saved_state.close_reason not in (CloseReason.COMPLETE, CloseReason.EMERGENCY)
+        still_open = row is not None and saved_state.close_reason is None
         if row is not None and row.get("pack_id") == pack.id and still_open:
             # The browser came back on a call we still hold: the row, the cursor, and the audio file are reused.
+            # `close_reason is None` is the whole test: a call that already ended (SILENCE, TIME_LIMIT,
+            # TECHNICAL_FAILURE, CALLER_STOP, COMPLETE, EMERGENCY) kept its reason, and reviving it here wiped that
+            # reason to None and re-finalized the call as CALLER_STOP, regenerating the report for a reason the
+            # caller never gave. An interrupted line never has a reason; that call is what `?resume=` exists for.
             cid = int(row["id"])
             if (pending := _PENDING_FINALIZE.pop(cid, None)) is not None: pending.cancel()
             old = _ACTIVE_CALLS.pop(cid, None)

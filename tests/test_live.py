@@ -3085,5 +3085,891 @@ class NudgeAndReconnectFrameTests(unittest.TestCase):
         asyncio.run(body())
 
 
+class ReconnectReentryTests(unittest.TestCase):
+    """One socket swap at a time: `tick` and `_gemini_loop` both call `_reconnect`, and only one may own it.
+
+    Call #2 in `adversarial_shishu_untested` died after ONE socket death with `reconnects: 5` and emitted
+    `reconnected` details `1, 3, 3, 5, 5` — odd numbers only, twice over. Two defects made that number a lie:
+    `_gemini_loop` called `_reconnect` with no `reconnecting` guard, so a stale `_lost()` during the connect
+    await let a second entry increment the same counter; and every log line read `self.reconnects` (the shared
+    field) after two awaits, so a later entry's increment was what an earlier entry printed.
+    """
+
+    def test_two_reconnect_entries_collapse_into_one_attempt(self):
+        async def body() -> None:
+            built, ws, _session = build()
+            gate, connects = asyncio.Event(), []
+
+            async def connect(handle: str) -> FakeSession:
+                connects.append(handle)
+                await gate.wait()  # `_open_live`'s real network await: the window both entries share
+                return FakeSession()
+
+            built.connect, built.resume_handle = connect, "handle-1"
+            first = asyncio.ensure_future(built._reconnect())  # the watchdog's path, guarded by `tick`
+            await asyncio.sleep(0.01)
+            self.assertTrue(built.reconnecting, "the in-flight swap owns the socket")
+            built.resume_requested = True  # a stale send during the await re-arms the flag through `_lost()`
+            second = asyncio.ensure_future(built._reconnect())  # `_gemini_loop`'s path: no guard of its own
+            await asyncio.sleep(0.01)
+            self.assertTrue(built.reconnecting, "a second entry never steals a swap that is already in flight")
+            gate.set()
+            await asyncio.gather(first, second)
+
+            self.assertEqual(len(connects), 1, "one socket death buys one new socket, never two")
+            self.assertEqual(built.reconnects, 1, "the counter counts sockets opened, not callers of _reconnect")
+            attempts = [p["attempt"] for p in ws.sent if p.get("type") in ("reconnecting", "reconnected")]
+            self.assertEqual(attempts, [1, 1],
+                             f"one attempt is announced once, and its own number is what it prints ({attempts})")
+            self.assertEqual(built.telemetry["reconnects"], 1)
+
+        asyncio.run(body())
+
+    def test_reconnecting_stays_true_until_the_swap_tail_speaks(self):
+        # `reconnecting = False` used to land BEFORE the `reconnected`/`_speak` tail. Every send in that tail that
+        # failed re-armed `resume_requested` while `reconnecting` already read False, which is exactly how `tick`
+        # was let back in to start a second swap for the same death.
+        async def body() -> None:
+            built, _ws, _session = build()
+            seen: list[bool] = []
+
+            async def connect(_handle: str) -> FakeSession:
+                return FakeSession()
+
+            async def tail(kind: str = "speak") -> bool:  # the last thing `_reconnect` does
+                seen.append(built.reconnecting)
+                return True
+
+            built.connect, built.resume_handle = connect, "handle-1"
+            built._speak = tail  # type: ignore[method-assign]
+            built.resume_requested = True
+            self.assertTrue(await built._reconnect())
+            self.assertEqual(seen, [True], "the tail still owns the swap: no other entry may start behind it")
+            self.assertFalse(built.reconnecting, "and the swap is released once the tail is done")
+
+        asyncio.run(body())
+
+    def test_a_resumed_session_seeds_its_reconnect_count_from_telemetry(self):
+        # `?resume=` merges `telemetry["reconnects"]` into the new session, but `self.reconnects` started at 0, so
+        # the first heal of the resumed call wrote `1` over a call that had already spent 4.
+        async def body() -> None:
+            built, _ws, _session = build()
+            prior = dict(built.telemetry) | {"reconnects": 4}
+            resumed = live.LiveCallSession(ws=built.ws, pack=PACK, session=built.session, call_id=built.call_id,
+                                           state=built.state, recorder=FakeRecorder(), telemetry=prior, resumed=True)
+            self.assertEqual(resumed.reconnects, 4, "a resumed call re-reads the reconnects it already spent")
+
+            async def connect(_handle: str) -> FakeSession:
+                return FakeSession()
+
+            resumed.connect, resumed.resume_handle = connect, "handle-1"
+            resumed.resume_requested = True
+            self.assertTrue(await resumed._reconnect())
+            self.assertEqual(resumed.reconnects, 5, "the next heal is the fifth, not the first again")
+            self.assertEqual(resumed.telemetry["reconnects"], 5, "and the merge only ever counts upward")
+
+        asyncio.run(body())
+
+
+class MutedWindowRecorderTests(unittest.TestCase):
+    """S-7.6: the mic gate protects the turn, never the audit recording."""
+
+    def test_a_frame_heard_while_the_mic_is_muted_still_reaches_the_audit_wav(self):
+        # She can tap over SHISHU but never talk over her (S-7.4). "Never talk over her" means the frame is not a
+        # caller turn — it does not mean the frame may vanish. The stereo WAV is the only witness that she spoke
+        # during the mute, and `live.py:296` returned before `recorder.add_user_pcm`, so the left channel lost it.
+        async def body() -> None:
+            built, _ws, session = build()
+            built.bot_generating = True  # SHISHU is mid-sentence: the gate is shut for echo reasons only
+            self.assertTrue(built._mic_muted(time.time()))
+            phase = built.turn_phase
+            frame = pcm()
+
+            await built.on_audio({"data": frame, "sample_rate": 16000})
+
+            self.assertEqual([chunk for chunk, _rate in built.recorder.user], [base64.b64decode(frame)],
+                             "S-7.6: a muted-window frame still lands in the left channel of the audit WAV")
+            self.assertEqual(built.recorder.user[0][1], 16000, "at the rate the browser sent it")
+            self.assertEqual(session.kinds(), [], "and her own echo still never reaches Gemini as a caller turn")
+            self.assertEqual(built.pcm, b"", "nor is it banked for a Decision pass")
+            self.assertEqual(list(built.preroll), [], "nor may its onset seed the turn after it")
+            self.assertIs(built.turn_phase, phase, "a muted frame never flips the phase that muted it")
+            self.assertEqual(built.telemetry["audio_chunks_in"], 0, "a frame she spoke over is not a caller chunk")
+
+        asyncio.run(body())
+
+
+class ResumeRefusesTerminalCloseTests(unittest.TestCase):
+    """`?resume=` restores a dropped line. It may never resurrect a call that already ended on its own terms."""
+
+    @staticmethod
+    async def wait_until(predicate: Any, *, timeout: float = 3.0) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            await asyncio.sleep(0.005)
+        return predicate()
+
+    def test_resume_of_a_call_closed_for_silence_time_limit_or_failure_mints_a_new_call(self):
+        # `still_open` only excluded COMPLETE and EMERGENCY, so a SILENCE / TIME_LIMIT / TECHNICAL_FAILURE call was
+        # reopened, its close_reason wiped to None, and the next `finalize` re-stamped it CALLER_STOP — the report
+        # was regenerated for a reason the caller never gave.
+        async def body() -> None:
+            class DummyAsyncCtx:
+                async def __aenter__(self) -> Any:
+                    return FakeSession()
+
+                async def __aexit__(self, *_exc: Any) -> bool:
+                    return False
+
+            async def fake_open(_client: Any, _pack: Any, _handle: str) -> Any:
+                return DummyAsyncCtx(), FakeSession()
+
+            original = live._open_live
+            live._open_live = fake_open  # type: ignore[assignment]
+            created: list[int] = []
+            try:
+                with unittest.mock.patch.dict(live.os.environ, {"GEMINI_API_KEY": "k"}):
+                    for reason in (CloseReason.SILENCE, CloseReason.TIME_LIMIT, CloseReason.TECHNICAL_FAILURE):
+                        with self.subTest(reason=reason.value):
+                            ws1, ws2 = FakeWebSocket(), FakeWebSocket()
+                            first = second = None
+                            first = asyncio.ensure_future(live.handle_live_ws(ws1, pack=PACK, caller_name="Tester"))
+                            self.assertTrue(await self.wait_until(lambda: bool(ws1.of("session_started"))),
+                                            f"{reason.value}: the call must start")
+                            started = ws1.of("session_started")[0]
+                            cid, token = int(started["call_id"]), str(started["share_token"])
+                            created.append(cid)
+                            self.assertTrue(await self.wait_until(lambda: cid in live._ACTIVE_CALLS))
+
+                            # The call ends for its own reason and its report is written, exactly as `_close` leaves it.
+                            ended = live._ACTIVE_CALLS[cid]
+                            st = ended.state.model_copy(deep=True)
+                            st.phase, st.close_reason = Phase.CLOSING, reason
+                            await ended._persist(st)
+                            await asyncio.to_thread(db.complete_call, cid, 60, "call.wav")
+                            await asyncio.to_thread(db.save_report_text, cid, summary_doctor=f"report:{reason.value}")
+
+                            await ws1.queue.put({"type": "hangup"})
+                            await asyncio.wait_for(first, timeout=3)
+                            first = None
+                            before = await asyncio.to_thread(db.get_call, cid)
+                            self.assertEqual(before["status"], "completed", f"{reason.value}: the call is finished")
+
+                            # The browser comes back on the same token: a new call, never the finished one.
+                            second = asyncio.ensure_future(live.handle_live_ws(ws2, pack=PACK, resume_token=token))
+                            self.assertTrue(await self.wait_until(lambda: bool(ws2.of("session_started"))),
+                                            f"{reason.value}: the rejoin still gets a call")
+                            minted = int(ws2.of("session_started")[0]["call_id"])
+                            created.append(minted)
+                            self.assertNotEqual(minted, cid,
+                                                f"{reason.value}: a closed call is never reopened as the same call")
+                            await ws2.queue.put({"type": "hangup"})
+                            await asyncio.wait_for(second, timeout=3)
+                            second = None
+
+                            after = await asyncio.to_thread(db.get_call, cid)
+                            self.assertEqual(after["status"], "completed", f"{reason.value}: still finished")
+                            self.assertIs(db.call_state_from_row(after).close_reason, reason,
+                                          f"{reason.value}: the reason it really ended for survives the rejoin")
+                            self.assertEqual(after["summary_doctor"], f"report:{reason.value}",
+                                             f"{reason.value}: its report is never regenerated for a new reason")
+            finally:
+                live._open_live = original  # type: ignore[assignment]
+                for call_id in created:
+                    with db._LOCK:
+                        db.conn.execute("DELETE FROM calls WHERE id = ?", (call_id,))
+                        db.conn.commit()
+                    live._ACTIVE_CALLS.pop(call_id, None)
+                    if (pending := live._PENDING_FINALIZE.pop(call_id, None)) is not None:
+                        pending.cancel()
+                        await asyncio.gather(pending, return_exceptions=True)
+
+        asyncio.run(body())
+
+    def test_an_in_flight_drop_with_no_close_reason_still_resumes_the_same_call(self):
+        # The control that must keep working: a dropped socket leaves `close_reason is None` on a row still marked
+        # `active`, and that call is exactly the one `?resume=` exists to pick up again.
+        async def body() -> None:
+            class DummyAsyncCtx:
+                async def __aenter__(self) -> Any:
+                    return FakeSession()
+
+                async def __aexit__(self, *_exc: Any) -> bool:
+                    return False
+
+            async def fake_open(_client: Any, _pack: Any, _handle: str) -> Any:
+                return DummyAsyncCtx(), FakeSession()
+
+            original = live._open_live
+            live._open_live = fake_open  # type: ignore[assignment]
+            created: list[int] = []
+            first = second = None
+            try:
+                with unittest.mock.patch.dict(live.os.environ, {"GEMINI_API_KEY": "k"}):
+                    ws1, ws2 = FakeWebSocket(), FakeWebSocket()
+                    first = asyncio.ensure_future(live.handle_live_ws(ws1, pack=PACK, caller_name="Tester"))
+                    self.assertTrue(await self.wait_until(lambda: bool(ws1.of("session_started"))))
+                    started = ws1.of("session_started")[0]
+                    cid, token = int(started["call_id"]), str(started["share_token"])
+                    created.append(cid)
+                    self.assertTrue(await self.wait_until(lambda: cid in live._ACTIVE_CALLS))
+
+                    await ws1.queue.put(None)  # the line drops: no `hangup` is ever sent
+                    await asyncio.wait_for(first, timeout=3)
+                    first = None
+                    self.assertIn(cid, live._PENDING_FINALIZE, "an in-flight drop waits in the resume grace")
+                    row = await asyncio.to_thread(db.get_call, cid)
+                    self.assertEqual(row["status"], "active")
+                    self.assertIsNone(db.call_state_from_row(row).close_reason, "an in-flight call has no reason yet")
+
+                    second = asyncio.ensure_future(live.handle_live_ws(ws2, pack=PACK, resume_token=token))
+                    self.assertTrue(await self.wait_until(
+                        lambda: bool(ws2.of("session_started")) and bool(ws2.of("question_state"))))
+                    self.assertEqual(int(ws2.of("session_started")[0]["call_id"]), cid,
+                                     "a call that never ended is resumed, never duplicated")
+            finally:
+                live._open_live = original  # type: ignore[assignment]
+                for task in (first, second):
+                    if task is not None and not task.done():
+                        task.cancel()
+                        await asyncio.gather(task, return_exceptions=True)
+                for call_id in created:
+                    with db._LOCK:
+                        db.conn.execute("DELETE FROM calls WHERE id = ?", (call_id,))
+                        db.conn.commit()
+                    live._ACTIVE_CALLS.pop(call_id, None)
+                    if (pending := live._PENDING_FINALIZE.pop(call_id, None)) is not None:
+                        pending.cancel()
+                        await asyncio.gather(pending, return_exceptions=True)
+
+        asyncio.run(body())
+
+class Clock:
+    """A simulated `time.time`, so a watchdog sweep costs microseconds instead of the seconds it models."""
+
+    def __init__(self, now: float = 100.0) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+
+class BankedTurnWatchdogTests(unittest.TestCase):
+    """A caller turn banked in `self.pcm` that Gemini never judged must be rescued by `tick`, not closed on silence.
+
+    Call 3 of `adversarial_shishu_untested` (`a3_shishu_voice_twins_deciding_drop`) is the witness: her answer to
+    `body_fits:which_item` reached the server - it is sample-exact in the audit WAV at 206.15 s - and Gemini returned
+    neither an input transcription, nor a `next_question`, nor a `turn_complete`. `on_turn_complete` never ran, so
+    its `recovered` branch never offered the bank to a Decision pass; the 15 s check-in and the 30 s close then fired
+    against a step that was already dead. The rescue is the missing third caller of `_next_question` - after
+    `_answer_tools` and `on_nudge` - and it must stay silent on every path that is not this one.
+    """
+
+    SPEECH = 0.09  # comfortably over `max(_ONSET_MIN, noise_rms * 2.5)` for every floor this file can reach
+    FAN = 0.022    # `regime_d_fan_onset`'s clinic fan: loud enough to bank, still under its own onset gate
+
+    @staticmethod
+    def frame(target_rms: float) -> bytes:
+        """One 64 ms frame of 16 kHz int16 mono at (almost exactly) `target_rms`."""
+        return round(target_rms * 32768).to_bytes(2, "little", signed=True) * 1024
+
+    @classmethod
+    async def bank(cls, built: live.LiveCallSession, level: float, count: int = 12) -> None:
+        """Feed `count` identical frames, exactly as the browser streams one caller turn."""
+        payload = base64.b64encode(cls.frame(level)).decode()
+        for _ in range(count):
+            await built.on_audio({"data": payload, "sample_rate": 16000})
+
+    @staticmethod
+    def spy(built: live.LiveCallSession) -> list[tuple[str, int]]:
+        """Stand in for the one Decision pass, recording every (text, audio) pair it is really handed."""
+        seen: list[tuple[str, int]] = []
+
+        async def fake_pass(snapshot: CallState, spoken: str, pcm_bytes: bytes) -> live.Turn:
+            seen.append((spoken, len(pcm_bytes)))
+            return turn_with(snapshot, TurnOutcome.CLEAR, spoken)._replace(pcm_len=len(pcm_bytes))
+
+        built._evaluate_turn_task = fake_pass  # type: ignore[method-assign]
+        return seen
+
+    @staticmethod
+    def healthy() -> CallState:
+        """A resolved, bridged call parked mid-interview, so a rescue has a real next question to publish."""
+        return NudgeAndReconnectFrameTests.hold("birth_cord_3weeks")
+
+    @staticmethod
+    def rescues(built: live.LiveCallSession) -> list[dict[str, Any]]:
+        """Every `watchdog_nudge` event the session put on the wire, in order."""
+        return [p["last_event"] for p in built.ws.of("telemetry")  # type: ignore[attr-defined]
+                if (p.get("last_event") or {}).get("type") == "watchdog_nudge"]
+
+    # -- 1: the bug itself -----------------------------------------------------------------------------------
+    def test_a_banked_turn_gemini_never_judged_is_rescued_after_the_watchdog_timeout(self):
+        # The exact Call #3 shape: real speech banked, no `turn_complete`, no `next_question`, no transcript.
+        async def body() -> None:
+            built, _ws, session = build(call_id=None, state=self.healthy())
+            seen = self.spy(built)
+            await self.bank(built, self.SPEECH)
+            audio, old_step, old_epoch = built.pcm, built.state.step_token, built.epoch
+            cues_before = len(session.realtime("text"))
+            self.assertTrue(audio, "her turn really is banked: this is the case that used to stall")
+            self.assertEqual(seen, [], "no pass has run, because Gemini never asked for one")
+            self.assertEqual((built.text, built.pcm), ("", audio), "audio only, exactly as Call #3 recorded it")
+
+            due = built.last_voice_ts + built.watchdog_timeout_sec
+            self.assertTrue(await built.tick(due - 0.5), "a pending rescue is never a dead call")
+            self.assertEqual(seen, [], "the watchdog waits the full timeout: this fix must not cut turns short")
+            self.assertEqual(built.telemetry.get("watchdog_nudges", 0), 0, "and counts nothing it did not do")
+
+            self.assertTrue(await built.tick(due + 0.1))
+            self.assertEqual(seen, [("", len(audio))], "her banked audio is judged exactly once")
+            self.assertEqual(built.telemetry["watchdog_nudges"], 1, "the rescue is counted, not silently swallowed")
+            self.assertIsNot(built.state.step_token, old_step, "the call moves on instead of waiting to be closed")
+            self.assertEqual(built.epoch, old_epoch + 1, "the new step is a new epoch")
+            self.assertIs(built.turn_phase, live.TurnPhase.PROMPTING, "and is owed its own cue")
+            self.assertEqual(session.realtime("text")[cues_before:], [live.speak_cue(PACK, built.state, "speak")],
+                             "exactly one cue, and it is the question she is actually on")
+            self.assertEqual([e["detail"] for e in self.rescues(built)], [old_step],
+                             "one `watchdog_nudge` event naming the step that was rescued")
+
+        asyncio.run(body())
+
+    # -- 2: the fan must never be mistaken for her -----------------------------------------------------------
+    def test_fan_onset_residue_in_pcm_is_never_rescued(self):
+        # `regime_d_fan_onset`: a quiet room, then a clinic fan. The floor has not caught up, so frames cross the
+        # onset gate and land in `self.pcm` while `last_voice_ts` freezes. A room is not an answer.
+        async def body() -> None:
+            built, ws, session = build(call_id=None, state=self.healthy())
+            seen = self.spy(built)
+            clock = Clock(100.0)
+            with unittest.mock.patch.object(live.time, "time", clock):
+                await self.bank(built, 0.002, 6)   # the quiet room: the floor settles at `_NOISE_MIN`
+                await self.bank(built, self.FAN, 10)  # the fan alone, still under a floor*2.5 onset gate
+                self.assertTrue(built.pcm, "the onset really did bank frames: this is the false-positive case")
+                self.assertLess(live.audio.pcm_rms(built.pcm), max(live._ONSET_MIN, built.noise_rms * 2.5),
+                                "and the bank is quieter than the onset that admitted it")
+                cues = len(session.realtime("text"))
+                steps_before = len(ws.of("question_state"))
+                clock.now = 110.0
+                for step in range(30):  # 15 s of nothing but fan, well past the 8 s watchdog
+                    clock.now = 110.0 + step * 0.5
+                    await built.tick(clock.now)
+            self.assertEqual(seen, [], "a clinic fan is never handed to the Decision pass")
+            self.assertEqual(built.telemetry.get("watchdog_nudges", 0), 0, "nor booked as a rescue")
+            self.assertEqual(self.rescues(built), [], "nor may it appear on the timeline")
+            self.assertEqual(ws.of("thinking"), [], "no Decision pass was announced either")
+            self.assertEqual(len(ws.of("question_state")), steps_before,
+                             "and no step was republished: a fan never advances the interview")
+            # The room is quiet, so the ordinary 15 s check-in is still owed - that is the *silence* path, not a
+            # rescue, and it must be the only thing that speaks.
+            self.assertEqual(session.realtime("text")[cues:],
+                             [str(PACK.prompts.get("silence_check_in_cue") or "")],
+                             "only the pre-existing silence check-in speaks, never a second question")
+
+        asyncio.run(body())
+
+    # -- 3: one rescue per step, however often `tick` runs ---------------------------------------------------
+    def test_the_rescue_fires_once_per_step_however_often_tick_runs(self):
+        async def body() -> None:
+            built, _ws, _session = build(call_id=None, state=self.healthy())
+            seen = self.spy(built)
+            await self.bank(built, self.SPEECH)
+            base = built.last_voice_ts
+            for offset in (8.1, 8.5, 9.0, 12.0, 20.0):  # the same step, five ticks, one owed pass
+                await built.tick(base + offset)
+            self.assertEqual(len(seen), 1, "one banked turn is one pass, not one per tick")
+            self.assertEqual(built.telemetry["watchdog_nudges"], 1, "and the counter agrees")
+            self.assertEqual(len(self.rescues(built)), 1, "one event on the timeline")
+
+            await self.bank(built, self.SPEECH)  # the next step earns its own rescue
+            await built.tick(built.last_voice_ts + built.watchdog_timeout_sec + 0.1)
+            self.assertEqual(len(seen), 2, "a second stall on a new step is a second rescue")
+            self.assertEqual(built.telemetry["watchdog_nudges"], 2)
+
+        asyncio.run(body())
+
+    def test_a_rescue_that_is_raced_into_a_pass_never_spams_the_counter(self):
+        # The latch's one real job. `tick` awaits `_emit` between deciding to rescue and calling `on_nudge`, and a
+        # `tool_call` landing in that await flips the session to DECIDING - where `on_nudge` correctly refuses. The
+        # bank is still there and the step has not moved, so *without* the latch every later tick would resume the
+        # same step, emit the same event and bump the counter for a rescue it never performed.
+        async def body() -> None:
+            built, _ws, _session = build(call_id=None, state=self.healthy())
+            seen = self.spy(built)
+            await self.bank(built, self.SPEECH)
+            real_emit = built._emit
+
+            async def emit_then_lose_the_turn(kind: str, detail: str = "", meta: dict | None = None) -> None:
+                await real_emit(kind, detail, meta)
+                if kind == "watchdog_nudge":
+                    built.turn_phase = live.TurnPhase.DECIDING  # Gemini's `tool_call` won the race
+
+            built._emit = emit_then_lose_the_turn  # type: ignore[method-assign]
+            await built.tick(built.last_voice_ts + built.watchdog_timeout_sec + 0.1)
+            self.assertEqual(seen, [], "`on_nudge` refused: a pass really is in flight")
+            self.assertEqual(built.telemetry["watchdog_nudges"], 1, "the attempt is booked once")
+
+            built.turn_phase = live.TurnPhase.LISTENING  # the losing pass is over, her turn is still unjudged
+            for offset in (9.0, 12.0, 20.0):
+                await built.tick(built.last_voice_ts + offset)
+            self.assertEqual(built.telemetry["watchdog_nudges"], 1,
+                             "and the same step may never be re-booked: the latch is what stops the spam")
+            self.assertEqual(len(self.rescues(built)), 1, "nor may the timeline grow a second identical event")
+
+        asyncio.run(body())
+
+    # -- 4: every guard --------------------------------------------------------------------------------------
+    def test_no_rescue_while_a_pass_is_in_flight(self):
+        async def body() -> None:
+            built, _ws, _session = build(call_id=None, state=self.healthy())
+            seen = self.spy(built)
+            await self.bank(built, self.SPEECH)
+            gate = asyncio.Event()
+            started = len(seen)
+
+            async def slow_pass(snapshot: CallState, spoken: str, pcm_bytes: bytes) -> live.Turn:
+                seen.append((spoken, len(pcm_bytes)))
+                await gate.wait()
+                return turn_with(snapshot, TurnOutcome.CLEAR, spoken)._replace(pcm_len=len(pcm_bytes))
+
+            built._evaluate_turn_task = slow_pass  # type: ignore[method-assign]
+            answering = asyncio.ensure_future(
+                built._answer_tools([live.types.FunctionCall(id="t1", name="next_question", args={})]))
+            await asyncio.sleep(0)
+            self.assertIs(built.turn_phase, live.TurnPhase.DECIDING, "a pass really is in flight")
+            task, step = built.tool_task, built.state.step_token
+            for offset in (0.1, 8.1, 9.0, 30.0):
+                await built.tick(built.last_voice_ts + offset)
+            self.assertEqual(len(seen), started + 1, "the in-flight pass is the only pass")
+            self.assertEqual(built.telemetry.get("watchdog_nudges", 0), 0, "a racing rescue is never booked")
+            self.assertIs(built.state.step_token, step, "and it certainly does not move the call on")
+            self.assertIs(built.tool_task, task, "the real pass still owns the turn")
+            gate.set()
+            await answering
+            self.assertEqual(len(seen), started + 1)
+
+        asyncio.run(body())
+
+    def test_no_rescue_while_a_tool_task_is_armed_but_the_phase_has_not_flipped_yet(self):
+        # The real race the `tool_task` guard exists for. `on_message` arms `_answer_tools(wait_stt=True)` and only
+        # *then* parks on the caller's trailing transcription, so between the arm and `_next_question` the session
+        # is still LISTENING with her turn banked - and `turn_phase` cannot answer "is a pass coming?".
+        async def body() -> None:
+            built, _ws, _session = build(call_id=None, state=self.healthy())
+            seen = self.spy(built)
+            await self.bank(built, self.SPEECH)  # her answer is banked; `stt_ready` is not set
+            await built.on_message(live.types.LiveServerMessage(tool_call=live.types.LiveServerToolCall(
+                function_calls=[live.types.FunctionCall(id="t1", name="next_question", args={})])))
+            self.assertIs(built.turn_phase, live.TurnPhase.LISTENING, "still listening: no transcript has landed")
+            self.assertIsNotNone(built.tool_task, "yet a tool task already owns this turn")
+            self.assertFalse(built.tool_task.done(), "and is parked waiting for her words")
+
+            for offset in (8.1, 9.0, 20.0):
+                await built.tick(built.last_voice_ts + offset)
+            self.assertEqual(seen, [], "the armed tool task is the one owner of her turn: no second pass")
+            self.assertEqual(built.telemetry.get("watchdog_nudges", 0), 0, "and nothing is booked as a rescue")
+            self.assertEqual(self.rescues(built), [], "nor written to the timeline")
+
+            built.stt_ready.set()  # her trailing transcription finally lands
+            await built.tool_task
+            self.assertEqual(len(seen), 1, "the armed task runs its own pass, exactly once")
+
+        asyncio.run(body())
+
+    def test_no_rescue_while_the_socket_is_being_replaced(self):
+        async def body() -> None:
+            # `reconnecting` is a plain flag. `resume_requested` is not: it is only true *during* the swap, because
+            # `tick`'s own first line consumes it via `_reconnect`. So this drives the real swap with a stubbed
+            # connect, and asks for a rescue every tick while it is in flight.
+            built, _ws, _session = build(call_id=None, state=self.healthy())
+            seen = self.spy(built)
+            await self.bank(built, self.SPEECH)
+            built.reconnecting = True
+            for offset in (8.1, 9.0, 20.0):
+                await built.tick(built.last_voice_ts + offset)
+            self.assertEqual(seen, [], "a swap owns the socket: no pass may start under it")
+            self.assertEqual(built.telemetry.get("watchdog_nudges", 0), 0)
+
+            gate = asyncio.Event()
+
+            async def held_connect(_handle: str) -> FakeSession:
+                await gate.wait()  # hold the swap open while `tick` runs
+                return FakeSession()
+
+            built.reconnecting, built.resume_requested = False, True
+            built.resume_handle, built.connect = "handle-1", held_connect
+            swap = asyncio.ensure_future(built.tick(1.0))  # the swap starts and parks on `gate`
+            await asyncio.sleep(0)
+            self.assertTrue(built.reconnecting, "the swap really is in flight")
+            self.assertFalse(built.resume_requested, "`tick` consumed the flag when it began the swap")
+            for offset in (8.1, 9.0, 20.0):
+                await built.tick(built.last_voice_ts + offset)
+            self.assertEqual(seen, [], "and every tick during the swap is still refused")
+            self.assertEqual(built.telemetry.get("watchdog_nudges", 0), 0)
+            gate.set()
+            await swap
+
+        asyncio.run(body())
+
+    def test_no_rescue_while_her_line_is_still_playing(self):
+        async def body() -> None:
+            built, _ws, _session = build(call_id=None, state=self.healthy())
+            seen = self.spy(built)
+            await self.bank(built, self.SPEECH)
+            # Her prompt is still queued at the browser long after the caller stopped: `quiet` is measured from the
+            # later of `last_voice_ts` and `playback_ends_at`, so the clock has not even started.
+            built.playback_ends_at = built.last_voice_ts + 6.0
+            await built.tick(built.last_voice_ts + 8.1)
+            self.assertEqual(seen, [], "8 s after her last frame is not 8 s of quiet when her line plays until +6 s")
+            self.assertEqual(built.telemetry.get("watchdog_nudges", 0), 0, "and nothing is booked as a rescue")
+            self.assertEqual(self.rescues(built), [], "nor written to the timeline")
+            await built.tick(built.playback_ends_at + built.watchdog_timeout_sec + 0.1)
+            self.assertEqual(len(seen), 1, "but once the line really ends the rescue is owed again")
+
+        asyncio.run(body())
+
+    def test_no_rescue_in_a_phase_that_cannot_own_a_turn(self):
+        async def body() -> None:
+            for phase in (live.TurnPhase.DECIDING, live.TurnPhase.CLOSING):
+                with self.subTest(phase=str(phase)):
+                    built, _ws, _session = build(call_id=None, state=self.healthy())
+                    seen = self.spy(built)
+                    await self.bank(built, self.SPEECH)
+                    built.turn_phase = phase
+                    for offset in (8.1, 9.0, 20.0):
+                        await built.tick(built.last_voice_ts + offset)
+                    self.assertEqual(seen, [], f"`{phase}` never owes a rescue")
+                    self.assertEqual(built.telemetry.get("watchdog_nudges", 0), 0)
+
+        asyncio.run(body())
+
+    # -- 5: soft speech that never opened `pcm` --------------------------------------------------------------
+    def test_a_text_only_turn_is_rescued_too(self):
+        # `regime_a_soft_speakerphone`: the words arrive as transcription and never cross the onset gate, so
+        # `self.pcm` is empty and `self.text` is the only witness. The RMS re-check must not throw that away.
+        async def body() -> None:
+            built, _ws, _session = build(call_id=None, state=self.healthy())
+            seen = self.spy(built)
+            await built._hear("user", "डोरी सूखी नहीं है")
+            self.assertEqual((built.pcm, built.text), (b"", "डोरी सूखी नहीं है"), "a text-only turn carries no audio")
+            old_step = built.state.step_token
+            await built.tick(built.last_voice_ts + built.watchdog_timeout_sec + 0.1)
+            self.assertEqual(seen, [("डोरी सूखी नहीं है", 0)], "her words reach the pass even with no audio")
+            self.assertEqual(built.telemetry["watchdog_nudges"], 1)
+            self.assertIsNot(built.state.step_token, old_step, "and the call moves on")
+
+        asyncio.run(body())
+
+    # -- 6: Gemini finally wakes up --------------------------------------------------------------------------
+    def test_a_late_tool_call_after_the_rescue_never_double_advances(self):
+        async def body() -> None:
+            built, _ws, session = build(call_id=None, state=self.healthy())
+            seen = self.spy(built)
+            await self.bank(built, self.SPEECH)
+            await built.tick(built.last_voice_ts + built.watchdog_timeout_sec + 0.1)
+            self.assertEqual(len(seen), 1)
+            step, answers = built.state.step_token, dict(built.state.answers)
+            calls_before = built.telemetry["tool_calls"]
+            cues_before = len(session.realtime("text"))
+
+            # Gemini's `next_question` for a turn already judged arrives late. It must be answered, never re-run.
+            await built._answer_tools([live.types.FunctionCall(id="late-1", name="next_question", args={})])
+            self.assertEqual(len(seen), 1, "the late call may not buy a second Decision pass")
+            self.assertIs(built.state.step_token, step, "and may not move the call on again")
+            self.assertEqual(built.state.answers, answers, "nor re-reduce any answer it did not hear")
+            self.assertEqual(session.realtime("text")[cues_before:], [],
+                             "nor may the question she is already being asked be spoken again")
+            self.assertEqual(built.telemetry["tool_calls"], calls_before + 1, "the call is answered, just held")
+            body_sent = [payload for kind, payload in session.sent if kind == "tool"][-1][0].response
+            self.assertEqual(body_sent["say"], live.engine.say_text(PACK, built.state),
+                             "the body Gemini receives is the question she is really on, not the stale one")
+
+        asyncio.run(body())
+
+    # -- and the healthy call must never pay for any of it ----------------------------------------------------
+    def test_the_rescue_count_survives_a_resumed_call(self):
+        # `run_personas._check` reads `telemetry["watchdog_nudges"]`, and a resumed call re-seeds its counters from
+        # the row. `_COUNTERS` is what that merge walks, so a counter missing from it is silently reset to nothing -
+        # exactly the way `reconnects` was before Call #2 taught this file to seed it.
+        async def body() -> None:
+            live_session = live.LiveCallSession(
+                ws=FakeWebSocket(), pack=PACK, session=FakeSession(), call_id=None,
+                telemetry={"watchdog_nudges": 3, "tool_errors": 1})
+            self.assertEqual(live_session.telemetry.get("watchdog_nudges"), 3,
+                             "a rejoin must not forget a rescue the call already made")
+            self.assertEqual(live_session.telemetry["tool_errors"], 1, "and the counters beside it still work")
+
+            # And the increment must keep working on top of a seeded value, never restart at 1.
+            built, _ws, _session = build(call_id=None, state=self.healthy())
+            self.spy(built)
+            built.telemetry["watchdog_nudges"] = 3
+            await self.bank(built, self.SPEECH)
+            await built.tick(built.last_voice_ts + built.watchdog_timeout_sec + 0.1)
+            self.assertEqual(built.telemetry["watchdog_nudges"], 4, "a fourth rescue counts as four, not one")
+
+        asyncio.run(body())
+    def test_a_healthy_answered_turn_is_never_rescued(self):
+        # On the normal path the model really generated a turn, so `on_turn_complete` takes its `heard_bot_turn`
+        # branch and empties the bank; the watchdog can never see it.
+        async def body() -> None:
+            built, _ws, _session = build(call_id=None, state=self.healthy())
+            seen = self.spy(built)
+            await self.bank(built, self.SPEECH)
+            built.bot_generating = True  # she really did hear a prompt for this turn
+            await built.on_turn_complete()
+            self.assertEqual((built.pcm, built.text), (b"", ""), "a judged turn is cleared before the timer sees it")
+            for offset in (8.1, 15.0, 30.0):
+                await built.tick(built.last_voice_ts + offset)
+            self.assertEqual(seen, [], "no rescue where Gemini already did its job")
+            self.assertEqual(built.telemetry.get("watchdog_nudges", 0), 0, "so `run_personas.py` stays satisfied")
+
+        asyncio.run(body())
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+class RedactedAckTests(unittest.TestCase):
+    """A diagnosis the caller named is never read back, and a turn with no observation says so explicitly.
+
+    Call 9 of the `personas` suite (`p1_red_flags_and_redaction`) is the witness. The mother answered
+    `fam_maternal_bleeding` with "...डॉक्टर ने हीमोफीलिया बताया था।". Policy recorded a plain
+    `accept_form / in_domain` - no `RETAIN_OBSERVATION`, no `OTHER_FORM` - so `live.py` correctly sent no
+    `noted_observation`. Gemini still opened the next turn with "मैंने यह नोट कर लिया है कि आपके मामा के बेटे को
+    हीमोफीलिया बताया गया था।", reading the diagnosis aloud. The stored note, her summary, and the PDF all stayed
+    redacted: the spoken channel was the only one that leaked.
+
+    So there are two holes, and these tests pin both. A redacted revision must never hand her words back to be
+    repeated, and an absent `noted_observation` must be stated in the body instead of left for the model to infer -
+    which is exactly what it filled in for itself on Call 9.
+    """
+
+    HEMO = "हाँ, मेरे सगे मामा के बेटे को डॉक्टर ने हीमोफीलिया बताया था।"
+    # A revision on an open gate: `stayed` is true and the OTHER_FORM decision is what used to populate the note.
+    REVISION = {"danger_now": {"noul": 0.01}, "active_topic": {"noul": 0.08}, "residual_clinical": {"noul": 0.94},
+                "asks_clarify": {"noul": 0.06}, "active_outcome": {"probabilities": {"other": 0.91, "concern": 0.05, "clear": 0.04}}}
+    # Call 9's own shape: a plain in-domain concern, so `ack` is false and no observation is owed at all.
+    # `detail_present` is high because Call 9 really recorded her words on the gate - that is the stored note the
+    # clinician keeps, and the whole point of the redaction test below.
+    PLAIN = {"danger_now": {"noul": 0.01}, "active_topic": {"noul": 0.9}, "residual_clinical": {"noul": 0.1},
+             "asks_clarify": {"noul": 0.05}, "detail_present": {"noul": 0.95},
+             "active_outcome": {"probabilities": {"concern": 0.95, "clear": 0.03, "other": 0.02}}}
+
+    @classmethod
+    def turn(cls, raw: dict[str, Any], *, redact: float, qid: str = "fam_maternal_bleeding",
+             text: str | None = None) -> live.LiveCallSession:
+        """Drive one real `_next_question` through policy, returning the session that produced it."""
+        st = live.engine.new_state(PACK)
+        st.cursor = st.cursor.model_copy(update={"qid": qid})
+        built, _ws, _session = build(state=st)
+        heads = {**raw, "redact_patient_note": {"noul": redact}}
+
+        async def evaluate(snapshot, spoken, pcm_bytes):
+            result = live.decisions.DecisionCallResult(True, "", 1, 180, 120, 6, 40, heads)
+            intent = live.decisions.interpret_turn_decision(PACK, snapshot, heads, utterance_text=spoken)
+            return live.Turn(result, intent, None, snapshot, spoken, len(pcm_bytes), None)
+
+        built._evaluate_turn_task = evaluate  # type: ignore[method-assign]
+        built.text = cls.HEMO if text is None else text
+        return built
+
+    async def body_of(self, built: live.LiveCallSession) -> tuple[dict[str, Any], bool]:
+        return await built._next_question()
+
+    # -- 1: a redacted revision must not hand the diagnosis back ---------------------------------------------
+    def test_a_redacted_revision_never_hands_the_diagnosis_to_noted_observation(self):
+        async def body() -> None:
+            built = self.turn(self.REVISION, redact=0.95)
+            body_json, clarify = await self.body_of(built)
+            self.assertNotIn("noted_observation", body_json,
+                             "a diagnosis she named must never be handed back to be read aloud")
+            for name in ("हीमोफीलिया", "hemophilia", "ड्यूशेन", "थैलेसीमिया"):
+                self.assertNotIn(name, str(body_json), f"{name} leaked into the tool body")
+            self.assertFalse(body_json.get("ack_note"), "and the body must say nothing is owed")
+            self.assertTrue(clarify, "the turn is still spoken back as a clarify, just never by diagnosis")
+            self.assertTrue(body_json.get("clarify"))
+
+        asyncio.run(body())
+
+    def test_a_redacted_note_is_still_stored_verbatim_for_the_clinician(self):
+        # Redaction is a channel decision, never a data loss: the doctor must still receive her exact words.
+        async def body() -> None:
+            built = self.turn(self.PLAIN, redact=0.95)  # the gate is really answered, so a record exists
+            await self.body_of(built)
+            rec = built.state.answers.get("fam_maternal_bleeding")
+            self.assertIsNotNone(rec, "the concern is still recorded")
+            self.assertIn("हीमोफीलिया", rec.verbatim_text, "the clinician keeps her own words")
+            self.assertNotIn("हीमोफीलिया", rec.patient_safe_text, "her copy never carries it")
+
+        asyncio.run(body())
+
+    # -- 2: an unacknowledged turn must say so ---------------------------------------------------------------
+    def test_a_plain_answer_says_explicitly_that_there_is_nothing_to_acknowledge(self):
+        async def body() -> None:
+            built = self.turn(self.PLAIN, redact=0.95)
+            body_json, clarify = await self.body_of(built)
+            self.assertNotIn("noted_observation", body_json, "there is nothing owed as an acknowledgement")
+            self.assertIs(body_json.get("ack_note"), False,
+                          "the absence must be stated as an explicit False, never left for the model to infer")
+            self.assertFalse(clarify, "a plain in-domain answer is not a clarify")
+
+        asyncio.run(body())
+
+    # -- 3: the acknowledgement that IS owed must still arrive -----------------------------------------------
+    def test_an_unredacted_revision_still_carries_its_observation(self):
+        # The a1d/a2b contract - and the two pre-existing aside tests. A future "never ack" over-correction must
+        # fail here rather than in a live run. Uses the pre-existing fixtures' own utterance and heads, which carry
+        # no diagnosis name, so this is the exact case that must keep working.
+        async def body() -> None:
+            built = self.turn(self.REVISION, redact=0.01, qid="fam_cancer",
+                              text="मामा को शुगर से अंधापन हो गया, कैंसर नहीं")
+            body_json, _clarify = await self.body_of(built)
+            self.assertIn("अंधापन", body_json.get("noted_observation", ""),
+                          "an un-redacted observation is still spoken back")
+            self.assertTrue(body_json.get("ack_note"), "and the body says one is owed")
+            self.assertTrue(body_json.get("clarify"), "an aside is still a clarify")
+
+        asyncio.run(body())
+
+    # -- 4: the prompt must define what an absent observation means ------------------------------------------
+    def test_the_prompt_forbids_volunteering_an_acknowledgement_and_naming_diseases(self):
+        prompt = PACK.prompts["system_prompt"]
+        self.assertIn("ack_note", prompt, "the body's explicit flag must be something the prompt actually explains")
+        self.assertIn("मैंने यह नोट कर लिया है", prompt, "the acknowledgement line is still defined")
+        self.assertIn("If ack_note is false", prompt,
+                      "the prompt must state the no-acknowledgement case explicitly, not leave it to be inferred")
+        self.assertIn("never volunteered", prompt, "and it must forbid volunteering one")
+        self.assertIn("हीमोफीलिया", prompt, "the banned-disease list still names the diagnosis it must never speak")
+
+
+class HungSendTests(unittest.TestCase):
+    """A Gemini send that never returns must not wedge the watchdog.
+
+    Call 7 of `adversarial_shishu_untested` proved the cost: `_watchdog` is the only caller of `tick()`, it awaits
+    `_send_realtime` -> `self.session.send_realtime_input(...)` with no bound, and a reconnected session whose first
+    send never returned left the sole timer driver blocked forever. The call stayed `active` with
+    `close_reason=None` for 12 minutes and recorded neither `silence_check_in` nor `auto_close`, because the one
+    coroutine that could have fired them stopped at that await.
+    """
+
+    TIMEOUT = 0.05  # the real budget is 5.0 s; a unit test cannot spend it
+
+    @staticmethod
+    def bound(budget: float) -> Any:
+        """Patch the send budget when the module defines one; a no-op until the fix lands."""
+        if hasattr(live, "_SEND_TIMEOUT_SEC"):
+            return unittest.mock.patch.object(live, "_SEND_TIMEOUT_SEC", budget)
+        return unittest.mock.patch.object(live, "_no_such_attr", budget, create=True)
+
+    class HungSession(FakeSession):
+        """Accepts a send and never answers it: the half-open socket that hung Call 7."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.entered = asyncio.Event()
+            self.calls = 0
+
+        async def send_realtime_input(self, **kwargs: Any) -> None:
+            self.calls += 1
+            self.entered.set()
+            await asyncio.Future()  # never resolves, never raises
+
+    @classmethod
+    def build(cls, *, resume: str = "handle-1") -> tuple[live.LiveCallSession, FakeWebSocket, HungSendTests.HungSession]:
+        ws, session = FakeWebSocket(), cls.HungSession()
+        built = live.LiveCallSession(ws=ws, pack=PACK, session=session, call_id=None,
+                                     recorder=FakeRecorder(), on_call_completed=lambda _id: True)
+        built.resume_handle, built.resume_requested = resume, bool(resume)
+        built.bot_generating = built.__dict__.get("bot_generating", False)
+        return built, ws, session
+
+    def test_the_watchdog_keeps_ticking_when_a_send_never_returns(self):
+        """The real bug, with no dependency on the fix's constant: the timer loop must survive a dead send."""
+        async def body() -> None:
+            built, ws, session = self.build()
+            # The watchdog only sends while the mic is muted (its AAD keepalive); a prompt still playing is the
+            # normal way that happens, and it is exactly the state a re-cue leaves behind.
+            built.turn_phase, built.bot_generating = live.TurnPhase.PROMPTING, True
+            with self.bound(self.TIMEOUT):
+                watchdog = asyncio.ensure_future(built._watchdog())
+                try:
+                    self.assertTrue(await asyncio.wait_for(session.entered.wait(), timeout=1.0),
+                                    "the watchdog really did attempt a send")
+                    before = session.calls
+                    await asyncio.sleep(self.TIMEOUT * 6)
+                    self.assertFalse(watchdog.done(), "the watchdog must still be running, never crashed")
+                    self.assertGreater(session.calls, before,
+                                       "and it must keep ITERATING: a hung send is retried, not waited on forever")
+                    self.assertFalse(built.send_lock.locked(), "and never leave the lock held")
+                finally:
+                    built.stop.set()
+                    watchdog.cancel()
+                    await asyncio.gather(watchdog, return_exceptions=True)
+
+        asyncio.run(body())
+
+    def test_a_hung_send_returns_false_and_arms_the_reconnect_instead_of_blocking(self):
+        async def body() -> None:
+            built, _ws, session = self.build()
+            with self.bound(self.TIMEOUT):
+                # `wait_for` is the boundary under test: without it this await never returns.
+                result = await asyncio.wait_for(built._send_realtime(text="hi"), timeout=self.TIMEOUT * 8)
+            self.assertFalse(result, "a send that never completes is a lost frame, never a success")
+            self.assertTrue(session.entered.is_set(), "the send really was attempted")
+            self.assertTrue(built.resume_requested, "and `_lost()` marked the socket resumable")
+            self.assertFalse(built.send_lock.locked(), "the lock must be released, or every later send inherits the hang")
+
+        asyncio.run(body())
+
+    def test_a_hung_send_during_a_reconnect_does_not_wedge_tick_or_the_watchdog(self):
+        # The Call 7 shape: `tick()` drives `_reconnect()`, which ends in `_speak()` on the new session.
+        async def body() -> None:
+            built, ws, _session = self.build()
+            replacement = self.HungSession()
+
+            async def connect(_handle: str) -> HungSendTests.HungSession:
+                return replacement
+
+            built.connect = connect
+            with self.bound(self.TIMEOUT):
+                # The one thing that used to be false: `tick` RETURNS. It may answer False (the re-cue could not be
+                # delivered, so `_reconnect` reports failure), but it must never park here forever.
+                await asyncio.wait_for(built.tick(live.time.time()), timeout=self.TIMEOUT * 8)
+                self.assertIs(built.session, replacement, "the swap itself succeeded")
+                self.assertFalse(built.send_lock.locked(), "and the re-cue released the lock")
+                self.assertTrue(replacement.entered.is_set(), "the re-cue was attempted on the new session")
+                self.assertTrue(built.resume_requested, "the lost cue armed the next attempt rather than hanging")
+
+                # A second tick must also come back, so one dead send cannot wedge the loop it runs in.
+                await asyncio.wait_for(built.tick(live.time.time() + 1.0), timeout=self.TIMEOUT * 8)
+
+            # And with the socket healthy again the timers still fire: the call is not silently dead.
+            built.resume_requested, built.reconnecting = False, False
+            built.session = FakeSession()
+            built.turn_phase, built.bot_generating = live.TurnPhase.LISTENING, False
+            built.last_voice_ts, built.playback_ends_at = 0.0, 0.0
+            await asyncio.wait_for(built.tick(built.silence_close_sec + 1), timeout=1.0)
+            self.assertIs(built.state.close_reason, CloseReason.SILENCE,
+                          "the 30 s silence close is reachable: the wedge is gone")
+
+        asyncio.run(body())
+
+    def test_a_hung_send_with_no_resume_handle_is_still_a_lost_frame(self):
+        # `_lost()` only sets `resume_requested` when a handle exists; a send must not raise either way.
+        async def body() -> None:
+            built, _ws, session = self.build(resume="")
+            self.assertFalse(built.resume_requested)
+            with self.bound(self.TIMEOUT):
+                result = await asyncio.wait_for(built._send_realtime(text="hi"), timeout=self.TIMEOUT * 8)
+            self.assertFalse(result)
+            self.assertTrue(session.entered.is_set())
+            self.assertFalse(built.send_lock.locked(), "the lock is released on every path")
+            self.assertFalse(built.resume_requested, "no handle means no reconnect to arm")
+
+        asyncio.run(body())
+
+
 if __name__ == "__main__":
     unittest.main()

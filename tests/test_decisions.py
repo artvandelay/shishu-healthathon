@@ -466,6 +466,43 @@ class BuildRequestTests(unittest.TestCase):
         # cyanosis from phototherapy blue light.
         self.assertIn("नीली लाइट", self.shishu.by_id["body_blue"].need)
 
+    def test_a_stated_need_widens_the_out_of_turn_head_without_widening_the_asked_question(self):
+        # `birth_jaundice` on the `intro_bridge` turn: the caller said "हाँ शुरू करें, जन्म के बाद बच्चे को पीलिया
+        # हुआ था।" and the `stated_birth_jaundice` head was in the request, yet the turn came back
+        # `clinical_aside` — because the head told the model to choose `unmentioned` unless she named its `need`
+        # ("jaundice treated under blue light") and she never said phototherapy. The stated head must read the
+        # topic she can actually answer, while `active_question` keeps the narrower wording the pack asks aloud.
+        st = state_at(self.shishu, "intro_bridge")
+        heads = decisions.build_turn_request(self.shishu, st)["questions"]
+        jaundice = heads["stated_birth_jaundice"]
+        text = " ".join(str(jaundice["instructions"]).split())
+
+        self.assertEqual(self.shishu.by_id["birth_jaundice"].need, "jaundice treated under blue light",
+                         "the asked question keeps its narrow phototherapy wording")
+        self.assertIn("jaundice (पीलिया) in the newborn after birth, with or without blue-light phototherapy", text,
+                      "the stated head names the topic she can actually volunteer")
+        self.assertNotIn('"jaundice treated under blue light"', text,
+                         "the narrow need is exactly what made the model answer `unmentioned`")
+        self.assertTrue(all("{" not in instruction for instruction in jaundice["criteria"].values()),
+                        f"the .format() holes must be filled, got {jaundice['criteria']}")
+        for criterion in jaundice["criteria"].values():
+            self.assertIn("jaundice (पीलिया)", criterion, "every criterion reads the same widened topic")
+        self.assertIn("क्या जन्म के बाद पीलिया के लिए बच्चे को नीली लाइट में रखना पड़ा था?", text,
+                      "the head still quotes the question it revises")
+
+    def test_a_question_without_a_stated_need_still_uses_its_need(self):
+        # The override is opt-in per question: every gate that says nothing keeps its own `need` in the head.
+        st = state_at(self.shishu, "intro_bridge")
+        heads = decisions.build_turn_request(self.shishu, st)["questions"]
+        needed = [q for q in self.shishu.questions
+                  if q.is_routable and q.kind.value in ("gate", "routing_gate") and q.id != st.cursor.qid]
+        self.assertTrue(needed)
+        for q in needed:
+            if q.stated_need:
+                continue
+            text = " ".join(str(heads[f"stated_{q.id}"]["instructions"]).split())
+            self.assertIn(q.need, text, f"{q.id}: the head must still name the question's own need")
+
 
 class InterpretTests(unittest.TestCase):
     """Threshold gating in both directions, per question kind."""

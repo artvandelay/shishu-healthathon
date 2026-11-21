@@ -241,6 +241,9 @@ questions:
   say: क्या जन्म के बाद पीलिया के लिए बच्चे को नीली लाइट में रखना पड़ा था?
   stem: जन्म के बाद पीलिया के लिए बच्चे को नीली लाइट में रखना पड़ा था
   need: jaundice treated under blue light
+  # Asked narrowly, volunteered broadly: a mother who says "जन्म के बाद बच्चे को पीलिया हुआ था" has reported this
+  # concern, so the `stated_` head must read that topic rather than demand the word "phototherapy".
+  stated_need: jaundice (पीलिया) in the newborn after birth, with or without blue-light phototherapy
   tag: Q03
   roster_scoped: true
   skip_if:
