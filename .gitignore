@@ -28,3 +28,7 @@ code/bad-v1/
 plan/
 architecture/
 3rdparty/
+
+# Local Ollama probe artifacts (not published)
+ollama/
+scripts/run_ollama_genre_probe.py
