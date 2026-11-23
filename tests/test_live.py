@@ -1454,6 +1454,144 @@ class EntrypointTests(unittest.TestCase):
         asyncio.run(body())
 
 
+class CapacityGuardTests(unittest.TestCase):
+    """One box carries one Gemini Live socket per call: past `MAX_CONCURRENT_CALLS` a new call is refused at the door.
+
+    Every live call holds its own Live socket, its own recorder, and its own Decision traffic against one process.
+    Admitting call 51 anyway does not queue it, it degrades all 51 — so the guard has to answer before `_open_live`
+    and before a call row is minted, and it must never lock out a caller whose own call is still open.
+    """
+
+    @staticmethod
+    def count_calls() -> int:
+        with db._LOCK:
+            return int(db.conn.execute("SELECT COUNT(*) FROM calls").fetchone()[0])
+
+    def test_a_new_call_at_capacity_is_rejected_without_opening_live_or_creating_a_row(self):
+        async def body() -> None:
+            ws, opened, created = FakeWebSocket(), [], []
+            before = await asyncio.to_thread(self.count_calls)
+
+            async def counting_open(*args: Any) -> Any:
+                opened.append(args)
+                raise RuntimeError("a call refused at capacity may never open a Live socket")
+
+            original, squatter = live._open_live, object()
+            live._open_live = counting_open  # type: ignore[assignment]
+            try:
+                live._ACTIVE_CALLS[9_900_001] = squatter  # type: ignore[assignment]  # the box is full
+                with unittest.mock.patch.dict(live.os.environ, {"GEMINI_API_KEY": "k", "MAX_CONCURRENT_CALLS": "1"}), \
+                        unittest.mock.patch.object(live.db, "create_call",
+                                                   side_effect=lambda **kw: created.append(kw) or 9_900_002):
+                    await live.handle_live_ws(ws, pack=PACK, caller_name="Tester")
+            finally:
+                live._open_live = original  # type: ignore[assignment]
+                live._ACTIVE_CALLS.pop(9_900_001, None)
+
+            self.assertEqual(len(opened), 0, f"no Live socket is opened for a call that is refused, got {len(opened)}")
+            self.assertEqual(created, [], "and no call row is minted for it")
+            self.assertEqual(await asyncio.to_thread(self.count_calls), before, "the calls table is untouched")
+            self.assertEqual(ws.of("error")[0]["message"], "Server is at capacity, please try again shortly",
+                             f"the caller is told why, got {ws.sent}")
+            self.assertTrue(ws.closed, "and the socket is shut")
+
+        asyncio.run(body())
+
+    def test_a_resume_token_for_a_still_open_call_passes_capacity(self):
+        # The cap must not punish the one caller it can still serve: a line that dropped mid-question is already
+        # counted in `_ACTIVE_CALLS`, and refusing her rejoin would strand a call the box is already paying for.
+        async def body() -> None:
+            sessions: list[FakeSession] = []
+
+            class DummyAsyncCtx:
+                async def __aenter__(self) -> Any:
+                    return FakeSession()
+
+                async def __aexit__(self, *_exc: Any) -> bool:
+                    return False
+
+            async def fake_open(_client: Any, _pack: Any, _handle: str) -> Any:
+                session = FakeSession()
+                sessions.append(session)
+                return DummyAsyncCtx(), session
+
+            ws1, probe, ws2 = FakeWebSocket(), FakeWebSocket(), FakeWebSocket()
+            first = second = third = None
+            created: list[int] = []
+            minted: list[dict[str, Any]] = []
+            original, real_create = live._open_live, live.db.create_call
+
+            def counting_create(**kw: Any) -> int:
+                minted.append(kw)
+                return real_create(**kw)
+
+            live._open_live = fake_open  # type: ignore[assignment]
+            live.db.create_call = counting_create  # type: ignore[assignment]
+            try:
+                with unittest.mock.patch.dict(live.os.environ, {"GEMINI_API_KEY": "k", "MAX_CONCURRENT_CALLS": "1"}):
+                    first = asyncio.ensure_future(live.handle_live_ws(ws1, pack=PACK, caller_name="Tester"))
+                    self.assertTrue(await ResumeSessionTests.wait_until(lambda: bool(ws1.of("session_started"))),
+                                    "the first call must start")
+                    started = ws1.of("session_started")[0]
+                    cid, share_token = int(started["call_id"]), str(started["share_token"])
+                    created.append(cid)
+                    self.assertTrue(await ResumeSessionTests.wait_until(lambda: cid in live._ACTIVE_CALLS))
+                    self.assertEqual(len(live._ACTIVE_CALLS), 1, "the box is exactly full")
+
+                    active = live._ACTIVE_CALLS[cid]
+                    active.state.cursor = active.state.cursor.model_copy(update={"qid": "intro_married"})
+                    await active._persist(active.state)
+
+                    third = asyncio.ensure_future(live.handle_live_ws(probe, pack=PACK, caller_name="Second caller"))
+                    await ResumeSessionTests.wait_until(
+                        lambda: bool(probe.of("error")) or bool(probe.of("session_started")), timeout=1.0)
+                    self.assertEqual([e["message"] for e in probe.of("error")],
+                                     ["Server is at capacity, please try again shortly"],
+                                     f"a stranger is refused at the cap, got {probe.sent}")
+                    await asyncio.gather(third, return_exceptions=True)
+                    third = None
+
+                    second = asyncio.ensure_future(live.handle_live_ws(ws2, pack=PACK, resume_token=share_token))
+                    self.assertTrue(await ResumeSessionTests.wait_until(
+                        lambda: bool(ws2.of("session_started")) and bool(ws2.of("question_state"))),
+                        f"the dropped caller rejoins her own call through the full box, got {ws2.sent}")
+                    self.assertEqual(ws2.of("session_started")[0]["call_id"], cid,
+                                     "the resume is handed the call it already owns")
+                    self.assertEqual(len(minted), 1, "no second row is minted for the rejoin")
+                    self.assertEqual(ws2.of("question_state")[0]["qid"], "intro_married",
+                                     "and the step it paused on")
+
+                    await ws2.push({"type": "hangup"})
+                    await asyncio.wait_for(second, timeout=3)
+                    second = None
+            finally:
+                live._open_live = original  # type: ignore[assignment]
+                live.db.create_call = real_create  # type: ignore[assignment]
+                for task in (first, second, third):
+                    if task is not None and not task.done():
+                        task.cancel()
+                        await asyncio.gather(task, return_exceptions=True)
+                for call_id in created:
+                    with db._LOCK:
+                        db.conn.execute("DELETE FROM calls WHERE id = ?", (call_id,))
+                        db.conn.commit()
+                    live._ACTIVE_CALLS.pop(call_id, None)
+                    if (pending := live._PENDING_FINALIZE.pop(call_id, None)) is not None:
+                        pending.cancel()
+                        await asyncio.gather(pending, return_exceptions=True)
+
+        asyncio.run(body())
+
+    def test_the_cap_reads_the_environment_and_refuses_nonsense(self):
+        cases = [("7", 7), ("0", 0), ("-3", 0), ("", 50), ("lots", 50), (" 12 ", 12)]
+        with unittest.mock.patch.dict(live.os.environ, {}, clear=False):
+            for raw, expected in cases:
+                live.os.environ.pop("MAX_CONCURRENT_CALLS", None)
+                if raw != "":
+                    live.os.environ["MAX_CONCURRENT_CALLS"] = raw
+                self.assertEqual(live.max_concurrent_calls(), expected, f"MAX_CONCURRENT_CALLS={raw!r}")
+
+
 class ResumeSessionTests(unittest.TestCase):
     """A socket that dies is a dropped line, not a hangup: the call waits in grace, then resumes where it stopped."""
 

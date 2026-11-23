@@ -18,6 +18,9 @@ from intake.turns import ClinicalClaim, DomainFit, EvidenceSource, SpeechAct, To
 DECISIONS_ENDPOINT, DEFAULT_MODEL = "https://generativelanguage.googleapis.com/v1beta/decisions", "gemini-decision-1"
 Transport = Callable[..., tuple[int, bytes] | Awaitable[tuple[int, bytes]]]
 _CLIENTS: WeakKeyDictionary[asyncio.AbstractEventLoop, httpx.AsyncClient] = WeakKeyDictionary()
+# Every live call posts here once per caller turn, so the pool must be sized for calls, not for httpx's single-digit
+# default of 100/20. Past it a POST either opens a cold TLS connection per turn or waits out the 3 s pool timeout.
+_POOL_LIMITS = httpx.Limits(max_connections=256, max_keepalive_connections=128)
 _CORE = ("danger_now", "caller_stop", "mentions_profile", "redact_patient_note", "active_topic", "residual_clinical", "asks_clarify")
 _NOUL = (*_CORE, "detail_present", "jump_topic")
 _STATED_KINDS = (QuestionKind.GATE, QuestionKind.ROUTING_GATE)
@@ -43,7 +46,7 @@ async def _post(url: str, body: bytes, headers: dict[str, str], budget: float) -
     loop = asyncio.get_running_loop()
     client = _CLIENTS.get(loop)
     if client is None or client.is_closed:
-        client = _CLIENTS[loop] = httpx.AsyncClient(http2=False)
+        client = _CLIENTS[loop] = httpx.AsyncClient(http2=False, limits=_POOL_LIMITS)
     timeout = httpx.Timeout(connect=3.0, read=budget, write=3.0, pool=3.0)
     reply = await client.post(url, content=body, headers=headers, timeout=timeout)
     return reply.status_code, reply.content

@@ -1306,5 +1306,44 @@ class Call8RetractSplitTests(unittest.TestCase):
         self.assertNotEqual(nxt.step_token, st.step_token, "a read answer never burns a retry")
 
 
+class PooledClientLimitTests(unittest.TestCase):
+    """The Decision pass runs once per caller turn, and every live call runs one: 100 sockets is not 50 calls' worth.
+
+    httpx's default pool is 100 connections with 20 kept alive. Under the concurrency this box admits, the 21st
+    caller's POST either opens a cold TLS connection per turn or waits on the pool's 3 s timeout — the decision
+    latency cliff, bought for nothing. The pool is sized once, at construction, so this pins the constructor's limits.
+    """
+
+    def test_the_pooled_client_is_sized_for_the_concurrency_the_box_admits(self):
+        built: dict[str, Any] = {}
+        original = decisions.httpx.AsyncClient
+
+        class RecordingClient(original):  # type: ignore[misc, valid-type]
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                built.update(kwargs)
+                super().__init__(*args, **kwargs)
+
+            async def post(self, *args: Any, **kwargs: Any) -> Any:
+                return httpx.Response(200, json=OK_BODY, request=httpx.Request("POST", decisions.DECISIONS_ENDPOINT))
+
+        decisions.httpx.AsyncClient = RecordingClient  # type: ignore[assignment]
+        try:
+            status, _body = asyncio.run(decisions._post(decisions.DECISIONS_ENDPOINT, b"{}", {}, 1.0))
+        finally:
+            decisions.httpx.AsyncClient = original  # type: ignore[assignment]
+        self.assertEqual(status, 200, "the fake reply must travel the pooled path")
+
+        defaults = httpx.Limits()
+        limits = built.get("limits")
+        self.assertIsNotNone(limits, "the pooled client sets no explicit limits, so httpcore's default pool of "
+                                     "100 connections / 20 keep-alive still applies")
+        self.assertGreaterEqual(limits.max_connections, 256,
+                                f"max_connections is {limits.max_connections}, under 256: the pool cannot carry the "
+                                f"concurrent calls this box admits (httpcore's default is {defaults.max_connections or 100})")
+        self.assertGreaterEqual(limits.max_keepalive_connections, 128,
+                                f"max_keepalive_connections is {limits.max_keepalive_connections}, under 128: turns pay "
+                                f"a cold TLS handshake (httpcore's default is {defaults.max_keepalive_connections or 20})")
+
+
 if __name__ == "__main__":
     unittest.main()

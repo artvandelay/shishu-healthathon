@@ -33,6 +33,15 @@ _RESUME_GRACE_SEC = 90.0  # how long a call whose socket died waits for the brow
 _SEND_TIMEOUT_SEC = 5.0
 _ACTIVE_CALLS: dict[int, "LiveCallSession"] = {}  # call id -> the session that currently owns it
 _PENDING_FINALIZE: dict[int, asyncio.Task] = {}  # call id -> the grace timer that will finalize it if nobody rejoins
+_MAX_CONCURRENT_CALLS = 50  # the most live calls one box admits; each holds its own Live socket, recorder, and Decisions
+
+
+def max_concurrent_calls() -> int:
+    """`MAX_CONCURRENT_CALLS` as a live-call ceiling: a positive int, or `0` when the cap is switched off."""
+    raw = str(os.environ.get("MAX_CONCURRENT_CALLS") or "").strip()
+    try: value = int(raw)
+    except ValueError: return _MAX_CONCURRENT_CALLS
+    return value if value > 0 else 0
 _NEXT_QUESTION = {"name": "next_question", "parameters": {"type": "OBJECT", "properties": {}}, "description":
                   "Call this on every caller utterance with no arguments to fetch the exact line to speak next. Never speak to the caller before calling next_question."}
 
@@ -962,13 +971,18 @@ async def handle_live_ws(ws: WebSocket, *, pack: PackConfig, caller_name: str = 
     cid: int | None = None
     try:
         if not key: return await _reject(ws, "GEMINI_API_KEY is not set")
-        try: ctx, session = await _open_live(client, pack, "")
-        except Exception: return await _reject(ws, "Gemini Live connection failed")  # noqa: BLE001
         tok = (resume_token or "").strip()
         row = await asyncio.to_thread(db.get_call_by_token, tok) if tok else None
         saved_state = db.call_state_from_row(row) if row is not None else CallState()
-        still_open = row is not None and saved_state.close_reason is None
-        if row is not None and row.get("pack_id") == pack.id and still_open:
+        still_open = row is not None and row.get("pack_id") == pack.id and saved_state.close_reason is None
+        # One box carries one Live socket per call; past the cap a new call is refused before it costs anything.
+        # A resume is let through: that call is already in `_ACTIVE_CALLS`, so refusing its rejoin strands a call the
+        # box is already paying for, and the caller has nowhere else to go.
+        if (cap := max_concurrent_calls()) and len(_ACTIVE_CALLS) >= cap and not still_open:
+            return await _reject(ws, "Server is at capacity, please try again shortly")
+        try: ctx, session = await _open_live(client, pack, "")
+        except Exception: return await _reject(ws, "Gemini Live connection failed")  # noqa: BLE001
+        if row is not None and still_open:
             # The browser came back on a call we still hold: the row, the cursor, and the audio file are reused.
             # `close_reason is None` is the whole test: a call that already ended (SILENCE, TIME_LIMIT,
             # TECHNICAL_FAILURE, CALLER_STOP, COMPLETE, EMERGENCY) kept its reason, and reviving it here wiped that
