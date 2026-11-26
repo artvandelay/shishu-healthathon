@@ -92,7 +92,8 @@ const sent = [], pdfCalls = [], intervals = [], timeouts = [], worklets = [], ws
 let timerId = 0;
 let bugBody = null, ctxRef = null, current = null, frames = [];
 let PACK_JSON = {}, NOW = 1_700_000_000_000;
-let pdfHeaders = "", pdfNoHeaders = false, pdfFails = false, pdfGate = false, pdfRelease = null;
+let pdfHeaders = "", pdfNoHeaders = false, pdfFails = false, pdfGate = false;
+const pdfPending = [];
 let canShare = true, shareCalls = 0, revoked = [];
 const fileNames = [], anchors = [];
 
@@ -158,7 +159,7 @@ function makeSandbox() {
     btoa: (s) => Buffer.from(s, "binary").toString("base64"),
     URL: { createObjectURL: () => "blob:x", revokeObjectURL: (u) => revoked.push(u) },
     Blob: function (parts) { this.parts = parts; },
-    File: function (parts, name, cfg) { this.parts = parts; this.name = name; this.type = cfg && cfg.type; fileNames.push(name); },
+    File: function (parts, name, cfg) { this.parts = parts; this.name = name; this.type = cfg && cfg.type; fileNames.push({ name, lang: parts[0] && parts[0].lang }); },
     Image: function () { const self = this; setTimeout(() => self.onerror && self.onerror(), 0); },
     URLSearchParams, Uint8Array, Int16Array, Float32Array, DataView, ArrayBuffer, JSON, Promise,
     encodeURIComponent, decodeURIComponent, Object, Number, String, Boolean, Math, RegExp, Error,
@@ -188,12 +189,21 @@ function makeSandbox() {
       return Promise.resolve({ ok: true, status: 200 });
     }
     if (url.includes("patient.pdf")) {
-      pdfCalls.push(init && init.method);
-      const headers = pdfNoHeaders ? undefined : { get: (k) => (k.toLowerCase() === "content-disposition" ? pdfHeaders : null) };
-      const reply = () => (pdfFails
-        ? { ok: false, status: 500, headers, blob: () => Promise.resolve(new Blob([])) }
-        : { ok: true, status: 200, headers, blob: () => Promise.resolve(new Blob([])) });
-      if (pdfGate) return new Promise((resolve) => { pdfRelease = () => resolve(reply()); });
+      /* Two sheets, two requests: tag every call with its language so a test can gate, fail or name them apart. */
+      const lang = (/[?&]lang=([a-z]+)/.exec(url) || [null, "hi"])[1];
+      pdfCalls.push({ lang, method: (init && init.method) || "GET", url });
+      const disposition = pdfHeaders.replace(/\{lang\}/g, lang);
+      const headers = pdfNoHeaders ? undefined : { get: (k) => (k.toLowerCase() === "content-disposition" ? disposition : null) };
+      const fails = pdfFails === true || (Array.isArray(pdfFails) && pdfFails.includes(lang));
+      const reply = () => {
+        if (fails) return { ok: false, status: 500, headers, blob: () => Promise.resolve(new Blob([])) };
+        const blob = new Blob([]);
+        blob.lang = lang;
+        return { ok: true, status: 200, headers, blob: () => Promise.resolve(blob) };
+      };
+      if (pdfGate === true || (Array.isArray(pdfGate) && pdfGate.includes(lang))) {
+        return new Promise((resolve) => { pdfPending.push({ lang, resolve: () => resolve(reply()) }); });
+      }
       return Promise.resolve(reply());
     }
     return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) });
@@ -261,7 +271,9 @@ const api = {
     nodes["bug-chips"].fire("click", { target: { closest: () => chip } });
   },
   bug() { return bugBody; },
-  pdfName() { return fileNames.slice(); },
+  pdfName() { return fileNames.map((f) => f.name); },
+  /* Which language each built File belongs to, so a test can prove the two sheets never swap names or files. */
+  pdfFiles() { return fileNames.slice(); },
   downloads() { return anchors.map((a) => a.download); },
   shares() { return shareCalls; },
   revoked() { return revoked.slice(); },
@@ -269,10 +281,20 @@ const api = {
      be conjured by getElementById with `hidden === false` and read as visible. */
   has(id) { return htmlIds.has(id); },
   setPdf(disposition, noHeaders, shareable) { pdfHeaders = disposition || ""; pdfNoHeaders = !!noHeaders; canShare = shareable !== false; },
-  failPdf(fails) { pdfFails = !!fails; },
-  /* Hold the PDF response open, so "preparing" can be observed mid-flight instead of guessed at. */
-  gatePdf() { pdfGate = true; pdfRelease = null; },
-  releasePdf() { pdfGate = false; const done = pdfRelease; pdfRelease = null; if (done) done(); },
+  /* `true` fails both sheets; an array fails only the named languages, so one sheet can fail alone. */
+  failPdf(fails) { pdfFails = fails === true ? true : (Array.isArray(fails) ? fails.slice() : false); },
+  /* Hold the PDF responses open, so "preparing" can be observed mid-flight instead of guessed at.
+     `langs` names the sheets to hold; with no argument both are held, as before. */
+  gatePdf(langs) { pdfGate = langs == null ? true : (Array.isArray(langs) ? langs.slice() : [langs]); },
+  /* Release the held sheets — only the named languages when given, else everything that is waiting. */
+  releasePdf(langs) {
+    const wanted = langs == null ? null : (Array.isArray(langs) ? langs : [langs]);
+    for (let i = pdfPending.length - 1; i >= 0; i -= 1) {
+      if (wanted && wanted.indexOf(pdfPending[i].lang) < 0) continue;
+      pdfPending.splice(i, 1)[0].resolve();
+    }
+    if (!pdfPending.length) pdfGate = false;
+  },
   /* A missing id is a real defect (the element was never served), so say so — never let getElementById's
      lazy stand-in answer as if it were on the page. */
   need(id) { if (!nodes[id]) throw new Error("#" + id + " is not on the served call page"); return nodes[id]; },
@@ -684,36 +706,54 @@ return { wasPlaying, stillPlaying, tapped, tailAudible, secondAudible };
         self.assertTrue(out["secondAudible"], "Question B plays normally once its own state arrives")
 
     def test_the_pdf_adopts_the_served_filename_and_falls_back_without_headers(self):
+        # Two sheets, two responses: each button must adopt its OWN served filename, never the other language's.
         out = self.run_js(r"""
+const byLang = (rows) => Object.fromEntries(rows.map((r) => [r.lang, r.name]));
+const endCall = async () => {
+  api.push({ type: "call_completed", call_id: 4, share_token: "tok" });
+  await api.settle();
+};
+
 api.boot(JSON.parse(process.env.PACK));
 await api.settle();
 await api.start();
 api.push({ type: "session_started", call_id: 4, share_token: "tok", out_sample_rate: 24000 });
 await api.settle();
 
-api.setPdf('attachment; filename="SHISHU-2026-11-12-093000-c4.pdf"', false, false);
-api.push({ type: "call_completed", call_id: 4, share_token: "tok" });
+api.setPdf('attachment; filename="SHISHU-2026-11-12-093000-c4-{lang}.pdf"', false, false);
+await endCall();
+const adopted = byLang(api.pdfFiles());
+api.need("download-pdf-hi").fire("click");
+api.need("download-pdf-en").fire("click");
 await api.settle();
-const adopted = api.pdfName().pop();
-api.need("download-pdf").fire("click");
-await api.settle();
-const adoptedDownload = api.downloads().pop();
+const adoptedDownloads = api.downloads();
 
+/* A fresh page whose server sends no Content-Disposition at all: each sheet still lands on a
+   language-tagged name of its own instead of one shared "SHISHU.pdf". */
+const seenFiles = api.pdfFiles().length, seenDownloads = api.downloads().length;
+api.boot(JSON.parse(process.env.PACK));
+await api.settle();
+await api.start();
+api.push({ type: "session_started", call_id: 4, share_token: "tok", out_sample_rate: 24000 });
+await api.settle();
 api.setPdf("", true, false);
-api.nodes["retry-pdf"].fire("click");
+await endCall();
+const fallback = byLang(api.pdfFiles().slice(seenFiles));
+api.need("download-pdf-hi").fire("click");
+api.need("download-pdf-en").fire("click");
 await api.settle();
-const fallback = api.pdfName().pop();
-api.need("download-pdf").fire("click");
-await api.settle();
-const fallbackDownload = api.downloads().pop();
+const fallbackDownloads = api.downloads().slice(seenDownloads);
 
-return { adopted, adoptedDownload, fallback, fallbackDownload };
+return { adopted, fallback, adoptedDownloads, fallbackDownloads };
 """)
 
-        self.assertEqual(out["adopted"], "SHISHU-2026-11-12-093000-c4.pdf")
-        self.assertEqual(out["adoptedDownload"], "SHISHU-2026-11-12-093000-c4.pdf")
-        self.assertEqual(out["fallback"], "SHISHU.pdf", "no Content-Disposition still yields a name")
-        self.assertEqual(out["fallbackDownload"], "SHISHU.pdf")
+        self.assertEqual(out["adopted"], {"hi": "SHISHU-2026-11-12-093000-c4-hi.pdf",
+                                          "en": "SHISHU-2026-11-12-093000-c4-en.pdf"})
+        self.assertEqual(out["adoptedDownloads"], ["SHISHU-2026-11-12-093000-c4-hi.pdf",
+                                                   "SHISHU-2026-11-12-093000-c4-en.pdf"])
+        self.assertEqual(out["fallback"], {"hi": "SHISHU-hi.pdf", "en": "SHISHU-en.pdf"},
+                         "no Content-Disposition still yields a name, and it names its own language")
+        self.assertEqual(out["fallbackDownloads"], ["SHISHU-hi.pdf", "SHISHU-en.pdf"])
 
     def test_ws_drop_mid_call_auto_reconnects_with_resume_token_and_never_shows_consent(self):
         out = self.run_js(r"""
@@ -920,41 +960,102 @@ return { beforeComplete, midLine, outsideTail, insideTail, turnPhase, statusText
         # the live stage, and `call_completed` flashed an empty thank-you card. The preparing indicator has to
         # live on #thanks, spin while the PDF is in flight, and be gone the moment the file is ready.
         out = self.run_js(r"""
+const labels = () => ({
+  hi: api.need("download-pdf-hi-label").children.map((c) => c.textContent).join("|"),
+  en: api.need("download-pdf-en-label").children.map((c) => c.textContent).join("|")
+});
+
 api.boot(JSON.parse(process.env.PACK));
 await api.settle();
 await api.start();
 api.push({ type: "session_started", call_id: 4, share_token: "tok", out_sample_rate: 24000 });
 await api.settle();
 const idleHidden = !api.shown("thanks-preparing");
+const idleButtonsHidden = [!api.shown("download-pdf-hi"), !api.shown("download-pdf-en")];
 
+/* Both sheets are held open, so the mid-flight state is observed instead of guessed at. */
 api.gatePdf();
 api.push({ type: "call_completed", call_id: 4, share_token: "tok" });
 await api.settle();
 const waiting = api.shown("thanks-preparing");
 const waitingThanks = api.shown("thanks");
-const downloadHiddenWhileWaiting = !api.shown("download-pdf");
+/* Each button is on screen with its own preparing copy, but there is no file behind either one yet. */
+const shownWhileWaiting = [api.shown("download-pdf-hi"), api.shown("download-pdf-en")];
+const disabledWhileWaiting = [api.need("download-pdf-hi").disabled, api.need("download-pdf-en").disabled];
+const downloadsWhileWaiting = api.downloads().length;
+api.need("download-pdf-hi").fire("click");
+api.need("download-pdf-en").fire("click");
+await api.settle();
+const clicksWhileWaiting = { builds: api.pdfCalls.length, downloads: api.downloads().length };
+const bothLoading = [api.need("download-pdf-hi").classList.contains("sheet-loading"),
+                    api.need("download-pdf-en").classList.contains("sheet-loading")];
 const spinner = api.tree("thanks-preparing").some((n) => n.cls.split(/\s+/).includes("prep-spinner"));
 const hint = api.tree("thanks-preparing").map((n) => n.text).join("|");
+const waitingLabels = labels();
+
+/* Hindi lands first: its own button unlocks while English is still building, and the hint stays up. */
+api.releasePdf("hi");
+await api.settle();
+const hindiOnly = {
+  preparing: api.shown("thanks-preparing"),
+  hi: api.shown("download-pdf-hi"), en: api.shown("download-pdf-en"),
+  hiDisabled: api.need("download-pdf-hi").disabled, enDisabled: api.need("download-pdf-en").disabled,
+  hiLoading: api.need("download-pdf-hi").classList.contains("sheet-loading"),
+  enLoading: api.need("download-pdf-en").classList.contains("sheet-loading"),
+  hiIcon: !api.need("download-pdf-hi-icon").hidden, enIcon: !api.need("download-pdf-en-icon").hidden,
+  labels: labels()
+};
 
 api.releasePdf();
 await api.settle();
 const afterReady = api.shown("thanks-preparing");
-const downloadAfterReady = api.shown("download-pdf");
+const bothReady = [api.shown("download-pdf-hi"), api.shown("download-pdf-en")];
+const readyLabels = labels();
 
-return { idleHidden, waiting, waitingThanks, downloadHiddenWhileWaiting, spinner, hint, afterReady, downloadAfterReady };
+return { idleHidden, idleButtonsHidden, waiting, waitingThanks, shownWhileWaiting, disabledWhileWaiting,
+         downloadsWhileWaiting, clicksWhileWaiting, bothLoading, spinner, hint,
+         waitingLabels, hindiOnly, afterReady, bothReady, readyLabels };
 """)
 
         self.assertTrue(out["idleHidden"], "the preparing indicator is hidden before the call ends")
+        self.assertEqual(out["idleButtonsHidden"], [True, True], "and so is every download button")
         self.assertTrue(out["waiting"], "while the PDF is being built the end screen shows the preparing indicator")
         self.assertTrue(out["waitingThanks"], "and it does so on the #thanks screen, not the live stage")
-        self.assertTrue(out["downloadHiddenWhileWaiting"], "no download button before there is a file to download")
+        self.assertEqual(out["shownWhileWaiting"], [True, True],
+                         "each language shows its own button while its file is being built")
+        self.assertEqual(out["disabledWhileWaiting"], [True, True], "but neither is clickable with no file behind it")
+        self.assertEqual(out["downloadsWhileWaiting"], 0, "and no download happens before a PDF exists")
+        self.assertEqual(out["clicksWhileWaiting"]["downloads"], 0, "a click while preparing saves nothing")
+        self.assertEqual(out["bothLoading"], [True, True], "both buttons say they are preparing")
         self.assertTrue(out["spinner"], "the indicator carries the .prep-spinner that styles.css animates")
         self.assertIn("रिपोर्ट तैयार हो रही है…", out["hint"], "and the pack's preparing copy")
-        self.assertFalse(out["afterReady"], "once the PDF lands the preparing indicator is gone")
-        self.assertTrue(out["downloadAfterReady"], "and the download button takes its place")
+        self.assertIn("हिन्दी PDF तैयार हो रही है…", out["waitingLabels"]["hi"])
+        self.assertIn("Preparing English PDF…", out["waitingLabels"]["en"])
+
+        # The two sheets settle independently: Hindi ready, English still preparing.
+        self.assertTrue(out["hindiOnly"]["preparing"], "one language still building keeps the shared hint up")
+        self.assertTrue(out["hindiOnly"]["hi"], "the Hindi button is on screen the moment the Hindi file lands")
+        self.assertFalse(out["hindiOnly"]["hiDisabled"], "and it is clickable, because its file is here")
+        self.assertTrue(out["hindiOnly"]["enDisabled"], "the English button stays unclickable while English builds")
+        self.assertFalse(out["hindiOnly"]["hiLoading"], "and Hindi no longer claims to be preparing")
+        self.assertTrue(out["hindiOnly"]["enLoading"], "while English still does")
+        self.assertEqual([out["hindiOnly"]["hiIcon"], out["hindiOnly"]["enIcon"]], [True, False],
+                         "the down-arrow appears only on the sheet that actually has a file")
+        self.assertIn("हिन्दी PDF डाउनलोड करें", out["hindiOnly"]["labels"]["hi"])
+        self.assertIn("Preparing English PDF…", out["hindiOnly"]["labels"]["en"])
+
+        self.assertFalse(out["afterReady"], "once both PDFs land the preparing indicator is gone")
+        self.assertEqual(out["bothReady"], [True, True], "and both download buttons take its place")
+        self.assertIn("हिन्दी PDF डाउनलोड करें", out["readyLabels"]["hi"])
+        self.assertIn("Download English PDF", out["readyLabels"]["en"])
 
     def test_preparing_indicator_clears_when_the_pdf_build_fails(self):
         out = self.run_js(r"""
+const labels = () => ({
+  hi: api.need("download-pdf-hi-label").children.map((c) => c.textContent).join("|"),
+  en: api.need("download-pdf-en-label").children.map((c) => c.textContent).join("|")
+});
+
 api.boot(JSON.parse(process.env.PACK));
 await api.settle();
 await api.start();
@@ -963,20 +1064,51 @@ await api.settle();
 api.failPdf(true);
 api.push({ type: "call_completed", call_id: 9, share_token: "tok9" });
 await api.settle();
-const preparing = api.shown("thanks-preparing");
-const retry = api.shown("retry-pdf");
-const download = api.shown("download-pdf");
-return { preparing, retry, download };
+const failed = {
+  preparing: api.shown("thanks-preparing"),
+  hi: api.shown("download-pdf-hi"), en: api.shown("download-pdf-en"),
+  hiDisabled: api.need("download-pdf-hi").disabled, enDisabled: api.need("download-pdf-en").disabled,
+  hiFailed: api.need("download-pdf-hi").classList.contains("sheet-failed"),
+  enFailed: api.need("download-pdf-en").classList.contains("sheet-failed"),
+  hiIcon: !api.need("download-pdf-hi-icon").hidden, enIcon: !api.need("download-pdf-en-icon").hidden,
+  labels: labels()
+};
+const downloadsBefore = api.downloads().length;
+api.need("download-pdf-hi").fire("click");
+await api.settle();
+const afterRetryClick = { downloads: api.downloads().length - downloadsBefore, builds: api.pdfCalls.length };
+
+return { failed, afterRetryClick, downloadsBefore };
 """)
 
-        self.assertFalse(out["preparing"], "a failed build must not leave the spinner running forever")
-        self.assertTrue(out["retry"], "a failed build offers the rebuild button")
-        self.assertFalse(out["download"], "and never a download button with no file behind it")
+        f = out["failed"]
+        self.assertFalse(f["preparing"], "a failed build must not leave the spinner running forever")
+        self.assertEqual([f["hi"], f["en"]], [True, True],
+                         "each failed language keeps its own button, offering a rebuild")
+        self.assertEqual([f["hiDisabled"], f["enDisabled"]], [False, False], "and both are clickable again")
+        self.assertEqual([f["hiFailed"], f["enFailed"]], [True, True], "both carry the failed, not the ready, styling")
+        self.assertEqual([f["hiIcon"], f["enIcon"]], [False, False],
+                         "a failed sheet never shows the download arrow it has no file for")
+        self.assertIn("हिन्दी PDF दोबारा बनाएँ", f["labels"]["hi"], "the Hindi button says it can rebuild")
+        self.assertIn("Retry English PDF", f["labels"]["en"], "and so does the English one")
+        self.assertEqual(out["afterRetryClick"]["downloads"], 0,
+                         "clicking a failed sheet rebuilds it; it never downloads a file that does not exist")
+        self.assertEqual(out["afterRetryClick"]["builds"], 3,
+                         "the retry click sent one new build, on top of the two that failed")
 
     def test_download_button_has_an_svg_arrow_and_never_calls_navigator_share(self):
         # Windows Safari/Chrome and the iPhone home-screen browser all behaved differently through
         # navigator.share. A plain <a download> is the one thing every target does the same way.
         out = self.run_js(r"""
+const icon = (lang) => {
+  const tree = api.tree("download-pdf-" + lang);
+  const svg = tree.find((n) => n.tag === "SVG");
+  const path = tree.find((n) => n.tag === "PATH");
+  const label = tree.find((n) => n.cls.split(/\s+/).includes("btn-label"));
+  return { svg: svg || null, path: path || null, label: label ? label.text : "",
+           text: tree.map((n) => n.text).join("|") };
+};
+
 api.boot(JSON.parse(process.env.PACK));
 await api.settle();
 await api.start();
@@ -984,71 +1116,94 @@ api.push({ type: "session_started", call_id: 4, share_token: "tok", out_sample_r
 await api.settle();
 
 /* Both share APIs present and happy: the page must ignore them anyway. */
-api.setPdf('attachment; filename="SHISHU-report.pdf"', false, true);
+api.setPdf('attachment; filename="SHISHU-report-{lang}.pdf"', false, true);
 api.push({ type: "call_completed", call_id: 4, share_token: "tok" });
 await api.settle();
 
-const hasButton = api.has("download-pdf");
-const tree = api.tree("download-pdf");
-const svg = tree.find((n) => n.tag === "SVG");
-const arrow = tree.find((n) => n.tag === "PATH");
-const label = tree.find((n) => n.cls.split(/\s+/).includes("btn-label"));
+const hasButtons = [api.has("download-pdf-hi"), api.has("download-pdf-en")];
+const hi = icon("hi"), en = icon("en");
 const revokedBefore = api.revoked().length;
-api.need("download-pdf").fire("click");
+api.need("download-pdf-hi").fire("click");
+await api.settle();
+const revokedAtHiClick = api.revoked().length;
+const sharesAfterHi = api.shares();
+api.need("download-pdf-en").fire("click");
 await api.settle();
 const shareCalls = api.shares();
 const downloads = api.downloads();
 /* The blob must outlive the click: revoking it in the same tick can cancel the download on Safari. */
-const revokedAtClick = api.revoked().length;
+const revokedAtClick = revokedAtHiClick - revokedBefore;
 api.advance(1500);
-const revokedLater = api.revoked().length;
+const revokedLater = api.revoked().length - revokedBefore;
 
-return { hasButton, svg: svg || null, arrow: arrow || null, shareCalls, downloads,
-         revokedAtClick: revokedAtClick - revokedBefore, revokedLater: revokedLater - revokedBefore,
-         label: label ? label.text : "", button: tree.map((n) => n.text).join("|") };
+return { hasButtons, hi, en, sharesAfterHi, shareCalls, downloads,
+         revokedAtClick, revokedLater, shared: sharesAfterHi > 0 || shareCalls > 0 };
 """)
 
-        self.assertTrue(out["hasButton"], "the end screen ships a #download-pdf button")
-        self.assertIsNotNone(out["svg"], "the button carries an inline SVG download icon")
-        self.assertEqual(out["svg"]["aria"], "true", "the icon is decorative: aria-hidden on the SVG")
-        self.assertIsNotNone(out["arrow"], "the icon is drawn with a <path>")
-        self.assertIn("M12 3", out["arrow"]["d"] or "",
-                      "the icon is the standard down-arrow: the arrow shaft starts at the top of the viewBox")
-        self.assertIn("h12.4", out["arrow"]["d"] or "", "and ends in the tray/bar the arrow drops into")
-        self.assertIn("डाउनलोड करें", out["label"], "the pack's Hindi download copy lands on the button")
-        self.assertIn("Download", out["label"], "beside the English copy")
+        self.assertEqual(out["hasButtons"], [True, True],
+                         "the end screen ships one download button per language")
+        for lang in ("hi", "en"):
+            with self.subTest(lang=lang):
+                icon = out[lang]
+                self.assertIsNotNone(icon["svg"], "the button carries an inline SVG download icon")
+                self.assertEqual(icon["svg"]["aria"], "true", "the icon is decorative: aria-hidden on the SVG")
+                self.assertIsNotNone(icon["path"], "the icon is drawn with a <path>")
+                self.assertIn("M12 3", icon["path"]["d"] or "",
+                              "the icon is the standard down-arrow: the arrow shaft starts at the top of the viewBox")
+                self.assertIn("h12.4", icon["path"]["d"] or "",
+                              "and ends in the tray/bar the arrow drops into")
+                self.assertTrue(icon["label"], "the label rides in its own span, beside the icon")
+        self.assertIn("डाउनलोड करें", out["hi"]["label"], "the Hindi button says download in Hindi")
+        self.assertIn("Download Hindi PDF", out["hi"]["label"], "and names its own language in English")
+        self.assertIn("डाउनलोड करें", out["en"]["label"], "the English button says download in Hindi too")
+        self.assertIn("Download English PDF", out["en"]["label"], "and names its own language in English")
         self.assertEqual(out["shareCalls"], 0,
                          "navigator.share must never be touched, even when it exists and canShare says yes")
-        self.assertEqual(out["downloads"], ["SHISHU-report.pdf"], "the click is a direct <a download>")
+        self.assertFalse(out["shared"], "no share API was reached on either click")
+        self.assertEqual(out["downloads"], ["SHISHU-report-hi.pdf", "SHISHU-report-en.pdf"],
+                         "each click is a direct <a download> of that language's own file")
         self.assertEqual(out["revokedAtClick"], 0, "the blob URL outlives the click itself")
-        self.assertEqual(out["revokedLater"], 1, "and is released a moment later, so memory is not leaked")
+        self.assertEqual(out["revokedLater"], 2, "each blob is released a moment later, so memory is not leaked")
 
     def test_download_icon_survives_the_pack_copy_that_rewrites_the_button_label(self):
         # applyUi() calls replaceChildren() on every [data-ui] node, which would shred an inline <svg> that sat
         # directly inside the button. The icon lives beside a .btn-label span, so the pack only repaints the text.
         out = self.run_js(r"""
+const icon = (lang) => {
+  const tree = api.tree("download-pdf-" + lang);
+  const label = tree.find((n) => n.cls.split(/\s+/).includes("btn-label"));
+  return { svg: tree.filter((n) => n.tag === "SVG").length, label: label || null,
+           text: label ? label.text : "" };
+};
+
 api.boot(JSON.parse(process.env.PACK));
 await api.settle();
 await api.start();
 api.push({ type: "session_started", call_id: 4, share_token: "tok", out_sample_rate: 24000 });
 await api.settle();
-api.setPdf('attachment; filename="SHISHU-report.pdf"', false, true);
+api.setPdf('attachment; filename="SHISHU-report-{lang}.pdf"', false, true);
 api.push({ type: "call_completed", call_id: 4, share_token: "tok" });
 await api.settle();
-const tree = api.tree("download-pdf");
-return { svg: tree.filter((n) => n.tag === "SVG").length,
-         label: tree.find((n) => n.cls.split(/\s+/).includes("btn-label")) || null,
-         text: api.need("download-pdf").textContent };
+return { hi: icon("hi"), en: icon("en") };
 """)
 
-        self.assertEqual(out["svg"], 1, "the SVG down-arrow is still in the button after the pack copy applies")
-        self.assertIsNotNone(out["label"], "the label rides in its own .btn-label span")
-        self.assertIn("डाउनलोड करें", out["label"]["text"] if out["label"] else "",
-                      "and the pack's Hindi copy is what the span shows")
+        for lang in ("hi", "en"):
+            with self.subTest(lang=lang):
+                icon = out[lang]
+                self.assertEqual(icon["svg"], 1,
+                                 f"the {lang} SVG down-arrow is still in the button after the pack copy applies")
+                self.assertIsNotNone(icon["label"], "the label rides in its own .btn-label span")
+                self.assertIn("डाउनलोड करें", icon["label"]["text"] if icon["label"] else "",
+                              "and the pack's Hindi download copy is what the span shows")
+                self.assertIn(lang.capitalize() if lang == "en" else "PDF", icon["text"],
+                              "with each button naming its own language")
 
     def test_both_packs_ship_the_download_copy_and_no_share_instruction(self):
         # The end screen has no share step any more, so no pack may still tell her to tap 'शेयर करें'.
-        for pack_id in ("shishu-hi", "fever-opd-hi"):
+        # SHISHU's summary is now the factual, bilingual record line; the OPD pack still names its download button.
+        expected = {"shishu-hi": {"hi": ("डाउनलोड", "कॉल का रिकॉर्ड"), "en": ("record", "Hindi and English")},
+                    "fever-opd-hi": {"hi": ("डाउनलोड करें",), "en": ("Download",)}}
+        for pack_id, wanted in expected.items():
             with self.subTest(pack=pack_id):
                 ui = load_pack(pack_id).meta["ui"]["call"]
                 self.assertIn("download_btn", ui, f"{pack_id} ships the download button copy")
@@ -1056,10 +1211,23 @@ return { svg: tree.filter((n) => n.tag === "SVG").length,
                 hi, en = ui["thanks_summary"]["hi"], ui["thanks_summary"]["en"]
                 self.assertNotIn("शेयर करें", hi, f"{pack_id} stops pointing at a Share button in Hindi")
                 self.assertNotIn("Share", en, f"{pack_id} stops pointing at a Share button in English")
-                self.assertIn("डाउनलोड करें", hi, f"{pack_id} points at Download in Hindi")
-                self.assertIn("Download", en, f"{pack_id} points at Download in English")
+                for phrase in wanted["hi"]:
+                    self.assertIn(phrase, hi, f"{pack_id} Hindi summary keeps {phrase!r}")
+                for phrase in wanted["en"]:
+                    self.assertIn(phrase, en, f"{pack_id} English summary keeps {phrase!r}")
                 self.assertEqual(ui["download_btn"]["hi"], "डाउनलोड करें")
                 self.assertEqual(ui["download_btn"]["en"], "Download")
+
+    def test_shishu_thanks_summary_is_factual_and_names_both_languages(self):
+        # The old line promised a list of questions to ask the doctor. The record is now a factual call record,
+        # so the copy says what it is (the call record) and where it comes from (both languages), never advice.
+        ui = load_pack("shishu-hi").meta["ui"]["call"]
+        hi, en = ui["thanks_summary"]["hi"], ui["thanks_summary"]["en"]
+        self.assertEqual(hi, "इस कॉल का रिकॉर्ड नीचे हिन्दी और English दोनों में डाउनलोड के लिए उपलब्ध है।")
+        self.assertEqual(en, "Your call record is available below in both Hindi and English.")
+        for text in (hi, en):
+            for banned in ("सवाल", "डॉक्टर", "questions", "doctor", "अगली मुलाक़ात", "next visit"):
+                self.assertNotIn(banned, text, f"the thanks summary still reads as advice: {banned!r}")
 
 
 if __name__ == "__main__":

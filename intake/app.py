@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import base64, hashlib, hmac, json, logging, os, re, secrets, threading, time
+import asyncio, base64, hashlib, hmac, json, logging, os, re, secrets, threading, time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote
@@ -64,10 +64,14 @@ def _inside(root: Path, *parts: str) -> Path:
     if base not in path.parents: raise HTTPException(404, "Not found")
     return path
 async def _prepare_pdf(call_id: int) -> bool:
-    try: return await reports.ensure_patient_pdf(call_id) is not None and reports.ready_pdf(call_id) is not None
+    """Build Hindi first so the caller sees the thank-you screen with zero added latency, then immediately
+    start English in the background so both sheets are always generated without blocking Hindi."""
+    try: await reports.ensure_patient_pdf(call_id, lang="hi")
     except Exception:  # noqa: BLE001
-        log.exception("Failed to prepare PDF for call %s", call_id)
-        return False
+        log.exception("Failed to prepare the hi PDF for call %s", call_id)
+    en_task = asyncio.create_task(reports.ensure_patient_pdf(call_id, lang="en"))
+    en_task.add_done_callback(lambda t: log.exception("Failed to prepare the en PDF for call %s", call_id, exc_info=t.exception()) if not t.cancelled() and t.exception() else None)
+    return reports.ready_pdf(call_id, lang="hi") is not None
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     # Demo seeding is opt-in: a fresh production database must never invent finished patients on boot.
@@ -133,8 +137,13 @@ app.get("/api/bugs")(lambda: db.list_bug_reports())
 @app.api_route("/api/calls/by-token/{share_token}/patient.pdf", methods=["GET", "POST"])
 async def patient_pdf(request: Request, call_id: int | None = None, share_token: str | None = None):
     call = _call(call_id) if share_token is None else _call(token=share_token)
+    # The sheet exists in two languages; anything else is a bad request, not a silent fallback to Hindi.
+    lang = (request.query_params.get("lang") or "hi").strip().lower()
+    if lang not in reports.VALID_LANGS: raise HTTPException(400, "Unsupported language")
     if request.method == "POST" and share_token and _over("pdf", str(call["share_token"])): raise HTTPException(429, "Too many report rebuilds")
-    try: built = await reports.ensure_patient_pdf(call["id"]) if request.method == "POST" else reports.ready_pdf(call["id"])
+    try:
+        if request.method == "POST": built = await reports.ensure_patient_pdf(call["id"], lang=lang)
+        else: built = reports.ready_pdf(call["id"], lang=lang) or (await reports.ensure_patient_pdf(call["id"], lang=lang) if reports.is_pdf_inflight(call["id"], lang=lang) else None)
     except Exception as exc: raise HTTPException(500, "Could not build the report") from exc
     if built is None: raise HTTPException(409, "Report is not ready")
     return Response(built[0], media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{built[1]}"'})

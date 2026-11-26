@@ -104,7 +104,12 @@
     $("player").hidden = $("download").hidden = !audio; $("audio-note").hidden = audio;
     if (audio) { $("player").src = "/api/audio/" + call.id; $("download").href = "/api/audio/" + call.id; $("download").download = "call_" + call.id + ".wav"; }
     else { $("player").removeAttribute("src"); $("download").removeAttribute("href"); }
-    $("patient-pdf").href = url + "/patient.pdf"; $("patient-pdf").classList.toggle("disabled", call.status === "active");
+    // Both language sheets are always rendered for a finished call; an active call has neither on disk yet.
+    for (const lang of ["hi", "en"]) {
+      const link = $("patient-pdf-" + lang);
+      link.href = url + "/patient.pdf?lang=" + lang;
+      link.classList.toggle("disabled", call.status === "active");
+    }
     $("flag-banner").hidden = !flags.length; $("no-flags").hidden = Boolean(flags.length);
     set("flag-list", flags.map((item) => "<li>" + esc(txt(item)) + "</li>").join(""));
     $("doctor").innerHTML = md(call.summary_doctor);

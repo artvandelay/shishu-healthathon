@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from intake import app as intake_app  # noqa: E402
 from intake import db, live, reports  # noqa: E402
+from intake.pack import load_pack  # noqa: E402
 
 USER_PASS = os.environ["APP_PASSCODE"]
 ADMIN_PASS = os.environ["ADMIN_PASSCODE"]
@@ -205,6 +206,53 @@ class CallAdminTests(AppTestCase):
             self.assertEqual(res.headers["content-type"], "application/pdf")
             self.assertIn("attachment", res.headers["content-disposition"])
             self.assertTrue(res.content.startswith(b"%PDF"))
+
+    def test_patient_pdf_serves_hindi_and_english_and_rejects_any_other_lang(self):
+        # `?lang=` picks one of the two sheets the caller was promised; a third language is a bad request,
+        # never a silent fallback to Hindi that would hand an English reader a Hindi PDF.
+        self.sign_in(ADMIN_PASS, "Ada")
+        call = self.seeded_call()
+        url = f"/api/calls/{call['id']}/patient.pdf"
+        sheets = {}
+        for lang in ("hi", "en"):
+            with self.subTest(lang=lang):
+                res = self.client.post(url, params={"lang": lang})
+                self.assertEqual(res.status_code, 200, res.text)
+                self.assertEqual(res.headers["content-type"], "application/pdf")
+                self.assertTrue(res.content.startswith(b"%PDF"))
+                self.assertIn(f'filename="{reports.pdf_filename(load_pack("shishu-hi"), call, lang)}"',
+                              res.headers["content-disposition"])
+                self.assertTrue(res.headers["content-disposition"].endswith(f'-{lang}.pdf"'),
+                                res.headers["content-disposition"])
+                sheets[lang] = res.content
+                # A GET reads back exactly the sheet that language's build wrote.
+                again = self.client.get(url, params={"lang": lang})
+                self.assertEqual(again.status_code, 200, again.text)
+                self.assertEqual(again.content, res.content)
+                self.assertIn(f"-{lang}.pdf", again.headers["content-disposition"])
+        self.assertNotEqual(sheets["hi"], sheets["en"], "the two sheets are genuinely different documents")
+
+        # `?lang=` is normalised before it is validated, so shouting or padding the same code still works…
+        for loose in ("HI", " hi ", "EN"):
+            with self.subTest(normalised=loose):
+                res = self.client.get(url, params={"lang": loose})
+                self.assertEqual(res.status_code, 200, res.text)
+                self.assertTrue(res.headers["content-disposition"].endswith(f'-{loose.strip().lower()}.pdf"'),
+                                res.headers["content-disposition"])
+        # An absent or blank `?lang=` is the caller's Hindi sheet, which is what the call page has always fetched.
+        for default in (None, ""):
+            with self.subTest(default=default):
+                query = {} if default is None else {"lang": default}
+                res = self.client.get(url, params=query)
+                self.assertEqual(res.status_code, 200, res.text)
+                self.assertEqual(res.content, sheets["hi"], "a missing lang is the Hindi sheet, byte for byte")
+                self.assertTrue(res.headers["content-disposition"].endswith('-hi.pdf"'),
+                                res.headers["content-disposition"])
+        # …but a language the app never built is a bad request on either method, never a quiet fallback.
+        for lang in ("fr", "de", "hi-en", "english"):
+            with self.subTest(rejected=lang):
+                self.assertEqual(self.client.get(url, params={"lang": lang}).status_code, 400)
+                self.assertEqual(self.client.post(url, params={"lang": lang}).status_code, 400)
 
     def test_audio_is_404_until_a_call_records_one(self):
         self.sign_in(ADMIN_PASS, "Ada")

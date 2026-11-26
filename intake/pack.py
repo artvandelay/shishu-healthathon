@@ -32,7 +32,8 @@ def _parse_question(raw: dict[str, Any], prefixes: list[str]) -> QuestionSpec:
     bare = say.rstrip("?।!.")
     stem = str(raw.get("stem") or "").strip() or next((bare[len(p):].strip() for p in prefixes if bare.startswith(p)), bare)
     opts = {str(k): OptionSpec.model_validate(v if isinstance(v, dict) else {"label": str(v)}) for k, v in (raw.get("options") or {}).items()}
-    shaped = {"say": say, "stem": stem, "options": opts, "variants": tuple(VariantSpec.model_validate(v) for v in raw.get("variants") or ())}
+    shaped = {"say": say, "stem": stem, "stem_en": str(raw.get("stem_en") or "").strip(), "options": opts,
+              "variants": tuple(VariantSpec.model_validate(v) for v in raw.get("variants") or ())}
     return QuestionSpec.model_validate(raw | shaped | {k: tuple(raw.get(k) or ()) for k in _SEQS})
 def _validate_pack(pack: PackConfig) -> PackConfig:
     ids = [q.id for q in pack.questions]

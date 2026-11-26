@@ -57,12 +57,17 @@ class ProjectionTests(unittest.TestCase):
         proj = reports.project_summary(pack, state)
         self.assertTrue(proj.emergency)
         self.assertEqual(proj.close_reason, "emergency")
-        self.assertEqual(list(proj.patient_questions), list(pack.report_cfg["emergency_questions"]))
+        # The old "questions to ask the doctor" filler is gone: an emergency adds no advice list, routine or otherwise.
+        self.assertEqual(proj.patient_questions, ())
         self.assertEqual(len(proj.red_flags), 1)
         self.assertTrue(proj.red_flags[0].startswith("emergency: active danger sign now"))
         self.assertIn("hospital or 108", proj.red_flags[0])
         self.assertTrue(proj.red_flags[0].endswith("अभी बेहोश है"))
         self.assertIn("Active emergency", proj.doctor_markdown)
+        # The sheet still says an emergency was reported, and still prints no question list at all.
+        html = reports.render_patient_html(pack, _SAMPLE_CALL, proj)
+        self.assertIn("इस कॉल में इमरजेंसी की बात दर्ज हुई।", html)
+        self.assertNotIn("डॉक्टर से पूछने के सवाल", html)
 
 
 class Page2DetailTests(unittest.TestCase):
@@ -162,7 +167,9 @@ class ResponseStateGlossaryTests(unittest.TestCase):
                 self.assertIn("पता नहीं", html)
                 self.assertIn("खुद कहा — पता नहीं, या जाँच नहीं हुई", html)
                 self.assertIn("जवाब नहीं हो पाया", html)
-                self.assertIn("कॉल पर जवाब नहीं मिला — डॉक्टर से बात करें", html)
+                # Factual legend: "no answer recorded on call", never "talk to the doctor".
+                self.assertIn("कॉल पर जवाब नहीं मिला", html)
+                self.assertNotIn("डॉक्टर से बात करें", html)
 
     def test_unanswered_renders_apart_from_unknown(self):
         for pack_id, case in self._CASES.items():
@@ -185,7 +192,8 @@ class ResponseStateGlossaryTests(unittest.TestCase):
                 self.assertNotIn(miss_stem, proj.page2_unknown)
                 self.assertIn(miss_stem, proj.page2_unanswered)
                 self.assertEqual(self.ans_for(html, unk_stem), "पता नहीं")
-                self.assertEqual(self.ans_for(html, miss_stem), "जवाब नहीं हो पाया — डॉक्टर से बात करें")
+                # The unanswered row states the fact (no answer on the call); it no longer tells her to see a doctor.
+                self.assertEqual(self.ans_for(html, miss_stem), "जवाब नहीं हो पाया")
                 negatives = proj.doctor_markdown.split("### Pertinent Negatives", 1)[1]
                 self.assertNotIn(miss_need, negatives)
 
@@ -236,8 +244,11 @@ class PdfFilenameTests(unittest.TestCase):
 
     def test_a_call_without_a_start_or_an_id_still_gets_a_name(self):
         pack = load_pack(_FEVER)
-        self.assertEqual(reports.pdf_filename(pack, {}), "SHISHU.pdf")
-        self.assertEqual(reports.pdf_filename(pack, {"id": 12}), "SHISHU-c12.pdf")
+        # Every sheet is language-tagged: the Hindi file is not allowed to look like the English one.
+        self.assertEqual(reports.pdf_filename(pack, {}), "SHISHU-hi.pdf")
+        self.assertEqual(reports.pdf_filename(pack, {}, "en"), "SHISHU-en.pdf")
+        self.assertEqual(reports.pdf_filename(pack, {"id": 12}), "SHISHU-c12-hi.pdf")
+        self.assertEqual(reports.pdf_filename(pack, {"id": 12}, "en"), "SHISHU-c12-en.pdf")
 
 
 class PatientPdfTests(unittest.TestCase):
@@ -323,7 +334,7 @@ class SeedScenarioReportTests(unittest.TestCase):
         self.assertEqual(self.alerts(proj).strip().splitlines(), ["& NRROID Gate Alerts", "- No positive gate alerts."])
         self.assertEqual(proj.page2_unknown, ("इसके अलावा डॉक्टर के लिए कुछ और बताना है जो आपके मन में हो",))
         self.assertEqual(proj.page2_unanswered, ())
-        self.assertIn("इस कॉल में कोई बात हाँ में नहीं आई।", html)
+        self.assertIn("इस कॉल में कोई बात हाँ में दर्ज नहीं हुई।", html)
         self.assertNotIn('<ul class="yes">', html)
         self.assertFalse(proj.incomplete)
         self.assertNotIn("यह कॉल अधूरी रही", html)
@@ -375,7 +386,7 @@ class SeedScenarioReportTests(unittest.TestCase):
         negatives = proj.doctor_markdown.split("### Pertinent Negatives", 1)[1]
         self.assertIn("Clear: difficulty breathing, or chest pain or tightness.", negatives)
         self.assertIn("Clear: jaundice, or bleeding from the nose, gums, or in the urine.", negatives)
-        self.assertIn("इस कॉल में कोई बात हाँ में नहीं आई।", html)
+        self.assertIn("इस कॉल में कोई बात हाँ में दर्ज नहीं हुई।", html)
         self.assertNotIn('<ul class="yes">', html)
         self.assertFalse(proj.incomplete)
 
@@ -595,6 +606,79 @@ class ConcurrentWriteTests(_TempDataDir):
         telemetry = db.get_call(call_id)["telemetry"]
         self.assertTrue(telemetry.pop("seeded"))
         self.assertEqual(telemetry, {f"k{i}_{n}": n for i in range(self.THREADS) for n in range(self.APPENDS)})
+
+
+class BilingualFactualReportTests(unittest.TestCase):
+    """Patient summary PDFs must be strictly factual (zero advice/directives) and available in both hi and en."""
+
+    BANNED_PHRASES = (
+        "डॉक्टर से पूछें",
+        "डॉक्टर या स्वास्थ्य कार्यकर्ता",
+        "डॉक्टर से बात करें",
+        "सलाह",
+        "108",
+        "दोबारा कॉल",
+        "अस्पताल ले जाइए",
+        "अस्पताल जाइए",
+        "ask the doctor",
+        "consult a doctor",
+        "talk to the doctor",
+        "thalassemia screening",
+        "call again",
+        "never blue light",
+        "only if a child is",
+        "only if a girl is",
+        "item_1",
+    )
+
+    def test_all_reportable_questions_have_clean_stem_en(self):
+        for pack_id in (_SHISHU, _FEVER):
+            pack = load_pack(pack_id)
+            for q in pack.questions:
+                if not q.is_routable:
+                    continue
+                with self.subTest(pack=pack_id, qid=q.id):
+                    stem_en = getattr(q, "stem_en", "")
+                    self.assertTrue(stem_en.strip(), f"{pack_id}:{q.id} missing stem_en")
+                    self.assertNotIn("never blue light", stem_en.lower())
+                    self.assertNotIn("only if", stem_en.lower())
+
+    def test_hindi_and_english_html_contain_zero_advice_or_prompt_leakage(self):
+        for pack_id, scenarios in _SCENARIOS.items():
+            pack = load_pack(pack_id)
+            for sc in scenarios:
+                state = _replay(pack, sc)
+                proj = reports.project_summary(pack, state)
+                self.assertEqual(proj.patient_questions, (), f"{pack_id}:{sc} still emits patient_questions")
+                for lang in ("hi", "en"):
+                    with self.subTest(pack=pack_id, scenario=sc, lang=lang):
+                        html = reports.render_patient_html(pack, _SAMPLE_CALL, proj, lang=lang)
+                        low = html.lower()
+                        for banned in self.BANNED_PHRASES:
+                            self.assertNotIn(banned.lower(), low, f"Found banned phrase {banned!r} in {pack_id}/{sc}/{lang}")
+                        if lang == "en":
+                            self.assertIn('lang="en"', html)
+                            self.assertIn("Call Record", html)
+                            self.assertIn("Details", html)
+                        else:
+                            self.assertIn('lang="hi"', html)
+                            self.assertIn("विवरण", html)
+
+    def test_build_and_ready_pdf_support_both_hi_and_en(self):
+        pack = load_pack(_SHISHU)
+        state, _ = reports.replay_seed_scenario(pack, _scenario(pack, "red_flags"))
+        cid = db.create_call(pack_id=_SHISHU, caller_name="सुनीता")
+        db.save_cursor_state(cid, pack, state)
+        db.complete_call(cid, 300)
+        hi_bytes, hi_name = reports.build_patient_pdf_sync(cid, lang="hi")
+        en_bytes, en_name = reports.build_patient_pdf_sync(cid, lang="en")
+        self.assertTrue(hi_bytes.startswith(b"%PDF"))
+        self.assertTrue(en_bytes.startswith(b"%PDF"))
+        self.assertTrue(hi_name.endswith("-hi.pdf"), hi_name)
+        self.assertTrue(en_name.endswith("-en.pdf"), en_name)
+        self.assertNotEqual(hi_bytes, en_bytes)
+        self.assertIsNotNone(reports.ready_pdf(cid, lang="hi"))
+        self.assertIsNotNone(reports.ready_pdf(cid, lang="en"))
 
 
 if __name__ == "__main__":

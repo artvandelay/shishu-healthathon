@@ -86,7 +86,7 @@ class CallState(Strict):
         head = [f"{c.substep}:{c.followup_idx}"] if c.substep is not SubStep.MAIN else []
         return ":".join([c.qid, *head, *(f"{k}:{v}" for k, v in (("more", c.open_rounds), ("hold", c.hold_slot), ("try", c.attempts)) if v)])
 QuestionSpec = _rec(
-    "QuestionSpec", id=(str, ...), group=(str, ...), kind=(QuestionKind, ...), say=(str, ...), stem=(str, ""), need=(str, ""), tag=(str, ""),
+    "QuestionSpec", id=(str, ...), group=(str, ...), kind=(QuestionKind, ...), say=(str, ...), stem=(str, ""), stem_en=(str, ""), need=(str, ""), tag=(str, ""),
     clinician_group=(str, ""), requires_slot=(str, ""), reask=(str, ""), saves_to_profile=(str, ""), roster_scoped=(bool, False),
     skip_if=(tuple[str, ...], ()), followups=(tuple[str, ...], ()), variants=(tuple[VariantSpec, ...], ()),
     options=(dict[str, OptionSpec], Field(default_factory=dict)), quick_options=(bool, False), score_rubric=(tuple[str, ...], ()),

@@ -82,8 +82,8 @@ ui:
       hi: "धन्यवाद"
       en: "Thank you"
     thanks_summary:
-      hi: "इस रिपोर्ट (PDF) में वे सवाल हैं जो आप अगली मुलाकात में डॉक्टर या ASHA / ANM दीदी से पूछ सकती हैं। इसे फ़ोन में सेव करने के लिए नीचे 'डाउनलोड करें' दबाएँ।"
-      en: "This report (PDF) has the questions you can ask the doctor or ASHA / ANM didi at your next visit. To save it on your phone, tap Download below."
+      hi: "इस कॉल का रिकॉर्ड नीचे हिन्दी और English दोनों में डाउनलोड के लिए उपलब्ध है।"
+      en: "Your call record is available below in both Hindi and English."
     download_btn:
       hi: "डाउनलोड करें"
       en: "Download"

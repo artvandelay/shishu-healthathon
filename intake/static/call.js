@@ -16,13 +16,13 @@ const PLAYBACK_TAIL_SEC = 0.35; /* the last 350 ms of a completed turn: she may 
 
 const NAMES = (
   "status timer caption wait stage avatar-wrap thanks error thanks-sub call-btn no-btn yes-btn nudge-btn " +
-  "consent-row consent-check yes-no-prime choice-pills download-pdf retry-pdf thanks-preparing bug-dialog " +
+  "consent-row consent-check yes-no-prime choice-pills thanks-preparing bug-dialog " +
   "bug-chips bug-note bug-shot bug-save bug-confirm bug-error brand-logo avatar-logo admin-link consent-link"
 ).split(" ");
 
 const [
   statusEl, timerEl, captionEl, waitEl, stageEl, avatarEl, thanksEl, errorEl, subEl, callBtn, noBtn, yesBtn,
-  nudgeBtn, consentRow, consentCheck, primeEl, pillsEl, downloadBtn, retryBtn, preparingEl, bugDialog, bugChips,
+  nudgeBtn, consentRow, consentCheck, primeEl, pillsEl, preparingEl, bugDialog, bugChips,
   bugNote, bugShot, bugSave, bugOk, bugErr, brandLogo, avatarLogo, adminLink, consentLink
 ] = NAMES.map(el);
 
@@ -31,6 +31,25 @@ const micLevel = el("mic-level");
 let micSmooth = 0;
 
 const bi = (hi, en) => ({ hi, en });
+
+/* Two sheets, two independent lifecycles. The Hindi and English PDFs are built by separate server tasks, so
+   whichever lands first unlocks its own button and a failure on one never blocks the other. */
+const SHEET_BTNS = { hi: el("download-pdf-hi"), en: el("download-pdf-en") };
+const SHEET_LABELS = { hi: el("download-pdf-hi-label"), en: el("download-pdf-en-label") };
+const SHEET_ICONS = { hi: el("download-pdf-hi-icon"), en: el("download-pdf-en-icon") };
+const PDF_COPY = {
+  hi: {
+    preparing: bi("हिन्दी PDF तैयार हो रही है…", "Preparing Hindi PDF…"),
+    ready: bi("हिन्दी PDF डाउनलोड करें", "Download Hindi PDF"),
+    retry: bi("हिन्दी PDF दोबारा बनाएँ", "Retry Hindi PDF")
+  },
+  en: {
+    preparing: bi("English PDF तैयार हो रही है…", "Preparing English PDF…"),
+    ready: bi("English PDF डाउनलोड करें", "Download English PDF"),
+    retry: bi("English PDF दोबारा बनाएँ", "Retry English PDF")
+  }
+};
+const sheets = { hi: { state: "idle", file: null }, en: { state: "idle", file: null } };
 const T = {
   start: bi("कॉल शुरू करने के लिए नीचे दबाएँ", "Tap below to start the call"),
   listen: bi("सुन रही हूँ…", "Listening"),
@@ -75,7 +94,6 @@ let reconnectTimer = 0;
 let callId = null;
 let token = "";
 let role = "user";
-let pdf = null;
 let startedAt = 0;
 let shot = "";
 let step = "";
@@ -518,11 +536,13 @@ const handlers = {
   call_completed(m) {
     adopt(m);
     showThanks();
-    loadPdf("GET");
+    loadSheets();
   },
   report_failed() {
+    /* The server reported a build problem, but one sheet may still be on disk: GET each and let the
+       missing language fall into its own retry state. */
     showThanks();
-    show(retryBtn, true);
+    loadSheets();
   },
   error() { warn(T.failed); }
 };
@@ -533,7 +553,7 @@ function onClose(sock) {
   ws = null;
   if (phase === "preparing") {
     showThanks();
-    show(retryBtn, true);
+    loadSheets();
     return;
   }
   if (phase === "live" && !hungUp && token && reconnectAttempt < RECONNECT_DELAYS.length) {
@@ -556,7 +576,7 @@ function onClose(sock) {
   stopMic();
   runTimer(false);
   resetQuick();
-  hide([downloadBtn, retryBtn, preparingEl]);
+  resetSheets();
   paint("error");
   setCallButton(false);
   say(T.start);
@@ -682,29 +702,64 @@ function closeAudio() {
   }
 }
 
-async function loadPdf(method) {
-  hide([downloadBtn, retryBtn]);
-  show(preparingEl, true);
-  try {
-    const url = `/api/calls/by-token/${encodeURIComponent(token)}/patient.pdf`;
-    const res = await fetch(url, { method, credentials: "same-origin" });
-    const cd = (res.headers && res.headers.get && res.headers.get("content-disposition")) || "";
-    if (!res.ok) throw new Error("report");
-    const m = /filename="([^"]+)"/.exec(cd);
-    pdf = new File([await res.blob()], (m && m[1]) || "SHISHU.pdf", { type: "application/pdf" });
-    show(preparingEl, false);
-    show(downloadBtn, true);
-  } catch (e) {
-    show(preparingEl, false);
-    show(retryBtn, true);
+/* One button, one language. `preparing` -> `ready` (download) or `failed` (click to retry), never shared. */
+function paintSheet(lang) {
+  const { state } = sheets[lang];
+  const button = SHEET_BTNS[lang];
+  const label = SHEET_LABELS[lang];
+  button.hidden = state === "idle";
+  /* Only a build in flight is unclickable: `ready` downloads, `failed` retries. */
+  button.disabled = state === "preparing" || state === "idle";
+  button.classList.toggle("sheet-failed", state === "failed");
+  button.classList.toggle("sheet-loading", state === "preparing");
+  if (SHEET_ICONS[lang]) SHEET_ICONS[lang].hidden = state !== "ready";
+  label.replaceChildren();
+  setLabels(label, PDF_COPY[lang][{ preparing: "preparing", ready: "ready", failed: "retry" }[state]] || null);
+  /* The shared hint stays up while either language is still building; each button reports only its own state. */
+  show(preparingEl, Object.values(sheets).some((s) => s.state === "preparing"));
+}
+
+function resetSheets() {
+  for (const lang of ["hi", "en"]) {
+    sheets[lang] = { state: "idle", file: null };
+    paintSheet(lang);
   }
 }
 
+/* Both languages start together and each settles on its own: a slow English render must not hold Hindi back. */
+async function loadSheets() {
+  await Promise.all(["hi", "en"].map((lang) => loadSheet(lang, "GET")));
+}
+
+/* GET reads the sheet the server already built for both languages; POST is the forced rebuild behind a retry. */
+async function loadSheet(lang, method) {
+  sheets[lang] = { state: "preparing", file: null };
+  paintSheet(lang);
+  try {
+    const url = `/api/calls/by-token/${encodeURIComponent(token)}/patient.pdf?lang=${lang}`;
+    const res = await fetch(url, { method: method || "GET", credentials: "same-origin" });
+    if (!res.ok) throw new Error("report");
+    const cd = (res.headers && res.headers.get && res.headers.get("content-disposition")) || "";
+    const m = /filename="([^"]+)"/.exec(cd);
+    sheets[lang] = { state: "ready", file: new File([await res.blob()], (m && m[1]) || `SHISHU-${lang}.pdf`, { type: "application/pdf" }) };
+  } catch (e) {
+    /* One language failing leaves the other button exactly as it was. */
+    sheets[lang] = { state: "failed", file: null };
+  }
+  paintSheet(lang);
+}
+
+async function retrySheet(lang) {
+  if (phase !== "done" || sheets[lang].state === "preparing") return;
+  await loadSheet(lang, "POST");
+}
+
 /* Every platform downloads the same way: a plain anchor with `download`. No navigator.share, no canShare. */
-function savePdf() {
-  if (!pdf) return;
-  const url = URL.createObjectURL(pdf);
-  const link = Object.assign(document.createElement("a"), { href: url, download: pdf.name || "SHISHU.pdf" });
+function saveSheet(lang) {
+  const file = sheets[lang].file;
+  if (!file) return;
+  const url = URL.createObjectURL(file);
+  const link = Object.assign(document.createElement("a"), { href: url, download: file.name || `SHISHU-${lang}.pdf` });
   document.body.appendChild(link);
   link.click();
   link.remove();
@@ -716,7 +771,6 @@ function showThanks() {
   runTimer(false);
   closeAudio();
   paint("thanks");
-  hide([downloadBtn, retryBtn, preparingEl]);
   subEl.textContent = timerEl.textContent;
 }
 
@@ -728,7 +782,6 @@ function resetForNewCall() {
   reconnectAttempt = 0;
   callId = null;
   token = "";
-  pdf = null;
   primed = false;
   startedAt = 0;
   tick = 0;
@@ -743,7 +796,7 @@ function resetForNewCall() {
   stopWaiting();
   consentCheck.checked = readConsent();
   paint("idle");
-  hide([downloadBtn, retryBtn, preparingEl]);
+  resetSheets();
   warn(null);
   say(T.start);
   setCallButton(false);
@@ -903,10 +956,13 @@ on("no-btn", "click", () => answer("clear"));
 on("yes-btn", "click", () => answer("concern"));
 on("nudge-btn", "click", nudge);
 on("bug-save", "click", saveBug);
-on("download-pdf", "click", savePdf);
-on("retry-pdf", "click", () => {
-  show(retryBtn, false);
-  loadPdf("POST");
+on("download-pdf-hi", "click", () => {
+  if (sheets.hi.state === "ready") saveSheet("hi");
+  else retrySheet("hi");
+});
+on("download-pdf-en", "click", () => {
+  if (sheets.en.state === "ready") saveSheet("en");
+  else retrySheet("en");
 });
 on("new-call", "click", resetForNewCall);
 on("logout-btn", "click", async () => {

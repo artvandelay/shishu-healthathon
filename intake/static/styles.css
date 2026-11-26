@@ -651,6 +651,25 @@ img { max-width: 100%; }
 
 .dash-link { background: var(--navy-soft); color: var(--navy); }
 
+/* Each language button owns its own state: loading is dimmed and unclickable, failed is a plain retry,
+   ready is the navy download button. They never share a label, so one slow sheet cannot look like two. */
+.download-btn.sheet-loading {
+  background: var(--navy-soft);
+  color: var(--navy);
+}
+
+.download-btn.sheet-loading .en { color: var(--muted); }
+
+.download-btn.sheet-failed {
+  background: var(--saffron-soft);
+  color: var(--amber-ink);
+  box-shadow: inset 0 0 0 1.5px var(--saffron);
+}
+
+.download-btn.sheet-failed .en { color: var(--amber-ink); opacity: 0.85; }
+
+.download-btn .dl-icon[hidden] { display: none; }
+
 #error {
   margin-top: 16px;
   padding: 12px 14px;

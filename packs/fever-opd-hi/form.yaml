@@ -113,6 +113,7 @@ questions:
   group: fever
   kind: single_choice
   say: बुखार कब से है — 3 दिन से कम, 3 से 7 दिन, या 7 दिन से ज़्यादा?
+  stem_en: "How long the fever has lasted"
   stem: बुखार कब से है — 3 दिन से कम, 3 से 7 दिन, या 7 दिन से ज़्यादा
   need: how long the fever has lasted
   tag: FEVER
@@ -139,6 +140,7 @@ questions:
   group: fever
   kind: single_choice
   say: बुखार लगातार रहता है, या बीच-बीच में आता-जाता है?
+  stem_en: "Fever continuous or coming and going"
   stem: बुखार लगातार रहता है, या बीच-बीच में आता-जाता है
   need: whether the fever is continuous or comes and goes
   tag: FEVER
@@ -159,6 +161,7 @@ questions:
   group: fever
   kind: single_choice
   say: बुखार कितनी बार आता है — दिन में कुछ-कुछ घंटों में, एक दिन छोड़कर, या दो-तीन दिन में एक बार?
+  stem_en: "How often the intermittent fever returns"
   stem: बुखार कितनी बार आता है — दिन में कुछ-कुछ घंटों में, एक दिन छोड़कर, या दो-तीन दिन में एक बार
   need: how often the intermittent fever returns
   tag: FEVER
@@ -185,6 +188,7 @@ questions:
   kind: score
   say: बुखार कितना तेज़ है — हल्का गरम लगता है, साफ़ बुखार है पर उठकर काम हो जाता है, तेज़ बुखार में बिस्तर पर रहना पड़ता
     है, या इतना तेज़ कि खड़े नहीं हो पाते?
+  stem_en: "How severe the fever is"
   stem: बुखार कितना तेज़ है
   need: how severe the fever is, from mild warmth to being unable to stand or eat
   tag: FEVER
@@ -203,6 +207,7 @@ questions:
   kind: multi_choice
   say: बुखार के साथ क्या-क्या होता है — कंपकंपी और ठंड लगना, बदन दर्द, रात में पसीना, शरीर पर दाने, या कुछ और? अगर
     कुछ नहीं होता तो 'कुछ नहीं' कह दीजिए।
+  stem_en: "Symptoms along with the fever"
   stem: बुखार के साथ क्या-क्या होता है
   need: which symptoms accompany the fever
   tag: FEVER
@@ -240,6 +245,7 @@ questions:
   group: warning
   kind: gate
   say: क्या साँस लेने में तकलीफ़ है, या छाती में दर्द या जकड़न है?
+  stem_en: "Difficulty breathing, or chest pain or tightness"
   stem: साँस लेने में तकलीफ़ है, या छाती में दर्द या जकड़न है
   need: difficulty breathing, or chest pain or tightness
   tag: RED_FLAG
@@ -253,6 +259,7 @@ questions:
   group: warning
   kind: gate
   say: क्या आँखों या शरीर में पीलापन दिख रहा है, या नाक, मसूड़े या पेशाब से खून आ रहा है?
+  stem_en: "Yellow eyes or skin, or bleeding from the nose, gums, or in the urine"
   stem: आँखों या शरीर में पीलापन दिख रहा है, या नाक, मसूड़े या पेशाब से खून आ रहा है
   need: jaundice, or bleeding from the nose, gums, or in the urine
   tag: RED_FLAG
@@ -263,6 +270,7 @@ questions:
   group: warning
   kind: gate
   say: क्या बार-बार उल्टी हो रही है, या पतले दस्त आ रहे हैं?
+  stem_en: "Repeated vomiting or loose stools"
   stem: बार-बार उल्टी हो रही है, या पतले दस्त आ रहे हैं
   need: repeated vomiting or loose stools
   # Deliberately NOT `RED_FLAG`: repeated vomiting/diarrhea is a hydration risk that the
@@ -277,6 +285,7 @@ questions:
   group: history
   kind: gate
   say: क्या इस बुखार के लिए अब तक कोई दवा ली है, या डॉक्टर से दिखाया है?
+  stem_en: "Any medicine taken or doctor seen for this fever"
   stem: इस बुखार के लिए अब तक कोई दवा ली है, या डॉक्टर से दिखाया है
   need: any medicine taken or any health provider seen for this fever
   tag: HISTORY
@@ -289,6 +298,7 @@ questions:
   group: history
   kind: gate
   say: क्या पिछले दो हफ़्तों में कहीं बाहर सफ़र किया है — दूसरे गाँव, शहर, या जंगल के इलाक़े में?
+  stem_en: "Travel outside the area in the last two weeks"
   stem: पिछले दो हफ़्तों में कहीं बाहर सफ़र किया है — दूसरे गाँव, शहर, या जंगल के इलाक़े में
   need: any travel outside the area in the last two weeks
   tag: HISTORY
@@ -304,6 +314,7 @@ questions:
   group: close
   kind: open_capture
   say: क्या इसके अलावा डॉक्टर के लिए कुछ और बताना है जो आपके मन में हो?
+  stem_en: "Anything else shared at the end of the call"
   stem: इसके अलावा डॉक्टर के लिए कुछ और बताना है जो आपके मन में हो
   need: anything else the caller wants the doctor to know
   tag: CLOSE

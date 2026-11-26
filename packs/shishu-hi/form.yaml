@@ -153,6 +153,7 @@ questions:
   group: intro
   kind: single_choice
   say: क्या आपकी शादी हो गई है, होने वाली है, या अभी नहीं हुई?
+  stem_en: "Married, about to marry, or unmarried"
   stem: आपकी शादी हो गई है, होने वाली है, या अभी नहीं हुई
   need: married, about to marry, or unmarried
   saves_to_profile: marital_status
@@ -193,6 +194,7 @@ questions:
   group: birth
   kind: gate
   say: क्या बच्चे का जन्म ऑपरेशन (सिजेरियन) से हुआ था?
+  stem_en: "Birth by caesarean operation"
   stem: बच्चे का जन्म ऑपरेशन (सिजेरियन) से हुआ था
   need: birth by operation
   tag: Q03
@@ -208,6 +210,7 @@ questions:
   group: birth
   kind: gate
   say: क्या बच्चे का जन्म समय से बहुत पहले (9 महीने से काफी पहले) हुआ था?
+  stem_en: "Born much before 9 months"
   stem: बच्चे का जन्म समय से बहुत पहले (9 महीने से काफी पहले) हुआ था
   need: birth much before 9 months
   tag: Q03
@@ -223,6 +226,7 @@ questions:
   group: birth
   kind: gate
   say: क्या जन्म के बाद बच्चे को काँच के बक्से या बच्चों के ICU (NICU) में रखना पड़ा था?
+  stem_en: "Kept in a glass box or NICU after birth"
   stem: जन्म के बाद बच्चे को काँच के बक्से या बच्चों के ICU (NICU) में रखना पड़ा था
   need: NICU or glass-box stay after birth
   tag: Q03
@@ -239,6 +243,7 @@ questions:
   group: birth
   kind: gate
   say: क्या जन्म के बाद पीलिया के लिए बच्चे को नीली लाइट में रखना पड़ा था?
+  stem_en: "Newborn jaundice treated under blue light"
   stem: जन्म के बाद पीलिया के लिए बच्चे को नीली लाइट में रखना पड़ा था
   need: jaundice treated under blue light
   # Asked narrowly, volunteered broadly: a mother who says "जन्म के बाद बच्चे को पीलिया हुआ था" has reported this
@@ -257,6 +262,7 @@ questions:
   group: birth
   kind: gate
   say: क्या जन्म के बाद बच्चा अचानक बहुत बीमार पड़ा और इमरजेंसी में ले जाना पड़ा?
+  stem_en: "Suddenly very ill after birth and taken to emergency"
   stem: जन्म के बाद बच्चा अचानक बहुत बीमार पड़ा और इमरजेंसी में ले जाना पड़ा
   need: suddenly very ill after birth and taken to emergency
   tag: Q03
@@ -272,6 +278,7 @@ questions:
   group: birth
   kind: gate
   say: क्या जन्म के बाद बच्चे की नाल गिरने में 3 हफ्ते से ज़्यादा लगे थे?
+  stem_en: "Cord took more than 3 weeks to fall"
   stem: जन्म के बाद बच्चे की नाल गिरने में 3 हफ्ते से ज़्यादा लगे थे
   need: cord took more than 3 weeks to fall
   tag: Q03
@@ -285,6 +292,7 @@ questions:
   group: birth
   kind: gate
   say: क्या नाल गिरने पर बहुत ज़्यादा खून आया था?
+  stem_en: "Heavy bleeding when the cord fell"
   stem: नाल गिरने पर बहुत ज़्यादा खून आया था
   need: heavy bleeding when the cord fell
   tag: Q03
@@ -298,6 +306,7 @@ questions:
   group: birth
   kind: gate
   say: क्या कंधे के BCG टीके की जगह पर बड़ा फोड़ा, मवाद, या बगल में गाँठ हुई थी?
+  stem_en: "Big boil, pus, or armpit lump at the BCG site"
   stem: कंधे के BCG टीके की जगह पर बड़ा फोड़ा, मवाद, या बगल में गाँठ हुई थी
   need: big boil, pus, or armpit lump at the BCG site
   tag: Q03
@@ -311,6 +320,7 @@ questions:
   group: birth
   kind: gate
   say: क्या जन्म से बच्चे का होंठ या तालू कटा हुआ था?
+  stem_en: "Cleft lip or palate from birth"
   stem: जन्म से बच्चे का होंठ या तालू कटा हुआ था
   need: cleft lip or palate from birth
   tag: Q02
@@ -324,6 +334,7 @@ questions:
   group: birth
   kind: gate
   say: क्या बच्चे को सुनने में कोई दिक्कत है?
+  stem_en: "Hearing difficulty"
   stem: बच्चे को सुनने में कोई दिक्कत है
   need: hearing difficulty
   tag: Q02
@@ -337,6 +348,7 @@ questions:
   group: birth
   kind: gate
   say: क्या बच्चे को देखने में कोई दिक्कत है?
+  stem_en: "Vision difficulty"
   stem: बच्चे को देखने में कोई दिक्कत है
   need: vision difficulty
   tag: Q02
@@ -350,6 +362,7 @@ questions:
   group: body
   kind: gate
   say: क्या बच्चे को कभी झटके या दौरे (फ़िट्स) आए हैं?
+  stem_en: "Fits or seizures at any time"
   stem: बच्चे को कभी झटके या दौरे (फ़िट्स) आए हैं
   need: fits or seizures
   tag: Q02
@@ -365,6 +378,7 @@ questions:
   group: body
   kind: gate
   say: क्या बच्चे ने बैठना, चलना या बोलना बाकी बच्चों से काफी देर से सीखा?
+  stem_en: "Late sitting, walking, or talking"
   stem: बच्चे ने बैठना, चलना या बोलना बाकी बच्चों से काफी देर से सीखा
   need: late sitting, walking, or talking
   tag: Q02
@@ -378,6 +392,7 @@ questions:
   group: body
   kind: gate
   say: क्या बच्चा कोई पहले से सीखी हुई बात (जैसे चलना या बोलना) अब भूल गया है?
+  stem_en: "Lost a skill the child had already learned"
   stem: बच्चा कोई पहले से सीखी हुई बात (जैसे चलना या बोलना) अब भूल गया है
   need: lost a skill the child had already learned
   tag: Q02
@@ -393,6 +408,7 @@ questions:
   group: body
   kind: gate
   say: क्या बच्चे के होंठ या उंगलियाँ कभी नीली पड़ती हैं?
+  stem_en: "Child's lips or fingers turn blue"
   stem: बच्चे के होंठ या उंगलियाँ कभी नीली पड़ती हैं
   need: child's lips or fingers turning blue/cyanotic (never blue light / नीली लाइट phototherapy for newborn jaundice)
   tag: Q02
@@ -406,6 +422,7 @@ questions:
   group: body
   kind: gate
   say: क्या स्कैन में या जन्म पर डॉक्टर ने बच्चे के दिल में कोई खराबी बताई थी?
+  stem_en: "Heart problem seen on the scan or at birth"
   stem: स्कैन में या जन्म पर डॉक्टर ने बच्चे के दिल में कोई खराबी बताई थी
   need: heart problem on the scan or at birth
   tag: Q02
@@ -419,6 +436,7 @@ questions:
   group: body
   kind: gate
   say: क्या मामूली चोट पर खून देर तक बहता है, या आसानी से नील पड़ जाते हैं?
+  stem_en: "Bleeds for a long time after a small injury, or bruises easily"
   stem: मामूली चोट पर खून देर तक बहता है, या आसानी से नील पड़ जाते हैं
   need: prolonged bleeding after a small injury, or easy bruising
   tag: Q04
@@ -433,6 +451,7 @@ questions:
   group: body
   kind: gate
   say: क्या गिरने पर घुटने या जोड़ में सूजन आती है जो कुछ दिनों में अपने आप ठीक हो जाती है?
+  stem_en: "Knee or joint swelling after a fall that settles in a few days"
   stem: गिरने पर घुटने या जोड़ में सूजन आती है जो कुछ दिनों में अपने आप ठीक हो जाती है
   need: knee or joint swelling after a fall that settles in a few days
   tag: Q04
@@ -448,6 +467,7 @@ questions:
   group: body
   kind: gate
   say: क्या दूध का दाँत टूटने पर खून बहुत देर तक बहता रहा था?
+  stem_en: "Prolonged bleeding when a milk tooth fell out"
   stem: दूध का दाँत टूटने पर खून बहुत देर तक बहता रहा था
   need: prolonged bleeding when a milk tooth broke; only if a child is 5 or older
   tag: Q04
@@ -463,6 +483,7 @@ questions:
   group: body
   kind: gate
   say: क्या आपकी बेटी को पीरियड्स में बहुत ज़्यादा खून आता है?
+  stem_en: "Very heavy periods"
   stem: आपकी बेटी को पीरियड्स में बहुत ज़्यादा खून आता है
   need: very heavy periods; only if a girl is 11 or older
   tag: Q04
@@ -478,6 +499,7 @@ questions:
   group: body
   kind: gate
   say: क्या बच्चे को कभी खून चढ़ाना पड़ा है?
+  stem_en: "Ever needed a blood transfusion"
   stem: बच्चे को कभी खून चढ़ाना पड़ा है
   need: the child ever needed a blood transfusion
   tag: Q05
@@ -494,6 +516,7 @@ questions:
   group: body
   kind: gate
   say: क्या डॉक्टर ने कभी बच्चे का खून बहुत कम या असामान्य बताया है?
+  stem_en: "A doctor said the blood count was very low or abnormal"
   stem: डॉक्टर ने कभी बच्चे का खून बहुत कम या असामान्य बताया है
   need: a doctor said the blood count was very low or abnormal
   tag: Q05
@@ -509,6 +532,7 @@ questions:
   group: body
   kind: gate
   say: क्या बच्चे के हाथ-पैर में बार-बार इतना तेज़ दर्द होता है कि अस्पताल जाना पड़े?
+  stem_en: "Repeated severe limb pain needing hospital"
   stem: बच्चे के हाथ-पैर में बार-बार इतना तेज़ दर्द होता है कि अस्पताल जाना पड़े
   need: repeated severe limb pain that needs hospital
   tag: Q05
@@ -523,6 +547,7 @@ questions:
   group: body
   kind: gate
   say: क्या बच्चे का पेट धीरे-धीरे बड़ा हो रहा है (लिवर या तिल्ली बढ़ना)?
+  stem_en: "Tummy slowly getting bigger"
   stem: बच्चे का पेट धीरे-धीरे बड़ा हो रहा है (लिवर या तिल्ली बढ़ना)
   need: tummy slowly getting bigger
   tag: Q06
@@ -536,6 +561,7 @@ questions:
   group: body
   kind: gate
   say: क्या जन्म से बच्चे के शरीर पर कोई सूजन या गाँठें हैं?
+  stem_en: "Swellings or lumps on the body since birth"
   stem: जन्म से बच्चे के शरीर पर कोई सूजन या गाँठें हैं
   need: swellings or lumps on the body since birth
   tag: Q06
@@ -549,6 +575,7 @@ questions:
   group: body
   kind: gate
   say: क्या बच्चे का कद या वज़न बाकी बच्चों से काफी कम बढ़ रहा है?
+  stem_en: "Height or weight growing much less than other children"
   stem: बच्चे का कद या वज़न बाकी बच्चों से काफी कम बढ़ रहा है
   need: height or weight growing much less than other children
   tag: Q07
@@ -562,6 +589,7 @@ questions:
   group: body
   kind: gate
   say: क्या बच्चे के हाथ-पैर शरीर के मुकाबले बहुत छोटे हैं?
+  stem_en: "Arms or legs very short compared with the body"
   stem: बच्चे के हाथ-पैर शरीर के मुकाबले बहुत छोटे हैं
   need: arms or legs very short compared with the body
   tag: Q07
@@ -575,6 +603,7 @@ questions:
   group: body
   kind: gate
   say: क्या बच्चे की कोई उंगली या अंगूठा छोटा है, या कम है?
+  stem_en: "A small or missing finger or thumb"
   stem: बच्चे की कोई उंगली या अंगूठा छोटा है, या कम है
   need: a small or missing finger or thumb
   tag: Q07
@@ -588,6 +617,7 @@ questions:
   group: body
   kind: gate
   say: क्या मामूली गिरने पर बच्चे की हड्डी टूटी है, या दवा के बाद भी पैर टेढ़े हैं?
+  stem_en: "Bone broke after a minor fall, or legs still bowed after treatment"
   stem: मामूली गिरने पर बच्चे की हड्डी टूटी है, या दवा के बाद भी पैर टेढ़े हैं
   need: fracture after a minor fall, or bowed legs after treatment
   tag: Q08
@@ -603,6 +633,7 @@ questions:
   group: body
   kind: gate
   say: क्या बच्चा बार-बार बहुत ज़्यादा पेशाब करता और पानी पीता है, या गुर्दे/पथरी की दिक्कत है?
+  stem_en: "Passing a lot of urine and drinking a lot, or a kidney or stone problem"
   stem: बच्चा बार-बार बहुत ज़्यादा पेशाब करता और पानी पीता है, या गुर्दे/पथरी की दिक्कत है
   need: excess urine and thirst, or a kidney or stone problem
   tag: Q09
@@ -619,6 +650,7 @@ questions:
   group: body
   kind: gate
   say: क्या बच्चे के गुप्त अंग वैसे नहीं दिखते जैसे होने चाहिए?
+  stem_en: "Private parts not looking as they should"
   stem: बच्चे के गुप्त अंग वैसे नहीं दिखते जैसे होने चाहिए
   need: private parts do not look as they should
   tag: Q10
@@ -632,6 +664,7 @@ questions:
   group: body
   kind: gate
   say: क्या 10 साल से बड़े बच्चे में बढ़ती उम्र के बदलाव बहुत जल्दी या बहुत देर से आए हैं?
+  stem_en: "Puberty much earlier or later than usual"
   stem: 10 साल से बड़े बच्चे में बढ़ती उम्र के बदलाव बहुत जल्दी या बहुत देर से आए हैं
   need: puberty much earlier or later; only if a child is 10 or older
   tag: Q10
@@ -646,6 +679,7 @@ questions:
   group: illness
   kind: gate
   say: क्या खाना छूटने या हल्की बीमारी में बच्चा बहुत सुस्त पड़ जाता है या बार-बार उल्टी करता है?
+  stem_en: "Very sleepy or repeated vomiting when a meal is missed"
   stem: खाना छूटने या हल्की बीमारी में बच्चा बहुत सुस्त पड़ जाता है या बार-बार उल्टी करता है
   need: very sleepy or repeated vomiting when a meal is missed or during a mild illness
   tag: Q01
@@ -660,6 +694,7 @@ questions:
   group: illness
   kind: gate
   say: क्या बच्चे के पेशाब या पॉटी में कभी अजीब बदबू आती है?
+  stem_en: "Unusual smell in urine or stool"
   stem: बच्चे के पेशाब या पॉटी में कभी अजीब बदबू आती है
   need: urine or stool smells unusual
   tag: Q01
@@ -673,6 +708,7 @@ questions:
   group: illness
   kind: gate
   say: क्या बच्चे को बार-बार अस्पताल में भर्ती करना पड़ा है?
+  stem_en: "Admitted to hospital again and again"
   stem: बच्चे को बार-बार अस्पताल में भर्ती करना पड़ा है
   need: admitted to hospital again and again
   tag: Q03
@@ -689,6 +725,7 @@ questions:
   group: illness
   kind: gate
   say: क्या बार-बार इंफेक्शन के लिए बच्चे को नस में (IV ड्रिप से) दवा लगी है?
+  stem_en: "Repeated infections treated through a vein (IV drip)"
   stem: बार-बार इंफेक्शन के लिए बच्चे को नस में (IV ड्रिप से) दवा लगी है
   need: repeated infections that needed medicine through a vein
   tag: Q03
@@ -702,6 +739,7 @@ questions:
   group: pregnancy
   kind: routing_gate
   say: क्या आप कभी गर्भवती हुई हैं?
+  stem_en: "Ever been pregnant"
   stem: आप कभी गर्भवती हुई हैं
   need: whether the caller has ever been pregnant
   saves_to_profile: ever_pregnant
@@ -713,6 +751,7 @@ questions:
   group: pregnancy
   kind: gate
   say: क्या किसी प्रेग्नेंसी में आपको हाई बीपी, शुगर या थायरॉइड रहा था?
+  stem_en: "High BP, sugar, or thyroid during a pregnancy"
   stem: किसी प्रेग्नेंसी में आपको हाई बीपी, शुगर या थायरॉइड रहा था
   need: high BP, sugar, or thyroid in a pregnancy
   tag: Antenatal
@@ -726,6 +765,7 @@ questions:
   group: pregnancy
   kind: gate
   say: क्या किसी प्रेग्नेंसी के सोनोग्राफी स्कैन में कोई खराबी बताई गई थी?
+  stem_en: "A pregnancy scan showed a problem"
   stem: किसी प्रेग्नेंसी के सोनोग्राफी स्कैन में कोई खराबी बताई गई थी
   need: a pregnancy scan showed a problem
   tag: Antenatal
@@ -739,6 +779,7 @@ questions:
   group: pregnancy
   kind: gate
   say: क्या किसी प्रेग्नेंसी के दौरान आपको खून चढ़ाना पड़ा था?
+  stem_en: "Blood transfusion during a pregnancy"
   stem: किसी प्रेग्नेंसी के दौरान आपको खून चढ़ाना पड़ा था
   need: blood transfusion during a pregnancy
   tag: Antenatal
@@ -750,6 +791,7 @@ questions:
   group: pregnancy
   kind: gate
   say: क्या किसी डिलीवरी के समय कोई बड़ी दिक्कत आई थी?
+  stem_en: "A major problem at a delivery"
   stem: किसी डिलीवरी के समय कोई बड़ी दिक्कत आई थी
   need: major trouble at a delivery
   tag: Antenatal
@@ -763,6 +805,7 @@ questions:
   group: pregnancy
   kind: gate
   say: क्या आपकी या आपके पति की थैलेसीमिया खून जाँच में कभी माइनर या ट्रेट जैसी कोई दिक्कत बताई गई?
+  stem_en: "Thalassemia minor or trait on a blood test"
   stem: आपकी या आपके पति की थैलेसीमिया खून जाँच में कभी माइनर या ट्रेट जैसी कोई दिक्कत बताई गई
   need: thalassemia minor or trait on a blood test
   tag: Antenatal
@@ -776,6 +819,7 @@ questions:
   group: family
   kind: gate
   say: क्या आप और आपके पति शादी से पहले आपस में रिश्तेदार थे, जैसे कज़िन या एक ही खानदान से?
+  stem_en: "She and her husband are related, such as cousins"
   stem: आप और आपके पति शादी से पहले आपस में रिश्तेदार थे, जैसे कज़िन या एक ही खानदान से
   need: she and her husband are related, such as cousins
   tag: Q11
@@ -790,6 +834,7 @@ questions:
   group: family
   kind: gate
   say: क्या आपका कभी गर्भ गिरा है (मिसकैरेज), या गिरवाना पड़ा था?
+  stem_en: "A miscarriage or an ended pregnancy"
   stem: आपका कभी गर्भ गिरा है (मिसकैरेज), या गिरवाना पड़ा था
   need: miscarriage or an ended pregnancy
   tag: Q12
@@ -804,6 +849,7 @@ questions:
   group: family
   kind: gate
   say: क्या परिवार में किसी छोटे बच्चे की 1 साल से कम उम्र में मौत हुई है?
+  stem_en: "A baby in the family died before 1 year"
   stem: परिवार में किसी छोटे बच्चे की 1 साल से कम उम्र में मौत हुई है
   need: a baby in the family died before 1 year
   tag: Q12
@@ -815,6 +861,7 @@ questions:
   kind: gate
   say: क्या परिवार में किसी बच्चे या बड़े को झटके (फ़िट्स), देर से सीखने, या सीखी बात भूलने की समस्या
     है?
+  stem_en: "Fits, late learning, or lost skills in the family"
   stem: परिवार में किसी बच्चे या बड़े को झटके (फ़िट्स), देर से सीखने, या सीखी बात भूलने की समस्या है
   need: fits, late learning, or lost skills in the family
   tag: Q11
@@ -824,6 +871,7 @@ questions:
   group: family
   kind: gate
   say: क्या परिवार में किसी बच्चे या बड़े को बार-बार खून चढ़ाना पड़ता है?
+  stem_en: "Someone in the family needs blood again and again"
   stem: परिवार में किसी बच्चे या बड़े को बार-बार खून चढ़ाना पड़ता है
   need: someone in the family needs blood again and again
   tag: Q11
@@ -833,6 +881,7 @@ questions:
   group: family
   kind: gate
   say: क्या परिवार में किसी बच्चे या बड़े को चोट पर ज़्यादा खून बहने की समस्या है?
+  stem_en: "Someone in the family bleeds too much after injury"
   stem: परिवार में किसी बच्चे या बड़े को चोट पर ज़्यादा खून बहने की समस्या है
   need: someone in the family bleeds too much after injury
   tag: Q11
@@ -842,6 +891,7 @@ questions:
   group: family
   kind: gate
   say: क्या परिवार में किसी बच्चे या बड़े को बचपन या कम उम्र से अंधेपन या बहरेपन की समस्या है?
+  stem_en: "Childhood blindness or deafness in the family"
   stem: परिवार में किसी बच्चे या बड़े को बचपन या कम उम्र से अंधेपन या बहरेपन की समस्या है
   need: childhood blindness or deafness in the family
   tag: Q11
@@ -851,6 +901,7 @@ questions:
   group: family
   kind: gate
   say: क्या परिवार में किसी बच्चे या बड़े को कैंसर हुआ है?
+  stem_en: "Cancer in the family"
   stem: परिवार में किसी बच्चे या बड़े को कैंसर हुआ है
   need: cancer in the family
   tag: Q11
@@ -860,6 +911,7 @@ questions:
   group: family
   kind: gate
   say: क्या परिवार में किसी बच्चे या बड़े को दिल या गुर्दे (किडनी) की गंभीर बीमारी है?
+  stem_en: "Serious heart or kidney disease in the family"
   stem: परिवार में किसी बच्चे या बड़े को दिल या गुर्दे (किडनी) की गंभीर बीमारी है
   need: serious heart or kidney disease in the family
   tag: Q11
@@ -869,6 +921,7 @@ questions:
   group: family
   kind: gate
   say: क्या परिवार में 40-50 साल से कम उम्र के किसी व्यक्ति को बीपी, शुगर या लकवा हुआ है?
+  stem_en: "BP, sugar, or paralysis before age 40-50 in the family"
   stem: परिवार में 40-50 साल से कम उम्र के किसी व्यक्ति को बीपी, शुगर या लकवा हुआ है
   need: BP, sugar, or paralysis before age 40-50 in the family
   tag: Q11
@@ -879,6 +932,7 @@ questions:
   group: family
   kind: gate
   say: क्या आपके मायके की तरफ किसी बच्चे या बड़े को चोट पर ज़्यादा खून बहने की दिक्कत है?
+  stem_en: "Heavy bleeding in the mother's family"
   stem: आपके मायके की तरफ किसी बच्चे या बड़े को चोट पर ज़्यादा खून बहने की दिक्कत है
   need: 'on her parents'' side: heavy bleeding'
   tag: Q11
@@ -888,6 +942,7 @@ questions:
   group: family
   kind: gate
   say: क्या आपके मायके की तरफ किसी बच्चे या बड़े को बार-बार गंभीर इंफेक्शन की दिक्कत है?
+  stem_en: "Repeated serious infections in the mother's family"
   stem: आपके मायके की तरफ किसी बच्चे या बड़े को बार-बार गंभीर इंफेक्शन की दिक्कत है
   need: 'on her parents'' side: repeated serious infections'
   tag: Q11
@@ -897,6 +952,7 @@ questions:
   group: family
   kind: gate
   say: क्या आपके मायके की तरफ किसी बच्चे या बड़े को त्वचा पर सूखे खुजली वाले धब्बों की दिक्कत है?
+  stem_en: "Dry itchy skin patches in the mother's family"
   stem: आपके मायके की तरफ किसी बच्चे या बड़े को त्वचा पर सूखे खुजली वाले धब्बों की दिक्कत है
   need: 'on her parents'' side: dry itchy skin patches'
   tag: Q11
@@ -906,6 +962,7 @@ questions:
   group: family
   kind: gate
   say: क्या परिवार में किसी बच्चे या बड़े के शरीर पर सूजन या गाँठें हैं?
+  stem_en: "Swellings or lumps on someone in the family"
   stem: परिवार में किसी बच्चे या बड़े के शरीर पर सूजन या गाँठें हैं
   need: swellings or lumps on someone in the family
   tag: Q11
@@ -915,6 +972,7 @@ questions:
   group: family
   kind: gate
   say: क्या परिवार में किसी और को भी आपके बच्चे जैसी ही दिक्कत है?
+  stem_en: "Someone else in the family has the same problem as the child"
   stem: परिवार में किसी और को भी आपके बच्चे जैसी ही दिक्कत है
   need: someone else in the family has the same problem as her child
   tag: Q11
@@ -928,6 +986,7 @@ questions:
   group: close
   kind: open_capture
   say: क्या इसके अलावा डॉक्टर के लिए कुछ और बताना है जो आपके मन में हो?
+  stem_en: "Anything else shared at the end of the call"
   stem: इसके अलावा डॉक्टर के लिए कुछ और बताना है जो आपके मन में हो
   need: anything else she wants the doctor to know
   followups:
