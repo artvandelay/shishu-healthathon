@@ -98,9 +98,16 @@ def _section_target(pack: PackConfig, spec: QuestionSpec, known: set[str]) -> st
     """The clinician heading an answer belongs under: the spec's own override when declared, else its group's title."""
     if spec.clinician_group and f"### {spec.clinician_group}" in known: return f"### {spec.clinician_group}"
     return f"### {(pack.groups.get(spec.group) or {}).get('title_clinician') or spec.group}"
-def _chief_complaint(pack: PackConfig, concerns: Sequence[tuple[QuestionSpec, AnswerRecord]], emergency: bool) -> str:
+def _chief_complaint(pack: PackConfig, concerns: Sequence[tuple[QuestionSpec, AnswerRecord]], emergency: bool, note: str = "") -> str:
+    """The one line the doctor reads first. An active emergency leads it — a concern recorded earlier in the call is
+    history the doctor still needs (it stays in the red-flag block), never the complaint that ended the call."""
+    if emergency:
+        line = _clean(pack.report_cfg.get("emergency_line_en")) or "Active emergency. Caller was told to go to the nearest hospital or call 108."
+        line = line if line.endswith((".", "।")) else f"{line}."
+        said = _note(note)
+        return f"{line} Mother's words: {said}" if said else line
     if concerns: return _clean(concerns[0][0].need)
-    return _clean(pack.meta.get("chief_complaint")) or ("Active emergency reported during call." if emergency else "not reported")
+    return _clean(pack.meta.get("chief_complaint")) or "not reported"
 def _template(pack: PackConfig, name: str):
     return Environment(loader=FileSystemLoader(str(pack.root / "templates")), undefined=StrictUndefined, autoescape=False).get_template(name)
 def _pick(cfg: dict[str, Any], *keys: str, fallback: str = "") -> str:
@@ -184,7 +191,7 @@ def project_summary(pack: PackConfig, state: CallState | None, observations: Seq
             lines.append(f"{rec.state.value.title()}. {q.need}.")
             if rec.state is AnswerStatus.CLEAR: negatives.append(f"Clear: {q.need}.")
     roster = engine.roster_label_clinician(st)
-    chief = _chief_complaint(pack, concerns, emergency)
+    chief = _chief_complaint(pack, concerns, emergency, st.emergency_note)
     prof = [f"{s.replace('_', ' ').capitalize()}: {_clean(st.profile[s])}." for s in pack.profile_slots if st.profile.get(s)]
     prof += [f"{s.replace('_', ' ').capitalize()}: {_clean(v)}." for s, v in st.profile.items() if s not in pack.profile_slots]
     if pack.roster_cfg: prof.append(f"Children: {roster or 'none reported'}.")

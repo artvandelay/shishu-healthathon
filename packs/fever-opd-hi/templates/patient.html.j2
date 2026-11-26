@@ -32,7 +32,7 @@
 </header>
 <div class="notice">{{ 'यह इस कॉल में बताई गई बातों का रिकॉर्ड है, कोई बीमारी की पुष्टि (डायग्नोसिस) नहीं।' if hi else 'This is a record of what was shared on this call, not a medical diagnosis.' }}</div>
 {% if emergency %}
-<div class="band">{{ '<b>इस कॉल में इमरजेंसी की बात दर्ज हुई।</b>' if hi else '<b>An emergency was reported during this call.</b>' }}</div>
+<div class="band">{{ '<b>इस कॉल में इमरजेंसी की बात दर्ज हुई।</b><br>अभी नज़दीकी अस्पताल जाइए, या 108 पर कॉल कीजिए।' if hi else '<b>An emergency was reported during this call.</b><br>Go to the nearest hospital right now, or call 108.' }}</div>
 {% elif incomplete %}
 <div class="band">{{ '<b>यह कॉल अधूरी रही।</b> नीचे वही है जो इस कॉल में पूछा जा सका।' if hi else '<b>This call ended before all questions were asked.</b> Below is what was recorded.' }}</div>
 {% endif %}

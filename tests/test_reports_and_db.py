@@ -20,7 +20,9 @@ from unittest import mock
 
 import tests  # noqa: F401 — ensure isolated TEST_DATA_DIR under `-s tests`
 from intake import db, engine, reports
-from intake.models import AnswerRecord, AnswerStatus, CallState, Phase, ProfilePatch, TurnCommand
+from intake.models import (
+    AnswerRecord, AnswerStatus, CallState, CursorStep, NoteText, Phase, ProfilePatch, RosterItem, TurnCommand,
+)
 from intake.pack import load_pack
 
 _SHISHU = "shishu-hi"
@@ -68,6 +70,85 @@ class ProjectionTests(unittest.TestCase):
         html = reports.render_patient_html(pack, _SAMPLE_CALL, proj)
         self.assertIn("इस कॉल में इमरजेंसी की बात दर्ज हुई।", html)
         self.assertNotIn("डॉक्टर से पूछने के सवाल", html)
+
+
+class EmergencyReportTests(unittest.TestCase):
+    """The two surfaces the Aanchal demo grades an emergency on: the mother's band and the clinician's first line.
+
+    Both regressed on a real demo call (`scripts/run_demo_aanchal.py`): the emergency PDF printed only
+    "इस कॉल में इमरजेंसी की बात दर्ज हुई।" with no 108 or nearest-hospital line, and the clinician note opened
+    "Chief complaint: NICU or glass-box stay after birth." — the first recorded concern, not the emergency that
+    ended the call.
+    """
+
+    CALL = {"id": 7, "started_at": reports.SAMPLE_STARTED_AT, "duration_sec": 420}
+    EMERGENCY = "नहीं, लेकिन मेरी छोटी बच्ची अभी बहुत तेज़ साँस ले रही है"
+    NICU = "NICU or glass-box stay after birth"
+
+    def emergency_state(self, pack, concern_qid: str, concern_note: str) -> CallState:
+        """A concern already on record, then an active emergency on the next turn — exactly the demo's order."""
+        st = CallState(
+            profile={("caller_name" if pack.roster_cfg else "patient_name"): "आँचल", "marital_status": "married"},
+            roster=[RosterItem(id="item_1", age_years=8, age_label="8 साल", tag="male"),
+                    RosterItem(id="item_2", age_years=5, age_label="5 साल", tag="female")] if pack.roster_cfg else [],
+            roster_stated=bool(pack.roster_cfg),
+            answers={concern_qid: AnswerRecord(state=AnswerStatus.CONCERN, note=NoteText(verbatim=concern_note))},
+            cursor=CursorStep(qid="close_anything_else"),
+        )
+        return engine.reduce_turn(pack, st, TurnCommand(emergency=True, utterance=self.EMERGENCY))
+
+    @staticmethod
+    def band(html: str) -> str:
+        """Only the emergency banner, so a `108` in the page-two rows cannot make this pass."""
+        match = re.search(r'<div class="band">(.*?)</div>', html, re.S)
+        return match.group(1) if match else ""
+
+    def test_emergency_band_carries_108_and_the_nearest_hospital_in_both_languages(self):
+        for pack_id, concern_qid, concern_note in ((_SHISHU, "birth_nicu", "हाँ भर्ती हुई थी मेरी छोटी बेटी"),
+                                                   (_FEVER, "fever_severity", "बहुत तेज़ बुखार है")):
+            pack = load_pack(pack_id)
+            proj = reports.project_summary(pack, self.emergency_state(pack, concern_qid, concern_note))
+            self.assertTrue(proj.emergency, pack_id)
+            for lang, hospital in (("hi", "अस्पताल"), ("en", "hospital")):
+                with self.subTest(pack=pack_id, lang=lang):
+                    band = self.band(reports.render_patient_html(pack, self.CALL, proj, lang=lang))
+                    self.assertTrue(band, f"{pack_id}/{lang} rendered no emergency band")
+                    self.assertIn("108", band)
+                    self.assertIn(hospital, band.lower() if lang == "en" else band)
+                    # The bare statement stays: the band still says an emergency was reported on this call.
+                    self.assertIn("emergency was reported" if lang == "en" else "इमरजेंसी", band)
+
+    def test_the_written_pdf_itself_carries_the_108_line(self):
+        """`scripts/run_demo_aanchal.py` grades the downloaded PDF's text, not this test's HTML."""
+        from pypdf import PdfReader
+        pack = load_pack(_SHISHU)
+        proj = reports.project_summary(pack, self.emergency_state(pack, "birth_nicu", "हाँ भर्ती हुई थी मेरी छोटी बेटी"))
+        for lang in ("hi", "en"):
+            with self.subTest(lang=lang):
+                blob = reports.render_patient_pdf(pack, self.CALL, proj, lang=lang)
+                self.assertTrue(blob.startswith(b"%PDF"))
+                text = " ".join(" ".join(page.extract_text() or "" for page in PdfReader(io.BytesIO(blob)).pages).split())
+                self.assertIn("108", text)
+                # The band is page one, before the "yes" list: a `108` anywhere lower would not be the banner.
+                self.assertLess(text.index("108"), text.index('Reported "Yes"' if lang == "en" else "इस कॉल में जो"))
+
+    def test_chief_complaint_leads_with_the_active_emergency_not_the_first_concern(self):
+        for pack_id, concern_qid, concern_note, concern_need in (
+            (_SHISHU, "birth_nicu", "हाँ भर्ती हुई थी मेरी छोटी बेटी", self.NICU),
+            (_FEVER, "fever_severity", "बहुत तेज़ बुखार है, बिस्तर पर रहना पड़ता है",
+             "how severe the fever is, from mild warmth to being unable to stand or eat"),
+        ):
+            pack = load_pack(pack_id)
+            md = reports.project_summary(pack, self.emergency_state(pack, concern_qid, concern_note)).doctor_markdown
+            chief = next((line for line in md.splitlines() if line.startswith("- Chief complaint:")), "")
+            with self.subTest(pack=pack_id):
+                self.assertTrue(chief, "the clinician note has no chief complaint line")
+                self.assertTrue(chief.startswith("- Chief complaint: Active emergency"), chief)
+                self.assertIn("108", chief)
+                self.assertIn(self.EMERGENCY, chief, "her own words must lead the chief complaint")
+                # The earlier concern is still on record for the doctor, but never as the chief complaint.
+                self.assertNotIn(concern_need, chief)
+                self.assertIn(concern_need, md.split("### Positive Red Flags", 1)[1])
 
 
 class Page2DetailTests(unittest.TestCase):
@@ -616,6 +697,9 @@ class BilingualFactualReportTests(unittest.TestCase):
         "डॉक्टर या स्वास्थ्य कार्यकर्ता",
         "डॉक्टर से बात करें",
         "सलाह",
+        # No advice on a routine sheet. The emergency band is the one deliberate exception: it names 108 and the
+        # nearest hospital, because a call that closed on a danger sign must say so. Every scenario here is a
+        # non-emergency close, so an emergency seed would have to assert its band separately (see EmergencyReportTests).
         "108",
         "दोबारा कॉल",
         "अस्पताल ले जाइए",
