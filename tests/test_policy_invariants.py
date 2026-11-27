@@ -17,6 +17,9 @@ from intake.turns import (
 PACKS = {pid: load_pack(pid) for pid in ("shishu-hi", "fever-opd-hi")}
 _BASE = {pid: engine.new_state(pack) for pid, pack in PACKS.items()}
 UTT, _RESOLVED = "INVTOKEN9f3a-कच्चा", (AnswerStatus.CONCERN, AnswerStatus.CLEAR, AnswerStatus.ANSWERED)
+def _norm(text: str) -> str:
+    """One spoken/report line compared as the reader sees it: whitespace collapsed, no trailing danda."""
+    return " ".join(str(text or "").split()).rstrip("।. ")
 _ACCEPT = (Disposition.ACCEPT_FORM, Disposition.ACCEPT_UNLISTED)
 _CHOICE = (QuestionKind.SINGLE_CHOICE, QuestionKind.MULTI_CHOICE, QuestionKind.SCORE)
 _YES = (QuestionKind.GATE, QuestionKind.ROUTING_GATE, QuestionKind.BRIDGE, QuestionKind.OPEN_CAPTURE)
@@ -141,7 +144,10 @@ class PolicyInvariantTests(unittest.TestCase):
             cmd = out.command
             if cmd.redacted or cmd.jump_topic or cmd.stated:
                 proj = reports.project_summary(pack, nxt)
-                if UTT in proj.patient_summary_text or UTT in str(proj.page2_groups):
+                # The one report intentionally quotes her whole sentence as the clinician record, so the redaction
+                # invariant now lives on the patient-facing structured answers, which are built from
+                # `patient_safe_text` and must never carry a multi-topic or redacted utterance verbatim.
+                if UTT in str(proj.page2_groups):
                     bad.append(f"law3 utterance leaked {tag} redacted={cmd.redacted} jump={cmd.jump_topic} stated={list(cmd.stated)}")
             if nxt.last_answered_qid not in (st.last_answered_qid, qid):
                 bad.append(f"law4 cursor {tag} last {st.last_answered_qid!r} -> {nxt.last_answered_qid!r}")
@@ -212,17 +218,31 @@ class PolicyInvariantTests(unittest.TestCase):
             cfg, proj = pack.report_cfg, reports.project_summary(pack, nxt)
             if not (proj.emergency and proj.close_reason == str(CloseReason.EMERGENCY) and proj.incomplete):
                 bad.append(f"emg11 report not an emergency {tag} emergency={proj.emergency} reason={proj.close_reason!r} incomplete={proj.incomplete}")
-            fillers, routine = set(cfg.get("emergency_questions") or ()), set(cfg.get("routine_questions") or ())
-            # A closed call adds no question of its own: page one may only carry copy for concerns already on record
-            # (the bait claim must not become one) plus the emergency fillers, never a routine question.
-            from_record = [q for q in proj.patient_questions if q not in fillers]
+            # A closed call invents no finding: every line under `### Reported "Yes"` must belong to a question the
+            # call actually recorded as CONCERN — the bait claim on the cursor question must not become one, and
+            # no routine question may be printed as something she reported.
             on_record = [qid for qid, rec in nxt.answers.items() if rec.state is AnswerStatus.CONCERN]
-            if routine & set(proj.patient_questions) or len(from_record) > len(on_record):
-                bad.append(f"emg12 questions invented after emergency {tag} from_record={len(from_record)} concerns={len(on_record)} questions={list(proj.patient_questions)}")
-            if not any(str(cfg.get("emergency_flag_en") or "") in f for f in proj.red_flags) or "Active emergency" not in proj.doctor_markdown:
-                bad.append(f"emg13 emergency band missing {tag} flags={list(proj.red_flags)}")
-            if _EMERGENCY_UTT.rstrip("।. ") not in proj.doctor_markdown:
-                bad.append(f"emg14 mother's words missing from the clinician note {tag}")
+            stems = [_norm(pack.by_id[q].stem or pack.by_id[q].say) for q in on_record if q in pack.by_id]
+            bait = _norm(spec.stem or spec.say)
+            yes_block = proj.report_markdown.split('### Reported "Yes"', 1)[-1].split("\n### ", 1)[0]
+            reported_yes = [line for line in yes_block.splitlines() if line.startswith("- ")]
+            # The empty-call placeholder is not a finding; anything else must trace back to a recorded CONCERN.
+            placeholder = "- None reported on this call."
+            reported_yes = [line for line in reported_yes if line.strip() != placeholder]
+            if not on_record and reported_yes:
+                bad.append(f"emg12 reported findings with nothing on record {tag} reported={reported_yes}")
+            invented = [line for line in reported_yes if not any(s and s in _norm(line) for s in stems)]
+            if invented or (bait and spec.id not in on_record and any(bait in _norm(line) for line in reported_yes)):
+                bad.append(f"emg12 findings invented after emergency {tag} concerns={on_record} reported={reported_yes}")
+            # The pack's own emergency line heads the report; both dead diagnostic headings are gone for good.
+            band = str(cfg.get("emergency_line_en") or "").strip()
+            if not band or band not in proj.report_markdown:
+                bad.append(f"emg13 emergency band missing {tag} band={band!r}")
+            for gone in ("Red Flags", "Gate Alerts", "Chief complaint"):
+                if gone in proj.report_markdown:
+                    bad.append(f"emg13 dead {gone!r} heading survived {tag}")
+            if _EMERGENCY_UTT.rstrip("।. ") not in proj.report_markdown:
+                bad.append(f"emg14 mother's words missing from the report {tag}")
         self.assertEqual(packs, {"shishu-hi", "fever-opd-hi"}, f"emergency pattern only covered {sorted(packs)}")
         self.assertEqual(seen, len(list(_anchors())), "every anchor must be exercised under an emergency")
         self.assertFalse(bad, f"{len(bad)} emergency violations / {seen} cases\n" + "\n".join(bad[:12]))

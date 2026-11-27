@@ -113,15 +113,23 @@ heads:
   residual_clinical:
     type: noul
     instructions: >-
-      Does caller_utterance mention a concrete medical symptom, side effect, reaction, illness, injury, or treatment
-      that is not captured by a bare yes/no or a listed option of active_question?
+      Does caller_utterance mention a concrete medical or clinical fact — a symptom, side effect, reaction,
+      illness, injury, treatment, hospital stay, pregnancy or birth event, or a loss or death — that is NOT
+      already captured by answering active_question? An answer to active_question captures only the exact
+      condition active_question asked about. When active_question is a demographic or intro question (a
+      name, an age, marital status, child count or ages, or readiness to start), a concrete clinical fact
+      shared in that turn is not captured by the demographic question and therefore counts as true.
     criteria:
       true_description: >-
-        Mentions a concrete medical symptom, side effect, reaction, illness, injury, or treatment not captured by a
-        bare yes/no or listed option of active_question.
+        States a concrete medical or clinical fact (a symptom, side effect, reaction, illness, injury,
+        treatment, hospital stay, pregnancy or birth event, or a loss or death) that answering active_question
+        does not already capture — including any such fact volunteered while answering a demographic or intro
+        question about a name, an age, marital status, child count or ages, or readiness to start.
       false_description: >-
-        Only a bare yes/no or listed option answering active_question, demographic profile facts, a clarification
-        question, or non-medical household or background talk.
+        Only confirms, denies, or elaborates on the exact clinical condition active_question already asked
+        (such as confirming a hospital stay when asked about that hospital stay, or confirming seizures when
+        asked about seizures), or gives only a bare yes/no, a bare listed option, purely demographic
+        information with no clinical fact, a clarification question, or non-medical talk.
 
   asks_clarify:
     type: noul

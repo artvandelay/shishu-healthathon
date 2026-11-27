@@ -1,5 +1,6 @@
 {# Context from `intake/reports.py`: lang, css, doc_title, pdf_subject, logo_uri, call_id, who, meta,
-   emergency, incomplete, yes_items, page2_groups, page2_unknown, page2_unanswered, page2_unasked.
+   emergency, incomplete, yes_items, observations, observations_heading,
+   page2_groups, page2_unknown, page2_unanswered, page2_unasked.
    Strictly factual: this sheet repeats what was said on the call. No advice, no directives, no questions.
    Page one is the "yes" list; page two is the full detail list with its response key.
    Identical context contract to every pack — `intake/reports.py` renders this with no pack-specific code. #}
@@ -47,6 +48,10 @@
 <section class="page2">
   <h1>{{ 'विवरण' if hi else 'Details' }}</h1>
   <p class="meta">{{ who|e }}</p>
+{% if observations %}
+  <div class="group">{{ observations_heading|e }}</div>
+  <ul class="notes">{% for line in observations %}<li>{{ line|e }}</li>{% endfor %}</ul>
+{% endif %}
   <div class="group">{{ 'जवाब का मतलब' if hi else 'Response key' }}</div>
   <div class="no-row"><span>{{ 'हाँ' if hi else 'Yes' }}</span><span class="ans">{{ 'दर्ज की गई बात' if hi else 'Reported on call' }}</span></div>
   <div class="no-row"><span>{{ 'नहीं' if hi else 'No' }}</span><span class="ans">{{ 'साफ़ इनकार' if hi else 'Confirmed no' }}</span></div>

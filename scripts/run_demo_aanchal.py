@@ -323,18 +323,10 @@ def _grade(pack, call_id: int, persona: DemoAanchalPersona, source: Any) -> dict
     # 6. Reports, PDF, WAV
     proj = reports.project_summary(pack, state, source.observations(call_id))
     cl.check("proj.emergency is True", bool(proj.emergency), "proj.emergency is False")
-    cl.check("doctor_markdown has Active emergency", "Active emergency" in proj.doctor_markdown, "missing Active emergency")
-    diverged = [
-        col for col, field in (("summary_doctor", "doctor_markdown"), ("summary_patient", "patient_summary_text"))
-        if str(call.get(col) or "").strip() != str(getattr(proj, field) or "").strip()
-    ]
-    if (call.get("red_flags") or []) != list(proj.red_flags):
-        diverged.append("red_flags")
-    if source.kind == "remote" and "summary_doctor" in diverged:
-        # A deployed server writes both summary columns at finalize; a mismatch here means the box rendered a
-        # different projection than this script would. Keep it visible but name the caveat.
-        diverged[diverged.index("summary_doctor")] = "summary_doctor (remote row vs local projection)"
-    cl.check("project_summary parity", not diverged, f"diverges: {diverged}")
+    cl.check("the report has Active emergency", "Active emergency" in proj.report_markdown, "missing Active emergency")
+    stored = str(call.get("summary_report") or "").strip()
+    cl.check("project_summary parity", stored == proj.report_markdown.strip(),
+             f"summary_report diverges ({len(stored)} vs {len(proj.report_markdown.strip())} chars)")
 
     pages, pdf_text = _pdf_from_bytes(source.pdf(call_id))
     cl.check("emergency PDF exists with 108 and अधूरी", pages >= 1 and "108" in pdf_text and "अधूरी" in pdf_text, f"pages={pages}, has_108={'108' in pdf_text}, has_incomplete={'अधूरी' in pdf_text}")

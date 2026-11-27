@@ -106,13 +106,11 @@ def _status(call: dict, cl: Checklist, *wanted: tuple[str, AnswerStatus]) -> Non
 
 
 def _parity(call: dict, pack, cl: Checklist) -> reports.ProjectedReport:
-    """One projection must feed the stored note, the patient summary, and the flags."""
+    """One projection must feed the stored report, and the PDF is rendered from that same projection."""
     proj = reports.project_summary(pack, db.call_state_from_row(call), db.list_retained_observations(int(call.get("id") or 0)))
-    diverged = [c for c, field in (("summary_doctor", "doctor_markdown"), ("summary_patient", "patient_summary_text"))
-                if str(call.get(c) or "").strip() != str(getattr(proj, field) or "").strip()]
-    if (call.get("red_flags") or []) != list(proj.red_flags):
-        diverged.append("red_flags")
-    cl.check("project_summary parity", not diverged, f"diverges: {diverged}")
+    stored, expected = str(call.get("summary_report") or "").strip(), proj.report_markdown.strip()
+    cl.check("project_summary parity", stored == expected,
+             f"summary_report diverges ({len(stored)} vs {len(expected)} chars)")
     return proj
 
 
@@ -129,8 +127,7 @@ def _common(call: dict, cl: Checklist) -> tuple[int, str]:
              f"auto_close={[e.get('detail') for e in events if e.get('type') == 'auto_close']}")
     leaks = [leak for leak in _LEAKS if leak.lower() in spoken]
     cl.check("zero spoken leaks", not leaks, f"leaks={leaks}")
-    cl.check("both summaries written", all(str(call.get(f) or "").strip() for f in ("summary_doctor", "summary_patient")), "")
-    cl.check("red flags reported", bool(call.get("red_flags")), "no red flags projected")
+    cl.check("the report is written", bool(str(call.get("summary_report") or "").strip()), "summary_report is empty")
     wav = Path(db.DATA_DIR) / "audio" / str(call.get("audio_path") or "")
     if not wav.is_file():
         cl.check("stereo 16 kHz WAV", False, "missing wav")
@@ -321,22 +318,20 @@ def _check_c1(pack, call: dict, persona: Persona, cl: Checklist) -> dict[str, An
 
     proj = _parity(call, pack, cl)
     pages, text = _common(call, cl)
-    doctor, patient = str(call.get("summary_doctor") or ""), str(call.get("summary_patient") or "")
+    report = str(call.get("summary_report") or "")
     cl.check("patient_name on the call is सुमन", persona.name_ok(call), f"patient_name={call.get('patient_name')!r}")
-    cl.check("doctor summary keeps हीमोफीलिया", "हीमोफीलिया" in doctor, "doctor summary lost the reported diagnosis")
-    cl.check("doctor summary keeps the maternal note", "मामा" in doctor, "doctor summary lost the maternal relative")
-    cl.check("patient summary redacts हीमोफीलिया", bool(patient.strip()) and "हीमोफीलिया" not in patient,
-             "patient summary is empty or leaked हीमोफीलिया")
+    cl.check("the report keeps हीमोफीलिया", "हीमोफीलिया" in report, "the report lost the reported diagnosis")
+    cl.check("the report keeps the maternal note", "मामा" in report, "the report lost the maternal relative")
     leaked = [frag for frag in _DISEASE if frag in text]
     cl.check("PDF redacts हीमोफीलिया", bool(text.strip()) and not leaked, f"PDF leaked fragments {leaked}")
-    cl.check("glossary in the clinician note", "### Response State Glossary" in proj.doctor_markdown, "no glossary")
+    cl.check("glossary in the report", "### Response state glossary" in proj.report_markdown, "no glossary")
     rows = [f"{'/'.join(row)}" for row in _GLOSSARY_PDF if not any(frag in text for frag in row)]
     cl.check("glossary in the PDF", bool(text.strip()) and not rows, f"missing glossary rows {rows}")
     cl.check("PDF is at least two pages", pages >= 2, f"pages={pages}")
     retained = db.list_retained_observations(int(call.get("id") or 0))
     cl.check("clinical aside retained", bool(retained) and any("खाँसी" in str(o.transcript) for o in retained),
              f"retained={[o.transcript[:60] for o in retained]}")
-    cl.check("retained aside lands in the clinician note", "खाँसी" in doctor, "aside missing from the doctor note")
+    cl.check("retained aside lands in the report", "खाँसी" in report, "aside missing from the report")
     return {"emergency_step": "", "roster": [{"id": c.id, "age": c.age_years, "tag": c.tag} for c in state.roster],
             "retained_observations": [str(o.transcript) for o in retained]}
 
@@ -367,7 +362,7 @@ def _check_c2(pack, call: dict, persona: Persona, cl: Checklist) -> dict[str, An
 
     cl.check("phase CLOSING", state.phase is Phase.CLOSING, f"phase={state.phase}")
     proj = _parity(call, pack, cl)
-    cl.check("projection is an emergency note", proj.emergency is True and "Active emergency" in proj.doctor_markdown,
+    cl.check("projection is an emergency note", proj.emergency is True and "Active emergency" in proj.report_markdown,
              f"emergency={proj.emergency}")
     pages, text = _common(call, cl)
     # The `patient_name` column is "first filled profile slot", so for this pack it holds the AGE ("32") once the
@@ -438,7 +433,8 @@ def _check(pack, call_id: int, persona: Persona, elapsed: float) -> dict[str, An
               "close_reason": str(state.close_reason or ""), "phase": str(state.phase),
               "duration_sec": call.get("duration_sec"), "wall_sec": round(elapsed, 1),
               "patient_name": call.get("patient_name"), "share_token": call.get("share_token"),
-              "red_flags": list(call.get("red_flags") or []), "telemetry": call.get("telemetry") or {},
+              "summary_report_chars": len(str(call.get("summary_report") or "")),
+              "telemetry": call.get("telemetry") or {},
               "asks": persona.counts, "sends": persona.sent, "default_replies": persona.defaults,
               "frames": persona.frames, "answers": _answers_summary(call), "events": _events_summary(call)}
     result.update(detail)

@@ -107,6 +107,15 @@ def _norm(text: str) -> str:
     return " ".join(str(text or "").split())
 
 
+def _notes_block(markdown: str, heading: str = "") -> str | None:
+    """The body of the retained-aside block, or None. `reports._markdown` heads it with the pack's own label."""
+    for head in (heading, "### Additional notes shared:", "### अन्य बातें जो साझा की गईं:"):
+        if head and head in markdown:
+            body = markdown.split(head, 1)[1]
+            return body.split("\n### ", 1)[0]
+    return None
+
+
 class Persona:
     """One scripted caller: a reply per typed cursor step, a stuck-step guard, and a full send log.
 
@@ -303,14 +312,11 @@ def _na_qids(ev: Ev) -> list[str]:
 
 
 def _parity(ev: Ev, cl: Checklist) -> Any:
-    """One projection must feed the stored note, the patient summary, and the flags."""
+    """One projection must feed the stored report — the same Markdown the dashboard reads and Copy hands out."""
     call = ev.call
     proj = reports.project_summary(ev.pack, ev.state, ev.retained_ev)
-    diverged = [c for c, f in (("summary_doctor", "doctor_markdown"), ("summary_patient", "patient_summary_text"))
-                if str(call.get(c) or "").strip() != str(getattr(proj, f) or "").strip()]
-    if list(call.get("red_flags") or []) != list(proj.red_flags):
-        diverged.append("red_flags")
-    cl.check("project_summary parity", not diverged, f"diverges: {diverged}")
+    stored, expected = str(call.get("summary_report") or "").strip(), str(proj.report_markdown or "").strip()
+    cl.check("project_summary parity", stored == expected, f"summary_report diverges ({len(stored)} vs {len(expected)} chars)")
     ev.proj = proj
     return proj
 
@@ -330,9 +336,10 @@ def _common(ev: Ev, cl: Checklist) -> None:
              f"auto_close={[e.get('detail') for e in events if e.get('type') == 'auto_close']}")
     leaks = [leak for leak in _LEAKS if leak.lower() in spoken]
     cl.check("zero spoken leaks", not leaks, f"leaks={leaks}")
-    cl.check("both summaries written",
-             all(str(ev.call.get(f) or "").strip() for f in ("summary_doctor", "summary_patient")), "")
-    cl.check("red flags reported", bool(ev.call.get("red_flags")), "no red flags projected")
+    # One unified report per call, and the only clinical channel is that report: a diagnosis named out loud is
+    # quoted there verbatim (it is the clinician's record), so the redaction checks live on the spoken text and the
+    # patient PDF, never on the report.
+    cl.check("the report is written", bool(str(ev.call.get("summary_report") or "").strip()), "summary_report is empty")
     cl.check("stereo 16 kHz WAV", ev.wav_shape == (2, 16000), f"wav is {ev.wav_shape}")
     cl.check("patient PDF exists", bool(ev.pages), "missing pdf")
     rows = [f"{'/'.join(row)}" for row in _GLOSSARY_PDF if not any(frag in ev.pdf_text for frag in row)]
@@ -419,18 +426,17 @@ def _check_a1(ev: Ev, cl: Checklist) -> dict[str, Any]:
     close_state = _answered(ev, "close_anything_else")[0]
     cl.check("a1f chatter never became a CONCERN on close_anything_else", close_state in (CL, UA, None), f"got {close_state}")
     yes_items = list((ev.proj.yes_items if ev.proj else ()) or ())
-    red_flags = [str(x) for x in (ev.call.get("red_flags") or [])]
-    cl.check("a1f गर्मी never reached yes_items or red_flags",
-             not any("गर्मी" in str(x) for x in [*yes_items, *red_flags]), f"yes={yes_items} flags={red_flags}")
+    reported_yes = (ev.proj.report_markdown.split('### Reported "Yes"', 1)[-1].split("\n### ", 1)[0] if ev.proj else "")
+    cl.check("a1f गर्मी never became a reported concern",
+             not any("गर्मी" in str(x) for x in yes_items) and "गर्मी" not in reported_yes,
+             f"yes={yes_items} reported={reported_yes!r}")
     cl.check("a1f गर्मी never reached the patient PDF", "गर्मी" not in ev.pdf_text, "patient PDF leaked the chatter")
     _status(ev, cl, ("birth_bcg", U))
     states = {r.state for r in st.answers.values()}
     cl.check("all five answer states coexist", _ALL_STATES <= states, f"missing={sorted(_ALL_STATES - states)}")
-    # The maternal diagnosis: spoken name kept for the doctor, redacted for the mother.
-    doctor, patient = str(ev.call.get("summary_doctor") or ""), str(ev.call.get("summary_patient") or "")
-    cl.check("doctor summary keeps हीमोफीलिया", "हीमोफीलिया" in doctor, "doctor summary lost the reported diagnosis")
-    cl.check("patient summary redacts हीमोफीलिया", bool(patient.strip()) and "हीमोफीलिया" not in patient,
-             "patient summary is empty or leaked हीमोफीलिया")
+    # The maternal diagnosis: kept verbatim in the one report, redacted on the mother's own PDF.
+    report = str(ev.call.get("summary_report") or "")
+    cl.check("the report keeps हीमोफीलिया", "हीमोफीलिया" in report, "the report lost the reported diagnosis")
     leaked = [frag for frag in _DISEASE if frag in ev.pdf_text]
     cl.check("PDF redacts हीमोफीलिया", bool(ev.pdf_text.strip()) and not leaked, f"PDF leaked fragments {leaked}")
     return {"call_ids": p.call_ids, "asks": p.counts, "roster": [(c.id, c.age_years, c.tag) for c in st.roster],
@@ -679,7 +685,9 @@ def _a2_script() -> dict[str, tuple]:
 def _check_a2(ev: Ev, cl: Checklist) -> dict[str, Any]:
     """Every mechanism the triad owes, graded from the call's own row, ledger and PDF."""
     p, st = ev.persona, ev.state
-    doctor, patient = str(ev.call.get("summary_doctor") or ""), str(ev.call.get("summary_patient") or "")
+    report = str(ev.call.get("summary_report") or "")
+    proj = ev.proj
+    yes_items = [str(x) for x in ((proj.yes_items if proj else ()) or ())]
     daughter, son = _child(st, "female"), _child(st, "male")
 
     # --- the walk itself ---------------------------------------------------------------------------------
@@ -735,11 +743,8 @@ def _check_a2(ev: Ev, cl: Checklist) -> dict[str, Any]:
              f"fam_who={st.answers.get('fam_fits_delay')}")
     cl.check("a2a the fam_who aside was NOT also filed as an unlisted observation",
              "अल्जाइमर" not in joined, f"retained={ev.retained}")
-    cl.check("a2a doctor summary keeps ड्यूशेन and हीमोफीलिया",
-             _has(doctor, "ड्यूशेन", "हीमोफीलिया"), "doctor summary lost the reported diagnosis")
-    cl.check("a2a patient summary redacts both names",
-             bool(patient.strip()) and not _has(patient, "ड्यूशेन", "हीमोफीलिया", "ड्यूश", "हीमोफ"),
-             "patient summary is empty or leaked the diagnosis")
+    cl.check("a2a the report keeps ड्यूशेन and हीमोफीलिया",
+             _has(report, "ड्यूशेन", "हीमोफीलिया"), "the report lost the reported diagnosis")
     leaked_pdf = [frag for frag in _DISEASE if frag in ev.pdf_text]
     cl.check("a2a patient PDF redacts both names",
              bool(ev.pdf_text.strip()) and not leaked_pdf and "ड्यूशेन" not in ev.pdf_text and "ड्यूश" not in ev.pdf_text,
@@ -751,9 +756,10 @@ def _check_a2(ev: Ev, cl: Checklist) -> dict[str, Any]:
     up = A2_UP
     wrong = {q: str(_answered(ev, q)[0]) for q in up if _answered(ev, q)[0] is not C}
     cl.check("a2b CLEAR -> CONCERN revisions all landed", not wrong, f"still not CONCERN: {wrong}")
-    flags = [str(x) for x in (ev.call.get("red_flags") or [])]
-    missing = [q for q in up if not any(q in f for f in flags)]
-    cl.check("a2b every upward revision is in red_flags", not missing, f"missing from red_flags: {missing}")
+    # The report is the only place a revision is read: every upward revision must be a reported concern there.
+    reported = " ".join(yes_items)
+    missing = [q for q in up if q in ev.pack.by_id and _norm(ev.pack.by_id[q].stem or ev.pack.by_id[q].say) not in _norm(reported)]
+    cl.check("a2b every upward revision is reported as a concern", not missing, f"missing from the report: {missing}")
     decided = {d[2] for d in ev.decisions if d[1] == "other_form"}
     cl.check("a2b each upward revision was recorded as OTHER_FORM",
              set(up) <= decided, f"missing OTHER_FORM: {sorted(set(up) - decided)}")
@@ -775,19 +781,15 @@ def _check_a2(ev: Ev, cl: Checklist) -> dict[str, Any]:
     down = A2_DOWN
     still = {q: str(_answered(ev, q)[0]) for q in down if _answered(ev, q)[0] is not CL}
     cl.check("a2b CONCERN -> CLEAR revisions all landed", not still, f"still not CLEAR: {still}")
-    cl.check("a2b a cleared gate is gone from red_flags",
-             not [q for q in down if any(q in f for f in flags)],
-             f"red_flags still name {[q for q in down if any(q in f for f in flags)]}")
-    proj = ev.proj
-    yes_items = [str(x) for x in ((proj.yes_items if proj else ()) or ())]
     # A cleared gate is not "absent from her copy": it becomes a *negative* on page two, which is the whole point.
-    # What must not survive is the yes-list entry and the red flag it earned while it was still a CONCERN.
+    # What must not survive is the yes-list entry and the reported concern it earned while it was still a CONCERN.
     stems = {gid: ((q := ev.pack.by_id.get(gid)) and (q.stem or q.say)) for gid in down}
+    cl.check("a2b a cleared gate is gone from the reported concerns",
+             not [gid for gid, x in stems.items() if x and any(x in str(y) for y in yes_items)],
+             f"the report still reports {[g for g, x in stems.items() if x and any(x in str(y) for y in yes_items)]}")
     grouped = " ".join(str(g) for g in ((proj.page2_groups if proj else ()) or ()))
-    cl.check("a2b a cleared gate is gone from yes_items and listed as a negative instead",
-             not [gid for gid, x in stems.items() if x and any(x in str(y) for y in yes_items)]
-             and all(x in grouped for x in stems.values() if x),
-             f"still a yes: {[g for g, x in stems.items() if x and any(x in str(y) for y in yes_items)]} "
+    cl.check("a2b a cleared gate is listed as a negative instead",
+             all(x in grouped for x in stems.values() if x),
              f"missing a negative: {[g for g, x in stems.items() if x and x not in grouped]}")
     stale = {q: {"items": list(r.item_ids), "fups": sorted(r.followups),
                  "note": (r.verbatim_text or "")[:40]} for q, r in ((q, st.answers[q]) for q in down if q in st.answers)
@@ -800,19 +802,22 @@ def _check_a2(ev: Ev, cl: Checklist) -> dict[str, Any]:
     cl.check("a2c every distinct unlisted aside was retained",
              sum(1 for needle in A2_ASIDES if needle in joined) >= 17,
              f"found {sum(1 for needle in A2_ASIDES if needle in joined)}/{len(A2_ASIDES)} in {ev.retained}")
-    cl.check("a2c retained asides render under the unlisted heading in the doctor note",
-             "### Additional Clinical Observations (Unlisted)" in doctor
-             and sum(1 for needle in A2_ASIDES if needle in doctor) >= 15,
-             f"heading={'### Additional Clinical Observations (Unlisted)' in doctor}")
-    cl.check("a2c zero unlisted asides leaked into the patient summary",
-             not [needle for needle in A2_ASIDES if needle in patient], f"patient leaked {[n for n in A2_ASIDES if n in patient]}")
-    cl.check("a2c zero unlisted asides leaked into the patient PDF",
-             not [needle for needle in A2_ASIDES if needle in ev.pdf_text],
-             f"PDF leaked {[n for n in A2_ASIDES if n in ev.pdf_text]}")
-    cl.check("a2c zero unlisted asides reached yes_items or page2_groups",
+    # The unified report quotes every aside, attributed, under the pack's own notes heading — no diagnostic heading.
+    aside_label = str(ev.pack.report_cfg.get("caller_words_hi") or "")
+    notes_heading = str(ev.pack.report_cfg.get("notes_header_hi") or "")
+    _notes = _notes_block(report, notes_heading)
+    cl.check("a2c retained asides render attributed under the notes heading in the report",
+             _notes is not None and f"{aside_label}: “" in _notes
+             and sum(1 for needle in A2_ASIDES if needle in _notes) >= 15,
+             f"notes block missing or thin; heading={notes_heading!r} block={(_notes or '')[:120]!r}")
+    cl.check("a2c the report carries no diagnostic heading for asides",
+             not _has(report, "Additional Clinical Observations", "Patient Profile & Chief Complaint", "Red Flags"),
+             "an old clinician heading survived")
+    # An aside is never a finding: it must not become a reported yes, a page-two answer, or a PDF row.
+    cl.check("a2c zero unlisted asides reached yes_items, page2_groups, or the PDF rows",
              not [needle for needle in A2_ASIDES if any(needle in str(y) for y in yes_items)]
              and not [needle for needle in A2_ASIDES if any(needle in str(g) for g in ((proj.page2_groups if proj else ()) or ()))],
-             "an aside was projected onto her copy")
+             "an aside was projected as a finding")
     cl.check("a2c an aside gate exhausted to UNANSWERED with its aside still retained",
              _answered(ev, "body_proportion")[0] is UA and "उल्टी जैसा जी मिचलाता" in joined,
              f"body_proportion={_answered(ev, 'body_proportion')[0]} retained={[x for x in ev.retained if 'मिचलाता' in x]}")
@@ -823,8 +828,8 @@ def _check_a2(ev: Ev, cl: Checklist) -> dict[str, Any]:
     # --- Law 1 on the closing question -------------------------------------------------------------------
     cl.check("a2f chatter never became a CONCERN on close_anything_else",
              _answered(ev, "close_anything_else")[0] is not C, f"got {_answered(ev, 'close_anything_else')[0]}")
-    cl.check("a2f the weather remark never reached the patient copy or the PDF",
-             not _has(" ".join(yes_items) + " " + patient + " " + ev.pdf_text, "मौसम", "रसोई", "बारिश"),
+    cl.check("a2f the weather remark never reached the reported concerns or the PDF",
+             not _has(" ".join(yes_items) + " " + ev.pdf_text, "मौसम", "रसोई", "बारिश"),
              "chatter leaked onto her copy")
     # --- the event ledger on a long chaotic call ---------------------------------------------------------
     cl.check("a2 session_started survived the event cap on a long call",
@@ -1050,7 +1055,8 @@ class Runner:
                   "close_reason": str(ev.state.close_reason or ""), "phase": str(ev.state.phase),
                   "duration_sec": ev.call.get("duration_sec"), "wall_sec": round(time.monotonic() - self.started, 1),
                   "patient_name": ev.call.get("patient_name"), "share_token": ev.call.get("share_token"),
-                  "red_flags": list(ev.call.get("red_flags") or []), "telemetry": ev.call.get("telemetry") or {},
+                  "summary_report_chars": len(str(ev.call.get("summary_report") or "")),
+                  "telemetry": ev.call.get("telemetry") or {},
                   "frames": self.persona.frames, "default_replies": self.persona.defaults,
                   "answers": _answers_summary(ev.state), "events": _events_summary(ev.events)}
         result.update(detail)
@@ -1220,15 +1226,12 @@ def _profile(slots: dict[str, Any]) -> TurnCommand:
 def _finish(ev: Ev) -> Ev:
     """Fill the projection-derived fields a live run gets from SQLite, so parity is graded the same way.
 
-    A key the self-test deliberately pinned (a doctor note that lost its diagnosis) is left alone: the point of
-    that mutation is a stored column that no longer matches the projection.
+    A key the self-test deliberately pinned (a report that lost its diagnosis) is left alone: the point of that
+    mutation is a stored column that no longer matches the projection.
     """
     ev.proj = reports.project_summary(ev.pack, ev.state, ev.retained_ev)
-    for key, value in (("summary_doctor", ev.proj.doctor_markdown),
-                       ("summary_patient", ev.proj.patient_summary_text),
-                       ("red_flags", list(ev.proj.red_flags))):
-        if key not in ev.pinned:
-            ev.call = {**ev.call, key: value}
+    if "summary_report" not in ev.pinned:
+        ev.call = {**ev.call, "summary_report": ev.proj.report_markdown}
     return ev
 
 
@@ -1478,8 +1481,10 @@ def _mutations_a1() -> list[tuple[str, str, Any]]:
          lambda ev: answers(ev, close_anything_else=_rec(C, "आज बाहर गर्मी बहुत ज़्यादा है।"))),
         ("UNKNOWN missing", "all five answer states coexist", lambda ev: answers(ev, birth_bcg=_rec(CL))),
         ("UNANSWERED missing", "all five answer states coexist", lambda ev: answers(ev, birth_term=_rec(CL))),
-        ("doctor note lost the diagnosis", "doctor summary keeps हीमोफीलिया",
-         lambda ev: call(ev, summary_doctor="Close reason: complete.")),
+        ("the report lost the diagnosis", "the report keeps हीमोफीलिया",
+         lambda ev: call(ev, summary_report="Close reason: complete.")),
+        ("the report was never written", "the report is written",
+         lambda ev: call(ev, summary_report="")),
         ("watchdog closed the call", "closed on content, not the watchdog",
          lambda ev: setattr(ev, "events", [*ev.events, {"type": "auto_close", "detail": "silence"}])),
         ("a tool error was swallowed", "zero tool_errors", lambda ev: call(ev, telemetry={"tool_errors": 2})),
@@ -1560,10 +1565,8 @@ def _mutations_a2() -> list[tuple[str, str, Any]]:
          lambda ev: (ev.retained.append("मेरे नाना जी को बुढ़ापे में भूलने की अल्जाइमर बीमारी थी।"),
                      setattr(ev, "retained_ev", [*ev.retained_ev,
                                                  _stored(99, "fam_fits_delay:followup:0", "अल्जाइमर बीमारी थी।")]))),
-        ("doctor note lost the diagnosis", "a2a doctor summary keeps ड्यूशेन and हीमोफीलिया",
-         lambda ev: call(ev, summary_doctor="Close reason: complete.")),
-        ("patient copy leaked the diagnosis", "a2a patient summary redacts both names",
-         lambda ev: call(ev, summary_patient="मामा के लड़के को ड्यूशेन और हीमोफीलिया का शक था।")),
+        ("the report lost the diagnosis", "a2a the report keeps ड्यूशेन and हीमोफीलिया",
+         lambda ev: call(ev, summary_report="Close reason: complete.")),
         ("PDF leaked the diagnosis", "a2a patient PDF redacts both names",
          lambda ev: setattr(ev, "pdf_text", ev.pdf_text + " ड्यूशेन हीमोफ")),
         ("the maternal-bleeding words were filed twice", "a2a the maternal-bleeding words were not double-filed as an unlisted observation",
@@ -1572,7 +1575,7 @@ def _mutations_a2() -> list[tuple[str, str, Any]]:
         # --- Bucket B, direction 1 --------------------------------------------------------------------------
         ("an upward revision never landed", "a2b CLEAR -> CONCERN revisions all landed",
          lambda ev: answers(ev, birth_nicu=_rec(CL))),
-        ("an upward revision is missing from red_flags", "a2b every upward revision is in red_flags",
+        ("an upward revision is missing from the report", "a2b every upward revision is reported as a concern",
          lambda ev: answers(ev, fam_cancer=_rec(CL))),
         ("an upward revision was never recorded as OTHER_FORM", "a2b each upward revision was recorded as OTHER_FORM",
          lambda ev: drop(ev, lambda d: d[1] == "other_form" and d[2] == "ill_fasting")),
@@ -1586,9 +1589,9 @@ def _mutations_a2() -> list[tuple[str, str, Any]]:
         # --- Bucket B, direction 2 --------------------------------------------------------------------------
         ("a downward revision never landed", "a2b CONCERN -> CLEAR revisions all landed",
          lambda ev: answers(ev, birth_jaundice=_rec(C, "पीलिया बताया था।"))),
-        ("a cleared gate survived in red_flags", "a2b a cleared gate is gone from red_flags",
+        ("a cleared gate is still reported", "a2b a cleared gate is gone from the reported concerns",
          lambda ev: answers(ev, birth_term=_rec(C, "आठवें महीने में हुआ था।"))),
-        ("a cleared gate survived on her copy", "a2b a cleared gate is gone from yes_items and listed as a negative instead",
+        ("a cleared gate survived on her copy", "a2b a cleared gate is listed as a negative instead",
          lambda ev: answers(ev, birth_jaundice=_rec(C, "पीलिया बताया था।"))),
         ("a cleared gate kept a stale child or follow-up",
          "a2b a cleared gate kept no stale child, follow-up, or verbatim note",
@@ -1600,12 +1603,10 @@ def _mutations_a2() -> list[tuple[str, str, Any]]:
         # --- Bucket C --------------------------------------------------------------------------------------
         ("an unlisted aside was dropped", "a2c every distinct unlisted aside was retained",
          lambda ev: retained(ev, "बेटी को बस में उल्टी जैसा जी मिचलाता है।")),
-        ("the unlisted heading never rendered", "a2c retained asides render under the unlisted heading in the doctor note",
-         lambda ev: call(ev, summary_doctor="### Patient Profile & Chief Complaint\n- Close reason: complete.")),
-        ("an aside leaked onto her summary", "a2c zero unlisted asides leaked into the patient summary",
-         lambda ev: call(ev, summary_patient="जी मिचलाता है और डैंड्रफ भी है।")),
-        ("an aside leaked onto the PDF", "a2c zero unlisted asides leaked into the patient PDF",
-         lambda ev: setattr(ev, "pdf_text", ev.pdf_text + " डैंड्रफ")),
+        ("the notes block never rendered", "a2c retained asides render attributed under the notes heading in the report",
+         lambda ev: call(ev, summary_report="### Profile\n- Close reason: complete.")),
+        ("an aside leaked onto the PDF", "a2c zero unlisted asides reached yes_items, page2_groups, or the PDF rows",
+         lambda ev: answers(ev, body_thumb=AnswerRecord(state=C, note=NoteText.from_text("नाखून बहुत टूटते हैं।")))),
         ("an exhausted gate recorded CLEAR instead of UNANSWERED",
          "a2c an aside gate exhausted to UNANSWERED with its aside still retained",
          lambda ev: answers(ev, body_proportion=_rec(CL))),
@@ -1614,7 +1615,7 @@ def _mutations_a2() -> list[tuple[str, str, Any]]:
         # --- closing law and the ledger ---------------------------------------------------------------------
         ("chatter became a concern", "a2f chatter never became a CONCERN on close_anything_else",
          lambda ev: answers(ev, close_anything_else=_rec(C, "आज मौसम काफ़ी ठंडा है।"))),
-        ("chatter reached the patient PDF", "a2f the weather remark never reached the patient copy or the PDF",
+        ("chatter reached the patient PDF", "a2f the weather remark never reached the reported concerns or the PDF",
          lambda ev: setattr(ev, "pdf_text", ev.pdf_text + " मौसम")),
         ("the event cap ate session_started", "a2 session_started survived the event cap on a long call",
          lambda ev: setattr(ev, "events", [{"type": "turn_complete", "detail": "", "meta": {}} for _ in range(600)])),

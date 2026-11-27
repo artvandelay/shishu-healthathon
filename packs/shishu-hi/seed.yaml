@@ -1,6 +1,6 @@
 scenarios:
-- id: red_flags
-  pdf: SHISHU-sample-red-flags.pdf
+- id: concerns
+  pdf: SHISHU-sample-concerns.pdf
   caller_name: शिल्पा
   marital_status: married
   children:

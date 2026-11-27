@@ -9,12 +9,16 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import os
 import re
+import sqlite3
+import subprocess
 import sys
 import tempfile
 import threading
 import unittest
+from html import unescape
 from pathlib import Path
 from unittest import mock
 
@@ -24,11 +28,12 @@ from intake.models import (
     AnswerRecord, AnswerStatus, CallState, CursorStep, NoteText, Phase, ProfilePatch, RosterItem, TurnCommand,
 )
 from intake.pack import load_pack
+from intake.turns import EvidenceSource, StoredTurnEvidence
 
 _SHISHU = "shishu-hi"
 _FEVER = "fever-opd-hi"
 _SCENARIOS = {
-    _SHISHU: ("red_flags", "no_flags", "incomplete"),
+    _SHISHU: ("concerns", "no_flags", "incomplete"),
     _FEVER: ("urgent_fever", "clean_fever", "stopped_early"),
 }
 _SAMPLE_CALL = {"id": 7, "started_at": "2026-11-12 04:00:00", "duration_sec": 420}
@@ -59,13 +64,13 @@ class ProjectionTests(unittest.TestCase):
         proj = reports.project_summary(pack, state)
         self.assertTrue(proj.emergency)
         self.assertEqual(proj.close_reason, "emergency")
-        # The old "questions to ask the doctor" filler is gone: an emergency adds no advice list, routine or otherwise.
-        self.assertEqual(proj.patient_questions, ())
-        self.assertEqual(len(proj.red_flags), 1)
-        self.assertTrue(proj.red_flags[0].startswith("emergency: active danger sign now"))
-        self.assertIn("hospital or 108", proj.red_flags[0])
-        self.assertTrue(proj.red_flags[0].endswith("अभी बेहोश है"))
-        self.assertIn("Active emergency", proj.doctor_markdown)
+        # The old "questions to ask the doctor" filler is gone with its field: an emergency adds no advice list.
+        self.assertFalse(hasattr(proj, "patient_questions"), "ProjectedReport still carries the dead patient_questions")
+        # The unified report carries the emergency line and her words — with no red-flag or gate-alert block at all.
+        self.assertIn("Active emergency", proj.report_markdown)
+        self.assertIn("अभी बेहोश है", proj.report_markdown)
+        for gone in ("Red Flags", "Gate Alerts", "Chief complaint"):
+            self.assertNotIn(gone, proj.report_markdown)
         # The sheet still says an emergency was reported, and still prints no question list at all.
         html = reports.render_patient_html(pack, _SAMPLE_CALL, proj)
         self.assertIn("इस कॉल में इमरजेंसी की बात दर्ज हुई।", html)
@@ -73,12 +78,12 @@ class ProjectionTests(unittest.TestCase):
 
 
 class EmergencyReportTests(unittest.TestCase):
-    """The two surfaces the Aanchal demo grades an emergency on: the mother's band and the clinician's first line.
+    """The surface the Aanchal demo grades an emergency on: the mother's band, and the 108 line in both languages.
 
     Both regressed on a real demo call (`scripts/run_demo_aanchal.py`): the emergency PDF printed only
     "इस कॉल में इमरजेंसी की बात दर्ज हुई।" with no 108 or nearest-hospital line, and the clinician note opened
     "Chief complaint: NICU or glass-box stay after birth." — the first recorded concern, not the emergency that
-    ended the call.
+    ended the call. The chief complaint is gone with the split note; the band still has to carry 108.
     """
 
     CALL = {"id": 7, "started_at": reports.SAMPLE_STARTED_AT, "duration_sec": 420}
@@ -132,23 +137,30 @@ class EmergencyReportTests(unittest.TestCase):
                 # The band is page one, before the "yes" list: a `108` anywhere lower would not be the banner.
                 self.assertLess(text.index("108"), text.index('Reported "Yes"' if lang == "en" else "इस कॉल में जो"))
 
-    def test_chief_complaint_leads_with_the_active_emergency_not_the_first_concern(self):
-        for pack_id, concern_qid, concern_note, concern_need in (
-            (_SHISHU, "birth_nicu", "हाँ भर्ती हुई थी मेरी छोटी बेटी", self.NICU),
-            (_FEVER, "fever_severity", "बहुत तेज़ बुखार है, बिस्तर पर रहना पड़ता है",
-             "how severe the fever is, from mild warmth to being unable to stand or eat"),
+    def test_the_unified_report_leads_with_the_emergency_and_keeps_the_earlier_concern(self):
+        """The one markdown report now opens on the emergency and still carries the concern recorded before it —
+        as reported facts in her own words, with no chief-complaint or red-flag heading to rank them."""
+        for pack_id, concern_qid, concern_note in (
+            (_SHISHU, "birth_nicu", "हाँ भर्ती हुई थी मेरी छोटी बेटी"),
+            (_FEVER, "fever_severity", "बहुत तेज़ बुखार है, बिस्तर पर रहना पड़ता है"),
         ):
             pack = load_pack(pack_id)
-            md = reports.project_summary(pack, self.emergency_state(pack, concern_qid, concern_note)).doctor_markdown
-            chief = next((line for line in md.splitlines() if line.startswith("- Chief complaint:")), "")
+            stem = (pack.by_id[concern_qid].stem or "").strip()
+            proj = reports.project_summary(pack, self.emergency_state(pack, concern_qid, concern_note))
+            md = proj.report_markdown
             with self.subTest(pack=pack_id):
-                self.assertTrue(chief, "the clinician note has no chief complaint line")
-                self.assertTrue(chief.startswith("- Chief complaint: Active emergency"), chief)
-                self.assertIn("108", chief)
-                self.assertIn(self.EMERGENCY, chief, "her own words must lead the chief complaint")
-                # The earlier concern is still on record for the doctor, but never as the chief complaint.
-                self.assertNotIn(concern_need, chief)
-                self.assertIn(concern_need, md.split("### Positive Red Flags", 1)[1])
+                self.assertIn("Active emergency", md)
+                self.assertIn("108", md)
+                self.assertIn("Close reason: emergency.", md)
+                self.assertIn(self.EMERGENCY, md, "her emergency words must be on the report")
+                # The earlier concern is still on record, under the pack's own label, in the reported-yes block.
+                self.assertIn(stem, md)
+                reported_yes = md.split('### Reported "Yes"', 1)[1].split("\n### ", 1)[0]
+                self.assertIn(concern_note, reported_yes)
+                label = str(pack.report_cfg["caller_words_hi"])
+                self.assertIn(f"{label}: “{concern_note}”", reported_yes)
+                for gone in ("Chief complaint", "Red Flags", "Gate Alerts"):
+                    self.assertNotIn(gone, md)
 
 
 class Page2DetailTests(unittest.TestCase):
@@ -197,6 +209,250 @@ class Page2DetailTests(unittest.TestCase):
         self.assertIn(self.SHISHU_CLEAR_Q, items)
 
 
+class AnsweredIsNotClearTests(unittest.TestCase):
+    """A chosen option is not a denial: `ANSWERED` may never print under "### Clear / No".
+
+    The glossary printed right under that heading says Clear / no means "the caller said this did not
+    happen", so a married mother's "शादी हो गई" and a 3-day fever read as two contradictory records of
+    the same call. `ANSWERED` rows now get their own heading; only real `CLEAR` strings stay below.
+    """
+
+    MARRIED_Q = Page2DetailTests.MARRIED_Q
+    DURATION_Q = Page2DetailTests.DURATION_Q
+    FEVER_CLEAR_Q = Page2DetailTests.FEVER_CLEAR_Q
+    SHISHU_CLEAR_Q = Page2DetailTests.SHISHU_CLEAR_Q
+
+    @staticmethod
+    def section(md: str, heading: str) -> str:
+        """Only the body of one `### heading`, so a row in a neighbouring block cannot make this pass."""
+        return md.split(f"### {heading}", 1)[1].split("\n### ", 1)[0]
+
+    def test_a_fever_duration_choice_prints_under_answered_and_never_under_clear(self):
+        pack = load_pack(_FEVER)
+        md = reports.project_summary(pack, _replay(pack, "clean_fever")).report_markdown
+        self.assertIn("### Answered", md)
+        self.assertIn(f"- {self.DURATION_Q} — 3 दिन से कम", self.section(md, "Answered"))
+        self.assertNotIn(self.DURATION_Q, self.section(md, "Clear / No"))
+        # The gates she really answered "no" to stay exactly where the glossary says they belong.
+        self.assertIn(self.FEVER_CLEAR_Q, self.section(md, "Clear / No"))
+        self.assertNotIn(self.FEVER_CLEAR_Q, self.section(md, "Answered"))
+
+    def test_the_marriage_choice_prints_under_answered_and_never_under_clear(self):
+        pack = load_pack(_SHISHU)
+        md = reports.project_summary(pack, _replay(pack, "no_flags")).report_markdown
+        self.assertIn(f"- {self.MARRIED_Q} — शादी हो गई", self.section(md, "Answered"))
+        self.assertNotIn(self.MARRIED_Q, self.section(md, "Clear / No"))
+        self.assertIn(self.SHISHU_CLEAR_Q, self.section(md, "Clear / No"))
+
+    def test_page_two_still_carries_the_answer_column_for_the_html_template(self):
+        """Only the Markdown separates the states; `patient.html.j2` prints each row's own `answer`."""
+        pack = load_pack(_FEVER)
+        proj = reports.project_summary(pack, _replay(pack, "clean_fever"))
+        items = [item for group in proj.page2_groups for item in group["items"]]
+        self.assertIn({"question": self.DURATION_Q, "answer": "3 दिन से कम"}, items)
+        self.assertIn(self.FEVER_CLEAR_Q, items)
+
+    def test_an_answered_choice_is_never_filed_as_dont_know_or_not_answered(self):
+        pack = load_pack(_FEVER)
+        proj = reports.project_summary(pack, _replay(pack, "clean_fever"))
+        md = proj.report_markdown
+        for heading in ("Don't know", "Not answered", "Not asked"):
+            with self.subTest(heading=heading):
+                self.assertNotIn(self.DURATION_Q, self.section(md, heading) if f"### {heading}" in md else "")
+
+
+class ProfileLineTests(unittest.TestCase):
+    """A profile line is read by a person: `True` and `about_to_marry` are Python, not words."""
+
+    def profile(self, **slots) -> str:
+        pack = load_pack(_SHISHU)
+        state = _replay(pack, "no_flags")
+        state.profile.update(slots)
+        md = reports.project_summary(pack, state).report_markdown
+        return md.split("### Profile", 1)[1].split("\n### ", 1)[0]
+
+    def test_a_boolean_reads_yes_or_no(self):
+        self.assertIn("- Ever pregnant: Yes.", self.profile(ever_pregnant=True))
+        self.assertIn("- Ever pregnant: No.", self.profile(ever_pregnant=False))
+        self.assertNotIn("True", self.profile(ever_pregnant=True))
+        self.assertNotIn("False", self.profile(ever_pregnant=False))
+
+    def test_an_enum_slug_reads_as_words(self):
+        self.assertIn("- Marital status: about to marry.", self.profile(marital_status="about_to_marry"))
+        self.assertNotIn("about_to_marry", self.profile(marital_status="about_to_marry"))
+
+
+class ReportMarkdownLayoutTests(unittest.TestCase):
+    """The `summary_report` is Markdown a clinician reads and Copy hands out, so its line structure matters.
+
+    `_markdown` inserted `""` between sections and then dropped every empty line with `if line`, which glued
+    each heading straight onto the previous bullet ("- Close reason: complete.\n### Reported \"Yes\"") and left
+    the dashboard renderer with no paragraph break to work from.
+    """
+
+    def markdown(self, pack_id: str, scenario: str) -> str:
+        pack = load_pack(pack_id)
+        return reports.project_summary(pack, _replay(pack, scenario)).report_markdown
+
+    def test_every_section_is_preceded_by_exactly_one_blank_line(self):
+        for pack_id, scenario in ((_SHISHU, "no_flags"), (_SHISHU, "incomplete"), (_FEVER, "clean_fever"), (_FEVER, "stopped_early")):
+            md = self.markdown(pack_id, scenario)
+            headings = [line for line in md.splitlines() if line.startswith("### ")]
+            with self.subTest(pack=pack_id, scenario=scenario):
+                self.assertGreater(len(headings), 3, md)
+                for heading in headings[1:]:
+                    self.assertIn("\n\n" + heading + "\n", md, f"{heading!r} is not set off by a blank line")
+                self.assertNotIn("\n\n\n", md, "a section gained two blank lines instead of one")
+                self.assertTrue(md.startswith("# Call report\n\n### "), md[:80])
+                self.assertTrue(md.endswith("\n") and not md.endswith("\n\n"), "the report ends with exactly one newline")
+
+    def test_close_reason_prints_as_words_and_never_as_the_enum_slug(self):
+        md = self.markdown(_SHISHU, "incomplete")
+        self.assertIn("- Close reason: caller stop.", md)
+        self.assertNotIn("caller_stop", md)
+        self.assertIn("- Close reason: complete.", self.markdown(_SHISHU, "no_flags"))
+
+
+class TwinScopeTests(unittest.TestCase):
+    """Two same-age twins share one patient label, so an answer scoped to one must not read as the other's.
+
+    `roster_label_patient` builds "2 साल बेटा" for both, and `_scope` used it as-is: the sheet said
+    "NICU stay (2 साल बेटा)" for a concern that was about the second boy only.
+    """
+
+    def twins(self) -> CallState:
+        return CallState(
+            profile={"caller_name": "आँचल"},
+            roster=[RosterItem(id="item_1", age_years=2, age_label="2 साल", tag="male"),
+                    RosterItem(id="item_2", age_years=2, age_label="2 साल", tag="male")],
+            roster_stated=True,
+            answers={"birth_nicu": AnswerRecord(state=AnswerStatus.CONCERN, item_ids=["item_1"],
+                                                 note=NoteText(verbatim="हाँ, एक वाले को रखा था")),
+                     "birth_jaundice": AnswerRecord(state=AnswerStatus.CONCERN, item_ids=["item_2"],
+                                                    note=NoteText(verbatim="दूसरे को नीली लाइट लगी थी"))},
+        )
+
+    def scope_of(self, lines, stem: str) -> str:
+        line = next((x for x in lines if x.startswith(f"{stem} (")), "")
+        self.assertTrue(line, f"no scoped line for {stem!r} in {lines}")
+        match = re.match(r"^" + re.escape(stem) + r" \((.+)\) — ", line)
+        return match.group(1) if match else ""
+
+    def test_twin_scopes_stay_distinct_on_both_sheets(self):
+        pack, state = load_pack(_SHISHU), self.twins()
+        proj = reports.project_summary(pack, state)
+        for lang, lines in (("hi", proj.yes_items), ("en", proj.yes_items_en)):
+            stems = [getattr(pack.by_id[q], "stem" if lang == "hi" else "stem_en") for q in ("birth_nicu", "birth_jaundice")]
+            scopes = [self.scope_of(lines, s) for s in stems]
+            with self.subTest(lang=lang):
+                # The premise: the two twins really do share one bare patient label, so distinct scopes have to be
+                # earned rather than falling out of the roster.
+                self.assertEqual(engine.roster_label_patient(pack, state, ["item_1"]),
+                                 engine.roster_label_patient(pack, state, ["item_2"]))
+                self.assertTrue(all(scopes), f"a twin answer lost its scope: {lines}")
+                self.assertNotEqual(scopes[0], scopes[1], f"both twins collapsed into {scopes[0]!r}: {lines}")
+                # The words are the pack's own, never a bare `item_1` or a made-up ordinal.
+                for scope in scopes:
+                    self.assertNotIn("item_", scope)
+            if lang == "hi":
+                # Hindi uses the pack's own `which_item.ordinals` — the words the call speaks out loud.
+                self.assertTrue(scopes[0].startswith("पहले "), scopes)
+                self.assertTrue(scopes[1].startswith("दूसरे "), scopes)
+
+    def joint(self) -> CallState:
+        """One answer that covers both twins — the joint `which_item` selection, `item_ids=["item_1","item_2"]`."""
+        return self.twins().model_copy(update={"answers": {
+            "birth_nicu": AnswerRecord(state=AnswerStatus.CONCERN, item_ids=["item_1", "item_2"],
+                                       note=NoteText(verbatim="दोनों को काँच के बक्से में रखा था"))}})
+
+    def test_a_joint_answer_names_both_twins_individually(self):
+        """`_scope` joined the twins' shared bare label, so a joint answer printed
+        "(2 साल बेटा · 2 साल बेटा)" — the same words twice, naming neither child."""
+        pack, state = load_pack(_SHISHU), self.joint()
+        proj = reports.project_summary(pack, state)
+        for lang, lines, expected in (
+            ("hi", proj.yes_items, "पहले 2 साल बेटा · दूसरे 2 साल बेटा"),
+            ("en", proj.yes_items_en, "2 yr boy #1 · 2 yr boy #2"),
+        ):
+            stem = getattr(pack.by_id["birth_nicu"], "stem" if lang == "hi" else "stem_en")
+            with self.subTest(lang=lang):
+                lines = list(lines)
+                scope = self.scope_of(lines, stem)
+                self.assertEqual(scope, expected, f"joint twin scope is not disambiguated: {lines}")
+                self.assertNotIn("item_", scope)
+
+
+class UnifiedIntakeReportTests(unittest.TestCase):
+    """One non-diagnostic report, on all three surfaces: the Hindi sheet, the English sheet, and `report_markdown`.
+
+    The state here is the real spoken-redaction state: `NoteText(verbatim=…)` with `patient_safe=""`, which is what
+    `NoteText.from_text(text, redacted=True)` writes when the caller names a diagnosis out loud. A projection that
+    reads `patient_safe` silently drops her words; one that reads `verbatim` keeps them. Both sheets and the Markdown
+    must show the same attributed words under the pack's own label, never a diagnosis heading of their own.
+    """
+
+    SAID = "डॉक्टर ने बच्ची को थैलेसियमिया बताया था"
+    ASIDE = "टीके के बाद दो दिन हल्का बुखार आया था"
+    CALL = {"id": 7, "started_at": reports.SAMPLE_STARTED_AT, "duration_sec": 420}
+    # A diagnostic heading on any of the three surfaces means the non-diagnostic report regressed.
+    REMOVED_HEADINGS = ("Red Flags", "Gate Alerts", "Chief complaint", "Pertinent Negatives")
+
+    def state(self) -> CallState:
+        return CallState(
+            profile={"caller_name": "आँचल"},
+            roster=[RosterItem(id="item_1", age_years=4, age_label="4 साल", tag="female")],
+            roster_stated=True,
+            answers={"preg_thalassemia": AnswerRecord(state=AnswerStatus.CONCERN,
+                                                      note=NoteText(verbatim=self.SAID, patient_safe=""))},
+        )
+
+    def observation(self) -> StoredTurnEvidence:
+        return StoredTurnEvidence(evidence_id="ev-1", call_id=7, sequence=1, source=EvidenceSource.VOICE,
+                                  snapshot_step="birth_bcg:main", transcript=self.ASIDE, received_at=1_795_000_000.0)
+
+    def surfaces(self, observations: tuple[StoredTurnEvidence, ...]) -> dict[str, str]:
+        pack = load_pack(_SHISHU)
+        proj = reports.project_summary(pack, self.state(), observations)
+        # Both sheets are HTML; unescape so a quote (`Caller's words`) is compared as the reader sees it.
+        return {
+            "hi": unescape(reports.render_patient_html(pack, self.CALL, proj, lang="hi")),
+            "en": unescape(reports.render_patient_html(pack, self.CALL, proj, lang="en")),
+            "markdown": proj.report_markdown,
+        }
+
+    def test_her_verbatim_words_and_observations_reach_all_three_surfaces_attributed(self):
+        for name, text in self.surfaces((self.observation(),)).items():
+            lang = "en" if name == "en" else "hi"
+            pack = load_pack(_SHISHU)
+            label = str(pack.report_cfg["caller_words_en" if lang == "en" else "caller_words_hi"])
+            heading = str(pack.report_cfg["notes_header_en" if lang == "en" else "notes_header_hi"])
+            with self.subTest(surface=name):
+                # (a) her spoken words survive the redaction of `patient_safe`, attributed from the pack config.
+                self.assertIn(f"{label}: “{self.SAID}”", text)
+                # (b) the retained observation, under the pack's notes heading.
+                self.assertIn(heading, text)
+                self.assertIn(f"{label}: “{self.ASIDE}”", text)
+                # (c) nothing diagnostic: this is a record of what she said, not a gate/red-flag report.
+                for banned in self.REMOVED_HEADINGS:
+                    self.assertNotIn(banned, text)
+
+    def test_the_notes_heading_is_omitted_when_nothing_was_retained(self):
+        for name, text in self.surfaces(()).items():
+            lang = "en" if name == "en" else "hi"
+            heading = str(load_pack(_SHISHU).report_cfg["notes_header_en" if lang == "en" else "notes_header_hi"])
+            with self.subTest(surface=name):
+                self.assertNotIn(heading, text)
+                self.assertNotIn(self.ASIDE, text)
+
+    def test_the_split_clinician_and_patient_projections_are_gone(self):
+        proj = reports.project_summary(load_pack(_SHISHU), self.state(), (self.observation(),))
+        for removed in ("doctor_markdown", "patient_summary_text", "red_flags", "roster_clinician", "observations"):
+            self.assertFalse(hasattr(proj, removed), f"ProjectedReport still carries {removed}")
+        # The one report is the only surface: it is named `report_markdown` and it carries the asides too.
+        self.assertIn(self.ASIDE, proj.report_markdown)
+        self.assertIn(self.SAID, proj.report_markdown)
+
+
 class ResponseStateGlossaryTests(unittest.TestCase):
     """UNKNOWN is what she said (पता नहीं). UNANSWERED is a question the call never got an answer for.
 
@@ -228,21 +484,20 @@ class ResponseStateGlossaryTests(unittest.TestCase):
         self.assertIsNotNone(row, f"no page-two row for {question!r}")
         return row.group(1)
 
-    def test_glossary_is_fixed_on_clinician_note_and_patient_pdf(self):
+    def test_glossary_is_fixed_on_the_unified_report_and_the_patient_pdf(self):
         for pack_id in (_SHISHU, _FEVER):
             pack = load_pack(pack_id)
             proj = reports.project_summary(pack, CallState())
             html = reports.render_patient_html(
                 pack, {"id": 3, "started_at": reports.SAMPLE_STARTED_AT, "duration_sec": 60}, proj)
-            with self.subTest(pack=pack_id, surface="clinician"):
-                md = proj.doctor_markdown
-                self.assertIn("### Response State Glossary", md)
-                self.assertIn("Concern / हाँ — caller reported yes.", md)
-                self.assertIn("Clear / नहीं — caller reported no.", md)
-                self.assertIn("Unknown / पता नहीं — caller said don't know / not tested.", md)
-                self.assertIn(
-                    "Unanswered / जवाब नहीं हो पाया — question was not answered on the call — doctor should confirm.",
-                    md)
+            with self.subTest(pack=pack_id, surface="report"):
+                md = proj.report_markdown
+                self.assertIn("### Response state glossary", md)
+                self.assertIn("Reported yes — the caller said this happened or was true.", md)
+                self.assertIn("Clear / no — the caller said this did not happen.", md)
+                self.assertIn("Don't know — the caller said she did not know, or the child was not tested.", md)
+                self.assertIn("Not answered — the question was asked but no answer was recorded on the call.", md)
+                self.assertIn("Not asked — the call ended before this question was asked.", md)
             with self.subTest(pack=pack_id, surface="patient"):
                 self.assertIn("जवाब का मतलब", html)
                 self.assertIn("पता नहीं", html)
@@ -264,19 +519,21 @@ class ResponseStateGlossaryTests(unittest.TestCase):
             proj = reports.project_summary(pack, state)
             html = reports.render_patient_html(
                 pack, {"id": 7, "started_at": reports.SAMPLE_STARTED_AT, "duration_sec": 90}, proj)
+            md = proj.report_markdown
             with self.subTest(pack=pack_id):
-                self.assertIn(f"Unknown. {unk_need}.", proj.doctor_markdown)
-                self.assertIn(f"Not answered on call (confirm with patient). {miss_need}.", proj.doctor_markdown)
-                self.assertNotIn(f"Unknown. {miss_need}.", proj.doctor_markdown)
-                self.assertNotIn(f"Not answered on call (confirm with patient). {unk_need}.", proj.doctor_markdown)
+                # The two states are separate sections of the one report, and neither question leaks into the other.
+                don_t_know, not_answered = md.split("### Don't know", 1)[1].split("### Not answered", 1)
+                self.assertIn(unk_stem, don_t_know)
+                self.assertNotIn(miss_stem, don_t_know)
+                self.assertIn(miss_stem, not_answered.split("### ", 1)[0])
+                self.assertNotIn(unk_stem, not_answered.split("### ", 1)[0])
+                self.assertNotIn(unk_stem, md.split("### Clear / No", 1)[1].split("### ", 1)[0])
                 self.assertIn(unk_stem, proj.page2_unknown)
                 self.assertNotIn(miss_stem, proj.page2_unknown)
                 self.assertIn(miss_stem, proj.page2_unanswered)
                 self.assertEqual(self.ans_for(html, unk_stem), "पता नहीं")
                 # The unanswered row states the fact (no answer on the call); it no longer tells her to see a doctor.
                 self.assertEqual(self.ans_for(html, miss_stem), "जवाब नहीं हो पाया")
-                negatives = proj.doctor_markdown.split("### Pertinent Negatives", 1)[1]
-                self.assertNotIn(miss_need, negatives)
 
 
 class BuildInfoTests(unittest.TestCase):
@@ -361,11 +618,12 @@ class PatientPdfTests(unittest.TestCase):
 
 
 class SeedScenarioReportTests(unittest.TestCase):
-    """Each seeded scenario must keep the clinical content it exists to demonstrate.
+    """Each seeded scenario must keep the content it exists to demonstrate, on all three surfaces.
 
-    A seed that silently degrades to "0 red flags" or "complete" still writes a PDF, so file-existence smoke tests
-    pass on a pack whose danger signs stopped being reported. These assert the actual flag text, the actual
-    all-clear, and the actual stopped-early inventory, on the clinician note, the projection and the rendered page.
+    A seed that silently degrades to "nothing reported" or "complete" still writes a PDF, so file-existence smoke
+    tests pass on a pack whose reported concerns stopped reaching the report. These assert the actual concern text
+    with the mother's own words, the actual all-clear, and the actual stopped-early inventory — on the unified
+    markdown report, the projection, and the rendered page.
     """
 
     CALL = {"id": 7, "started_at": reports.SAMPLE_STARTED_AT, "duration_sec": 420}
@@ -375,44 +633,50 @@ class SeedScenarioReportTests(unittest.TestCase):
         proj = reports.project_summary(pack, _replay(pack, scenario_id))
         return proj, reports.render_patient_html(pack, self.CALL, proj)
 
-    @staticmethod
-    def alerts(proj: reports.ProjectedReport) -> str:
-        """The clinician note's red-flag block, so an assertion cannot pass on text from another section."""
-        return proj.doctor_markdown.split("### Positive Red Flags", 1)[1].split("\n### ", 1)[0]
-
-    def test_shishu_red_flags_reports_every_seeded_gate_with_the_mothers_words(self):
-        proj, html = self.report(_SHISHU, "red_flags")
-        flags = self.alerts(proj)
-        self.assertEqual(len(proj.red_flags), 4)
-        # Each seeded answer is a different clinical concern and each must reach the doctor.
-        for tag_id, need, said in (
-            ("Q03 birth_jaundice", "jaundice treated under blue light", "हाँ, तीन दिन नीली लाइट में रखा था"),
-            ("Q04 body_joint_swelling", "knee or joint swelling after a fall", "हाँ, गिरने पर घुटने में सूजन 5 से 7 दिन रहती है"),
-            ("Antenatal preg_conditions", "high BP, sugar, or thyroid in a pregnancy",
-             "हाँ, हाई बीपी और थायरॉइड की दवा डिलीवरी के बाद भी चल रही है"),
-            ("Q12 fam_infant_death", "a baby in the family died before 1 year", "झटके आने से उसकी मौत हुई थी"),
+    def test_shishu_concerns_reports_every_seeded_concern_with_the_mothers_words(self):
+        proj, html = self.report(_SHISHU, "concerns")
+        pack = load_pack(_SHISHU)
+        label, heading = str(pack.report_cfg["caller_words_hi"]), str(pack.report_cfg["notes_header_hi"])
+        self.assertEqual(len(proj.yes_items), 4)
+        reported = proj.report_markdown.split('### Reported "Yes"', 1)[1].split("\n### ", 1)[0]
+        # Each seeded answer is a different concern and each must reach the report, in her own words.
+        for need, said in (
+            ("नीली लाइट में रखना पड़ा था", "हाँ, तीन दिन नीली लाइट में रखा था"),
+            ("गिरने पर घुटने या जोड़ में सूजन", "हाँ, गिरने पर घुटने में सूजन 5 से 7 दिन रहती है"),
+            ("हाई बीपी, शुगर या थायरॉइड", "हाँ, हाई बीपी और थायरॉइड की दवा डिलीवरी के बाद भी चल रही है"),
+            ("1 साल से कम उम्र में मौत", "झटके आने से उसकी मौत हुई थी"),
         ):
-            with self.subTest(flag=tag_id):
-                line = next((f for f in proj.red_flags if f.startswith(f"{tag_id}:")), None)
-                self.assertIsNotNone(line, f"no red flag for {tag_id} in {proj.red_flags}")
-                self.assertIn(need, line)
+            with self.subTest(concern=need):
+                line = next((x for x in proj.yes_items if need in x), None)
+                self.assertIsNotNone(line, f"no reported concern for {need!r} in {proj.yes_items}")
                 self.assertIn(said, line)
-                self.assertIn(need, flags)
-                self.assertIn(said, flags)
+                self.assertIn(f"{label}: “", line, "her words must be attributed with the pack's own label")
+                self.assertIn(need, reported)
+                self.assertIn(said, reported)
+        # Nothing diagnostic survives anywhere on the unified report.
+        for gone in ("Red Flags", "Gate Alerts", "Chief complaint"):
+            self.assertNotIn(gone, proj.report_markdown)
         # The two-page patient sheet repeats them as the "हाँ" list she asked the doctor about.
         yes_list = re.search(r'<ul class="yes">(.*?)</ul>', html, re.S)
         self.assertIsNotNone(yes_list)
         for said in ("नीली लाइट में रखा था", "घुटने में सूजन", "हाई बीपी और थायरॉइड", "झटके आने से उसकी मौत"):
             with self.subTest(yes_item=said):
                 self.assertIn(said, yes_list.group(1))
+                self.assertIn(f"{label}: “", yes_list.group(1))
         self.assertFalse(proj.incomplete)
         self.assertNotIn("यह कॉल अधूरी रही", html)
+        # No retained aside on this seeded call, so the notes block and its heading stay off both surfaces.
+        self.assertEqual(proj.notes_hi, ())
+        self.assertNotIn(heading, html)
+        self.assertNotIn(heading, proj.report_markdown)
 
     def test_shishu_no_flags_is_a_clean_call_on_every_surface(self):
         proj, html = self.report(_SHISHU, "no_flags")
-        self.assertEqual(proj.red_flags, ())
         self.assertEqual(proj.yes_items, ())
-        self.assertEqual(self.alerts(proj).strip().splitlines(), ["& NRROID Gate Alerts", "- No positive gate alerts."])
+        self.assertEqual(proj.yes_items_en, ())
+        md = proj.report_markdown
+        self.assertIn("- None reported on this call.", md)
+        self.assertIn("### Clear / No", md)
         self.assertEqual(proj.page2_unknown, ("इसके अलावा डॉक्टर के लिए कुछ और बताना है जो आपके मन में हो",))
         self.assertEqual(proj.page2_unanswered, ())
         self.assertIn("इस कॉल में कोई बात हाँ में दर्ज नहीं हुई।", html)
@@ -425,69 +689,83 @@ class SeedScenarioReportTests(unittest.TestCase):
         self.assertEqual(proj.close_reason, "caller_stop")
         self.assertTrue(proj.incomplete)
         # The one answered gate is still reported; nothing answered must be invented for the rest.
-        self.assertEqual(len(proj.red_flags), 1)
-        self.assertIn("Q03 birth_nicu: NICU or glass-box stay after birth", proj.red_flags[0])
-        self.assertIn("दो दिन काँच के बक्से में रखा पड़ा था", proj.red_flags[0])
+        self.assertEqual(len(proj.yes_items), 1)
+        self.assertIn("काँच के बक्से या बच्चों के ICU (NICU) में रखना पड़ा था", proj.yes_items[0])
+        self.assertIn("दो दिन काँच के बक्से में रखा पड़ा था", proj.yes_items[0])
         unasked = [item for group in proj.page2_unasked for item in group["items"]]
         self.assertIn("जन्म के बाद पीलिया के लिए बच्चे को नीली लाइट में रखना पड़ा था", unasked)
         self.assertIn("परिवार में किसी छोटे बच्चे की 1 साल से कम उम्र में मौत हुई है", unasked)
         self.assertEqual(len(unasked), 50)
-        self.assertIn("Call ended before every applicable question was asked.", proj.doctor_markdown)
+        md = proj.report_markdown
+        self.assertIn("Call ended before every applicable question was asked.", md)
+        self.assertIn("### Not asked", md)
+        # A question she was never asked is never printed as clear/no, and never as a reported yes.
+        clear_block = md.split("### Clear / No", 1)[1].split("\n### ", 1)[0]
+        self.assertNotIn("जन्म के बाद पीलिया के लिए बच्चे को नीली लाइट में रखना पड़ा था", clear_block)
+        self.assertNotIn("जन्म के बाद पीलिया के लिए बच्चे को नीली लाइट में रखना पड़ा था",
+                         md.split('### Reported "Yes"', 1)[1].split("\n### ", 1)[0])
         self.assertIn("यह कॉल अधूरी रही।", html)
         self.assertIn("अभी नहीं पूछा गया", html)
         self.assertNotIn("पूर्ण कॉल", html)
 
-    def test_fever_urgent_fever_reports_the_red_flag_gate_and_the_fever_gates(self):
+    def test_fever_urgent_fever_reports_each_seeded_finding_with_the_patients_words(self):
         proj, html = self.report(_FEVER, "urgent_fever")
-        flags = self.alerts(proj)
-        self.assertEqual(len(proj.red_flags), 7)
-        # The seeded danger sign: breathlessness on stairs, with its own follow-up, under the RED_FLAG gate.
-        breathing = next(f for f in proj.red_flags if f.startswith("RED_FLAG breathing_or_chest:"))
-        self.assertIn("difficulty breathing, or chest pain or tightness", breathing)
+        pack = load_pack(_FEVER)
+        label = str(pack.report_cfg["caller_words_hi"])
+        self.assertEqual(len(proj.yes_items), 7)
+        # The seeded danger sign: breathlessness on stairs, with its own follow-up, reported as she said it.
+        breathing = next(x for x in proj.yes_items if "साँस लेने में तकलीफ़" in x)
         self.assertIn("हाँ, सीढ़ियाँ चढ़ने पर साँस फूलती है", breathing)
-        self.assertIn("- RED_FLAG breathing_or_chest: difficulty breathing, or chest pain or tightness. "
-                      "Mother's words: हाँ, सीढ़ियाँ चढ़ने पर साँस फूलती है.", flags)
-        # Duration (9 days -> 7+ bucket) and severity are scored gates, so they flag without a danger-sign tag.
-        self.assertIn("- FEVER fever_duration_bucket: how long the fever has lasted. Mother's words: 7 दिन से ज़्यादा.", flags)
-        self.assertIn("- FEVER fever_severity: how severe the fever is, from mild warmth to being unable to stand or eat. "
-                      "Mother's words: बहुत तेज़ बुखार है — खड़े नहीं हो पाते, या कुछ खा-पी नहीं पाते.", flags)
-        self.assertIn("- FEVER associated_symptoms: which symptoms accompany the fever. "
-                      "Mother's words: कंपकंपी और ठंड लगना; बदन दर्द.", flags)
+        self.assertIn(f"{label}: “हाँ, सीढ़ियाँ चढ़ने पर साँस फूलती है”", breathing)
+        # Duration (9 days -> 7+ bucket), severity and associated symptoms were all reported yes.
+        for stem, said in (("बुखार कब से है", "7 दिन से ज़्यादा"),
+                           ("बुखार कितना तेज़ है", "बहुत तेज़ बुखार है — खड़े नहीं हो पाते, या कुछ खा-पी नहीं पाते"),
+                           ("बुखार के साथ क्या-क्या होता है", "कंपकंपी और ठंड लगना; बदन दर्द")):
+            with self.subTest(stem=stem):
+                line = next(x for x in proj.yes_items if stem in x)
+                self.assertIn(said, line)
+        reported = proj.report_markdown.split('### Reported "Yes"', 1)[1].split("\n### ", 1)[0]
+        self.assertIn("हाँ, सीढ़ियाँ चढ़ने पर साँस फूलती है", reported)
         self.assertIn("हाँ, सीढ़ियाँ चढ़ने पर साँस फूलती है", html)
         self.assertFalse(proj.incomplete)
         self.assertNotIn("यह कॉल अधूरी रही", html)
 
     def test_fever_clean_fever_is_a_clean_call_on_every_surface(self):
         proj, html = self.report(_FEVER, "clean_fever")
-        self.assertEqual(proj.red_flags, ())
         self.assertEqual(proj.yes_items, ())
-        self.assertEqual(self.alerts(proj).strip().splitlines(), ["& Gate Alerts", "- No positive gate alerts."])
+        self.assertEqual(proj.yes_items_en, ())
         self.assertEqual((proj.page2_unknown, proj.page2_unanswered), ((), ()))
-        # Every gate was answered "नहीं", so page two prints them as negatives rather than dropping them.
-        negatives = proj.doctor_markdown.split("### Pertinent Negatives", 1)[1]
-        self.assertIn("Clear: difficulty breathing, or chest pain or tightness.", negatives)
-        self.assertIn("Clear: jaundice, or bleeding from the nose, gums, or in the urine.", negatives)
+        md = proj.report_markdown
+        # Every gate was answered "नहीं", so the clear block prints them rather than dropping them.
+        clear_block = md.split("### Clear / No", 1)[1].split("\n### ", 1)[0]
+        self.assertIn("साँस लेने में तकलीफ़ है, या छाती में दर्द या जकड़न है", clear_block)
+        self.assertIn("आँखों या शरीर में पीलापन दिख रहा है, या नाक, मसूड़े या पेशाब से खून आ रहा है", clear_block)
+        self.assertIn("- None reported on this call.", md)
         self.assertIn("इस कॉल में कोई बात हाँ में दर्ज नहीं हुई।", html)
         self.assertNotIn('<ul class="yes">', html)
         self.assertFalse(proj.incomplete)
 
-    def test_fever_stopped_early_keeps_the_flags_it_got_and_the_questions_it_never_asked(self):
+    def test_fever_stopped_early_keeps_what_it_got_and_the_questions_it_never_asked(self):
         proj, html = self.report(_FEVER, "stopped_early")
         self.assertEqual(proj.close_reason, "caller_stop")
         self.assertTrue(proj.incomplete)
-        self.assertEqual(len(proj.red_flags), 3)
-        self.assertIn("RED_FLAG breathing_or_chest: difficulty breathing, or chest pain or tightness", proj.red_flags[2])
-        self.assertIn("हल्की साँस फूलती है, पर छाती में दर्द नहीं", proj.red_flags[2])
-        self.assertIn("तेज़ बुखार है — बिस्तर पर रहना पड़ता है", proj.red_flags[0])
+        self.assertEqual(len(proj.yes_items), 3)
+        breathing = next(x for x in proj.yes_items if "साँस लेने में तकलीफ़" in x)
+        self.assertIn("हल्की साँस फूलती है, पर छाती में दर्द नहीं", breathing)
+        self.assertIn("तेज़ बुखार है — बिस्तर पर रहना पड़ता है", proj.yes_items[0])
         # Stopped after the second warning gate: the remaining danger-sign and treatment questions are unasked,
         # never recorded as "no".
         groups = {group["title"]: list(group["items"]) for group in proj.page2_unasked}
         self.assertEqual(set(groups), {"खतरे की निशानी", "इलाज और संपर्क", "अंत"})
         self.assertEqual(groups["खतरे की निशानी"], ["बार-बार उल्टी हो रही है, या पतले दस्त आ रहे हैं"])
         self.assertIn("इस बुखार के लिए अब तक कोई दवा ली है, या डॉक्टर से दिखाया है", groups["इलाज और संपर्क"])
-        negatives = proj.doctor_markdown.split("### Pertinent Negatives", 1)[1]
-        self.assertIn("Call ended before every applicable question was asked.", negatives)
-        self.assertNotIn("Clear: repeated vomiting or loose stools.", negatives)
+        md = proj.report_markdown
+        not_asked = md.split("### Not asked", 1)[1].split("\n### ", 1)[0]
+        self.assertIn("Call ended before every applicable question was asked.", not_asked)
+        self.assertIn("बार-बार उल्टी हो रही है, या पतले दस्त आ रहे हैं", not_asked)
+        # Never asked is not the same as "she said no": the unasked gate stays out of the clear block.
+        self.assertNotIn("बार-बार उल्टी हो रही है, या पतले दस्त आ रहे हैं",
+                         md.split("### Clear / No", 1)[1].split("\n### ", 1)[0])
         self.assertIn("यह कॉल अधूरी रही।", html)
         self.assertIn("अभी नहीं पूछा गया", html)
         self.assertIn("बार-बार उल्टी हो रही है, या पतले दस्त आ रहे हैं", html)
@@ -596,6 +874,54 @@ class StorageTests(_TempDataDir):
         self.assertEqual(row["status"], "active")
         self.assertIsNone(row["ended_at"])
         self.assertEqual(row["audio_path"], "call_1.wav")
+
+    def test_save_report_text_stores_one_report_and_the_call_schema_has_no_split_columns(self):
+        """Step 4: one `summary_report` column replaces `summary_doctor` + `summary_patient` + `red_flags_json`."""
+        call_id = db.create_call(pack_id=_SHISHU)
+        db.save_report_text(call_id, "# Call report\n### Profile\n- Close reason: complete.\n", "सुनीता", "आरव 7 साल बेटा")
+        row = db.get_call(call_id)
+        self.assertEqual(row["summary_report"], "# Call report\n### Profile\n- Close reason: complete.\n")
+        self.assertEqual((row["patient_name"], row["roster_summary"]), ("सुनीता", "आरव 7 साल बेटा"))
+        columns = {r[1] for r in db.conn.execute("PRAGMA table_info(calls)")}
+        for gone in ("summary_doctor", "summary_patient", "red_flags_json"):
+            self.assertNotIn(gone, columns, f"the dead split column {gone} is still in the schema")
+        self.assertIn("summary_report", columns)
+
+    def test_opening_a_legacy_database_adds_summary_report_so_save_report_text_works(self):
+        """A clinic's existing `intake.db` predates the one `summary_report` column: it still has `summary_doctor`,
+        `summary_patient` and `red_flags_json`. `CREATE TABLE IF NOT EXISTS` is a no-op on it, so every report save
+        died with `sqlite3.OperationalError: no such column: summary_report` — the call finished and no report was
+        stored. This replays the real startup path in a fresh interpreter: `DATA_DIR` points at that file and the
+        only thing that runs the migration is the module import itself."""
+        with tempfile.TemporaryDirectory() as folder:
+            legacy = sqlite3.connect(str(Path(folder) / "intake.db"))
+            legacy.execute("CREATE TABLE calls (id INTEGER PRIMARY KEY AUTOINCREMENT, pack_id TEXT DEFAULT 'shishu-hi', patient_name TEXT DEFAULT '', "
+                           "roster_summary TEXT DEFAULT '', status TEXT DEFAULT 'active', started_at DATETIME DEFAULT CURRENT_TIMESTAMP, ended_at DATETIME, "
+                           "duration_sec INTEGER DEFAULT 0, audio_path TEXT DEFAULT '', transcript_json TEXT DEFAULT '[]', summary_doctor TEXT DEFAULT '', "
+                           "summary_patient TEXT DEFAULT '', red_flags_json TEXT DEFAULT '[]', caller_name TEXT DEFAULT '', user_role TEXT DEFAULT 'user', "
+                           "model_used TEXT DEFAULT '', voice_used TEXT DEFAULT '', telemetry_json TEXT DEFAULT '{}', events_json TEXT DEFAULT '[]', "
+                           "cursor_json TEXT DEFAULT '', share_token TEXT DEFAULT '', clinic_code TEXT DEFAULT '')")
+            legacy.execute("INSERT INTO calls (patient_name) VALUES ('legacy')")
+            legacy.commit()
+            self.assertNotIn("summary_report", {r[1] for r in legacy.execute("PRAGMA table_info(calls)")})
+            legacy.close()
+            script = (
+                "import json\n"
+                "from intake import db\n"
+                "out = {'columns': [r[1] for r in db.conn.execute('PRAGMA table_info(calls)')]}\n"
+                "db.save_report_text(1, '# Call report\\n- Close reason: caller stop.\\n', 'सुनीता', 'आरव 7 साल बेटा')\n"
+                "row = db.get_call(1)\n"
+                "out.update(report=row['summary_report'], roster=row['roster_summary'])\n"
+                "import intake.db as again\n"
+                "print(json.dumps(out))\n")
+            run = subprocess.run([sys.executable, "-c", script], cwd=str(Path(__file__).resolve().parents[1]),
+                                 env={**os.environ, "DATA_DIR": folder}, capture_output=True, text=True)
+            # The RED failure was exactly this: non-zero exit with "no such column: summary_report" in stderr.
+            self.assertEqual(run.returncode, 0, f"opening the legacy database failed: {run.stderr.strip()[-600:]}")
+            stored = json.loads(run.stdout.strip().splitlines()[-1])
+            self.assertIn("summary_report", stored["columns"])
+            self.assertEqual(stored["report"], "# Call report\n- Close reason: caller stop.\n")
+            self.assertEqual(stored["roster"], "आरव 7 साल बेटा")
 
     def test_ready_pdf_ignores_a_truncated_file(self):
         call_id = db.create_call()
@@ -733,7 +1059,7 @@ class BilingualFactualReportTests(unittest.TestCase):
             for sc in scenarios:
                 state = _replay(pack, sc)
                 proj = reports.project_summary(pack, state)
-                self.assertEqual(proj.patient_questions, (), f"{pack_id}:{sc} still emits patient_questions")
+                self.assertFalse(hasattr(proj, "patient_questions"), f"{pack_id}:{sc} still emits patient_questions")
                 for lang in ("hi", "en"):
                     with self.subTest(pack=pack_id, scenario=sc, lang=lang):
                         html = reports.render_patient_html(pack, _SAMPLE_CALL, proj, lang=lang)
@@ -750,7 +1076,7 @@ class BilingualFactualReportTests(unittest.TestCase):
 
     def test_build_and_ready_pdf_support_both_hi_and_en(self):
         pack = load_pack(_SHISHU)
-        state, _ = reports.replay_seed_scenario(pack, _scenario(pack, "red_flags"))
+        state, _ = reports.replay_seed_scenario(pack, _scenario(pack, "concerns"))
         cid = db.create_call(pack_id=_SHISHU, caller_name="सुनीता")
         db.save_cursor_state(cid, pack, state)
         db.complete_call(cid, 300)

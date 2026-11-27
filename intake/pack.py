@@ -14,7 +14,7 @@ from intake.models import SEP_SP, OptionSpec, PackConfig, QuestionKind, Question
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKS_DIR, DEFAULT_PACK_ID = REPO_ROOT / "packs", "shishu-hi"
 _CHOICE, _SEQS = (QuestionKind.SINGLE_CHOICE, QuestionKind.MULTI_CHOICE), ("skip_if", "followups", "score_rubric")
-_TEMPLATES, _DOCS, _MAPS = ("patient.html.j2", "clinician.md.j2", "pdf.css"), ("pack", "prompts", "decisions", "seed"), ("semantic_flags", "rules", "groups")
+_TEMPLATES, _DOCS, _MAPS = ("patient.html.j2", "pdf.css"), ("pack", "prompts", "decisions", "seed"), ("semantic_flags", "rules", "groups")
 _SHAPES = ((QuestionKind.SCORE, "score_rubric", "score needs >=2 rubric levels"), (QuestionKind.PROFILE, "requires_slot", "profile step needs requires_slot"))
 _THRESHOLDS = frozenset("""danger_now_min_yes caller_stop_min_yes
     mentions_profile_min_yes redact_patient_note_min_yes detail_present_min_yes jump_topic_min_yes

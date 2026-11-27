@@ -3387,7 +3387,7 @@ class ResumeRefusesTerminalCloseTests(unittest.TestCase):
                             st.phase, st.close_reason = Phase.CLOSING, reason
                             await ended._persist(st)
                             await asyncio.to_thread(db.complete_call, cid, 60, "call.wav")
-                            await asyncio.to_thread(db.save_report_text, cid, summary_doctor=f"report:{reason.value}")
+                            await asyncio.to_thread(db.save_report_text, cid, summary_report=f"report:{reason.value}")
 
                             await ws1.queue.put({"type": "hangup"})
                             await asyncio.wait_for(first, timeout=3)
@@ -3411,7 +3411,7 @@ class ResumeRefusesTerminalCloseTests(unittest.TestCase):
                             self.assertEqual(after["status"], "completed", f"{reason.value}: still finished")
                             self.assertIs(db.call_state_from_row(after).close_reason, reason,
                                           f"{reason.value}: the reason it really ended for survives the rejoin")
-                            self.assertEqual(after["summary_doctor"], f"report:{reason.value}",
+                            self.assertEqual(after["summary_report"], f"report:{reason.value}",
                                              f"{reason.value}: its report is never regenerated for a new reason")
             finally:
                 live._open_live = original  # type: ignore[assignment]
@@ -3872,7 +3872,7 @@ if __name__ == "__main__":
 class RedactedAckTests(unittest.TestCase):
     """A diagnosis the caller named is never read back, and a turn with no observation says so explicitly.
 
-    Call 9 of the `personas` suite (`p1_red_flags_and_redaction`) is the witness. The mother answered
+    Call 9 of the `personas` suite (`p1_concerns_and_redaction`) is the witness. The mother answered
     `fam_maternal_bleeding` with "...डॉक्टर ने हीमोफीलिया बताया था।". Policy recorded a plain
     `accept_form / in_domain` - no `RETAIN_OBSERVATION`, no `OTHER_FORM` - so `live.py` correctly sent no
     `noted_observation`. Gemini still opened the next turn with "मैंने यह नोट कर लिया है कि आपके मामा के बेटे को

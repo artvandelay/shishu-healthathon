@@ -80,6 +80,8 @@ ol li::marker { color: #DAA550; font-weight: 700; }
 h2 { margin: 16px 0 6px; font-size: 13pt; }
 .yes { margin: 0; padding: 0; list-style: none; }
 .yes li { margin: 0 0 6px; padding-left: 12px; border-left: 2px solid #DAA550; }
+.notes { margin: 0; padding: 0; list-style: none; }
+.notes li { margin: 0 0 6px; padding-left: 12px; border-left: 2px solid #8E95A3; }
 .calm { margin: 0; color: #565F75; }
 
 .universal {

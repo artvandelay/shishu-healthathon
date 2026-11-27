@@ -825,10 +825,12 @@ class Wave1ReducerAndReportInvariantTests(unittest.TestCase):
                     out.cursor == CursorStep(qid="birth_nicu", substep=SubStep.FOLLOWUP, followup_idx=1),
             }, f"cursor={out.cursor} followups={ {k: v.state.value for k, v in slots.items()} }")
 
-    def test_multi_topic_utterances_stay_in_verbatim_and_never_contaminate_patient_pdf(self):
+    def test_multi_topic_utterances_stay_in_verbatim_and_report_each_concern_on_its_own_child(self):
         # Call #32 in full: one sentence held a denial, three of Aman's findings, and later a family cancer plus a
-        # correction about Meera's jaundice. Every record kept the WHOLE sentence as patient-safe words, so Aman's
-        # page said "नीली लाइट" and the family question said "पीलिया".
+        # correction about Meera's jaundice. The unified report now quotes her whole sentence, attributed, under
+        # each concern it raised — so the invariant is no longer "hide her words from her sheet" but "every line
+        # names the child it is about, and the denial she gave in the same breath never becomes a concern".
+        label = str(self.shishu.report_cfg["caller_words_hi"])
         two = self.past_bridge((AMAN, MEERA))
         utt_a = ("नहीं, नीली लाइट में तो नहीं रखा था पर मेरे बड़े बेटे अमन को तीन बार खून चढ़ाना पड़ा है "
                  "और उसका पेट भी धीरे-धीरे बड़ा हो रहा है।")
@@ -839,18 +841,24 @@ class Wave1ReducerAndReportInvariantTests(unittest.TestCase):
         proj_a = reports.project_summary(self.shishu, turn_a)
         said_a = _said(utt_a)
         stated_a = ("body_transfusion", "body_blood_count", "body_tummy")
+        jaundice_stem = self.shishu.by_id["birth_jaundice"].stem
         observed = {
             **{f"A {qid} verbatim": utt_a in turn_a.answers[qid].verbatim_text for qid in stated_a},
-            **{f"A {qid} doctor_markdown": said_a in proj_a.doctor_markdown for qid in stated_a},
+            # No doctor/patient split: the one report carries the same attributed sentence as the sheet.
+            **{f"A {qid} attributed in the report": f"{label}: “{said_a}”" in proj_a.report_markdown for qid in stated_a},
             **{f"A {qid} patient_safe": turn_a.answers[qid].patient_safe_text == "" for qid in stated_a},
             **{f"A {qid} no_prefilled_followup": turn_a.answers[qid].followups == {} for qid in stated_a},
-            "A no phototherapy leak": not [line for line in (*proj_a.yes_items, *proj_a.patient_questions,
-                                                             *engine.recorded_concerns_summary(self.shishu, turn_a))
-                                            if "नीली लाइट" in line],
+            # The denial in the same breath did not turn the phototherapy question into a reported yes.
+            "A phototherapy stayed CLEAR": turn_a.answers["birth_jaundice"].state is AnswerStatus.CLEAR,
+            "A no phototherapy concern line": not [x for x in (*proj_a.yes_items, *engine.recorded_concerns_summary(self.shishu, turn_a))
+                                                    if jaundice_stem in x],
+            # Every reported line names the boy it is about, so the denial cannot read as Meera's answer.
+            "A every concern is scoped to Aman": bool(proj_a.yes_items) and all(
+                "अमन 6 साल बेटा" in x for x in proj_a.yes_items),
         }
-        for label, ok in observed.items():
-            with self.subTest(turn="A", invariant=label):
-                self.assertTrue(ok, f"{label}: {self._leak_context(proj_a, utt_a, stated_a)}")
+        for name, ok in observed.items():
+            with self.subTest(turn="A", invariant=name):
+                self.assertTrue(ok, f"{name}: {self._leak_context(proj_a, utt_a, stated_a)}")
 
         utt_b = ("हां, बुआ को कैंसर हुआ था और एक बात पहले नीली लाइट वाले सवाल में गलती से मना कर दिया था। "
                  "मीरा को जन्म पर पीलिया हुआ था।")
@@ -860,25 +868,30 @@ class Wave1ReducerAndReportInvariantTests(unittest.TestCase):
         proj_b = reports.project_summary(self.shishu, turn_b)
         said_b = _said(utt_b)
         both_b = ("fam_cancer", "birth_jaundice")
-        jaundice_stem, cancer_stem = self.shishu.by_id["birth_jaundice"].stem, self.shishu.by_id["fam_cancer"].stem
-        jaundice_lines = [x for x in (*proj_b.yes_items, *proj_b.patient_questions) if jaundice_stem in x]
-        cancer_lines = [x for x in (*proj_b.yes_items, *proj_b.patient_questions) if cancer_stem in x]
+        cancer_stem = self.shishu.by_id["fam_cancer"].stem
+        jaundice_lines = [x for x in proj_b.yes_items if jaundice_stem in x]
+        cancer_lines = [x for x in proj_b.yes_items if cancer_stem in x]
+        # The `head` of a reported line is `stem (scope) — label: “her words”`. Scope lives in the head; her quoted
+        # sentence can legitimately mention both children in one breath.
         observed_b = {
             **{f"B {qid} verbatim": utt_b in turn_b.answers[qid].verbatim_text for qid in both_b},
-            **{f"B {qid} doctor_markdown": said_b in proj_b.doctor_markdown for qid in both_b},
+            **{f"B {qid} attributed in the report": f"{label}: “{said_b}”" in proj_b.report_markdown for qid in both_b},
             **{f"B {qid} patient_safe": turn_b.answers[qid].patient_safe_text == "" for qid in both_b},
             "B fam_who settled": turn_b.cursor.qid != "fam_cancer",
             "B jaundice_days not pre-filled": turn_b.answers["birth_jaundice"].followups == {},
-            "B jaundice line reaches the PDF": bool(jaundice_lines),
-            "B jaundice line has no बुआ/कैंसर": bool(jaundice_lines) and not [x for x in jaundice_lines if "बुआ" in x or "कैंसर" in x],
-            "B cancer line reaches the PDF": bool(cancer_lines),
-            "B cancer line has no नीली लाइट/पीलिया": bool(cancer_lines) and not [x for x in cancer_lines if "नीली लाइट" in x or "पीलिया" in x],
-            "B patient questions stay distinct": len(proj_b.patient_questions) == len(set(proj_b.patient_questions)),
+            # Each concern keeps its own line: one scoped to Meera's jaundice, one about the family's cancer.
+            "B jaundice line reaches the report": bool(jaundice_lines),
+            "B jaundice head is scoped to Meera": bool(jaundice_lines) and all(
+                "मीरा 2 साल बेटी" in x.split(" — ", 1)[0] for x in jaundice_lines),
+            "B cancer line reaches the report": bool(cancer_lines),
+            "B cancer head carries no child scope": bool(cancer_lines) and not [
+                x for x in cancer_lines if "मीरा" in x.split(" — ", 1)[0] or "अमन" in x.split(" — ", 1)[0]],
             "B items never share a question": not (set(jaundice_lines) & set(cancer_lines)),
+            "B report has both stems": jaundice_stem in proj_b.report_markdown and cancer_stem in proj_b.report_markdown,
         }
-        for label, ok in observed_b.items():
-            with self.subTest(turn="B", invariant=label):
-                self.assertTrue(ok, f"{label}: {self._leak_context(proj_b, utt_b, both_b)}")
+        for name, ok in observed_b.items():
+            with self.subTest(turn="B", invariant=name):
+                self.assertTrue(ok, f"{name}: {self._leak_context(proj_b, utt_b, both_b)}")
 
     def test_a_clarify_at_the_closing_open_capture_never_hangs_up_the_call(self):
         # Bug (Wave 1 review): at `close_anything_else` — the LAST open question — "नहीं, बस थैलेसीमिया का मतलब
@@ -980,9 +993,9 @@ class Wave1ReducerAndReportInvariantTests(unittest.TestCase):
 
     @staticmethod
     def _leak_context(proj: reports.ProjectedReport, utterance: str, qids) -> str:
-        """The patient-facing lines that quote the whole sentence onto every item it mentions."""
+        """The reported lines that quote the whole sentence onto every item it mentions."""
         return (f"utterance={utterance!r} qids={tuple(qids)} "
-                f"yes_items={list(proj.yes_items)} patient_questions={list(proj.patient_questions)}")
+                f"yes_items={list(proj.yes_items)} report={proj.report_markdown[:400]!r}")
 
 
 if __name__ == "__main__":

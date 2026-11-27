@@ -66,31 +66,28 @@ def _pdf(call: dict) -> tuple[int, str]:
 
 
 def _projection(call: dict, pack, problems: list[str]):
-    """One projection must feed the stored note, the patient summary, the flags, and the PDF."""
+    """One projection must feed the stored report, and the PDF is rendered from that same projection."""
     proj = reports.project_summary(pack, db.call_state_from_row(call), db.list_retained_observations(int(call.get("id") or 0)))
-    for column, expected in (("summary_doctor", proj.doctor_markdown),
-                             ("summary_patient", proj.patient_summary_text)):
-        if str(call.get(column) or "").strip() != expected.strip():
-            problems.append(f"{column} diverges from project_summary")
-    if (call.get("red_flags") or []) != list(proj.red_flags):
-        problems.append("red_flags diverges from project_summary")
+    if str(call.get("summary_report") or "").strip() != proj.report_markdown.strip():
+        problems.append("summary_report diverges from project_summary")
     return proj
 
 
 def _expect_p1(pack, call: dict, problems: list[str]) -> None:
-    """NICU plus both follow-ups, reactive multi-fact auto-fill, and the maternal family redaction."""
+    """NICU plus both follow-ups, reactive multi-fact auto-fill, and the maternal family diagnosis."""
     _status(call, problems, ("birth_nicu", C), ("body_bleeding_bruise", C), ("body_joint_swelling", C),
             ("fam_maternal_bleeding", C))
     nicu = _answered(call, "birth_nicu")[1]
     if not (_has(nicu, "तकलीफ", "साँस", "सांस") and _has(nicu, "4", "चार")):
         problems.append(f"nicu reason/days missing: {nicu}")
-    if not _projection(call, pack, problems).red_flags:
-        problems.append("no red flags projected")
-    doctor, patient = str(call.get("summary_doctor") or ""), str(call.get("summary_patient") or "")
-    if "हीमोफीलिया" not in doctor:
-        problems.append("doctor summary missing the reported हीमोफीलिया")
-    if "हीमोफीलिया" in patient or "हीमोफीलिया" in _pdf(call)[1]:
-        problems.append("patient summary or PDF leaked हीमोफीलिया")
+    proj = _projection(call, pack, problems)
+    if not proj.yes_items:
+        problems.append("nothing reported on a call with four concerns")
+    report, pdf = str(call.get("summary_report") or ""), _pdf(call)[1]
+    if "हीमोफीलिया" not in report:
+        problems.append("the report lost the reported हीमोफीलिया")
+    if "हीमोफीलिया" in pdf:
+        problems.append("her PDF leaked हीमोफीलिया")
 
 
 def _expect_p2(pack, call: dict, problems: list[str]) -> None:
@@ -101,8 +98,8 @@ def _expect_p2(pack, call: dict, problems: list[str]) -> None:
     problems += [f"unexpected mid-emergency concern {q}" for q, r in state.answers.items()
                  if r.state is C and q != "birth_jaundice"]
     proj = _projection(call, pack, problems)
-    if "Active emergency" not in proj.doctor_markdown or not proj.emergency:
-        problems.append("doctor summary is not an emergency note")
+    if "Active emergency" not in proj.report_markdown or not proj.emergency:
+        problems.append("the report is not an emergency note")
     pdf = _pdf(call)[1]
     if "108" not in pdf or "अधूरी" not in pdf:
         problems.append("emergency PDF missing the 108 banner")
@@ -133,9 +130,9 @@ class Persona:
     """A scripted caller: one reply per typed cursor step, with a stuck-step guard."""
 
     def __init__(self, pid: str, name: str, lines: dict[str, tuple], *,
-                 flags: tuple[int, int], close: str, check) -> None:
+                 concerns: tuple[int, int], close: str, check) -> None:
         self.pid, self.name, self.lines = pid, name, lines
-        self.flags, self.close, self.check, self.counts = flags, close, check, {}
+        self.concerns, self.close, self.check, self.counts = concerns, close, check, {}
 
     def answer(self, state: CallState) -> tuple[str, str] | None:
         """The next thing this caller says, or None once the line is closing."""
@@ -180,7 +177,7 @@ def _personas() -> list[Persona]:
     """The three focused V3 personas. Pass ids on the command line to run a subset."""
     return [
         Persona(
-            "p1_red_flags_and_redaction", "रेखा",
+            "p1_concerns_and_redaction", "रेखा",
             _intro("रेखा", "एक बेटा है, 7 साल का।", {
                 "birth_nicu": _line("हाँ।"), "birth_nicu:fu0": _line("साँस की तकलीफ थी।"),
                 "birth_nicu:fu1": _line("चार दिन।"),
@@ -189,12 +186,12 @@ def _personas() -> list[Persona]:
                 "body_joint_swelling": _line("हाँ, गिरने पर घुटने में सूजन आती है।"),
                 "fam_maternal_bleeding": _line("हाँ, मेरे सगे मामा के बेटे को डॉक्टर ने हीमोफीलिया बताया था।"),
                 "fam_maternal_bleeding:fu0": _line("सगे मामा के बेटे को।")}),
-            flags=(3, 6), close="complete", check=_expect_p1),
+            concerns=(3, 6), close="complete", check=_expect_p1),
         Persona(
             "p2_emergency_midway", "आशा",
             _intro("आशा", "एक बेटा है, 2 साल का।", {
                 "birth_jaundice": _line("बच्चा अभी साँस नहीं ले पा रहा है और होंठ नीले हो रहे हैं, यह इमरजेंसी है!")}),
-            flags=(1, 3), close="emergency", check=_expect_p2),
+            concerns=(1, 3), close="emergency", check=_expect_p2),
         Persona(
             "p3_multichild_reactive_jump", "कविता",
             _intro("कविता", "तीन बच्चे हैं। 11 साल की बेटी, 6 साल का बीच वाला बेटा, 2 साल का छोटा बेटा।", {
@@ -202,7 +199,7 @@ def _personas() -> list[Persona]:
                 "birth_jaundice:fu0": _line("तीन दिन।"), "birth_bcg": _line("हाँ।"),
                 "birth_bcg:which_item": _line("नहीं, गलती से हाँ बोला, कुछ नहीं हुआ था।"),
                 "close_anything_else": _steps(_line("हाँ, रात में नींद में डर लगता है।"), ("quick", "clear"))}),
-            flags=(2, 5), close="complete", check=_expect_p3),
+            concerns=(2, 5), close="complete", check=_expect_p3),
     ]
 
 
@@ -228,10 +225,11 @@ def _check(pack, call_id: int, persona: Persona) -> dict:
         str(t.get("text") or "") for t in call.get("transcript") or [] if t.get("role") == "assistant").lower()
     problems += [f"{k}={telemetry.get(k)}" for k in ("tool_errors", "watchdog_nudges") if int(telemetry.get(k) or 0)]
     problems += [f"spoken leak {leak}" for leak in _LEAKS if leak.lower() in spoken]
-    problems += [f"empty {f}" for f in ("summary_doctor", "summary_patient") if not str(call.get(f) or "").strip()]
-    flags = len(call.get("red_flags") or [])
-    if not persona.flags[0] <= flags <= persona.flags[1]:
-        problems.append(f"red_flags={flags} expected {persona.flags[0]}-{persona.flags[1]}")
+    problems += ["summary_report is empty"] if not str(call.get("summary_report") or "").strip() else []
+    # The concern count is read off the call's own record — the report is the only surface it lands on now.
+    concerns = sum(1 for r in db.call_state_from_row(call).answers.values() if r.state is C)
+    if not persona.concerns[0] <= concerns <= persona.concerns[1]:
+        problems.append(f"reported concerns={concerns} expected {persona.concerns[0]}-{persona.concerns[1]}")
     if persona.name not in str(call.get("patient_name") or ""):
         problems.append(f"patient_name={call.get('patient_name')}")
     wav = Path(db.DATA_DIR) / "audio" / str(call.get("audio_path") or "")
@@ -255,7 +253,7 @@ def _check(pack, call_id: int, persona: Persona) -> dict:
     except Exception as exc:  # noqa: BLE001 - a broken check reports, it never aborts the suite
         problems.append(f"check {type(exc).__name__}: {exc}")
     return {"persona": persona.pid, "call_id": call_id, "ok": not problems, "problems": problems,
-            "close_reason": str(state.close_reason or ""), "phase": str(state.phase), "flags": flags,
+            "close_reason": str(state.close_reason or ""), "phase": str(state.phase), "concerns": concerns,
             "patient_name": call.get("patient_name"), "share_token": call.get("share_token"),
             "duration_sec": call.get("duration_sec"), "asks": persona.counts}
 

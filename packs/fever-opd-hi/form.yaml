@@ -332,17 +332,15 @@ report:
   - इमरजेंसी डॉक्टर से अभी पूछूँ कि यह खतरे की निशानी कितनी गंभीर है और मुझे अस्पताल या 108 पर क्या करना है?
   - अभी साँस और हालत को स्थिर करने के लिए डॉक्टर कौन सी जाँच तुरंत करेंगे?
   - अस्पताल पहुँचकर डॉक्टर को कौन सी चेतावनी की बातें और पहले की बीमारी बतानी चाहिए?
-  yes_header_hi: 'जो बातें हाँ में दर्ज हुईं:'
-  yes_empty_hi: इस बातचीत में कोई हाँ वाला बिंदु दर्ज नहीं हुआ।
   question_header_hi: 'डॉक्टर से पूछने के सवाल:'
   concern_question_scope_prefix_hi: ''
   concern_question_with_note_hi: '{prefix}मैंने बताया कि {note}। डॉक्टर, इसकी जाँच क्या होनी चाहिए?'
   concern_question_open_hi: मैंने कॉल के अंत में एक और बात दर्ज करवाई थी। डॉक्टर, उस पर क्या सलाह है?
   concern_question_stem_hi: मैंने हाँ कहा कि {head}। डॉक्टर, अब क्या जाँच करनी चाहिए?
-  yes_summary_open_hi: अन्य बात — {note}।
-  yes_summary_open_empty_hi: डॉक्टर को बताने के लिए एक अन्य बात दर्ज की गई।
-  yes_summary_stem_hi: '{head} — {note}।'
-  yes_summary_stem_no_note_hi: '{head}।'
+  notes_header_hi: 'अन्य बातें जो साझा की गईं:'
+  notes_header_en: 'Additional notes shared:'
+  caller_words_hi: 'मरीज़ के शब्दों में'
+  caller_words_en: "Caller's words"
   universal_advice_title_hi: सभी के लिए एक जैसी सलाह
   universal_advice_why_hi: यह किसी एक मरीज़ की जाँच के बारे में नहीं है।
   universal_advice_line_hi: बुखार में पानी और तरल ज़्यादा लें, और कोई दवा अपने मन से शुरू या बंद न करें — डॉक्टर से
@@ -361,18 +359,7 @@ report:
   - अक्टूबर
   - नवम्बर
   - दिसम्बर
-  clinician_headings:
-    patient_profile: '### Patient Profile & Chief Complaint'
-    alerts: '### Positive Red Flags & Gate Alerts'
-    fever: '### Fever History'
-    danger: '### Danger Signs (Red Flags)'
-    treatment: '### Treatment & Exposure History'
-    negatives: '### Pertinent Negatives'
-  nothing_reported_en: None reported in this call.
-  no_alerts_en: No positive gate alerts.
-  no_negatives_en: No confirmed negatives were recorded.
   partial_call_en: Call ended before every applicable question was asked.
-  emergency_flag_en: 'emergency: active danger sign now; hospital or 108'
   emergency_line_en: Active emergency. Caller was told to go to the nearest hospital or call 108.
   minute_unit: मिनट
   second_unit: सेकंड

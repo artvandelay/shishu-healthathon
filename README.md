@@ -2,9 +2,9 @@
 
 SHISHU is an offline-renderable Hindi voice intake call. A caller speaks with the app
 before meeting a doctor or health worker; the app asks a pack-defined set of structured
-questions, records what was said verbatim, and then projects one finished call into two
-artifacts with **zero post-call LLM calls**: a Hindi Patient PDF and an English clinician
-note.
+questions, records what was said verbatim, and then projects one finished call into one
+report with **zero post-call LLM calls**: the same facts as a bilingual Patient PDF and as
+the Markdown report the dashboard shows.
 
 V3 is an **engine**, not a rare-disease app. The clinical content — every question, every
 Hindi string, every template — lives in a declarative pack under `packs/`. Adding a second
@@ -45,7 +45,7 @@ Three invariants hold for every pack:
 | `decisions.py` | Single-pass `gemini-decision-1` multimodal turn classifier with slim retry fallback |
 | `extractor.py` | Schema-validated profile extractor (typed slot values and roster out of free speech) |
 | `live.py` | Gemini Live AAD voice puppet, `TurnPhase` + `epoch` state machine, `?resume=<share_token>` continuity |
-| `reports.py` | `project_summary` plus the Jinja → WeasyPrint Patient PDF and clinician markdown |
+| `reports.py` | `project_summary` → one report, plus the Jinja → WeasyPrint Patient PDF |
 | `db.py` | Atomic SQLite: calls, transcripts, events, bug reports, share tokens, and semantic ledger |
 | `app.py` | FastAPI routes, HMAC cookie auth, sliding-window rate limits, `/ws/live` |
 | `static/` | `login.html`, `call.html`, `admin.html`, `styles.css`, `call.js`, `admin.js` |
@@ -73,7 +73,7 @@ packs/<pack_id>/
   decisions.yaml   calibrated thresholds for the 21 required Decision API gates
   seed.yaml        scripted regression calls, replayed through the real reducer
   assets/          logo, Devanagari font, consent PDF
-  templates/       patient.html.j2, clinician.md.j2, pdf.css
+  templates/       patient.html.j2, pdf.css
 ```
 
 `form.yaml` is the contract. `intake/pack.py` validates it at startup: every question's

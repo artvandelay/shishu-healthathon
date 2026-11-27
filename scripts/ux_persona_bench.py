@@ -177,10 +177,10 @@ def server_summary(detail: dict[str, Any]) -> dict[str, Any]:
             "close_reason": cursor.get("close_reason"), "duration_sec": detail.get("duration_sec"),
             "patient_name": detail.get("patient_name") or detail.get("mother_name"), "answers": len(answers),
             "concerns": sorted(q for q, r in answers.items() if verdict(r) in ("concern", "yes", "positive")),
-            "red_flags": len(detail.get("red_flags") or ()), "server_turns": telemetry.get("user_turns"),
+            "server_turns": telemetry.get("user_turns"),
             "server_latency_median_ms": stat(latencies, np.median),
-            "has_doctor_summary": bool(str(detail.get("summary_doctor") or "").strip()),
-            "has_patient_summary": bool(str(detail.get("summary_patient") or detail.get("summary_mother") or "").strip())}
+            # One report per call now: `summary_report` in V3, or the old flat `summary_mother` on the prod box.
+            "has_report": bool(str(detail.get("summary_report") or detail.get("summary_mother") or "").strip())}
 
 def pdf_text(payload: bytes) -> str:
     """Extract report text, so the log can prove the diagnosis never leaked into the PDF."""

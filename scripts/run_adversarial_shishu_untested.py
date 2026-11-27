@@ -317,17 +317,14 @@ def _na(ev: Ev, qid: str) -> bool:
 
 
 def _parity(ev: Ev, cl: Checklist) -> Any:
-    """One projection must feed the stored note, the patient summary, and the flags.
+    """One projection must feed the stored report.
 
     The retained observations are passed in exactly as the live PDF build does: without them a call with an
-    unlisted aside would "diverge" on `summary_doctor` for a reason that is the harness's, not the server's.
+    unlisted aside would "diverge" on `summary_report` for a reason that is the harness's, not the server's.
     """
     call, proj = ev.call, reports.project_summary(ev.pack, ev.state, ev.retained_ev)
-    diverged = [c for c, f in (("summary_doctor", "doctor_markdown"), ("summary_patient", "patient_summary_text"))
-                if _norm(call.get(c)) != _norm(getattr(proj, f))]
-    if list(call.get("red_flags") or []) != list(proj.red_flags):
-        diverged.append("red_flags")
-    cl.check("project_summary parity", not diverged, f"diverges: {diverged}")
+    cl.check("project_summary parity", _norm(call.get("summary_report")) == _norm(proj.report_markdown),
+             f"summary_report diverges ({len(_norm(call.get('summary_report')))} vs {len(_norm(proj.report_markdown))} chars)")
     ev.proj = proj
     return proj
 
@@ -347,9 +344,7 @@ def _common(ev: Ev, cl: Checklist, *, case: str) -> None:
         cl.check("watchdog closed on silence", auto == ["silence"], f"auto_close={auto}")
     leaks = [leak for leak in _LEAKS if leak.lower() in ev.spoken().lower()]
     cl.check("zero spoken leaks", not leaks, f"leaks={leaks}")
-    cl.check("both summaries written",
-             all(str(ev.call.get(f) or "").strip() for f in ("summary_doctor", "summary_patient")), "a summary is empty")
-    cl.check("red flags reported", bool(ev.call.get("red_flags")), "no red flags projected")
+    cl.check("the report is written", bool(_norm(ev.call.get("summary_report"))), "summary_report is empty")
     cl.check("stereo 16 kHz WAV", ev.wav_shape == (2, RATE), f"wav is {ev.wav_shape}")
     cl.check("patient PDF exists", bool(ev.pages) and bool(_norm(ev.pdf_text)), "missing pdf")
     _parity(ev, cl)
@@ -557,9 +552,9 @@ def _check_a4(ev: Ev, cl: Checklist) -> dict[str, Any]:
     woke = [qid for qid in pruned if not _na(ev, qid)]
     cl.check("4B the three pruned child gates stay NOT_APPLICABLE", not woke,
              f"woken={[(qid, str(_answered(ev, qid)[0])) for qid in woke]}")
-    doctor = _norm(ev.call.get("summary_doctor"))
-    leaked = [qid for qid in (*pruned, "ever_pregnant") if _norm(ev.pack.by_id[qid].need) in doctor]
-    cl.check("4B pruned gates never reached the doctor note", not leaked, f"leaked={leaked}")
+    report = _norm(ev.call.get("summary_report"))
+    leaked = [qid for qid in (*pruned, "ever_pregnant") if _norm(ev.pack.by_id[qid].need) in report]
+    cl.check("4B pruned gates never reached the report", not leaked, f"leaked={leaked}")
     pdf = _flat(ev.pdf_text)
     leaked_pdf = [qid for qid, needles in _PRUNE_PDF.items() if all(n in pdf for n in needles)]
     cl.check("4B pruned gates never reached the patient PDF", not leaked_pdf, f"leaked={leaked_pdf}")
@@ -607,8 +602,8 @@ def _check_a4(ev: Ev, cl: Checklist) -> dict[str, Any]:
     dirty = [label for label in unasked_labels if any(na and na in _norm(label) for na in na_labels)]
     cl.check("4D page2_unasked omits every NOT_APPLICABLE gate",
              bool(unasked_labels) and not dirty, f"unasked={len(unasked_labels)} dirty={dirty[:3]}")
-    cl.check("4D the clinician note records the silence close",
-             "Close reason: silence." in _norm(ev.call.get("summary_doctor")), "doctor note lost the close reason")
+    cl.check("4D the report records the silence close",
+             "Close reason: silence." in _norm(ev.call.get("summary_report")), "the report lost the close reason")
     # 4E - a SILENCE-closed call is finished: `?resume=` restores a dropped line, never a call that ended on its own
     # terms. It used to reopen this row, wipe its reason, and re-finalize it as CALLER_STOP.
     probe = p.probe or {}
@@ -1292,11 +1287,8 @@ def _rendered(pack_id: str, state_json: str) -> tuple[int, str]:
 def _finish(ev: Ev) -> Ev:
     """Fill the projection-derived fields a live run gets from SQLite, so parity is graded the same way."""
     ev.proj = reports.project_summary(ev.pack, ev.state, ())
-    for key, value in (("summary_doctor", ev.proj.doctor_markdown),
-                       ("summary_patient", ev.proj.patient_summary_text),
-                       ("red_flags", list(ev.proj.red_flags))):
-        if key not in ev.pinned:
-            ev.call = {**ev.call, key: value}
+    if "summary_report" not in ev.pinned:
+        ev.call = {**ev.call, "summary_report": ev.proj.report_markdown}
     if "pdf" not in ev.pinned:
         ev.pages, ev.pdf_text = _rendered(ev.pack.id, json.dumps(ev.state.to_dict(), sort_keys=True))
     return ev
@@ -1454,13 +1446,12 @@ def _common_mutations(case: str) -> list[tuple[str, str, Any]]:
         watchdog,
         ("a spoken leak appeared", "zero spoken leaks",
          lambda ev: call(ev, transcript=[*(ev.call.get("transcript") or []), {"role": "assistant", "text": "हीमोफीलिया क्या है?"}])),
-        ("the patient summary was lost", "both summaries written", lambda ev: call(ev, summary_patient="")),
-        ("no red flag was projected", "red flags reported", lambda ev: call(ev, red_flags=[])),
+        ("the report was never written", "the report is written", lambda ev: call(ev, summary_report="")),
         ("the WAV came back mono", "stereo 16 kHz WAV", lambda ev: setattr(ev, "wav_shape", (1, RATE))),
         ("the PDF is missing", "patient PDF exists",
          lambda ev: (setattr(ev, "pinned", ev.pinned | {"pdf"}), setattr(ev, "pages", 0), setattr(ev, "pdf_text", ""))),
-        ("the stored note drifted from the projection", "project_summary parity",
-         lambda ev: call(ev, summary_doctor="### Patient Profile & Chief Complaint\n- nothing")),
+        ("the stored report drifted from the projection", "project_summary parity",
+         lambda ev: call(ev, summary_report="### Profile\n- nothing")),
     ]
 
 
@@ -1567,8 +1558,8 @@ def _mutations_a4() -> list[tuple[str, str, Any]]:
          lambda ev: answers(ev, ever_pregnant=_rec(CL))),
         ("a pruned child gate was woken by the claim", "4B the three pruned child gates stay NOT_APPLICABLE",
          lambda ev: answers(ev, mod_heavy_periods=_rec(C, "मासिक में बहुत ज़्यादा खून आता है।"))),
-        ("a pruned gate reached the doctor note", "4B pruned gates never reached the doctor note",
-         lambda ev: call(ev, summary_doctor=f"{ev.call.get('summary_doctor') or ''}\n{ev.pack.by_id['mod_heavy_periods'].need}")),
+        ("a pruned gate reached the report", "4B pruned gates never reached the report",
+         lambda ev: call(ev, summary_report=f"{ev.call.get('summary_report') or ''}\n{ev.pack.by_id['mod_heavy_periods'].need}")),
         ("a pruned gate reached the patient PDF", "4B pruned gates never reached the patient PDF",
          lambda ev: (setattr(ev, "pinned", ev.pinned | {"pdf"}),
                      setattr(ev, "pdf_text", ev.pdf_text + " " + " ".join(sum(_PRUNE_PDF.values(), ()))))),
@@ -1603,8 +1594,8 @@ def _mutations_a4() -> list[tuple[str, str, Any]]:
          lambda ev: setattr(ev, "state", ev.state.model_copy(update={"close_reason": CloseReason.COMPLETE}))),
         ("a pruned gate was listed as unasked", "4D page2_unasked omits every NOT_APPLICABLE gate",
          lambda ev: _drop_answer(ev, "mod_heavy_periods")),
-        ("the doctor note lost the close reason", "4D the clinician note records the silence close",
-         lambda ev: call(ev, summary_doctor="### Patient Profile & Chief Complaint\n- Close reason: complete.")),
+        ("the report lost the close reason", "4D the report records the silence close",
+         lambda ev: call(ev, summary_report="### Profile\n- Close reason: complete.")),
         ("the resume probe was never attempted", "4E the post-silence resume probe was recorded",
          lambda ev: persona(ev, probe={"attempted": False, "reopened": False, "call_id": 0})),
         ("the finished call was reopened as itself", "4E the resume was refused and minted a new call",

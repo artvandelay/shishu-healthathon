@@ -30,11 +30,19 @@ def seed_once() -> None:
 
     Seeding is no longer a side effect of the app lifespan (it is gated behind `SEED_DEMO_CALLS`), so the
     tests that need finished calls ask for them here instead of hoping the boot path did it.
+
+    `reports.ensure_seeded` only fills a pack whose table is *empty*, so a module that runs first and leaves a
+    single call behind would silently give this module a partial set (4 instead of 6 seeded calls). The demo rows
+    are fixtures of this module alone, so they are re-created from scratch once.
     """
     global _SEEDED
-    if not _SEEDED:
-        reports.ensure_seeded()
-        _SEEDED = bool(db.list_calls())
+    if _SEEDED:
+        return
+    with db._LOCK:
+        db.conn.execute("DELETE FROM calls")
+        db.conn.commit()
+    reports.ensure_seeded()
+    _SEEDED = bool(db.list_calls())
 
 
 class AppTestCase(unittest.TestCase):

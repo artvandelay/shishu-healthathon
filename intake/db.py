@@ -11,13 +11,13 @@ from .turns import CursorAction, DecisionReason, Disposition, DomainFit, Evidenc
 DATA_DIR = os.environ.get("DATA_DIR", str(Path(__file__).resolve().parent / "storage"))
 DB_PATH = Path(DATA_DIR) / "intake.db"
 _LOCK, _EVENT_CAP, _MIN_TOKEN = threading.Lock(), 600, 8
-_JSON = (("red_flags_json", "red_flags", list), ("transcript_json", "transcript", list), ("telemetry_json", "telemetry", dict),
+_JSON = (("transcript_json", "transcript", list), ("telemetry_json", "telemetry", dict),
          ("events_json", "events", list), ("cursor_json", "cursor_state", dict))
 _LISTED = ("id, pack_id, patient_name, roster_summary, status, started_at, ended_at, duration_sec, audio_path, caller_name, "
-           "user_role, model_used, voice_used, clinic_code, share_token, red_flags_json")
+           "user_role, model_used, voice_used, clinic_code, share_token")
 _CALLS = ("CREATE TABLE IF NOT EXISTS calls (id INTEGER PRIMARY KEY AUTOINCREMENT, pack_id TEXT DEFAULT 'shishu-hi', patient_name TEXT DEFAULT '', roster_summary TEXT DEFAULT '', status TEXT DEFAULT 'active', "
-          "started_at DATETIME DEFAULT CURRENT_TIMESTAMP, ended_at DATETIME, duration_sec INTEGER DEFAULT 0, audio_path TEXT DEFAULT '', transcript_json TEXT DEFAULT '[]', red_flags_json TEXT DEFAULT '[]', "
-          "summary_doctor TEXT DEFAULT '', summary_patient TEXT DEFAULT '', caller_name TEXT DEFAULT '', user_role TEXT DEFAULT 'user', model_used TEXT DEFAULT '', voice_used TEXT DEFAULT '', "
+          "started_at DATETIME DEFAULT CURRENT_TIMESTAMP, ended_at DATETIME, duration_sec INTEGER DEFAULT 0, audio_path TEXT DEFAULT '', transcript_json TEXT DEFAULT '[]', "
+          "summary_report TEXT DEFAULT '', caller_name TEXT DEFAULT '', user_role TEXT DEFAULT 'user', model_used TEXT DEFAULT '', voice_used TEXT DEFAULT '', "
           "telemetry_json TEXT DEFAULT '{}', events_json TEXT DEFAULT '[]', cursor_json TEXT DEFAULT '', share_token TEXT DEFAULT '', clinic_code TEXT DEFAULT '')")
 _BUGS = ("CREATE TABLE IF NOT EXISTS bug_reports (id INTEGER PRIMARY KEY AUTOINCREMENT, call_id INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, "
          "reporter TEXT DEFAULT '', category TEXT DEFAULT '', note TEXT DEFAULT '', call_elapsed_sec INTEGER DEFAULT 0, snapshot_json TEXT DEFAULT '{}')")
@@ -35,11 +35,22 @@ _POLICY_DECISIONS = ("CREATE TABLE IF NOT EXISTS policy_decisions (id INTEGER PR
 for _sub in ("", "audio", "pdfs"): (Path(DATA_DIR) / _sub).mkdir(parents=True, exist_ok=True)
 conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
 conn.row_factory = sqlite3.Row
-with _LOCK:
-    for _sql in ("PRAGMA journal_mode=WAL", "PRAGMA busy_timeout=5000", _CALLS, _BUGS, _TURN_EVIDENCE, _TURN_INTERPRETATIONS, _CLAIMS, _POLICY_DECISIONS,
-                 "CREATE TABLE IF NOT EXISTS server_secrets (key TEXT PRIMARY KEY, value TEXT)",
-                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_calls_token ON calls(share_token) WHERE share_token != ''"): conn.execute(_sql)
-    conn.commit()
+_MIGRATIONS = (("summary_report", "TEXT DEFAULT ''"),)  # columns added after a database may already exist
+def _migrate() -> None:
+    """Add any column `CREATE TABLE IF NOT EXISTS` cannot: on a legacy file it is a no-op, and an old `calls`
+    table keeps its own shape, so `save_report_text` failed with "no such column: summary_report"."""
+    have = {row[1] for row in conn.execute("PRAGMA table_info(calls)")}
+    for name, decl in _MIGRATIONS:
+        if name not in have: conn.execute(f"ALTER TABLE calls ADD COLUMN {name} {decl}")
+def init_db() -> None:
+    """Create or upgrade the schema. Runs once at import, so opening a legacy database migrates it."""
+    with _LOCK:
+        for _sql in ("PRAGMA journal_mode=WAL", "PRAGMA busy_timeout=5000", _CALLS, _BUGS, _TURN_EVIDENCE, _TURN_INTERPRETATIONS, _CLAIMS, _POLICY_DECISIONS,
+                     "CREATE TABLE IF NOT EXISTS server_secrets (key TEXT PRIMARY KEY, value TEXT)",
+                     "CREATE UNIQUE INDEX IF NOT EXISTS idx_calls_token ON calls(share_token) WHERE share_token != ''"): conn.execute(_sql)
+        _migrate()
+        conn.commit()
+init_db()
 def _json(raw: Any, default: type) -> Any:
     try: parsed = json.loads(raw) if raw and str(raw).strip() else None
     except (TypeError, ValueError): parsed = None
@@ -203,10 +214,9 @@ def update_call_telemetry(call_id: int, patch: dict[str, Any]) -> dict:
         merged = _json(raw, dict) | (patch if isinstance(patch, dict) else {})
         _write_unlocked(call_id, telemetry_json=json.dumps(merged, ensure_ascii=False))
     return merged
-def save_report_text(call_id: int, summary_doctor: str = "", summary_patient: str = "", red_flags: list[str] | None = None, patient_name: str = "",
-                     roster_summary: str = "") -> None:
-    _write(call_id, summary_doctor=summary_doctor, summary_patient=summary_patient, red_flags_json=json.dumps(list(red_flags or []), ensure_ascii=False),
-           patient_name=patient_name, roster_summary=roster_summary)
+def save_report_text(call_id: int, summary_report: str = "", patient_name: str = "", roster_patient: str = "") -> None:
+    """Store the one report a finished call is read from: the same Markdown the dashboard shows and Copy hands out."""
+    _write(call_id, summary_report=summary_report, patient_name=patient_name, roster_summary=roster_patient)
 def complete_call(call_id: int, duration_sec: int, audio_path: str = "") -> None:
     _write(call_id, status="completed", duration_sec=int(duration_sec), audio_path=audio_path, ended_at=time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()))
 def reopen_call(call_id: int, active_qid: str = "") -> None:

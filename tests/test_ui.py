@@ -7,11 +7,19 @@ import subprocess
 import unittest
 from pathlib import Path
 
+from intake import reports
+from intake.models import AnswerRecord, AnswerStatus, CallState
 from intake.pack import load_pack
 
 ROOT = Path(__file__).resolve().parents[1]
 STATIC = ROOT / "intake" / "static"
 NODE = shutil.which("node")
+
+
+def _fever_clean() -> CallState:
+    """A fever call with one `ANSWERED` choice, so the report carries a real `#### group` heading."""
+    return CallState(answers={"fever_duration_bucket": AnswerRecord(
+        state=AnswerStatus.ANSWERED, value="days_3_to_7", choice_label="3 से 7 दिन")})
 
 HARNESS = r"""
 const fs = require("fs"), vm = require("vm");
@@ -320,7 +328,7 @@ ADMIN_HARNESS = r"""
 const fs = require("fs"), vm = require("vm");
 const html = fs.readFileSync(process.env.HTML_PATH, "utf8");
 const source = fs.readFileSync(process.env.JS_PATH, "utf8");
-const nodes = {}, intervals = [];
+const nodes = {}, intervals = [], clipped = [];
 
 function node(id) {
   const attrs = {}, listeners = {}, set = new Set(), kids = [];
@@ -371,7 +379,7 @@ const box = {
     title: ""
   },
   location: { search: "", pathname: "/admin", href: "http://t/admin" },
-  navigator: { clipboard: { writeText: () => Promise.resolve() } },
+  navigator: { clipboard: { writeText: (t) => { clipped.push(String(t)); return Promise.resolve(); } } },
   URLSearchParams,
   window: { addEventListener() {}, print() {} },
   fetch: (url) => {
@@ -387,7 +395,8 @@ vm.createContext(box);
 vm.runInContext(source, box, { filename: "admin.js" });
 globalThis.api = {
   nodes,
-  async settle() { for (let i = 0; i < 120; i += 1) await Promise.resolve(); }
+  async settle() { for (let i = 0; i < 120; i += 1) await Promise.resolve(); },
+  copied: () => clipped.slice()
 };
 """
 
@@ -458,6 +467,43 @@ return { states, html };
 
         self.assertEqual(out["states"], ["concern", "unknown", "unanswered", "answered", "clear"])
         self.assertNotIn("not_applicable", out["html"], "not_applicable questions stay out of the chart")
+
+    def test_the_report_panel_renders_the_group_headings_the_projection_emits(self):
+        # `reports._markdown` prints `#### <group>` for every answered/clear group; the dashboard's Markdown subset
+        # only knew `#`–`###`, so those rows rendered as literal "#### परिचय" paragraphs.
+        proj = reports.project_summary(load_pack("fever-opd-hi"), _fever_clean())
+        report = proj.report_markdown
+        self.assertIn("#### ", report, "the projection really emits h4 group headings")
+        out = self.run_admin_js(r"""
+await api.settle();
+return { html: api.nodes["report-md"].innerHTML };
+""", calls=[{"id": 7, "pack_id": "p", "status": "completed"}],
+            detail={"id": 7, "pack_id": "p", "status": "completed", "summary_report": report,
+                    "cursor_state": {"answers": {}}, "events": [], "transcript": [], "telemetry": {}})
+
+        self.assertNotIn("####", out["html"], "a raw Markdown heading leaked into the rendered panel")
+        self.assertIn("<h4>", out["html"], "group headings render as real headings")
+
+    def test_one_report_panel_renders_the_call_report_and_nothing_red_flag_shaped(self):
+        # The dashboard used to paint two diverging panels (a "Doctor" Markdown note and a "Patient Summary"
+        # string) plus a red-flag banner. With one unified report there is exactly one panel, it reads
+        # `summary_report`, and Copy hands out that same text.
+        report = ("# Call report\n### Profile\n- Caller name: सुनीता.\n- Close reason: complete.\n"
+                  "### Reported \"Yes\"\n- जन्म के बाद पीलिया — माँ के शब्दों में: “नीली लाइट में रखा था”\n"
+                  "### Response state glossary\n- Reported yes — the caller said this happened or was true.\n")
+        out = self.run_admin_js(r"""
+await api.settle();
+await api.nodes["copy-report"].fire("click");
+await api.settle();
+return { html: api.nodes["report-md"].innerHTML, copied: api.copied().pop() };
+""", calls=[{"id": 7, "pack_id": "p", "status": "completed"}],
+            detail={"id": 7, "pack_id": "p", "status": "completed", "summary_report": report,
+                    "cursor_state": {"answers": {}}, "events": [], "transcript": [], "telemetry": {}})
+
+        self.assertIn("Caller name: सुनीता", out["html"], "the unified report renders in the panel")
+        self.assertIn("Reported &quot;Yes&quot;", out["html"], "the reported-yes block survives the Markdown pass")
+        self.assertIn("नीली लाइट में रखा था", out["html"])
+        self.assertEqual(out["copied"], report, "Copy Report hands out the stored report verbatim")
 
     def test_first_yes_no_primes_once_then_pills_and_bug_dialog(self):
         out = self.run_js(r"""

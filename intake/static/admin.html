@@ -40,7 +40,7 @@
     </aside>
     <main id="detail">
       <p id="notice" class="notice" role="status" hidden></p>
-      <p id="empty" class="empty">Select a call to review the recording, red flags, and reports.</p>
+      <p id="empty" class="empty">Select a call to review the recording, the report, and the structured answers.</p>
       <article id="report" hidden>
         <header class="detail-head"><h2 id="call-title"></h2><p id="call-meta"></p></header>
         <section class="block player" id="player-block">
@@ -51,26 +51,19 @@
           </div>
           <p id="audio-note" class="calm" hidden>Recording is not available yet.</p>
         </section>
-        <section id="flag-banner" class="banner" hidden><h3>Red Flags Alert Banner</h3><ul id="flag-list"></ul></section>
-        <p id="no-flags" class="calm" hidden>No red flags recorded.</p>
-        <div class="columns">
-          <section class="block">
-            <div class="head-row">
-              <h3>Doctor Clinical Intake Report</h3>
-              <div class="actions">
-                <button id="copy-report" class="ghost" type="button">Copy Report</button>
-                <button id="print-report" class="ghost" type="button">Print</button>
-                <a id="patient-pdf-hi" class="ghost" href="/api/calls/0/patient.pdf?lang=hi">Patient PDF (HI)</a>
-                <a id="patient-pdf-en" class="ghost" href="/api/calls/0/patient.pdf?lang=en">Patient PDF (EN)</a>
-              </div>
+        <section class="block">
+          <div class="head-row">
+            <h3>Clinical Intake Report</h3>
+            <div class="actions">
+              <button id="copy-report" class="ghost" type="button">Copy Report</button>
+              <button id="print-report" class="ghost" type="button">Print</button>
+              <a id="patient-pdf-hi" class="ghost" href="/api/calls/0/patient.pdf?lang=hi">Patient PDF (HI)</a>
+              <a id="patient-pdf-en" class="ghost" href="/api/calls/0/patient.pdf?lang=en">Patient PDF (EN)</a>
             </div>
-            <div id="doctor" class="md"></div>
-          </section>
-          <div class="patient-col">
-            <section class="block"><h3>Patient Summary</h3><p id="patient" class="patient" lang="hi"></p></section>
-            <section class="block"><h3>Structured Answers</h3><div id="answers"></div></section>
           </div>
-        </div>
+          <div id="report-md" class="md"></div>
+        </section>
+        <section class="block"><h3>Structured Answers</h3><div id="answers"></div></section>
         <section class="block transcript"><h3>Full Call Transcript</h3><div id="transcript"></div></section>
         <section class="block telemetry" id="telemetry-block">
           <div class="head-row">

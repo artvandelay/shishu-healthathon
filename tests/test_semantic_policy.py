@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import unittest
+from html import unescape
 
 import tests  # noqa: F401 — isolated storage bootstrap before importing intake
 
@@ -175,10 +176,11 @@ class SemanticPolicyTests(unittest.TestCase):
                 self.assertEqual(nxt.cursor.attempts, 0)
                 self.assertEqual(out.decisions[0].disposition, Disposition.ACCEPT_UNLISTED)
                 proj = reports.project_summary(FEVER, nxt)
-                self.assertIn(text, proj.doctor_markdown)
+                # Her unlisted wording reaches the report's answered block — no fabricated option stands in for it.
+                self.assertIn(text, proj.report_markdown)
                 self.assertIn(text, str(proj.page2_groups))
 
-        # Redacted unlisted answer: visible in clinician markdown, NEVER leaked into patient page2_groups/HTML.
+        # Redacted unlisted answer: her words never reach a rendered surface, only her own record keeps them.
         st_red = _fever_at_frequency()
         secret = "डॉक्टर ने मलेरिया कन्फर्म बताया, हर शाम आता है"
         red_interp = TurnInterpretation(
@@ -197,7 +199,10 @@ class SemanticPolicyTests(unittest.TestCase):
         nxt_red, _ = apply_policy(FEVER, st_red, _voice(st_red.step_token, secret), red_interp)
         proj_red = reports.project_summary(FEVER, nxt_red)
         html_red = reports.render_patient_html(FEVER, {"id": 9, "started_at": reports.SAMPLE_STARTED_AT, "duration_sec": 120}, proj_red)
-        self.assertIn(secret, proj_red.doctor_markdown)
+        # The clinician's own record of the turn keeps her exact words; no report surface ever prints them.
+        self.assertEqual(nxt_red.answers["fever_frequency"].verbatim_text, secret)
+        self.assertEqual(nxt_red.answers["fever_frequency"].patient_safe_text, "")
+        self.assertNotIn(secret, proj_red.report_markdown)
         self.assertNotIn(secret, str(proj_red.page2_groups))
         self.assertNotIn(secret, html_red)
 
@@ -219,7 +224,9 @@ class SemanticPolicyTests(unittest.TestCase):
         )
         nxt_multi, _ = apply_policy(FEVER, _fever_at_frequency(), _voice("fever_frequency", multi_txt), multi_interp)
         proj_multi = reports.project_summary(FEVER, nxt_multi)
-        self.assertIn(multi_txt, proj_multi.doctor_markdown)
+        # Redacted multi-topic: her words are still the record on the reported concern, but never on the PDF's
+        # structured rows — the same line the single-topic case above pins.
+        self.assertIn(multi_txt, proj_multi.report_markdown)
         self.assertNotIn(multi_txt, str(proj_multi.page2_groups))
 
         # Control 1: an off-topic symptom on the same choice question stays an aside and re-asks.
@@ -627,7 +634,12 @@ class SemanticReaderAndLiveSeamTests(unittest.TestCase):
 
         asyncio.run(run())
 
-    def test_retained_observations_project_into_doctor_markdown_and_never_into_patient_pdf(self):
+    def test_retained_observations_reach_the_unified_report_and_the_pdf_as_attributed_asides(self):
+        """A retained clinical aside is quoted the same way on every surface now: the pack's own label, her words.
+
+        The old split kept asides on a clinician-only note and off her sheet. One unified report means the aside
+        is on both — but still attributed, still never a red flag, and unrelated household noise is still dropped.
+        """
         call_id = db.create_call(pack_id=SHISHU.id)
         st0 = _shishu_at("birth_bcg")
         aside_txt = "टीके के बाद दो दिन हल्का बुखार आया था"
@@ -656,19 +668,22 @@ class SemanticReaderAndLiveSeamTests(unittest.TestCase):
         pdf_bytes, _name = reports.build_patient_pdf_sync(call_id)
         self.assertTrue(pdf_bytes.startswith(b"%PDF"))
         saved = db.get_call(call_id)
-        doctor_md = saved["summary_doctor"]
-        patient_txt = saved["summary_patient"]
-        patient_html = reports.render_patient_html(SHISHU, saved)
+        report = saved["summary_report"]
+        html = unescape(reports.render_patient_html(SHISHU, saved))
+        label = str(SHISHU.report_cfg["caller_words_hi"])
+        heading = str(SHISHU.report_cfg["notes_header_hi"])
 
-        self.assertIn("### Additional Clinical Observations", doctor_md)
-        self.assertIn("birth_bcg", doctor_md)
-        self.assertIn(aside_txt, doctor_md)
-        self.assertNotIn(noise_txt, doctor_md)
-        self.assertNotIn(aside_txt, patient_txt)
-        self.assertNotIn(aside_txt, patient_html)
-        self.assertEqual(saved["red_flags"], [], "an unconfirmed BCG fever aside is not a BCG red flag")
+        self.assertIn(f"### {heading}", report)  # the aside has its own block, not a diagnostic one
+        self.assertIn(f"{label}: “{aside_txt}”", report)
+        self.assertIn(f"{label}: “{aside_txt}”", html)
+        self.assertNotIn(noise_txt, report)
+        self.assertNotIn(noise_txt, html)
+        # An unconfirmed aside never becomes a clinical finding or a red flag: it stays out of the reported-yes block.
+        self.assertNotIn(aside_txt, report.split('### Reported "Yes"', 1)[1].split("\n### ", 1)[0])
+        for gone in ("Red Flags", "Gate Alerts", "Chief complaint", "Additional Clinical Observations"):
+            self.assertNotIn(gone, report)
 
-        # Audio-only RETAIN_OBSERVATION (empty transcript at commit) + trailing LATE_STT must still reach doctor_markdown!
+        # Audio-only RETAIN_OBSERVATION (empty transcript at commit) + trailing LATE_STT must still reach the report!
         call_late = db.create_call(pack_id=SHISHU.id)
         ev_audio = _voice(st0.step_token, "")
         st_a, out_a = apply_policy(SHISHU, st0, ev_audio, interp1)
@@ -681,7 +696,7 @@ class SemanticReaderAndLiveSeamTests(unittest.TestCase):
         )
         db.complete_call(call_late, 90)
         reports.build_patient_pdf_sync(call_late)
-        self.assertIn("टीके के बाद उल्टी हुई थी", db.get_call(call_late)["summary_doctor"])
+        self.assertIn(f"{label}: “टीके के बाद उल्टी हुई थी”", db.get_call(call_late)["summary_report"])
 
 
 if __name__ == "__main__":

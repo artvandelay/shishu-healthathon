@@ -73,8 +73,6 @@ def roster_label_patient(pack: PackConfig, state: CallState, item_ids: Sequence[
     fmt, tags = pack.prompts.get("roster_format") or {}, (pack.prompts.get("roster_format") or {}).get("tag_labels") or {}
     labels = (" ".join(p for p in (c.name or "", c.age_label, str(tags.get(c.tag, ""))) if p) for c in _selected(state, item_ids))
     return str(fmt.get("join", " · ")).join(lbl for lbl in labels if lbl)
-def roster_label_clinician(state: CallState, item_ids: Sequence[str] | None = None) -> str:
-    return ", ".join(f"{c.id} ({c.tag}, age {c.age_years}" + (f", {c.name})" if c.name else ")") for c in _selected(state, item_ids))
 def which_item_prompt(pack: PackConfig, state: CallState) -> str:
     w, ordered = (pack.prompts.get("roster_format") or {}).get("which_item") or {}, state.ordered_roster
     parts = []

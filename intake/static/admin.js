@@ -31,10 +31,10 @@
     try { await navigator.clipboard.writeText(text); } catch (e) { const a = el("textarea"); a.value = text; document.body.appendChild(a); a.select(); document.execCommand("copy"); a.remove(); }
     notice(ok);
   }
-  // Markdown subset: headings, bullets, rules, paragraphs; runs of items collapse into one <ul>. Escaped first.
+  // Markdown subset: headings h1-h4, bullets, rules, paragraphs; runs of items collapse into one <ul>. Escaped first.
   function md(src) {
     const html = String(src || "").split(/\r?\n/).map((raw) => {
-      const t = raw.trim(), h = /^(#{1,3})\s+(.*)$/.exec(t), li = /^[-*]\s+(.*)$/.exec(t);
+      const t = raw.trim(), h = /^(#{1,4})\s+(.*)$/.exec(t), li = /^[-*]\s+(.*)$/.exec(t);
       if (!t) return ""; if (t === "---") return "<hr>";
       return h ? "<h" + h[1].length + ">" + inline(h[2]) + "</h" + h[1].length + ">" : li ? "<li>" + inline(li[1]) + "</li>" : "<p>" + inline(t) + "</p>";
     }).join("").replace(/(?:<li>.*?<\/li>)+/g, (list) => "<ul>" + list + "</ul>");
@@ -54,8 +54,9 @@
     $("tab-calls").textContent = count;
     if (!rows.length) return set("call-list", '<p class="empty">' + (S.calls.length ? "No calls for this pack." : "No calls yet.") + "</p>");
     set("call-list", rows.map((c) => {
-      const n = asList(c.red_flags).length, meta = [model(c)].concat([c.pack_id, c.clinic_code, dur(c.duration_sec), when(c.started_at)].filter(Boolean));
-      const head = '<div class="row"><div class="row-left">Call #' + esc(c.id) + (c.status === "active" ? '<span class="live-dot">Live</span>' : "") + '</div><span class="' + (n ? "pill hot" : "pill") + '">' + (n === 1 ? "1 flag" : n + " flags") + "</span></div>";
+      const meta = [model(c)].concat([c.pack_id, c.clinic_code, dur(c.duration_sec), when(c.started_at)].filter(Boolean));
+      const head = '<div class="row"><div class="row-left">Call #' + esc(c.id) + (c.status === "active" ? '<span class="live-dot">Live</span>' : "") + "</div>" +
+        (c.status === "active" ? "" : '<span class="pill">' + esc(c.status || "completed") + "</span>") + "</div>";
       const body = '<div class="caller">' + esc(c.caller_name || "Login name not recorded") + '</div><div class="people">' + esc(c.roster_summary || c.patient_name || "Patient not named") + "</div>";
       const tags = meta.map((m, i) => '<span class="' + (i ? "" : "badge") + '">' + esc(m) + "</span>").join("");
       return '<button type="button" class="call-item' + (c.id === S.sel ? " selected" : "") + '" data-id="' + esc(c.id) + '">' + head + body + '<div class="meta">' + tags + "</div></button>";
@@ -97,7 +98,7 @@
     set("kpis", rows.map((r) => kpi(r[0], r[1], r[2])).join(""));
   }
   function renderDetail(call) {
-    const url = "/api/calls/" + encodeURIComponent(call.id), audio = Boolean(String(call.audio_path || "").trim()), flags = asList(call.red_flags), turns = asList(call.transcript);
+    const url = "/api/calls/" + encodeURIComponent(call.id), audio = Boolean(String(call.audio_path || "").trim()), turns = asList(call.transcript);
     S.cur = call; S.sel = call.id; $("empty").hidden = true; $("report").hidden = false;
     $("call-title").textContent = "Call #" + call.id + (call.patient_name ? " · " + call.patient_name : "");
     $("call-meta").textContent = [call.pack_id ? "pack " + call.pack_id : "", call.roster_summary || "", "duration " + dur(call.duration_sec), "model " + model(call), call.clinic_code || "", call.status || ""].filter(Boolean).join(" · ");
@@ -110,10 +111,7 @@
       link.href = url + "/patient.pdf?lang=" + lang;
       link.classList.toggle("disabled", call.status === "active");
     }
-    $("flag-banner").hidden = !flags.length; $("no-flags").hidden = Boolean(flags.length);
-    set("flag-list", flags.map((item) => "<li>" + esc(txt(item)) + "</li>").join(""));
-    $("doctor").innerHTML = md(call.summary_doctor);
-    $("patient").textContent = call.summary_patient || "The patient summary is not ready yet.";
+    $("report-md").innerHTML = md(call.summary_report);
     set("transcript", turns.map((turn) => {
       const role = turn.role || turn.speaker || "", who = role === "assistant" ? "SHISHU" : role === "user" ? "Patient" : role || "Note";
       return '<div class="turn' + (role === "assistant" ? " shishu" : "") + '"><strong>' + esc(who) + "</strong><p>" + esc(turn.text || "") + "</p></div>";
@@ -170,7 +168,7 @@
   const printing = () => { document.body.classList.add("printing"); window.addEventListener("afterprint", () => document.body.classList.remove("printing"), { once: true }); window.print(); };
   const actions = {
     refresh: refresh, "refresh-bugs": loadBugs, "print-report": printing,
-    "copy-report": () => copy((S.cur && S.cur.summary_doctor) || "", "Report copied."),
+    "copy-report": () => copy((S.cur && S.cur.summary_report) || "", "Report copied."),
     "copy-debug": () => !S.cur ? Promise.resolve() : copy(JSON.stringify({ call: S.cur.id, pack_id: S.cur.pack_id, cursor_state: asObj(S.cur.cursor_state), telemetry: asObj(S.cur.telemetry), events: asList(S.cur.events), transcript: asList(S.cur.transcript) }, null, 2), "Debug bundle copied."),
     logout: async () => { try { await fetch("/api/logout", { method: "POST", credentials: "same-origin" }); } catch (e) { /* redirect anyway */ } location.href = "/login"; }
   };

@@ -316,14 +316,11 @@ def _kid(st: CallState, name: str) -> Any:
 
 
 def _parity(ev: Ev, cl: Checklist) -> Any:
-    """One projection must feed the stored note, the patient summary, and the flags."""
+    """One projection must feed the stored report — the same Markdown the dashboard reads and Copy hands out."""
     call = ev.call
     proj = reports.project_summary(ev.pack, ev.state, ev.retained_ev)
-    diverged = [c for c, f in (("summary_doctor", "doctor_markdown"), ("summary_patient", "patient_summary_text"))
-                if str(call.get(c) or "").strip() != str(getattr(proj, f) or "").strip()]
-    if list(call.get("red_flags") or []) != list(proj.red_flags):
-        diverged.append("red_flags")
-    cl.check("project_summary parity", not diverged, f"diverges: {diverged}")
+    stored, expected = str(call.get("summary_report") or "").strip(), str(proj.report_markdown or "").strip()
+    cl.check("project_summary parity", stored == expected, f"summary_report diverges ({len(stored)} vs {len(expected)} chars)")
     ev.proj = proj
     return proj
 
@@ -341,9 +338,7 @@ def _common(ev: Ev, cl: Checklist) -> None:
              f"auto_close={[e.get('detail') for e in events if e.get('type') == 'auto_close']}")
     leaks = [leak for leak in _LEAKS if leak.lower() in spoken]
     cl.check("zero spoken leaks", not leaks, f"leaks={leaks}")
-    cl.check("both summaries written",
-             all(str(ev.call.get(f) or "").strip() for f in ("summary_doctor", "summary_patient")), "")
-    cl.check("red flags reported", bool(ev.call.get("red_flags")), "no red flags projected")
+    cl.check("the report is written", bool(str(ev.call.get("summary_report") or "").strip()), "summary_report is empty")
     cl.check("stereo 16 kHz WAV", ev.wav_shape == (2, 16000), f"wav is {ev.wav_shape}")
     cl.check("patient PDF exists", bool(ev.pages), "missing pdf")
     rows = [f"{'/'.join(row)}" for row in _GLOSSARY_PDF if not any(frag in ev.pdf_text for frag in row)]
@@ -424,7 +419,7 @@ def _check_u2(ev: Ev, cl: Checklist) -> None:
 # ------------------------------------------------------------------------------------------------------------
 def _check_u3(ev: Ev, cl: Checklist) -> None:
     st, p = ev.state, ev.persona
-    doctor, patient = str(ev.call.get("summary_doctor") or ""), str(ev.call.get("summary_patient") or "")
+    report = str(ev.call.get("summary_report") or "")
     cl.check("U3 confirmed_hemoglobinopathy flag recorded",
              "confirmed_hemoglobinopathy" in st.semantic_flags, f"semantic_flags={st.semantic_flags}")
     blood, asked = _answered(ev, "body_blood_count"), p.counts.get("body_blood_count", 0)
@@ -435,13 +430,10 @@ def _check_u3(ev: Ev, cl: Checklist) -> None:
              f"note={_answered(ev, 'body_transfusion')[1][:160]!r} "
              f"(a gate with follow-ups keeps her words only when `detail_present` fired; otherwise the "
              f"diagnosis is lost)")
-    cl.check("U3 doctor summary keeps थैलेसीमिया मेजर",
-             _has(doctor, "थैलेसीमिया") and _has(doctor, "मेजर") and _has(doctor, "आरव"),
-             f"doctor has थैलेसीमिया={'थैलेसीमिया' in doctor} मेजर={'मेजर' in doctor}; "
+    cl.check("U3 the report keeps थैलेसीमिया मेजर",
+             _has(report, "थैलेसीमिया") and _has(report, "मेजर") and _has(report, "आरव"),
+             f"report has थैलेसीमिया={'थैलेसीमिया' in report} मेजर={'मेजर' in report}; "
              f"note={_answered(ev, 'body_transfusion')[1][:120]!r}")
-    cl.check("U3 patient summary redacts the diagnosis",
-             bool(patient.strip()) and not _has(patient, *_DISEASE) and _has(patient, "आरव"),
-             f"patient kept the child but must drop the severity: मेजर={'मेजर' in patient}")
     leaked = [frag for frag in _DISEASE if frag in ev.pdf_text]
     cl.check("U3 patient PDF redacts the diagnosis", bool(ev.pdf_text.strip()) and not leaked,
              f"PDF leaked fragments {leaked}")
@@ -475,9 +467,11 @@ def _check_u4(ev: Ev, cl: Checklist) -> None:
              f"state={close} note={(close_rec.verbatim_text if close_rec else '')[:80]!r}")
     cl.check("U4 the revision was recorded as OTHER_FORM on fam_heart_kidney",
              ev.has("accept_form", "other_form", "fam_heart_kidney"), f"decisions={ev.reasons()}")
-    flags = " ".join(str(x) for x in (ev.call.get("red_flags") or []))
-    cl.check("U4 the revived family concern reached red_flags", "fam_heart_kidney" in flags,
-             f"red_flags={ev.call.get('red_flags')}")
+    # The revived family concern must be a reported concern on the call's own record.
+    reported = " ".join(reports.project_summary(ev.pack, ev.state, ev.retained_ev).yes_items)
+    stem = _norm(getattr(ev.pack.by_id.get("fam_heart_kidney"), "stem", "") or "")
+    cl.check("U4 the revived family concern reached the reported concerns", bool(stem) and stem in _norm(reported),
+             f"reported={reported[:200]!r}")
 
 
 def _prompt_strings(ev: Ev) -> list[tuple[str, str]]:
@@ -690,7 +684,8 @@ class Runner:
                   "close_reason": str(ev.state.close_reason or ""), "phase": str(ev.state.phase),
                   "duration_sec": ev.call.get("duration_sec"), "wall_sec": round(time.monotonic() - self.started, 1),
                   "patient_name": ev.call.get("patient_name"), "share_token": ev.call.get("share_token"),
-                  "red_flags": list(ev.call.get("red_flags") or []), "telemetry": ev.call.get("telemetry") or {},
+                  "summary_report_chars": len(str(ev.call.get("summary_report") or "")),
+                  "telemetry": ev.call.get("telemetry") or {},
                   "frames": self.persona.frames, "default_replies": self.persona.defaults,
                   "events": _events_summary(ev.events), "sends": self.persona.sent}
         result.update(detail)
@@ -905,10 +900,8 @@ def _walk(pack) -> Ev:
             sequences=sequences, interps=interps, pages=2,
             pdf_text="जविाब इनकर मतलब जवब नहीं", wav_shape=(2, 16000))
     ev.proj = reports.project_summary(pack, ev.state, ev.retained_ev)
-    for key, value in (("summary_doctor", ev.proj.doctor_markdown), ("summary_patient", ev.proj.patient_summary_text),
-                       ("red_flags", list(ev.proj.red_flags))):
-        if key not in ev.pinned:
-            ev.call = {**ev.call, key: value}
+    if "summary_report" not in ev.pinned:
+        ev.call = {**ev.call, "summary_report": ev.proj.report_markdown}
     return ev
 
 
@@ -978,11 +971,8 @@ def _mutations_u() -> list[tuple[str, str, Any]]:
          lambda ev: state(ev, semantic_flags=[])),
         ("body_blood_count was asked anyway", "U3 body_blood_count pruned to NOT_APPLICABLE and never asked",
          lambda ev: answer(ev, "body_blood_count", state=AnswerStatus.CLEAR) or ev.persona.counts.update({"body_blood_count": 1})),
-        ("the doctor note lost the diagnosis", "U3 doctor summary keeps थैलेसीमिया मेजर",
+        ("the report lost the diagnosis", "U3 the report keeps थैलेसीमिया मेजर",
          lambda ev: scrub(ev, "body_transfusion")),
-        ("her copy leaked the diagnosis", "U3 patient summary redacts the diagnosis",
-         lambda ev: answer(ev, "body_transfusion",
-                           note=NoteText.append(ev.state.answers["body_transfusion"].note, "थैलेसीमिया मेजर"))),
         ("the PDF leaked the diagnosis", "U3 patient PDF redacts the diagnosis",
          lambda ev: setattr(ev, "pdf_text", ev.pdf_text + " मेजर")),
         ("Gemini read the diagnosis back", "U3 Gemini never spoke the diagnosis",
@@ -1002,8 +992,8 @@ def _mutations_u() -> list[tuple[str, str, Any]]:
          lambda ev: call(ev, transcript=[{"role": "assistant", "qid": "preg_thalassemia",
                                           "text": "क्या आपकी थैलेसीमिया खून जाँच में कभी माइनर या ट्रेट जैसी कोई दिक्कत बताई गई? "
                                                   "क्या आपकी थैलेसीमिया खून जाँच में कभी माइनर या ट्रेट जैसी कोई दिक्कत बताई गई?"}])),
-        ("the revived concern lost its red flag", "U4 the revived family concern reached red_flags",
-         lambda ev: call(ev, red_flags=[f for f in ev.call["red_flags"] if "fam_heart_kidney" not in f])),
+        ("the revived concern never reached the report", "U4 the revived family concern reached the reported concerns",
+         lambda ev: answer(ev, "fam_heart_kidney", state=AnswerStatus.CLEAR)),
         ("fam_same_problem asked before the close turn", "U4 fam_same_problem woke up after close_anything_else and was asked",
          ask_before_close),
     ]
@@ -1059,10 +1049,8 @@ def _selftest() -> int:
             ev = _walk(pack)
             mutate(ev)
             ev.proj = reports.project_summary(pack, ev.state, ev.retained_ev)
-            for key, value in (("summary_doctor", ev.proj.doctor_markdown), ("summary_patient", ev.proj.patient_summary_text),
-                               ("red_flags", list(ev.proj.red_flags))):
-                if key not in ev.pinned:
-                    ev.call = {**ev.call, key: value}
+            if "summary_report" not in ev.pinned:
+                ev.call = {**ev.call, "summary_report": ev.proj.report_markdown}
             _parity(ev, broken)
             ev.persona.check(ev, broken)
         except Exception as exc:  # noqa: BLE001
