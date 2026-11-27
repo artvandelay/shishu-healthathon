@@ -230,6 +230,7 @@ def _apply_profile_data(pack: PackConfig, st: CallState, patch: ProfilePatch) ->
         for q in pack.questions:
             if clean not in (None, "") and q.saves_to_profile == k and q.kind is QuestionKind.SINGLE_CHOICE and clean in q.options:
                 st.answers[q.id] = AnswerRecord(state=AnswerStatus.ANSWERED, value=clean, choice_label=q.options[clean].label)
+    before = (tuple(st.roster), st.roster_stated, st.roster_incomplete)
     roster_given = patch.roster is not None or patch.roster_complete is not None
     if roster_given:
         old, used, typed = list(st.roster), set(), []
@@ -240,8 +241,9 @@ def _apply_profile_data(pack: PackConfig, st: CallState, patch: ProfilePatch) ->
         if patch.roster: st.roster = typed
         elif complete: st.roster = []  # an explicit zero children; an ages-less count keeps what is already typed
         st.roster_incomplete, st.roster_stated = not complete, complete
+    roster_changed = (tuple(st.roster), st.roster_stated, st.roster_incomplete) != before
     _imply(pack, st, roster_given=roster_given)
-    _revive_declined_slots(pack, st, fresh, roster_given=roster_given)
+    _revive_declined_slots(pack, st, fresh, roster_given=roster_changed)
     _resync(pack, st)
     return roster_given
 def _revive_declined_slots(pack: PackConfig, st: CallState, slots: dict[str, Any], *, roster_given: bool) -> None:

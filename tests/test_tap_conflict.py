@@ -86,7 +86,7 @@ class TapSpeechConflictTests(unittest.TestCase):
                 }
                 res = live.decisions.DecisionCallResult(True, "", 1, 180, 120, 6, 40, raw)
                 intent = live.decisions.interpret_turn_decision(SHISHU, snapshot, raw, utterance_text=spoken)
-                return live.Turn(res, intent, None, snapshot, spoken, len(pcm_bytes), None)
+                return live.Turn(res, intent, snapshot, spoken, len(pcm_bytes), None)
 
             sess._evaluate_turn_task = spoken_no  # type: ignore[method-assign]
             await sess.on_audio({"data": pcm(), "sample_rate": 16000})
@@ -149,7 +149,7 @@ class TapSpeechConflictTests(unittest.TestCase):
                         await gate.wait()
                         res = live.decisions.DecisionCallResult(True, "", 1, 160, 120, 6, 40, raw)
                         intent = live.decisions.interpret_turn_decision(FEVER, snapshot, raw, utterance_text=text)
-                        return live.Turn(res, intent, None, snapshot, text, len(pcm_bytes), None)
+                        return live.Turn(res, intent, snapshot, text, len(pcm_bytes), None)
 
                     sess._evaluate_turn_task = eval_choice  # type: ignore[method-assign]
                     await sess.on_text({"text": spoken})
@@ -188,7 +188,7 @@ class TapSpeechConflictTests(unittest.TestCase):
                 }
                 res = live.decisions.DecisionCallResult(True, "", 1, 180, 120, 6, 40, raw)
                 intent = live.decisions.interpret_turn_decision(SHISHU, snapshot, raw, utterance_text=spoken)
-                return live.Turn(res, intent, None, snapshot, spoken, len(pcm_bytes), None)
+                return live.Turn(res, intent, snapshot, spoken, len(pcm_bytes), None)
 
             sess._evaluate_turn_task = clear_plus_fever  # type: ignore[method-assign]
             await sess.on_text({"text": "नहीं, बस हल्का बुखार आया था"})
@@ -227,7 +227,7 @@ class TapSpeechConflictTests(unittest.TestCase):
                 }
                 res = live.decisions.DecisionCallResult(True, "", 1, 150, 120, 6, 40, raw)
                 intent = live.decisions.interpret_turn_decision(SHISHU, snapshot, raw, utterance_text=spoken)
-                return live.Turn(res, intent, None, snapshot, spoken, len(pcm_bytes), None)
+                return live.Turn(res, intent, snapshot, spoken, len(pcm_bytes), None)
 
             sess_tv._evaluate_turn_task = tv_noise  # type: ignore[method-assign]
             await sess_tv.on_text({"text": "गैस बंद कर दो"})
@@ -257,7 +257,7 @@ class TapSpeechConflictTests(unittest.TestCase):
                 raw = {"danger_now": {"noul": 0.98}, "active_outcome": {"probabilities": {"other": 0.95}}}
                 res = live.decisions.DecisionCallResult(True, "", 1, 150, 120, 6, 40, raw)
                 intent = live.decisions.interpret_turn_decision(SHISHU, snapshot, raw, utterance_text=spoken)
-                return live.Turn(res, intent, None, snapshot, spoken, len(pcm_bytes), None)
+                return live.Turn(res, intent, snapshot, spoken, len(pcm_bytes), None)
 
             sess._evaluate_turn_task = emergency_turn  # type: ignore[method-assign]
             await sess.on_text({"text": "अभी बच्चे को साँस नहीं आ रही है!"})
@@ -291,7 +291,7 @@ class TapSpeechConflictTests(unittest.TestCase):
                 }
                 res = live.decisions.DecisionCallResult(True, "", 1, 180, 120, 6, 40, raw)
                 intent = live.decisions.interpret_turn_decision(SHISHU, snapshot, raw, utterance_text=spoken)
-                return live.Turn(res, intent, None, snapshot, spoken, len(pcm_bytes), None)
+                return live.Turn(res, intent, snapshot, spoken, len(pcm_bytes), None)
 
             sess._evaluate_turn_task = detailed_yes  # type: ignore[method-assign]
             await sess.on_text({"text": "हाँ, अमन को साँस की तकलीफ के लिए रखा था"})
@@ -330,7 +330,7 @@ class TapSpeechConflictTests(unittest.TestCase):
                 }
                 res = live.decisions.DecisionCallResult(True, "", 1, 160, 120, 6, 40, raw)
                 intent = live.decisions.interpret_turn_decision(SHISHU, snapshot, raw, utterance_text=spoken)
-                return live.Turn(res, intent, None, snapshot, spoken, len(pcm_bytes), None)
+                return live.Turn(res, intent, snapshot, spoken, len(pcm_bytes), None)
 
             sess._evaluate_turn_task = spoken_no  # type: ignore[method-assign]
             await sess.on_audio({"data": pcm(), "sample_rate": 16000})
@@ -367,7 +367,7 @@ class TapSpeechConflictTests(unittest.TestCase):
                 }
                 res = live.decisions.DecisionCallResult(True, "", 1, 160, 120, 6, 40, raw)
                 intent = live.decisions.interpret_turn_decision(SHISHU, snapshot, raw, utterance_text=spoken)
-                return live.Turn(res, intent, None, snapshot, spoken, len(pcm_bytes), None)
+                return live.Turn(res, intent, snapshot, spoken, len(pcm_bytes), None)
 
             sess_c._evaluate_turn_task = slow_no  # type: ignore[method-assign]
             await sess_c.on_text({"text": "नहीं"})
@@ -399,7 +399,7 @@ class TapSpeechConflictTests(unittest.TestCase):
                 }
                 res = live.decisions.DecisionCallResult(True, "", 1, 160, 120, 6, 40, raw)
                 intent = live.decisions.interpret_turn_decision(SHISHU, snapshot, raw, utterance_text=spoken)
-                return live.Turn(res, intent, None, snapshot, spoken, len(pcm_bytes), None)
+                return live.Turn(res, intent, snapshot, spoken, len(pcm_bytes), None)
 
             sess_tc._evaluate_turn_task = slow_conflict  # type: ignore[method-assign]
             await sess_tc.on_audio({"data": pcm(), "sample_rate": 16000})
@@ -426,7 +426,7 @@ class TapSpeechConflictTests(unittest.TestCase):
                 raw = {"danger_now": {"noul": 0.98}, "active_outcome": {"probabilities": {"other": 0.95}}}
                 res = live.decisions.DecisionCallResult(True, "", 1, 160, 120, 6, 40, raw)
                 intent = live.decisions.interpret_turn_decision(SHISHU, snapshot, raw, utterance_text=spoken)
-                return live.Turn(res, intent, None, snapshot, spoken, len(pcm_bytes), None)
+                return live.Turn(res, intent, snapshot, spoken, len(pcm_bytes), None)
 
             sess_e._evaluate_turn_task = slow_emg  # type: ignore[method-assign]
             await sess_e.on_text({"text": "अभी साँस नहीं आ रही है!"})

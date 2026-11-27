@@ -581,7 +581,7 @@ class SemanticReaderAndLiveSeamTests(unittest.TestCase):
                 }
                 res = live.decisions.DecisionCallResult(True, "", 1, 180, 120, 6, 40, raw)
                 intent = live.decisions.interpret_turn_decision(FEVER, snapshot, raw, utterance_text=spoken)
-                return live.Turn(res, intent, None, snapshot, spoken, len(pcm_bytes), None)
+                return live.Turn(res, intent, snapshot, spoken, len(pcm_bytes), None)
 
             sess_freq._evaluate_turn_task = eval_unlisted  # type: ignore[method-assign]
             await sess_freq.on_text({"text": "रोज़ शाम को एक बार आता है"})
@@ -618,7 +618,7 @@ class SemanticReaderAndLiveSeamTests(unittest.TestCase):
                 }
                 res = live.decisions.DecisionCallResult(True, "", 1, 180, 120, 6, 40, raw)
                 intent = live.decisions.interpret_turn_decision(SHISHU, snapshot, raw, utterance_text=spoken)
-                return live.Turn(res, intent, None, snapshot, spoken, len(pcm_bytes), None)
+                return live.Turn(res, intent, snapshot, spoken, len(pcm_bytes), None)
 
             sess_bcg._evaluate_turn_task = eval_aside  # type: ignore[method-assign]
             await sess_bcg.on_text({"text": "बुखार आया था"})

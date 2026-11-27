@@ -368,7 +368,7 @@ class RealPackIntegrationTests(unittest.TestCase):
         st = reduce_turn(shishu, st, nothing)
         self.assertIs(st.answers["intro_children"].state, AnswerStatus.UNANSWERED)
         self.assertNotEqual(st.cursor.qid, "intro_children", "an exhausted roster step never loops back on itself")
-        self.assertEqual(st.cursor.qid, "intro_bridge")
+        self.assertEqual(st.cursor.qid, "birth_mode_detail")
 
     def test_a_partial_twin_roster_still_gets_its_ages_reask_before_giving_up(self):
         # Call #11's twins with no ages: ONE incomplete roster turn must still re-ask for the ages, never skip
@@ -398,6 +398,38 @@ class RealPackIntegrationTests(unittest.TestCase):
         self.assertEqual((st.cursor.qid, st.cursor.hold_slot), ("intro_children", "roster"))
         self.assertTrue(st.roster_incomplete)
         self.assertFalse(st.answers.get("intro_children") is not None and st.answers["intro_children"].state is AnswerStatus.UNANSWERED)
+
+    def test_unchanged_incomplete_roster_echo_does_not_revive_or_leave_birth_nicu(self):
+        # Call #138: intro_children is already UNANSWERED and the roster is already incomplete, cursor on
+        # birth_nicu. Restating ProfilePatch(roster=(), roster_complete=False) changes no roster fact, so it
+        # must not delete that UNANSWERED or rewind. Adding a child, or flipping roster_incomplete False -> True,
+        # still revives intro_children.
+        shishu = load_pack("shishu-hi")
+
+        def parked(*, incomplete: bool) -> CallState:
+            st = at_children(shishu, qid="birth_nicu")
+            st.roster_incomplete = incomplete
+            for q in shishu.questions:
+                if q.id == "birth_nicu":
+                    break
+                st.answers.setdefault(q.id, AnswerRecord(state=AnswerStatus.CLEAR))
+            st.answers["intro_children"] = AnswerRecord(state=AnswerStatus.UNANSWERED)
+            return st
+
+        echo = TurnCommand(profile_patch=ProfilePatch(roster=(), roster_complete=False))
+        kept = reduce_turn(shishu, parked(incomplete=True), echo)
+        self.assertIs(kept.answers["intro_children"].state, AnswerStatus.UNANSWERED)
+        self.assertEqual(kept.cursor.qid, "birth_nicu")
+
+        added = reduce_turn(shishu, parked(incomplete=True), TurnCommand(profile_patch=ProfilePatch(
+            roster=(RosterInput(age_years=2.0, tag="male"),), roster_complete=False)))
+        self.assertFalse(added.answers.get("intro_children") is not None and added.answers["intro_children"].state is AnswerStatus.UNANSWERED)
+        self.assertEqual((added.cursor.qid, added.cursor.hold_slot), ("intro_children", "roster"))
+
+        flipped = reduce_turn(shishu, parked(incomplete=False), echo)
+        self.assertTrue(flipped.roster_incomplete)
+        self.assertFalse(flipped.answers.get("intro_children") is not None and flipped.answers["intro_children"].state is AnswerStatus.UNANSWERED)
+        self.assertEqual((flipped.cursor.qid, flipped.cursor.hold_slot), ("intro_children", "roster"))
 
     def test_a_mid_call_count_only_statement_rewinds_to_the_ages_reask(self):
         shishu = load_pack("shishu-hi")
@@ -444,21 +476,22 @@ class RealPackIntegrationTests(unittest.TestCase):
                 RosterInput(age_years=2.0, tag="male", name="राजू"),
             ),
         )))
-        self.assertEqual(st.cursor.qid, "intro_bridge")
-        bridge = active_prompt(shishu, st)
-        self.assertIn("खुलकर बोलकर", bridge, "the bridge still invites a spoken answer")
-        self.assertLess(len(bridge), 100, "the bridge is spoken in one breath, not twelve seconds")
-        st = play(shishu, st, TurnOutcome.CONCERN)
         self.assertEqual(st.cursor.qid, "birth_mode_detail")
 
         # Multi-child which_item formatting check on 3 children
-        st_j = play(shishu, st, TurnOutcome.CONCERN)
+        st_j = play(shishu, st, TurnOutcome.ANSWERED, value="operation")
         self.assertEqual(st_j.cursor.substep, SubStep.WHICH_ITEM)
         self.assertEqual(
             which_item_prompt(shishu, st_j),
             "यह किस बच्चे की बात है — 11 साल वाली रीना, 6 साल वाले अमन (बीच वाले), या 2 साल वाले राजू?",
         )
         st = play(shishu, st_j, TurnOutcome.RETRACT)
+        self.assertEqual(st.cursor.qid, "intro_bridge")
+        bridge = active_prompt(shishu, st)
+        self.assertIn("खुलकर बोलकर", bridge, "the bridge still invites a spoken answer")
+        self.assertLess(len(bridge), 100, "the bridge is spoken in one breath, not twelve seconds")
+        st = play(shishu, st, TurnOutcome.CONCERN)
+        self.assertEqual(st.cursor.qid, "birth_term")
 
         # Reactive turn: denies birth_term, volunteers Thalassemia Major + monthly transfusions + enlarged spleen,
         # triggers confirmed_hemoglobinopathy semantic skip on body_blood_count, and jumps to preg_thalassemia!
@@ -498,7 +531,7 @@ class RealPackIntegrationTests(unittest.TestCase):
         shishu = load_pack("shishu-hi")
         st = reduce_turn(shishu, at_children(shishu), TurnCommand(profile_patch=ProfilePatch(roster=(
             RosterInput(age_years=4.0, tag="male"), RosterInput(age_years=2.0, tag="male")))))
-        self.assertEqual(st.cursor.qid, "intro_bridge")
+        self.assertEqual(st.cursor.qid, "birth_mode_detail")
         upto = [q.id for q in shishu.questions].index("preg_delivery")
         for q in shishu.questions[:upto]:
             st.answers[q.id] = AnswerRecord(state=AnswerStatus.CLEAR)
@@ -547,12 +580,73 @@ class RealPackIntegrationTests(unittest.TestCase):
         self.assertNotIn("mod_tooth_bleed", st.answers)
         self.assertNotIn("body_puberty", st.answers)
 
+    def test_birth_mode_detail_is_a_non_yes_no_delivery_choice(self):
+        q = load_pack("shishu-hi").by_id["birth_mode_detail"]
+        self.assertIs(q.kind, QuestionKind.SINGLE_CHOICE)
+        self.assertTrue(q.quick_options)
+        self.assertEqual(set(q.options), {"normal", "operation"})
+        self.assertEqual(q.concern_if, {"in": ["operation"]})
+        spoken = "\n".join([q.say, q.stem, q.stem_en, *(v.say for v in q.variants)])
+        self.assertNotIn("सिजेरियन", spoken.casefold())
+        self.assertNotRegex(spoken, r"(?i)caesarean")
+
+    def test_delivery_mode_sits_between_children_and_the_bridge(self):
+        ids = [q.id for q in load_pack("shishu-hi").questions]
+        self.assertEqual(
+            ids[ids.index("intro_children"):ids.index("birth_term") + 1],
+            ["intro_children", "birth_mode_detail", "intro_bridge", "birth_term"],
+        )
+
+    def test_every_cohort_meets_the_bridge_immediately_before_its_first_yes_no(self):
+        shishu = load_pack("shishu-hi")
+        yes_no = (QuestionKind.GATE, QuestionKind.ROUTING_GATE)
+
+        def until_yes_no(st: CallState) -> list[str]:
+            path: list[str] = []
+            for _ in range(8):
+                spec = shishu.by_id[st.cursor.qid]
+                path.append(spec.id)
+                if spec.kind in yes_no:
+                    return path
+                if spec.kind is QuestionKind.BRIDGE:
+                    st = reduce_turn(shishu, st, TurnCommand(outcome=TurnOutcome.CLEAR))
+                elif spec.kind is QuestionKind.SINGLE_CHOICE:
+                    value = "normal" if "normal" in spec.options else next(iter(spec.options))
+                    st = reduce_turn(shishu, st, TurnCommand(outcome=TurnOutcome.ANSWERED, value=value))
+                else:
+                    self.fail(f"unexpected step {spec.id} ({spec.kind.value}) on {path}")
+                if st.cursor.qid == spec.id:
+                    self.fail(f"stuck on {spec.id} after {path}")
+            self.fail(f"no yes/no reached: {path}")
+
+        named = reduce_turn(shishu, new_state(shishu), TurnCommand(profile_patch=ProfilePatch(slots={"caller_name": "कविता"})))
+        married = reduce_turn(shishu, named, TurnCommand(outcome=TurnOutcome.ANSWERED, value="married"))
+        with_children = reduce_turn(shishu, married, TurnCommand(profile_patch=ProfilePatch(
+            roster=(RosterInput(age_years=4.0, tag="male", name="Kabir"),), roster_complete=True)))
+        zero_children = reduce_turn(shishu, married, TurnCommand(profile_patch=ProfilePatch(roster=(), roster_complete=True)))
+        unmarried = reduce_turn(shishu, named, TurnCommand(outcome=TurnOutcome.ANSWERED, value="unmarried"))
+        paths = {
+            "married+children": until_yes_no(with_children),
+            "married+0 children": until_yes_no(zero_children),
+            "unmarried": until_yes_no(unmarried),
+        }
+        self.assertEqual(paths["married+children"][:2], ["birth_mode_detail", "intro_bridge"])
+        for cohort, path in paths.items():
+            with self.subTest(cohort=cohort):
+                self.assertIn("intro_bridge", path)
+                self.assertEqual(path[-2], "intro_bridge")
+                self.assertIn(shishu.by_id[path[-1]].kind, yes_no)
+                bridge_at = path.index("intro_bridge")
+                self.assertFalse(any(shishu.by_id[qid].kind in yes_no for qid in path[:bridge_at]))
+
     def test_both_packs_speak_their_bridge_in_one_short_breath(self):
         # The 12-second bridge held the call open with no reply: two sentences say the same thing in 4.
         for pack_id in ("shishu-hi", "fever-opd-hi"):
             with self.subTest(pack=pack_id):
                 bridge = load_pack(pack_id).by_id["intro_bridge"]
                 self.assertIn("खुलकर बोलकर बताएँ", bridge.say, "the open-speech invite survives the cut")
+                self.assertIn("हाँ या नहीं का बटन", bridge.say)
+                self.assertIn("हाँ या नहीं का बटन", bridge.stem)
                 self.assertLess(len(bridge.say), 100)
                 self.assertLess(len(bridge.stem), 100)
 
@@ -620,13 +714,16 @@ class Wave1ReducerAndReportInvariantTests(unittest.TestCase):
         cls.fever = load_pack("fever-opd-hi")
 
     def shishu_call(self, roster, *, complete: bool = True) -> CallState:
-        """A named, married caller whose children are on record, sitting on the intro bridge."""
+        """A named, married caller with this roster recorded, sitting on the next open question."""
         st = reduce_turn(self.shishu, new_state(self.shishu), TurnCommand(profile_patch=ProfilePatch(slots={"caller_name": "कविता"})))
         st = reduce_turn(self.shishu, st, TurnCommand(outcome=TurnOutcome.ANSWERED, value="married"))
         return reduce_turn(self.shishu, st, TurnCommand(profile_patch=ProfilePatch(roster=tuple(roster), roster_complete=complete)))
 
     def past_bridge(self, roster=(), **kw) -> CallState:
-        return reduce_turn(self.shishu, self.shishu_call(roster, **kw), TurnCommand(outcome=TurnOutcome.ANSWERED))
+        st = self.shishu_call(roster, **kw)
+        if st.cursor.qid == "birth_mode_detail":
+            st = reduce_turn(self.shishu, st, TurnCommand(outcome=TurnOutcome.ANSWERED, value="normal"))
+        return reduce_turn(self.shishu, st, TurnCommand(outcome=TurnOutcome.ANSWERED))
 
     @staticmethod
     def at(state: CallState, qid: str, *, substep=SubStep.MAIN, followup_idx: int = 0) -> CallState:
@@ -646,7 +743,7 @@ class Wave1ReducerAndReportInvariantTests(unittest.TestCase):
         # Call #21 (t=1794927089): "मेरे ट्विंस बच्चे हैं" landed on birth_mode_detail. The profile patch was an
         # incomplete roster (one 4y child, roster_complete=False), so the children reask owned the turn and the
         # caller's own birth_mode_detail answer was never written — her yes simply vanished from the record.
-        one = self.past_bridge((KABIR,), complete=True)
+        one = self.shishu_call((KABIR,), complete=True)
         self.assertEqual([c.id for c in one.roster], ["item_1"])
         self.assertEqual(one.cursor.qid, "birth_mode_detail")
         twins_added = (RosterInput(id="item_1", age_years=4.0, tag="male", name="Kabir"),
@@ -655,20 +752,20 @@ class Wave1ReducerAndReportInvariantTests(unittest.TestCase):
         incomplete = (RosterInput(id="item_1", age_years=4.0, tag="male"),)
         reask = CursorStep(qid="intro_children", hold_slot="roster")
         cases = (
-            ("complete twins added in the same breath", TurnOutcome.CONCERN, twins_added, True, False,
+            ("complete twins added in the same breath", TurnOutcome.ANSWERED, "operation", twins_added, True, False,
              AnswerStatus.CONCERN, ["item_1", "item_2", "item_3"], [],
              CursorStep(qid="birth_mode_detail", substep=SubStep.WHICH_ITEM)),
-            ("incomplete twins reask (Call #21)", TurnOutcome.CONCERN, incomplete, False, True,
+            ("incomplete twins reask (Call #21)", TurnOutcome.ANSWERED, "operation", incomplete, False, True,
              AnswerStatus.CONCERN, ["item_1"], [], reask),
-            ("incomplete twins on a quiet answer", TurnOutcome.CLEAR, incomplete, False, True,
-             AnswerStatus.CLEAR, ["item_1"], [], reask),
-            ("incomplete twins on an unknown answer", TurnOutcome.UNKNOWN, incomplete, False, True,
+            ("incomplete twins on a quiet answer", TurnOutcome.ANSWERED, "normal", incomplete, False, True,
+             AnswerStatus.ANSWERED, ["item_1"], [], reask),
+            ("incomplete twins on an unknown answer", TurnOutcome.UNKNOWN, None, incomplete, False, True,
              AnswerStatus.UNKNOWN, ["item_1"], [], reask),
         )
-        for label, outcome, patch_roster, complete, attempted, want_state, want_roster, want_ids, want_cursor in cases:
+        for label, outcome, value, patch_roster, complete, attempted, want_state, want_roster, want_ids, want_cursor in cases:
             with self.subTest(case=label, outcome=outcome.value):
                 st = reduce_turn(self.shishu, self.at(one, "birth_mode_detail"), TurnCommand(
-                    outcome=outcome, item_ref="", profile_patch=ProfilePatch(roster=patch_roster, roster_complete=complete),
+                    outcome=outcome, value=value, item_ref="", profile_patch=ProfilePatch(roster=patch_roster, roster_complete=complete),
                     profile_turn_attempted=attempted))
                 rec = st.answers.get("birth_mode_detail")
                 self._assert_all({

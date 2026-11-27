@@ -182,30 +182,42 @@ questions:
   skip_if:
   - unmarried
   - about_to_marry
-- id: intro_bridge
-  group: intro
-  kind: bridge
-  say: >-
-    अब मैं छोटे सवाल पूछूँगी। नीचे हाँ-नहीं दबाएँ, या खुलकर बोलकर बताएँ। शुरू करें?
-  stem: >-
-    अब मैं छोटे सवाल पूछूँगी। नीचे हाँ-नहीं दबाएँ, या खुलकर बोलकर बताएँ। शुरू करें
-  need: short yes or no questions; she can tap हाँ/नहीं or speak freely whenever there is more to share
 - id: birth_mode_detail
   group: birth
-  kind: gate
-  say: क्या बच्चे का जन्म ऑपरेशन (सिजेरियन) से हुआ था?
-  stem_en: "Birth by caesarean operation"
-  stem: बच्चे का जन्म ऑपरेशन (सिजेरियन) से हुआ था
-  need: birth by operation
+  kind: single_choice
+  say: आपके बच्चे की डिलीवरी नॉर्मल हुई थी या ऑपरेशन से हुई थी?
+  stem_en: "Delivery mode (normal or operation)"
+  stem: बच्चे की डिलीवरी नॉर्मल हुई थी या ऑपरेशन से
+  need: whether birth delivery was normal or by operation
   tag: Q03
+  quick_options: true
+  reask: जी, बच्चे की डिलीवरी नॉर्मल हुई थी या ऑपरेशन से हुई थी?
   roster_scoped: true
   skip_if:
   - no_children
   followups:
   - operation_reason
+  concern_if:
+    in:
+    - operation
+  options:
+    normal:
+      label: नॉर्मल
+      en: Normal
+      criteria: Caller states delivery was normal (not by operation).
+    operation:
+      label: ऑपरेशन
+      en: Operation
+      criteria: Caller states delivery (for the child or any child) was by operation.
   variants:
   - when: multi_child
-    say: क्या आपके किसी भी बच्चे का जन्म ऑपरेशन (सिजेरियन) से हुआ था?
+    say: आपके बच्चों की डिलीवरी नॉर्मल हुई थी या किसी की ऑपरेशन से हुई थी?
+- id: intro_bridge
+  group: intro
+  kind: bridge
+  say: अब मैं छोटे सवाल पूछूँगी। नीचे हाँ या नहीं का बटन दबाएँ, या खुलकर बोलकर बताएँ। शुरू करें?
+  stem: अब मैं छोटे सवाल पूछूँगी। नीचे हाँ या नहीं का बटन दबाएँ, या खुलकर बोलकर बताएँ। शुरू करें
+  need: short yes or no questions; she can tap हाँ/नहीं or speak freely whenever there is more to share
 - id: birth_term
   group: birth
   kind: gate

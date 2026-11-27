@@ -88,7 +88,7 @@ async def _race(case: dict, *, live_mode: bool) -> dict:
                 await gate.wait()
                 res = decisions.DecisionCallResult(True, "", 1, 0, 0, 1, 0, case["raw"])
                 intent = decisions.interpret_turn_decision(pack, snapshot, case["raw"], utterance_text=spoken)
-                turn = live.Turn(res, intent, None, snapshot, spoken, len(pcm), None)
+                turn = live.Turn(res, intent, snapshot, spoken, len(pcm), None)
         except Exception as exc:  # noqa: BLE001 — session recovers; the row still names the failure
             box["err"] = f"{type(exc).__name__}: {exc}"
             raise

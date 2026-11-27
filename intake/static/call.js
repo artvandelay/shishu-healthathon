@@ -104,6 +104,7 @@ let capText = "";
 let chip = "";
 let waitingSince = 0;
 let userSpoke = false;
+let speechFrames = 0;
 
 const live = new Set();
 const show = (n, v) => {
@@ -132,6 +133,7 @@ const hideNudge = () => {
 function stopWaiting() {
   waitingSince = 0;
   userSpoke = false;
+  speechFrames = 0;
   hideNudge();
 }
 
@@ -303,14 +305,15 @@ function onMicFrame(samples) {
   const pct = Math.min(100, Math.round((micSmooth / 0.12) * 100));
   micLevel.style.width = `${pct}%`;
   if (micMeter) micMeter.setAttribute("aria-valuenow", String(pct));
-  if (micAllowed && rms > 0.015) {
+  if (micAllowed && rms > 0.015 && ++speechFrames >= 3) {
     userSpoke = true;
     waitingSince = 0;
     hideNudge();
   } else if (micAllowed && userSpoke) {
     userSpoke = false;
+    speechFrames = 0;
     waitingSince = Date.now();
-  }
+  } else if (micAllowed && rms <= 0.015) speechFrames = 0;
   if (!micAllowed || !open() || ws.bufferedAmount > 262144) return;
   const pcm = rateFor(samples, (ctx && ctx.sampleRate) || IN_RATE);
   if (!pcm.length) return;
@@ -492,6 +495,7 @@ function showCaption(who, text) {
     capText += glue + chunk;
   }
   captionEl.textContent = capText ? `${who === "assistant" ? "SHISHU" : "You"}: ${capText}` : "";
+  if (waitingSince && capText) { waitingSince = Date.now(); hideNudge(); }
 }
 
 function wsUrl(resumeToken) {
@@ -527,6 +531,7 @@ const handlers = {
   reconnecting() {
     avatarEl.classList.add("reconnecting");
     say(T.reconnect);
+    stopWaiting();
   },
   reconnected() {
     avatarEl.classList.remove("reconnecting");

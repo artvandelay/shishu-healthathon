@@ -595,7 +595,7 @@ api.advance(4000);
 const quietIdle = api.nodes["nudge-btn"].hidden;
 
 /* The caller speaks, then stops: the 3 s clock starts at the silence, not the speech. */
-api.mic(0.2);
+api.mic(0.2); api.mic(0.2); api.mic(0.2);
 const duringSpeech = api.nodes["nudge-btn"].hidden;
 api.advance(4000);
 const stillSpeaking = api.nodes["nudge-btn"].hidden;
@@ -609,7 +609,7 @@ const afterThree = !api.nodes["nudge-btn"].hidden;
 const hotOnReveal = api.nodes["nudge-btn"].classList.contains("hot");
 
 /* Talking again hides it and re-arms the clock. */
-api.mic(0.2);
+api.mic(0.2); api.mic(0.2); api.mic(0.2);
 const talksAgain = api.nodes["nudge-btn"].hidden;
 const hotWhileQuietAgain = api.nodes["nudge-btn"].classList.contains("hot");
 api.mic(0);
@@ -672,6 +672,85 @@ return { micReady, quietIdle, duringSpeech, stillSpeaking, twoSeconds, afterThre
         self.assertTrue(out["afterClear"], "a clear clears the wait")
         self.assertFalse(out["hotAfterClear"], "and drops the .hot highlight")
 
+    def test_a_single_mic_blip_does_not_reveal_the_nudge(self):
+        # One capture frame is 1024 samples, 64 ms. A cough or a click is not speech she settled into.
+        out = self.run_js(r"""
+api.boot(JSON.parse(process.env.PACK));
+await api.settle();
+await api.start();
+api.push({ type: "session_started", call_id: 71, share_token: "tok71", out_sample_rate: 24000 });
+await api.settle();
+
+/* rms 0.2 for a single frame, then 3.5 s of silence. */
+api.mic(0.2);
+api.mic(0);
+api.advance(3500);
+const afterBlip = api.nodes["nudge-btn"].hidden;
+
+return { afterBlip };
+""")
+
+        self.assertTrue(out["afterBlip"], "a single 64 ms mic blip followed by 3.5 s of silence does not reveal the nudge")
+
+    def test_a_transcript_caption_resets_the_nudge_clock(self):
+        out = self.run_js(r"""
+api.boot(JSON.parse(process.env.PACK));
+await api.settle();
+await api.start();
+api.push({ type: "session_started", call_id: 72, share_token: "tok72", out_sample_rate: 24000 });
+await api.settle();
+
+/* Three frames is sustained speech; 2 s of silence is not yet a nudge. */
+api.mic(0.2);
+api.mic(0.2);
+api.mic(0.2);
+api.mic(0);
+api.advance(2000);
+const beforeCaption = api.nodes["nudge-btn"].hidden;
+
+/* A caption on screen is a sign of life: the 3 s clock starts over. */
+api.push({ type: "transcript", role: "user", text: "तीन दिन से बुखार है" });
+const caption = api.nodes["caption"].textContent;
+api.advance(2000);
+const twoSecondsAfter = api.nodes["nudge-btn"].hidden;
+api.advance(1500);
+const pastThreeAfter = !api.nodes["nudge-btn"].hidden;
+
+return { beforeCaption, caption, twoSecondsAfter, pastThreeAfter };
+""")
+
+        self.assertTrue(out["beforeCaption"], "2 s of silence after sustained speech is still too early")
+        self.assertIn("तीन दिन से बुखार है", out["caption"])
+        self.assertTrue(out["twoSecondsAfter"], "a transcript caption resets the 3 s clock, so 2 s later the nudge is still hidden")
+        self.assertTrue(out["pastThreeAfter"], "the nudge surfaces only after 3 s of further inaction")
+
+    def test_reconnecting_hides_the_nudge_and_clears_the_wait(self):
+        out = self.run_js(r"""
+api.boot(JSON.parse(process.env.PACK));
+await api.settle();
+await api.start();
+api.push({ type: "session_started", call_id: 73, share_token: "tok73", out_sample_rate: 24000 });
+await api.settle();
+
+api.mic(0.2);
+api.mic(0.2);
+api.mic(0.2);
+api.mic(0);
+api.advance(3500);
+const armed = !api.nodes["nudge-btn"].hidden;
+
+api.push({ type: "reconnecting", attempt: 1 });
+const hiddenOnReconnect = api.nodes["nudge-btn"].hidden;
+api.advance(4000);
+const staysHidden = api.nodes["nudge-btn"].hidden;
+
+return { armed, hiddenOnReconnect, staysHidden };
+""")
+
+        self.assertTrue(out["armed"], "sustained speech plus 3.5 s of silence arms the nudge")
+        self.assertTrue(out["hiddenOnReconnect"], "reconnecting hides the nudge")
+        self.assertTrue(out["staysHidden"], "reconnecting clears the wait, so further silence does not bring the nudge back")
+
     def test_the_mic_is_muted_while_shishu_speaks_so_no_echo_is_sent(self):
         # "She can tap over SHISHU but not talk over her": while any of her audio is still queued, the capture
         # worklet keeps running (the meter moves) but nothing is sent and the 3 s nudge timer never arms.
@@ -697,7 +776,7 @@ api.ctx().currentTime = 0.4;
 api.ctx().sources.forEach((s) => s.onended && s.onended());
 await api.settle();
 const quietAgain = api.playing();
-api.mic(0.2);
+api.mic(0.2); api.mic(0.2); api.mic(0.2);
 await api.settle();
 const afterPlayback = api.sent.filter((m) => m.type === "audio").length;
 api.mic(0);
@@ -711,7 +790,7 @@ return { speaking, echoed, nudgeWhileSpeaking, quietAgain, afterPlayback, nudgeA
         self.assertEqual(out["echoed"], 0, "not one echo frame reaches the socket while she speaks")
         self.assertTrue(out["nudgeWhileSpeaking"], "and a muted mic never arms the 3 s nudge")
         self.assertFalse(out["quietAgain"], "her queue is empty once the last frame ends")
-        self.assertEqual(out["afterPlayback"], 1, "the moment her audio ends the caller is heard again")
+        self.assertEqual(out["afterPlayback"], 3, "the moment her audio ends the caller is heard again")
         self.assertTrue(out["nudgeAfterPlayback"], "and the silence clock runs off her real listening window")
 
     def test_a_tap_over_shishu_stops_her_at_once_and_ignores_the_aborted_turns_tail(self):
@@ -906,7 +985,7 @@ api.nodes["yes-btn"].fire("click");
 await api.settle();
 
 /* Question B's state lands before its first audio frame: the client sits in `prompting`. */
-api.push({ type: "question_state", step: "birth_mode_detail", epoch: 2, is_yes_no: true, quick_replies: [] });
+api.push({ type: "question_state", step: "birth_term", epoch: 2, is_yes_no: true, quick_replies: [] });
 await api.settle();
 const beforeGap = api.sent.filter((m) => m.type === "audio").length;
 api.mic(0.2);
@@ -920,7 +999,7 @@ api.mic(0.2);
 await api.settle();
 const afterUnlock = api.sent.filter((m) => m.type === "audio").length;
 
-api.push({ type: "thinking", epoch: 2, step: "birth_mode_detail" });
+api.push({ type: "thinking", epoch: 2, step: "birth_term" });
 await api.settle();
 const thinkingText = api.nodes["status"].children.map((c) => c.textContent).join("|");
 api.advance(4000);

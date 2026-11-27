@@ -123,7 +123,7 @@ def _turn_with(state: CallState, outcome: TurnOutcome, spoken: str) -> live.Turn
         TurnOutcome.CLARIFY, TurnOutcome.RETRACT) if o is not outcome}
     body = _answers(danger_now=0.01, active_outcome={outcome.value: 0.97, **rivals})
     intent = live.decisions.interpret_turn_decision(PACK, state, body["answers"], utterance_text=spoken)
-    return live.Turn(_turn_result(body), intent, None, state.model_copy(deep=True), spoken, 640, None)
+    return live.Turn(_turn_result(body), intent, state.model_copy(deep=True), spoken, 640, None)
 
 
 async def _noop_db(*_a: Any, **_kw: Any) -> Any:
@@ -221,7 +221,7 @@ async def scenario_late_stt(boundary: RecordingBoundary) -> list[str]:
         intent = live.decisions.TurnIntent(
             command=TurnCommand(outcome=TurnOutcome.CONCERN, utterance=utterance),
             needs_profile_extraction=False, diagnostics={})
-        return live.Turn(_turn_result(_answers(danger_now=0.01)), intent, None,
+        return live.Turn(_turn_result(_answers(danger_now=0.01)), intent,
                          snapshot.model_copy(deep=True), spoken, len(pcm_bytes), None)
 
     built._evaluate_turn_task = fake_eval  # type: ignore[method-assign]

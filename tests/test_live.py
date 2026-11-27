@@ -146,7 +146,7 @@ def turn_with(state: CallState, outcome: TurnOutcome, spoken: str) -> live.Turn:
     rivals = {o.value: 0.03 / 5 for o in (TurnOutcome.CLEAR, TurnOutcome.CONCERN, TurnOutcome.UNKNOWN, TurnOutcome.CLARIFY, TurnOutcome.RETRACT) if o is not outcome}
     body = answers(danger_now=0.01, active_outcome={outcome.value: 0.97, **rivals})
     intent = live.decisions.interpret_turn_decision(PACK, state, body["answers"], utterance_text=spoken)
-    return live.Turn(TurnTests.result(body), intent, None, state.model_copy(deep=True), spoken, 640, None)
+    return live.Turn(TurnTests.result(body), intent, state.model_copy(deep=True), spoken, 640, None)
 
 
 class OutputTranscriptionTests(unittest.TestCase):
@@ -487,27 +487,30 @@ class HalfDuplexTests(unittest.TestCase):
 class TurnTests(unittest.TestCase):
     """One caller turn: the commit, its persistence, and the audio the pass was handed."""
 
-    def test_profile_steps_run_the_extractor_beside_the_decision_pass(self):
+    def test_profile_steps_extract_only_after_the_decision_asks(self):
         async def body() -> None:
             built, _ws, _session = build()
-            ran: list[str] = []
+            order: list[str] = []
             original_decisions = live.decisions.evaluate_turn
             original_extractor = live.extractor.extract_profile_entities
 
             async def fake_decisions(*_args: Any, **_kwargs: Any) -> live.decisions.DecisionCallResult:
-                ran.append("decisions")
+                order.append("decisions-start")
+                await asyncio.sleep(0)
+                order.append("decisions-end")
                 return TurnTests.result(answers(danger_now=0.01, mentions_profile=0.9))
 
             async def fake_extractor(*_args: Any, **_kwargs: Any) -> Any:
-                ran.append("extractor")
+                order.append("extractor")
                 return live.extractor.ProfileExtractionResult(True)
 
             live.decisions.evaluate_turn = fake_decisions  # type: ignore[assignment]
             live.extractor.extract_profile_entities = fake_extractor  # type: ignore[assignment]
             try:
                 self.assertEqual(live.engine.step_kind(PACK, built.state), "profile")
-                await built._evaluate_turn_task(built.state, "मेरा नाम मीरा है", b"")
-                self.assertEqual(sorted(ran), ["decisions", "extractor"])
+                await built.on_text({"text": "मेरा नाम मीरा है"})
+                await built._next_question()
+                self.assertEqual(order, ["decisions-start", "decisions-end", "extractor"])
             finally:
                 live.decisions.evaluate_turn = original_decisions  # type: ignore[assignment]
                 live.extractor.extract_profile_entities = original_extractor  # type: ignore[assignment]
@@ -528,7 +531,7 @@ class TurnTests(unittest.TestCase):
         cmd = command or TurnCommand()
         intent = live.decisions.TurnIntent(
             command=cmd, needs_profile_extraction=False, diagnostics={})
-        return live.Turn(TurnTests.result(answers(danger_now=0.01)), intent, None,
+        return live.Turn(TurnTests.result(answers(danger_now=0.01)), intent,
                          state.model_copy(deep=True), "नहीं", 640, None)
 
     def test_state_is_committed_before_the_tool_body_is_returned(self):
@@ -684,7 +687,7 @@ class TurnEvidenceLiveTests(unittest.TestCase):
                 intent = live.decisions.TurnIntent(
                     command=TurnCommand(), needs_profile_extraction=False, diagnostics={}
                 )
-                return live.Turn(result, intent, None, snapshot, spoken, len(pcm_bytes), None)
+                return live.Turn(result, intent, snapshot, spoken, len(pcm_bytes), None)
 
             built._evaluate_turn_task = failed  # type: ignore[method-assign]
             await built.on_text({"text": "बुखार आया था"})
@@ -811,44 +814,84 @@ class TurnEvidenceLiveTests(unittest.TestCase):
 
 
 class ExtractorParallelismTests(unittest.TestCase):
-    """A step that saves to the profile must never pay for the extractor after the Decisions pass."""
+    """A saves-to-profile step extracts only after Decisions, and only when that decision asks."""
 
-    def test_a_saves_to_profile_step_runs_the_extractor_beside_the_decision_pass(self):
-        # Call #11's `intro_married`: the caller answered "हाँ शादी हो गई है, मेरे दो बच्चे हैं" and `mentions_profile`
-        # fired, so `_next_question` ran the extractor *after* Decisions and the turn cost 3.4 s.
+    def test_a_saves_to_profile_step_extracts_after_the_decision_gate(self):
+        # Call #11's `intro_married`: "हाँ शादी हो गई है, मेरे दो बच्चे हैं" mentions the profile, so the
+        # extractor runs once, after the decision returns — never beside it, and never when the gate is shut.
         async def body() -> None:
             built, _ws, _session = build(call_id=None)
             state = live.engine.new_state(PACK)
             state.cursor = state.cursor.model_copy(update={"qid": "intro_married"})
-            state.profile["caller_name"] = "मीरा"  # named, but the roster is still unresolved
+            state.profile["caller_name"] = "मीरा"
             built.state = state
-            ran: list[str] = []
+            order: list[str] = []
             original_decisions, original_extractor = live.decisions.evaluate_turn, live.extractor.extract_profile_entities
 
             async def fake_decisions(*_args: Any, **_kwargs: Any) -> live.decisions.DecisionCallResult:
-                ran.append("decisions")
-                await asyncio.sleep(0.12)
+                order.append("decisions-start")
+                await asyncio.sleep(0)
+                order.append("decisions-end")
                 return TurnTests.result(answers(danger_now=0.01, mentions_profile=0.9,
                                                 choice_value={"married": 0.95, "unmarried": 0.03, "other": 0.02}))
 
             async def fake_extractor(*_args: Any, **_kwargs: Any) -> Any:
-                ran.append("extractor")
-                await asyncio.sleep(0.12)
+                order.append("extractor")
                 return live.extractor.ProfileExtractionResult(True)
 
             live.decisions.evaluate_turn = fake_decisions  # type: ignore[assignment]
             live.extractor.extract_profile_entities = fake_extractor  # type: ignore[assignment]
             try:
                 await built.on_text({"text": "हाँ शादी हो गई है, मेरे दो बच्चे हैं"})
-                started = time.perf_counter()
                 await built._next_question()
-                elapsed = time.perf_counter() - started
             finally:
                 live.decisions.evaluate_turn = original_decisions  # type: ignore[assignment]
                 live.extractor.extract_profile_entities = original_extractor  # type: ignore[assignment]
-            self.assertEqual(sorted(ran), ["decisions", "extractor"], "the extractor runs exactly once, on this turn")
-            self.assertLess(elapsed, 0.21,
-                            f"decisions and the extractor must overlap: 2 x 120 ms run sequentially took {elapsed * 1000:.0f} ms")
+            self.assertEqual(order, ["decisions-start", "decisions-end", "extractor"])
+
+        asyncio.run(body())
+
+
+class Call138ExtractionGateTests(unittest.TestCase):
+    """Call #138 SEQ 9: "NICU क्या होता है?" is a clarify, not a profile turn."""
+
+    UTTERANCE = "NICU क्या होता है?"
+
+    def test_call138_seq9_clarify_does_not_extract_and_stays_on_birth_nicu(self):
+        async def body() -> None:
+            state = live.engine.new_state(PACK)
+            state = live.engine.reduce_turn(PACK, state, TurnCommand(profile_patch=ProfilePatch(slots={"caller_name": "कविता"})))
+            state = live.engine.reduce_turn(PACK, state, TurnCommand(outcome=TurnOutcome.ANSWERED, value="married"))
+            state.answers["intro_children"] = AnswerRecord(state=AnswerStatus.UNANSWERED)
+            state.roster_incomplete = True
+            state.cursor = CursorStep(qid="birth_nicu")
+            built, _ws, _session = build(call_id=None, state=state)
+            body_answers = answers(danger_now=0.01, mentions_profile=0.02, asks_clarify=0.96,
+                                   active_outcome={"clarify": 0.93, "other": 0.07})
+            intent = live.decisions.interpret_turn_decision(
+                PACK, built.state, body_answers["answers"], utterance_text=self.UTTERANCE)
+            self.assertIs(intent.needs_profile_extraction, False)
+            calls: list[str] = []
+            original_decisions = live.decisions.evaluate_turn
+            original_extractor = live.extractor.extract_profile_entities
+
+            async def fake_decisions(*_args: Any, **_kwargs: Any) -> live.decisions.DecisionCallResult:
+                return TurnTests.result(body_answers)
+
+            async def fake_extractor(*_args: Any, **_kwargs: Any) -> live.extractor.ProfileExtractionResult:
+                calls.append("extractor")
+                return live.extractor.ProfileExtractionResult(True, ProfilePatch(roster=(), roster_complete=False))
+
+            live.decisions.evaluate_turn = fake_decisions  # type: ignore[assignment]
+            live.extractor.extract_profile_entities = fake_extractor  # type: ignore[assignment]
+            try:
+                await built.on_text({"text": self.UTTERANCE})
+                await built._next_question()
+            finally:
+                live.decisions.evaluate_turn = original_decisions  # type: ignore[assignment]
+                live.extractor.extract_profile_entities = original_extractor  # type: ignore[assignment]
+            self.assertEqual(len(calls), 0)
+            self.assertEqual(built.state.cursor.qid, "birth_nicu")
 
         asyncio.run(body())
 
@@ -875,7 +918,7 @@ class SttReevaluationTests(unittest.TestCase):
                         else {"item_2": 0.45, "item_1": 0.42, "other": 0.13})
                 body = answers(danger_now=0.01, active_outcome={"concern": 0.97, "clear": 0.01, "unknown": 0.01}, item_ref=head)
                 return live.Turn(TurnTests.result(body), live.decisions.interpret_turn_decision(PACK, snapshot, body["answers"], utterance_text=text),
-                                 None, snapshot.model_copy(deep=True), text, len(pcm), None)
+                                 snapshot.model_copy(deep=True), text, len(pcm), None)
 
             built._evaluate_turn_task = fake_pass  # type: ignore[method-assign]
             await built.on_audio({"data": pcm(), "sample_rate": 16000})
@@ -1916,18 +1959,19 @@ class OnePassDecisionTests(unittest.TestCase):
 
         asyncio.run(body())
 
-    def test_call16_profile_extractor_advances_step_when_decision_times_out(self):
-        # Call #16 turns `[11]` and `[13]`: the extractor returned अमन 6yo male and मीरा 2yo female in 1.5 s while
-        # Decisions timed out, and `_next_question` threw the extraction away to re-ask the same question — twice.
+    def test_a_timed_out_decision_retries_without_extracting(self):
         async def body() -> None:
             built, _ws, _session = build(call_id=None, state=self.roster_hold_state())
             self.assertEqual(built.state.step_token, "intro_children:hold:roster")
+            calls: list[str] = []
             original_decisions, original_extractor = live.decisions.evaluate_turn, live.extractor.extract_profile_entities
 
             async def timed_out(*_args: Any, **_kwargs: Any) -> live.decisions.DecisionCallResult:
+                calls.append("decisions")
                 return live.decisions.DecisionCallResult(False, "timeout", 2, 8_100, 92_000, 64, None, {})
 
             async def extracted(*_args: Any, **_kwargs: Any) -> live.extractor.ProfileExtractionResult:
+                calls.append("extractor")
                 return live.extractor.ProfileExtractionResult(True, self.aman_and_meera(), extractor_ms=1_500)
 
             live.decisions.evaluate_turn = timed_out  # type: ignore[assignment]
@@ -1939,63 +1983,76 @@ class OnePassDecisionTests(unittest.TestCase):
                 live.decisions.evaluate_turn = original_decisions  # type: ignore[assignment]
                 live.extractor.extract_profile_entities = original_extractor  # type: ignore[assignment]
 
-            self.assertEqual(payload["result"], "ok",
-                             "a dead Decision pass must not re-ask a question the extractor just answered")
-            self.assertEqual(built.state.cursor.qid, "intro_bridge", "the resolved roster carried the call forward")
-            self.assertEqual([(c.name, c.age_years, c.tag) for c in built.state.roster],
-                             [("अमन", 6.0, "male"), ("मीरा", 2.0, "female")], "both children survive, named and tagged")
-            self.assertEqual(built.consecutive_tool_errors, 0, "a recovered turn is not a strike")
-            self.assertEqual(built.last_turn_meta["recovered"], "extractor", "and the recovery says who saved it")
-            self.assertEqual(built.last_turn_meta["decision_error"], "timeout")
-            self.assertEqual(built.last_turn_meta["ext_ms"], 1_500)
-            self.assertEqual(payload["say"], live.engine.say_text(PACK, built.state),
-                             "she speaks the step the extraction landed on, not the one that timed out")
+            self.assertEqual(calls, ["decisions"])
+            self.assertEqual(payload["result"], "retry")
+            self.assertEqual(built.state.cursor.qid, "intro_children")
+            self.assertEqual(built.state.roster, [])
+            self.assertEqual(built.consecutive_tool_errors, 1)
+            self.assertEqual(built.last_turn_meta.get("recovered"), "reask")
 
         asyncio.run(body())
 
-    def test_a_mid_call_profile_patch_is_preserved_even_when_the_pass_still_fails(self):
-        # Not every extraction read moves the step: "दो बच्चे हैं" gives the count but no ages, so the roster hold
-        # stays put and a re-ask is still owed. The entities she just gave must not be dropped with the dead pass.
+    def test_a_failed_decision_does_not_keep_an_extractor_profile_patch(self):
         async def body() -> None:
             built, _ws, _session = build(call_id=None, state=self.roster_hold_state())
             step_in = built.state.step_token
-            patch = ProfilePatch(slots={"num_children": 2})
+            calls: list[str] = []
+            original_decisions, original_extractor = live.decisions.evaluate_turn, live.extractor.extract_profile_entities
 
-            async def failed_with_patch(snapshot: CallState, spoken: str, pcm: bytes) -> live.Turn:
-                turn = turn_with(snapshot, TurnOutcome.UNKNOWN, spoken)
-                return turn._replace(result=turn.result._replace(ok=False, error_reason="timeout"),
-                                     extraction=live.extractor.ProfileExtractionResult(True, patch, extractor_ms=600))
+            async def failed(*_args: Any, **_kwargs: Any) -> live.decisions.DecisionCallResult:
+                calls.append("decisions")
+                return live.decisions.DecisionCallResult(False, "timeout", 2, 8_100, 100, 4, None, {})
 
-            built._evaluate_turn_task = failed_with_patch  # type: ignore[method-assign]
-            await built.on_text({"text": "दो बच्चे हैं"})
-            payload, _clarify = await built._next_question()
-            self.assertEqual(payload["result"], "retry", "a patch that moves no step still leaves the turn unanswered")
-            self.assertEqual(built.state.step_token, step_in, "the ages reask is still owed")
-            self.assertEqual(built.state.profile.get("num_children"), 2,
-                             "but the count she just gave is on the record, not thrown away with the dead pass")
-            self.assertEqual(built.consecutive_tool_errors, 1, "an unanswered turn is still a strike")
-            self.assertEqual(built.last_turn_meta.get("recovered"), "reask",
-                             "the dead pass is recovered by a re-ask, not by the extraction")
+            async def extracted(*_args: Any, **_kwargs: Any) -> live.extractor.ProfileExtractionResult:
+                calls.append("extractor")
+                return live.extractor.ProfileExtractionResult(True, ProfilePatch(slots={"num_children": 2}), extractor_ms=600)
+
+            live.decisions.evaluate_turn = failed  # type: ignore[assignment]
+            live.extractor.extract_profile_entities = extracted  # type: ignore[assignment]
+            try:
+                await built.on_text({"text": "दो बच्चे हैं"})
+                payload, _clarify = await built._next_question()
+            finally:
+                live.decisions.evaluate_turn = original_decisions  # type: ignore[assignment]
+                live.extractor.extract_profile_entities = original_extractor  # type: ignore[assignment]
+
+            self.assertEqual(calls, ["decisions"])
+            self.assertEqual(payload["result"], "retry")
+            self.assertEqual(built.state.step_token, step_in)
+            self.assertIsNone(built.state.profile.get("num_children"))
+            self.assertEqual(built.consecutive_tool_errors, 1)
+            self.assertEqual(built.last_turn_meta.get("recovered"), "reask")
 
         asyncio.run(body())
 
-    def test_no_extraction_recovery_when_the_key_is_missing(self):
-        # `missing_api_key` means nothing was read at all: an offline extractor returning `ok` must not fake a
-        # recovery here, or a keyless server would advance call state it never actually consulted a model for.
+    def test_a_missing_key_closes_without_extracting(self):
         async def body() -> None:
             built, _ws, _session = build(call_id=None, state=self.roster_hold_state())
+            calls: list[str] = []
+            original_decisions, original_extractor = live.decisions.evaluate_turn, live.extractor.extract_profile_entities
 
-            async def no_key(snapshot: CallState, spoken: str, pcm: bytes) -> live.Turn:
-                turn = turn_with(snapshot, TurnOutcome.UNKNOWN, spoken)
-                return turn._replace(result=turn.result._replace(ok=False, error_reason="missing_api_key", attempts=1),
-                                     extraction=live.extractor.ProfileExtractionResult(True, self.aman_and_meera()))
+            async def no_key(*_args: Any, **_kwargs: Any) -> live.decisions.DecisionCallResult:
+                calls.append("decisions")
+                return live.decisions.DecisionCallResult(False, "missing_api_key", 1, 0, 0, 0, None, {})
 
-            built._evaluate_turn_task = no_key  # type: ignore[method-assign]
-            await built.on_text({"text": self.ROSTER_UTTERANCE})
-            payload, _clarify = await built._next_question()
-            self.assertEqual(payload["result"], "failed", "a keyless server closes the call, it does not advance it")
+            async def extracted(*_args: Any, **_kwargs: Any) -> live.extractor.ProfileExtractionResult:
+                calls.append("extractor")
+                return live.extractor.ProfileExtractionResult(True, self.aman_and_meera())
+
+            live.decisions.evaluate_turn = no_key  # type: ignore[assignment]
+            live.extractor.extract_profile_entities = extracted  # type: ignore[assignment]
+            try:
+                await built.on_text({"text": self.ROSTER_UTTERANCE})
+                payload, _clarify = await built._next_question()
+            finally:
+                live.decisions.evaluate_turn = original_decisions  # type: ignore[assignment]
+                live.extractor.extract_profile_entities = original_extractor  # type: ignore[assignment]
+
+            self.assertEqual(calls, ["decisions"])
+            self.assertEqual(payload["result"], "failed")
             self.assertIs(built.state.close_reason, CloseReason.TECHNICAL_FAILURE)
-            self.assertEqual(built.state.cursor.qid, "intro_children", "and the roster hold is untouched")
+            self.assertEqual(built.state.cursor.qid, "intro_children")
+            self.assertEqual(built.state.roster, [])
 
         asyncio.run(body())
 
@@ -2059,6 +2116,7 @@ def bridged_state() -> CallState:
     state.roster = [RosterItem(id="item_1", age_years=2.0, age_label="2 साल", tag="male")]
     state.roster_stated = True
     state.answers["intro_married"] = AnswerRecord(state=AnswerStatus.CLEAR)
+    state.answers["birth_mode_detail"] = AnswerRecord(state=AnswerStatus.ANSWERED, value="normal", choice_label="नॉर्मल")
     state.cursor = CursorStep(qid="intro_bridge")
     return state
 
@@ -2074,7 +2132,7 @@ class PromptMuteWindowTests(unittest.TestCase):
             self.assertTrue(built.bot_generating, "SHISHU is mid-sentence on the bridge")
 
             await built.on_quick_reply({"value": "concern", "step": built.state.step_token})
-            self.assertEqual(built.state.cursor.qid, "birth_mode_detail", "the tap moved the call on")
+            self.assertEqual(built.state.cursor.qid, "birth_term", "the tap moved the call on")
             self.assertIs(built.turn_phase, live.TurnPhase.PROMPTING)
 
             forwarded = len(session.realtime("audio"))
@@ -2735,7 +2793,7 @@ class Wave2CueLifecycleAndResumeTelemetryTests(unittest.TestCase):
                         command=TurnCommand(outcome=TurnOutcome.CONCERN, stated={"birth_jaundice": TurnOutcome.CONCERN},
                                             followup_answered=True, utterance=utterance, redacted=False),
                         needs_profile_extraction=False, diagnostics={})
-                    return live.Turn(TurnTests.result(answers(danger_now=0.01)), intent, None,
+                    return live.Turn(TurnTests.result(answers(danger_now=0.01)), intent,
                                      snapshot.model_copy(deep=True), spoken, len(pcm_bytes), None)
 
                 built._evaluate_turn_task = fake_pass  # type: ignore[method-assign]
@@ -2818,7 +2876,7 @@ class Wave3AcousticAndPlaybackTailTests(unittest.TestCase):
             captured.append(len(pcm_bytes))
             intent = live.decisions.TurnIntent(command=TurnCommand(outcome=TurnOutcome.CLEAR, utterance=spoken),
                                                needs_profile_extraction=False, diagnostics={})
-            return live.Turn(TurnTests.result(answers(danger_now=0.01)), intent, None,
+            return live.Turn(TurnTests.result(answers(danger_now=0.01)), intent,
                              snapshot.model_copy(deep=True), spoken, len(pcm_bytes), None)
 
         built._evaluate_turn_task = fake_pass  # type: ignore[method-assign]
@@ -3034,7 +3092,7 @@ class Call67AckTests(unittest.TestCase):
             async def evaluate(snapshot, spoken, pcm_bytes):
                 result = live.decisions.DecisionCallResult(True, "", 1, 180, 120, 6, 40, raw)
                 intent = live.decisions.interpret_turn_decision(PACK, snapshot, raw, utterance_text=spoken)
-                return live.Turn(result, intent, None, snapshot, spoken, len(pcm_bytes), None)
+                return live.Turn(result, intent, snapshot, spoken, len(pcm_bytes), None)
 
             built._evaluate_turn_task = evaluate  # type: ignore[method-assign]
             built.text = self.ASIDE
@@ -3066,7 +3124,7 @@ class Call67AckTests(unittest.TestCase):
             async def evaluate(snapshot, spoken, pcm_bytes):
                 result = live.decisions.DecisionCallResult(True, "", 1, 180, 120, 6, 40, raw)
                 intent = live.decisions.interpret_turn_decision(PACK, snapshot, raw, utterance_text=spoken)
-                return live.Turn(result, intent, None, snapshot, spoken, len(pcm_bytes), None)
+                return live.Turn(result, intent, snapshot, spoken, len(pcm_bytes), None)
 
             built._evaluate_turn_task = evaluate  # type: ignore[method-assign]
             built.text = self.OTHER
@@ -3907,7 +3965,7 @@ class RedactedAckTests(unittest.TestCase):
         async def evaluate(snapshot, spoken, pcm_bytes):
             result = live.decisions.DecisionCallResult(True, "", 1, 180, 120, 6, 40, heads)
             intent = live.decisions.interpret_turn_decision(PACK, snapshot, heads, utterance_text=spoken)
-            return live.Turn(result, intent, None, snapshot, spoken, len(pcm_bytes), None)
+            return live.Turn(result, intent, snapshot, spoken, len(pcm_bytes), None)
 
         built._evaluate_turn_task = evaluate  # type: ignore[method-assign]
         built.text = cls.HEMO if text is None else text

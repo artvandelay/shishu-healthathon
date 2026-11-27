@@ -9,6 +9,9 @@ scenarios:
     name: आरव
   duration_sec: 420
   answers:
+  - qid: birth_mode_detail
+    say:
+    - नॉर्मल
   - qid: birth_jaundice
     say:
     - हाँ, तीन दिन नीली लाइट में रखा था।
@@ -32,7 +35,10 @@ scenarios:
     tag: female
     name: अनन्या
   duration_sec: 360
-  answers: []
+  answers:
+  - qid: birth_mode_detail
+    say:
+    - नॉर्मल
   stop_after_gates: null
 - id: incomplete
   pdf: SHISHU-sample-incomplete.pdf
@@ -44,8 +50,11 @@ scenarios:
     name: null
   duration_sec: 95
   answers:
+  - qid: birth_mode_detail
+    say:
+    - नॉर्मल
   - qid: birth_nicu
     say:
     - हाँ, दो दिन काँच के बक्से में रखा पड़ा था।
     - दो दिन।
-  stop_after_gates: 3
+  stop_after_gates: 2

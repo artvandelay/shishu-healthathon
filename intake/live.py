@@ -115,7 +115,6 @@ async def _try_call(fn: Any, *args: Any, default: Any = None) -> Any:
 class Turn(NamedTuple):
     result: decisions.DecisionCallResult
     intent: decisions.TurnIntent
-    extraction: extractor.ProfileExtractionResult | None
     snapshot: CallState
     spoken: str
     pcm_len: int
@@ -266,11 +265,6 @@ class LiveCallSession:
             task.cancel()
             task.add_done_callback(consume_task_error)
         setattr(self, name, None)
-    def _wants_extractor(self, snapshot: CallState) -> bool:
-        """A profile step, a step that writes the profile, or a caller whose roster is still unknown all need it."""
-        spec = self.pack.by_id.get(snapshot.cursor.qid)
-        return (engine.step_kind(self.pack, snapshot) == "profile" or bool(spec and spec.saves_to_profile)
-                or not engine.roster_resolved(self.pack, snapshot))
     def _drop_other_step_tap(self, step: str) -> None:
         in_flight = self.deciding_count or self.turn_phase is TurnPhase.DECIDING or (self.tool_task is not None and not self.tool_task.done())
         if not in_flight and self.last_tap is not None and self.last_tap[0] != step: self.last_tap = None
@@ -287,11 +281,9 @@ class LiveCallSession:
         # bought nothing but the same timeout twice.
         req = decisions.build_turn_request(self.pack, snapshot, utterance_text=spoken, audio_wav_bytes=wav)
         slim = decisions.build_turn_request(self.pack, snapshot, utterance_text=spoken, audio_wav_bytes=wav, slim=True)
-        jobs: list[Awaitable[Any]] = [decisions.evaluate_turn(req, fallback_request=slim)]
-        if self._wants_extractor(snapshot): jobs.append(extractor.extract_profile_entities(self.pack, snapshot, utterance_text=spoken, audio_wav_bytes=wav))
-        done = await asyncio.gather(*jobs)
-        return Turn(done[0], decisions.interpret_turn_decision(self.pack, snapshot, done[0].raw_answers, utterance_text=spoken),
-                    done[1] if len(done) > 1 else None, snapshot, spoken, len(pcm), wav)
+        done = await decisions.evaluate_turn(req, fallback_request=slim)
+        return Turn(done, decisions.interpret_turn_decision(self.pack, snapshot, done.raw_answers, utterance_text=spoken),
+                    snapshot, spoken, len(pcm), wav)
     def _learn_noise(self, rms: float) -> None:
         """Follow the room, never the caller: a fan must become the floor, and a soft turn must never become it.
 
@@ -485,33 +477,6 @@ class LiveCallSession:
             return True
         self.last_turn_meta = {k: v for k, v in (meta | {"recovered": "reask", "strike": self.consecutive_tool_errors}).items() if v is not None}
         return False
-    async def _recover_from_extraction(self, turn: Turn, evidence: TurnEvidence) -> tuple[dict[str, Any], bool] | None:
-        """The extractor's own read of a turn Decisions could not finish: `None` when it saved nothing.
-
-        `extractor.py` and `decisions` are two independent reads of the same utterance, and on Call #16 the
-        extractor won twice (अमन 6yo male, मीरा 2yo female in ~1.5 s) while Decisions timed out. `_next_question`
-        then re-asked the question the mother had already answered, in full, through the microphone.
-        """
-        ext = turn.extraction
-        if (turn.result.error_reason == "missing_api_key" or turn.snapshot.step_token != self.state.step_token
-                or ext is None or not ext.ok or (ext.patch.is_empty and ext.patch.roster_complete is None)):
-            return None  # nothing was extracted, or the call has already moved on without it
-        on_profile = engine.step_kind(self.pack, turn.snapshot) == "profile"
-        patched = engine.apply_profile_patch(self.pack, self.state, ext.patch, attempted_on_profile=on_profile)
-        if patched.step_token != self.state.step_token:
-            # The patch resolved or advanced the active step: the caller's answer is in, so no re-ask is owed.
-            self.consecutive_tool_errors = 0
-            self.last_evidence_step = evidence.snapshot_step
-            await self._commit_turn(patched, evidence)
-            self.last_turn_meta = {k: v for k, v in {"step_in": turn.snapshot.step_token, "step_out": self.state.step_token,
-                                                     "advanced": True, "recovered": "extractor", "decision_error": turn.result.error_reason,
-                                                     "decision_ms": turn.result.decision_ms, "ext_ms": ext.extractor_ms,
-                                                     "stt": turn.spoken[:120]}.items() if v is not None and v != ""}
-            return tool_body(self.pack, self.state), False
-        if patched != self.state:
-            self.state = patched  # a mid-call profile write still belongs in memory before the evidence commit
-        return None
-
     async def _failed_turn(self, turn: Turn | None, step_in: str, error_reason: str, *, evidence: TurnEvidence) -> tuple[dict[str, Any], bool]:
         """A pass that produced nothing: the same question is re-asked, or the call is closed for real."""
         self.last_evidence_step = evidence.snapshot_step
@@ -549,11 +514,6 @@ class LiveCallSession:
                 self.last_turn_meta = {}
                 return await self._failed_turn(None, snapshot.step_token, "exception", evidence=evidence)
             if not turn.result.ok:
-                # A dead Decision pass is not a dead turn: when the extractor read this same utterance cleanly, its
-                # profile/roster patch is the caller's answer and must not be thrown away to re-ask what she just
-                # said. Call #16 did exactly that twice, losing अमन and मीरा both times.
-                recovered = await self._recover_from_extraction(turn, evidence)
-                if recovered is not None: return recovered
                 return await self._failed_turn(turn, turn.snapshot.step_token, turn.result.error_reason, evidence=evidence)
             self.consecutive_tool_errors = 0
             if self.state.phase is not Phase.ASKING:  # a close won the race; only emergency speech may change why
@@ -571,8 +531,8 @@ class LiveCallSession:
                 if self.last_tap is not None and self.last_tap[0] == turn.snapshot.step_token and interp is not None:
                     _, pre_tap, tap_cmd = self.last_tap
                     self.last_tap = None
-                    ext = turn.extraction
-                    if turn.intent.needs_profile_extraction and ext is None:
+                    ext = None
+                    if turn.intent.needs_profile_extraction and not (interp.emergency or interp.caller_stop):
                         ext = await extractor.extract_profile_entities(self.pack, turn.snapshot, utterance_text=turn.spoken, audio_wav_bytes=turn.wav)
                     if ext is not None and ext.ok and not (interp.emergency or interp.caller_stop):
                         interp = interp.model_copy(update={"profile_patch": ext.patch, "profile_turn_attempted": True})
@@ -594,10 +554,12 @@ class LiveCallSession:
                 await self._commit_turn(self.state, evidence)
                 self.last_turn_meta = {"step_in": turn.snapshot.step_token, "step_out": self.state.step_token, "reason": "stale_turn"}
                 return {**tool_body(self.pack, self.state), "result": "held", "reason": "stale_turn"}, False
-            cmd, ext, step_in, pol = turn.intent.command, turn.extraction, turn.snapshot.step_token, None
-            if turn.intent.needs_profile_extraction and ext is None:
-                ext = await extractor.extract_profile_entities(self.pack, turn.snapshot, utterance_text=turn.spoken, audio_wav_bytes=turn.wav)
+            cmd, step_in, pol = turn.intent.command, turn.snapshot.step_token, None
             interp = turn.intent.interpretation
+            ext = None
+            stopped = (interp.emergency or interp.caller_stop) if interp is not None else (cmd.emergency or cmd.caller_stop)
+            if turn.intent.needs_profile_extraction and not stopped:
+                ext = await extractor.extract_profile_entities(self.pack, turn.snapshot, utterance_text=turn.spoken, audio_wav_bytes=turn.wav)
             if interp is not None:
                 if ext is not None and ext.ok and not (interp.emergency or interp.caller_stop):
                     interp = interp.model_copy(update={"profile_patch": ext.patch, "profile_turn_attempted": True})
