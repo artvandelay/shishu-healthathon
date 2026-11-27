@@ -10,7 +10,7 @@ const IN_RATE = 16000;
 const OUT_RATE = 24000;
 const CONSENT_KEY = "shishu_consent";
 const RECONNECT_DELAYS = [600, 1500, 3000];
-const NUDGE_AFTER_MS = 3000;
+const NUDGE_AFTER_MS = 4000;
 const PROMPT_UNLOCK_MS = 5000;
 const PLAYBACK_TAIL_SEC = 0.35; /* the last 350 ms of a completed turn: she may answer over it, it is not an echo */
 

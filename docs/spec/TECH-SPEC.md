@@ -130,7 +130,7 @@ Required files: `pack.yaml` (branding, model, voice, VAD, timers, assets, UI str
 - **S-8.1–S-8.6** Single `_gate` middleware (`302` pages, `401`/`403` API); path containment `_inside`; constant-time passcodes + HMAC-SHA256 `shishu_auth` cookie (`v1.role.exp.user.sig`, 14 d, `httpOnly`, `samesite=lax`, `secure` on HTTPS, secret persisted in `server_secrets`). Rate limits: `login` 15/min failures (rightmost proxy hop IP), `pdf` 5/min/token, `share` 20/min/token.
 - **Wire S→C:** `session_started`, `question_state`, `audio`, `bot_turn_complete`, `thinking`, `clear`, `transcript`, `telemetry`, `reconnecting`/`reconnected`, `ending`, `call_completed`/`report_failed`, `error`.
 - **Wire C→S:** `audio` (16 kHz mono PCM), `text`, `quick_reply` (`value, step, epoch`), `nudge`, `hangup`.
-- **S-8.7–S-8.12** Server validates `quick_reply` against active `step` & `epoch`. Browser drops stale epochs, unlocks quick replies at ≥50% played / drained `bot_turn_complete` (fallback `5000 ms`), shows nudge at `3000 ms` silence, enables mic only in unmuted `LISTENING` or `350 ms` tail, reconnects `[600, 1500, 3000]` ms, downloads PDF via plain `<a download>` (no `navigator.share`), stores consent in `sessionStorage` (cleared on logout).
+- **S-8.7–S-8.12** Server validates `quick_reply` against active `step` & `epoch`. Browser drops stale epochs, unlocks quick replies at ≥50% played / drained `bot_turn_complete` (fallback `5000 ms`), shows nudge at `4000 ms` silence, enables mic only in unmuted `LISTENING` or `350 ms` tail, reconnects `[600, 1500, 3000]` ms, downloads PDF via plain `<a download>` (no `navigator.share`), stores consent in `sessionStorage` (cleared on logout).
 
 ---
 

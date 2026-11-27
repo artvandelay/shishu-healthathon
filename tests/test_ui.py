@@ -753,7 +753,7 @@ return { armed, hiddenOnReconnect, staysHidden };
 
     def test_the_mic_is_muted_while_shishu_speaks_so_no_echo_is_sent(self):
         # "She can tap over SHISHU but not talk over her": while any of her audio is still queued, the capture
-        # worklet keeps running (the meter moves) but nothing is sent and the 3 s nudge timer never arms.
+        # worklet keeps running (the meter moves) but nothing is sent and the 4 s nudge timer never arms.
         out = self.run_js(r"""
 api.boot(JSON.parse(process.env.PACK));
 await api.settle();
@@ -767,7 +767,7 @@ const speaking = api.playing();
 
 api.mic(0.2);
 await api.settle();
-api.advance(4000);
+api.advance(4500);
 const echoed = api.sent.filter((m) => m.type === "audio").length;
 const nudgeWhileSpeaking = api.nodes["nudge-btn"].hidden;
 
@@ -781,16 +781,19 @@ await api.settle();
 const afterPlayback = api.sent.filter((m) => m.type === "audio").length;
 api.mic(0);
 api.advance(3500);
+const nudgeBefore4s = api.nodes["nudge-btn"].hidden;
+api.advance(750);
 const nudgeAfterPlayback = !api.nodes["nudge-btn"].hidden;
 
-return { speaking, echoed, nudgeWhileSpeaking, quietAgain, afterPlayback, nudgeAfterPlayback };
+return { speaking, echoed, nudgeWhileSpeaking, quietAgain, afterPlayback, nudgeBefore4s, nudgeAfterPlayback };
 """)
 
         self.assertTrue(out["speaking"], "her audio really was queued")
         self.assertEqual(out["echoed"], 0, "not one echo frame reaches the socket while she speaks")
-        self.assertTrue(out["nudgeWhileSpeaking"], "and a muted mic never arms the 3 s nudge")
+        self.assertTrue(out["nudgeWhileSpeaking"], "and a muted mic never arms the 4 s nudge")
         self.assertFalse(out["quietAgain"], "her queue is empty once the last frame ends")
         self.assertEqual(out["afterPlayback"], 3, "the moment her audio ends the caller is heard again")
+        self.assertTrue(out["nudgeBefore4s"], "the 4 s nudge stays hidden at 3.5 s")
         self.assertTrue(out["nudgeAfterPlayback"], "and the silence clock runs off her real listening window")
 
     def test_a_tap_over_shishu_stops_her_at_once_and_ignores_the_aborted_turns_tail(self):
